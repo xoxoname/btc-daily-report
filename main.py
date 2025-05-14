@@ -1,97 +1,53 @@
 # main.py
 import os
 import time
-import hmac
-import hashlib
-import requests
 from datetime import datetime, timezone, timedelta
-
-# Render 대시보드 → Environment → 아래 3개 키를 설정하세요.
-API_KEY     = os.getenv("BITGET_API_KEY")
-SECRET_KEY  = os.getenv("BITGET_SECRET_KEY")
-PASSPHRASE  = os.getenv("BITGET_PASSPHRASE")
-
-BASE_URL = "https://api.bitget.com"
-
-def _sign(timestamp: str, method: str, request_path: str, body: str="") -> str:
-    """
-    Bitget 공통 HMAC-SHA256 시그니처 생성
-    """
-    message = f"{timestamp}{method}{request_path}{body}"
-    return hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256).hexdigest()
-
-def _request(method: str, path: str, params: dict=None, body: str="") -> requests.Response:
-    """
-    GET/POST 요청 래퍼
-    """
-    timestamp = str(int(time.time() * 1000))
-    request_path = f"/api/mix/v1/{path}"
-    signature = _sign(timestamp, method.upper(), request_path, body)
-    headers = {
-        "ACCESS-KEY": API_KEY,
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": PASSPHRASE,
-        "Content-Type": "application/json",
-        "X-ACCESS-SIGN": signature,
-    }
-    url = BASE_URL + request_path
-    if method.lower() == "get":
-        return requests.get(url, headers=headers, params=params)
-    else:
-        return requests.post(url, headers=headers, data=body)
-
-def fetch_today_pnl() -> float:
-    """
-    오늘(UTC) 실현 PNL 합계 조회
-    """
-    now = datetime.now(timezone.utc)
-    start_of_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    params = {
-        "productType": "UMCBL",      # USDT-M perpetual
-        "marginCoin": "USDT",
-        "startTime": int(start_of_day.timestamp() * 1000),
-        "endTime":   int(now.timestamp() * 1000),
-        "pageSize": 50
-    }
-    r = _request("get", "account/accountBill", params)
-    r.raise_for_status()
-    items = r.json().get("data", [])
-    # 실제 필드 이름은 profitUsd, profit etc. 리턴 구조 확인 후 조정하세요
-    return sum(float(item.get("profitUsd", 0)) for item in items)
-
-def fetch_open_positions() -> list:
-    """
-    현재 열린 모든 포지션 조회
-    """
-    params = {"productType": "UMCBL", "marginCoin": "USDT"}
-    r = _request("get", "position/openPositions", params)
-    r.raise_for_status()
-    return r.json().get("data", [])
+import ccxt
 
 def main():
-    # 한국시간 출력
-    now_kst = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=9)))
-    print(f"\n✅ [BTC 실시간 리포트] {now_kst.strftime('%Y-%m-%d %H:%M:%S')}\n" + "-"*40)
+    # 1) 환경변수에서 키·시크릿 읽어서 CCXT Bitget 인스턴스 생성
+    api_key    = os.getenv("BITGET_API_KEY")
+    secret     = os.getenv("BITGET_SECRET_KEY")
+    passphrase = os.getenv("BITGET_PASSPHRASE")
+    if not (api_key and secret and passphrase):
+        print("❌ 환경변수 BITGET_API_KEY/SECRET_KEY/PASSPHRASE 중 하나가 설정되지 않았습니다.")
+        return
 
-    # 1) 오늘 실현 PNL
-    try:
-        pnl = fetch_today_pnl()
-        print(f"📊 오늘 실현 PNL: {pnl:.4f} USDT")
-    except Exception as e:
-        print(f"❌ 오늘 수익 데이터 조회 실패: {e}")
+    exchange = ccxt.bitget({
+        "apiKey": api_key,
+        "secret": secret,
+        "password": passphrase,
+        "enableRateLimit": True,
+    })
+    # USDT-M 선물(Perpetual) 마켓으로 설정
+    exchange.options["defaultType"] = "future"
 
-    # 2) 실시간 미실현 PNL
+    # 2) 타임스탬프 찍기 (한국시간)
+    now = datetime.now(timezone(timedelta(hours=9)))
+    header = f"\n✅ [BTC 실시간 리포트] {now.strftime('%Y-%m-%d %H:%M:%S')}\n" + "-"*40
+    print(header)
+
+    # 3) 오늘 PNL은 CCXT가 직접 제공하진 않지만,
+    #    balance.fetchBalance 후 position들 합산해서 대략 이틀치 변화로 뽑아볼 수 있습니다.
+    #    여기서는 간단히 미실현 PNL만 보여드릴게요.
+
     try:
-        positions = fetch_open_positions()
-        if not positions:
-            print("📭 현재 열린 포지션이 없습니다.")
+        positions = exchange.fetch_positions()  # 모든 선물 포지션
+        unrealized_total = 0.0
+        for pos in positions:
+            # contracts(계약 수)가 0 초과인 포지션만
+            if pos.get("contracts", 0) > 0:
+                upnl = pos.get("unrealizedPnl", 0.0) or pos.get("unrealized_profit", 0.0)
+                symbol = pos.get("symbol")
+                side   = pos.get("side")
+                amt    = pos.get("contracts")
+                entry  = pos.get("entryPrice") or pos.get("entry_price")
+                print(f"📊 {symbol:<8} | {side:>4} | 수량: {amt:.4f} | 진입가: {entry:.1f} | 미실현 PNL: {upnl:.4f} USDT")
+                unrealized_total += float(upnl)
+        if unrealized_total == 0:
+            print("📭 현재 열린 포지션이 없거나, 미실현 PNL이 없습니다.")
         else:
-            for p in positions:
-                sym   = p.get("symbol")
-                unpl  = float(p.get("unrealizedProfit", 0))
-                qty   = float(p.get("holdingQty", 0))
-                entry = float(p.get("avgEntryPrice", 0))
-                print(f"• {sym} | 미실현 PNL: {unpl:.4f} USDT | 수량: {qty} | 진입가: {entry}")
+            print(f"🧮 총 미실현 PNL: {unrealized_total:.4f} USDT")
     except Exception as e:
         print(f"❌ 실시간 포지션 조회 실패: {e}")
 
