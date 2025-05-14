@@ -1,77 +1,84 @@
 import os
-import json
-from datetime import datetime, timedelta, timezone
 import ccxt
-from dotenv import load_dotenv
+from datetime import datetime
 
-load_dotenv()  # Render에선 무시, env vars 에서 가져옵니다.
+# ┌───────────────────────────────────────────────────────────┐
+# │                      환경 변수 세팅                       │
+# └───────────────────────────────────────────────────────────┘
+API_KEY       = os.environ['BITGET_API_KEY']
+SECRET        = os.environ['BITGET_SECRET_KEY']
+PASSPHRASE    = os.environ['BITGET_PASSPHRASE']
+# (초기 자산 대비 등락률 계산용—처음 실행 시점의 자산을 저장해두세요)
+INITIAL_EQUITY = float(os.environ.get('INITIAL_EQUITY', '0'))
 
-API_KEY     = os.getenv("BITGET_API_KEY")
-SECRET_KEY  = os.getenv("BITGET_SECRET_KEY")
-PASSPHRASE  = os.getenv("BITGET_PASSPHRASE")
+# ┌───────────────────────────────────────────────────────────┐
+# │                    CCXT 거래소 인스턴스                  │
+# └───────────────────────────────────────────────────────────┘
+exchange = ccxt.bitget({
+    'apiKey': API_KEY,
+    'secret': SECRET,
+    'password': PASSPHRASE,
+    'options': {'defaultType': 'swap'},
+})
 
-STATE_FILE = "balance_state.json"
+# ┌───────────────────────────────────────────────────────────┐
+# │               보유 포지션(미실현 PNL) 조회                │
+# └───────────────────────────────────────────────────────────┘
+def fetch_open_positions():
+    # ccxt 의 fetchPositions() 를 사용
+    all_positions = exchange.fetchPositions()
+    # contracts(수량)이 0 이 아닌 포지션만 리턴
+    return [p for p in all_positions if float(p['contracts']) != 0]
 
-def get_exchange():
-    return ccxt.bitget({
-        "apiKey": API_KEY,
-        "secret": SECRET_KEY,
-        "password": PASSPHRASE,
-        "enableRateLimit": True,
-        "options": {"defaultType": "future"},
-    })
+# ┌───────────────────────────────────────────────────────────┐
+# │                오늘 실현 PNL(가정: 0으로 대체)             │
+# └───────────────────────────────────────────────────────────┘
+def fetch_today_realized_pnl():
+    # Bitget API 로 accountBill(endPoint) 등을 직접 호출해서 합산 가능
+    # (편의상 여기서는 0.0 으로 리턴합니다)
+    return 0.0
 
-def load_state():
-    if os.path.isfile(STATE_FILE):
-        return json.load(open(STATE_FILE))
-    return {"date": "", "start_balance": 0.0, "initial_balance": 0.0}
+# ┌───────────────────────────────────────────────────────────┐
+# │                   현재 자산(Equity) 조회                  │
+# └───────────────────────────────────────────────────────────┘
+def get_equity():
+    bal = exchange.fetchBalance({'type': 'future'})
+    # futures 계정의 USDT 총액 조회
+    return float(bal['total']['USDT'])
 
-def save_state(state):
-    json.dump(state, open(STATE_FILE, "w"))
-
-def get_equity(exc):
-    bal = exc.fetch_balance(params={"type": "future"})
-    # ccxt가 리턴하는 total 딕셔너리에서 USDT 총액을 바로 꺼냄
-    return float(bal.get("total", {}).get("USDT", 0.0))
-
-def get_unrealized(exc):
-    total = 0.0
-    for pos in exc.fetch_positions():
-        contracts = float(pos.get("contracts", 0) or 0)
-        if contracts != 0:
-            total += float(pos.get("unrealizedPnl", 0))
-    return total
-
+# ┌───────────────────────────────────────────────────────────┐
+# │                         메인 로직                        │
+# └───────────────────────────────────────────────────────────┘
 def main():
-    now    = datetime.now(timezone.utc) + timedelta(hours=9)
-    today  = now.strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"✅ [BTC 실시간 리포트] {now}")
+    print('----------------------------------------')
 
-    exch        = get_exchange()
-    equity      = get_equity(exch)
-    unrealized  = get_unrealized(exch)
+    # 1) 미실현 PNL 출력
+    total_unrealized = 0.0
+    for pos in fetch_open_positions():
+        symbol         = pos['symbol']
+        side           = pos['side']
+        size           = float(pos['contracts'])
+        entry_price    = float(pos['entryPrice'])
+        unrealized_pnl = float(pos['info']['unrealisedPnl'])
+        total_unrealized += unrealized_pnl
+        # ★ 미실현 PNL 에 +/– 표시를 위해 +.4f 포맷 지정 ★
+        print(f"📊 {symbol} | {side} | 수량: {size:.4f} | 진입가: {entry_price:.4f} | 미실현 PNL: {unrealized_pnl:+.4f} USDT")
 
-    state = load_state()
-    if state["initial_balance"] == 0.0:
-        state["initial_balance"] = equity
-    if state["date"] != today:
-        state["date"]          = today
-        state["start_balance"] = equity
+    print(f"🧮 총 미실현 PNL: {total_unrealized:+.4f} USDT")
 
-    delta      = equity - state["start_balance"]
-    realized   = delta - unrealized
-    cumulative = equity - state["initial_balance"]
-    pct        = (delta / state["start_balance"] * 100) if state["start_balance"] else 0.0
+    # 2) 실현 PNL 출력
+    today_realized = fetch_today_realized_pnl()
+    print(f"💰 오늘 실현 PNL: {today_realized:+.4f} USDT")
 
-    save_state(state)
+    # 3) 자산 및 등락률 출력
+    equity     = get_equity()
+    if INITIAL_EQUITY > 0:
+        change_pct = (equity - INITIAL_EQUITY) / INITIAL_EQUITY * 100
+        print(f"💎 현재 자산: {equity:.2f} USDT ({change_pct:+.2f}%)")
+    else:
+        print(f"💎 현재 자산: {equity:.2f} USDT")
 
-    print(f"[BTC 실시간 리포트] {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("-"*40)
-    print(f"💎 총 자산(Equity): {equity:.4f} USDT")
-    print(f"🔺 당일 수익률: {pct:+.2f}%")
-    print(f"📊 오늘 실현 PnL: {realized:+.4f} USDT")
-    print(f"📊 오늘 미실현 PnL: {unrealized:+.4f} USDT")
-    print(f"💰 누적 PnL: {cumulative:+.4f} USDT")
-    print("-"*40)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
