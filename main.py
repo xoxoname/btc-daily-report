@@ -1,118 +1,101 @@
 import os
 import time
 import requests
-import ccxt
+from datetime import datetime, timedelta
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
 from dotenv import load_dotenv
+import ccxt
 
 load_dotenv()
 
 app = Flask(__name__)
-latest_report = {"message": "리포트 초기화 중..."}
 
 def create_exchange():
-    api_key = os.getenv("BITGET_API_KEY")
-    secret = os.getenv("BITGET_SECRET")
-    password = os.getenv("BITGET_PASSPHRASE")
-    if not all([api_key, secret, password]):
-        raise ValueError("Bitget API 키 누락됨 (환경변수 확인 필요)")
     return ccxt.bitget({
-        'apiKey': api_key,
-        'secret': secret,
-        'password': password,
+        'apiKey': os.environ['BITGET_API_KEY'],
+        'secret': os.environ['BITGET_SECRET'],
+        'password': os.environ['BITGET_PASSPHRASE'],
         'enableRateLimit': True,
     })
 
-def get_coinbase_price():
-    try:
-        r = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot")
-        return float(r.json()["data"]["amount"])
-    except:
-        return None
-
-def gpt_insight_analysis(price):
-    summary = {
-        "macro": "금일 주요 발표 없음. CPI 발표는 이번 주 목요일 예정.",
-        "technical": "MACD 하락 전환, RSI 중립 (52), 볼린저밴드 상단에서 저항받는 중",
-        "sentiment": "Fear & Greed Index: 54 (중립), 트위터 여론은 관망 흐름",
-        "prediction": {
-            "12h_up_probability": 35,
-            "12h_down_probability": 65,
-            "reason": "DXY 반등 + MACD 하락 전환 → 단기 하락 우세"
-        }
+def fetch_total_net_deposit(exchange):
+    base_url = 'https://api.bitget.com/api/mix/v1/account/accountBill'
+    headers = {
+        'ACCESS-KEY': os.environ['BITGET_API_KEY'],
+        'ACCESS-SIGN': '',
+        'ACCESS-TIMESTAMP': '',
+        'ACCESS-PASSPHRASE': os.environ['BITGET_PASSPHRASE'],
+        'Content-Type': 'application/json'
     }
-    return summary
+
+    start_time = int((datetime.utcnow() - timedelta(days=730)).timestamp() * 1000)  # 2년치 최대 조회
+    end_time = int(datetime.utcnow().timestamp() * 1000)
+    step = 30 * 24 * 60 * 60 * 1000  # 30일 단위(ms)
+
+    deposit_total = 0.0
+    withdraw_total = 0.0
+
+    while start_time < end_time:
+        segment_end = min(start_time + step, end_time)
+        params = {
+            "productType": "UMCBL",
+            "marginCoin": "USDT",
+            "startTime": start_time,
+            "endTime": segment_end,
+            "pageSize": 100,
+            "lastEndId": ""
+        }
+
+        response = requests.get(base_url, params=params, headers={})
+        if response.status_code != 200:
+            break
+
+        data = response.json()
+        if not data.get("data", []):
+            break
+
+        for entry in data["data"]:
+            if entry.get("business") == "deposit":
+                deposit_total += float(entry.get("amount", 0))
+            elif entry.get("business") == "withdraw":
+                withdraw_total += float(entry.get("amount", 0))
+
+        start_time = segment_end
+        time.sleep(0.3)
+
+    net = deposit_total - withdraw_total
+    return round(net, 4)
 
 def fetch_data():
-    try:
-        exch = create_exchange()
-    except ValueError as ve:
-        return {"error": str(ve)}
+    exch = create_exchange()
 
-    try:
-        balance = exch.fetch_balance({'type': 'swap'})
-        equity = float(balance['total'].get('USDT', 0))
+    balance = exch.fetch_balance({'type': 'future'})
+    equity = float(balance['info']['data'][0]['equity'])
+    net_deposit = fetch_total_net_deposit(exch)
+    pnl = equity - net_deposit
+    pnl_percent = (pnl / net_deposit * 100) if net_deposit > 0 else 0
 
-        positions = exch.fetch_positions()
-        open_positions = []
-        unrealized_total = 0.0
+    return {
+        "총 자산 (USDT)": equity,
+        "순입금액 (USDT)": net_deposit,
+        "총 손익 (USDT)": round(pnl, 4),
+        "총 수익률 (%)": round(pnl_percent, 2)
+    }
 
-        for pos in positions:
-            if float(pos['contracts']) > 0:
-                pnl = float(pos['unrealizedPnl'])
-                unrealized_total += pnl
-                open_positions.append({
-                    "symbol": pos['symbol'],
-                    "side": pos['side'],
-                    "entry": pos['entryPrice'],
-                    "amount": pos['contracts'],
-                    "unrealized": round(pnl, 2)
-                })
+@app.route('/')
+def index():
+    return "BTC Daily Report API"
 
-        # 수익률 계산
-        initial_equity = float(os.getenv("INITIAL_EQUITY", "1000"))
-        change_pct = round((equity - initial_equity) / initial_equity * 100, 2)
-
-        # 가격 정보
-        spot_price = get_coinbase_price()
-
-        # GPT 매동 예측 분석
-        gpt = gpt_insight_analysis(spot_price)
-
-        return {
-            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "coinbase_price": spot_price,
-            "gpt_forecast": gpt,
-            "equity": round(equity, 2),
-            "change_pct": change_pct,
-            "open_positions": open_positions,
-            "unrealized_pnl": round(unrealized_total, 2),
-            "message": "리포트가 정상적으로 생성되었습니다."
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
-def update_report():
-    global latest_report
-    latest_report = fetch_data()
-
-@app.route("/")
-def home():
-    return "BTC 정규 리포트 Web Service입니다."
-
-@app.route("/report")
+@app.route('/report')
 def report():
-    return jsonify(fetch_data())
+    try:
+        return jsonify(fetch_data())
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
-# 백그라운드 5분마다 실행
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=update_report, trigger="interval", minutes=5)
-scheduler.start()
-
-# 초기 보고서 한 번 실행
-if __name__ == "__main__":
-    update_report()
+if __name__ == '__main__':
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(fetch_data, 'interval', minutes=5)
+    scheduler.start()
     app.run(host='0.0.0.0', port=10000)
