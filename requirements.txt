@@ -4,4 +4,4 @@ requests>=2.18.4
 apscheduler==3.10.4
 python-telegram-bot==20.7
 openai==1.14.3
-python-dotenv==1.0.1      👈 이 줄 추가
+python-dotenv==1.0.1
