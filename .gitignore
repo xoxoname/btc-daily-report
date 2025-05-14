@@ -1,2 +1,10 @@
-# .gitignore
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Envs
 .env
+
+# Virtualenv
+.venv/
