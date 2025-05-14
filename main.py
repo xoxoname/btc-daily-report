@@ -3,96 +3,104 @@ import time
 import hmac
 import hashlib
 import requests
-from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
 
-# 1) 환경변수 로드 (Render 환경변수 또는 로컬 .env)
-load_dotenv()
-API_KEY    = os.getenv("BITGET_API_KEY")
-SECRET_KEY = os.getenv("BITGET_SECRET_KEY")
-PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
-BASE_URL   = "https://api.bitget.com"
+# --- 환경 변수에서 키·시크릿·패스프레이즈 읽기 ---
+API_KEY     = os.getenv("BITGET_API_KEY")
+SECRET_KEY  = os.getenv("BITGET_SECRET_KEY")
+PASSPHRASE  = os.getenv("BITGET_PASSPHRASE")
 
-# 2) 시그니처 생성
-def make_signature(timestamp: str, method: str, request_path: str, body: str = "") -> str:
+BASE_URL    = "https://api.bitget.com"
+
+def _get_timestamp_ms():
+    return str(int(time.time() * 1000))
+
+def _sign(method: str, request_path: str, timestamp: str, body: str=""):
+    """Bitget REST API HMAC-SHA256 서명 생성"""
     message = timestamp + method.upper() + request_path + body
-    return hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256).hexdigest()
+    mac = hmac.new(SECRET_KEY.encode('utf-8'),
+                   message.encode('utf-8'),
+                   digestmod=hashlib.sha256)
+    return mac.hexdigest()
 
-# 3) 오늘 실현 PNL 조회 (v2 Mix account)
-def fetch_realized_pnl():
-    now = int(time.time() * 1000)
-    # 한국시간 00:00 를 UTC로 변환
-    today_9 = datetime.now(timezone(timedelta(hours=9))).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    start = int(today_9.astimezone(timezone.utc).timestamp() * 1000)
-
-    path  = "/api/v2/mix/account/get-account-bills"
-    query = (
-        f"?productType=UMCBL"
-        f"&marginCoin=USDT"
-        f"&startTime={start}"
-        f"&endTime={now}"
-        f"&pageNo=1"
-        f"&pageSize=100"
-    )
-    ts  = str(int(time.time() * 1000))
-    sig = make_signature(ts, "GET", path + query)
-
+def _request(method: str, path: str, params=None, body=None):
+    ts = _get_timestamp_ms()
+    body_str = "" if body is None else requests.utils.json.dumps(body)
+    sign = _sign(method, path, ts, body_str)
     headers = {
-        "ACCESS-KEY": API_KEY,
+        "Content-Type":   "application/json",
+        "ACCESS-KEY":     API_KEY,
         "ACCESS-TIMESTAMP": ts,
         "ACCESS-PASSPHRASE": PASSPHRASE,
-        "ACCESS-SIGN": sig,
-        "Content-Type": "application/json"
+        "ACCESS-SIGN":    sign
     }
+    url = BASE_URL + path
+    if method.lower() == "get":
+        return requests.get(url, headers=headers, params=params)
+    else:
+        return requests.post(url, headers=headers, json=body)
 
-    resp = requests.get(BASE_URL + path + query, headers=headers)
-    resp.raise_for_status()
-    bills = resp.json().get("data", [])
-    return sum(item.get("realizedPnl", 0) for item in bills)
+def fetch_today_pnl():
+    """오늘(UTC+9) 수익 요약 조회"""
+    # Bitget 선물 수익 내역 엔드포인트 v1 (UMCBL = USDT-Perpetual)
+    path = "/api/mix/v1/account/accountBill"
+    now = datetime.now(timezone(timedelta(hours=9)))
+    start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
+    # 밀리초 타임스탬프
+    start_ts = int(start.timestamp() * 1000)
+    end_ts   = int(now.timestamp() * 1000)
+    params = {
+        "productType": "UMCBL",
+        "marginCoin":  "USDT",
+        "startTime":   start_ts,
+        "endTime":     end_ts,
+        "pageSize":    50
+    }
+    r = _request("get", path, params=params)
+    r.raise_for_status()
+    data = r.json().get("data", [])
+    pnl = sum(item.get("profit", 0) for item in data)
+    return pnl
 
-# 4) 실시간 오픈 포지션 조회 (v2 Mix position)
 def fetch_open_positions():
-    path  = "/api/v2/mix/position/get-open-positions"
-    query = "?productType=UMCBL"
-    ts    = str(int(time.time() * 1000))
-    sig   = make_signature(ts, "GET", path + query)
-
-    headers = {
-        "ACCESS-KEY": API_KEY,
-        "ACCESS-TIMESTAMP": ts,
-        "ACCESS-PASSPHRASE": PASSPHRASE,
-        "ACCESS-SIGN": sig,
-        "Content-Type": "application/json"
+    """실시간 미실현 PNL 조회 (열려있는 포지션만)"""
+    # v2 open positions
+    path = "/api/v2/mix/position/get-open-positions"
+    params = {
+        "productType": "UMCBL",
+        "marginCoin":  "USDT"
     }
+    r = _request("get", path, params=params)
+    r.raise_for_status()
+    positions = r.json().get("data", [])
+    return positions
 
-    resp = requests.get(BASE_URL + path + query, headers=headers)
-    resp.raise_for_status()
-    return resp.json().get("data", [])
-
-# 5) 메인
 def main():
-    # 5-1) 오늘 실현 PNL 출력
+    now = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n📈 [BTC 실시간 리포트] {now}\n" + "-"*40)
+
+    # 1) 오늘 수익
     try:
-        pnl = fetch_realized_pnl()
-        print(f"📈 [오늘 실현 PNL] ${pnl:.2f}")
+        pnl = fetch_today_pnl()
+        print(f"▶ 오늘 실현 PNL: {pnl:.4f} USDT")
     except Exception as e:
         print(f"❌ 오늘 수익 데이터 조회 실패: {e}")
 
-    # 5-2) 실시간 미실현 PNL 출력
-    print("📈 [실시간 포지션 수익 요약]")
+    # 2) 실시간 미실현 PNL
     try:
-        positions = fetch_open_positions()
-        if not positions:
-            print("📭 현재 보유 중인 포지션이 없습니다.")
+        pos = fetch_open_positions()
+        if not pos:
+            print("📭 현재 열린 포지션이 없습니다.")
         else:
-            for p in positions:
-                symbol = p.get("symbol")
-                upnl   = float(p.get("unrealizedPnl", 0))
-                print(f"• {symbol}: 미실현 PNL = ${upnl:+.2f}")
+            for p in pos:
+                sym   = p.get("symbol")
+                upnl  = float(p.get("unrealizedProfit", 0))
+                amt   = float(p.get("holdingQty", 0))
+                entry = float(p.get("avgEntryPrice", 0))
+                print(f"• {sym} | 미실현 PNL: {upnl:.4f} USDT | 수량: {amt} | 진입가: {entry}")
     except Exception as e:
-        print(f"❌ 포지션 조회 실패: {e}")
+        print(f"❌ 실시간 포지션 조회 실패: {e}")
 
 if __name__ == "__main__":
     main()
+
