@@ -22,16 +22,9 @@ def get_timestamp():
 def sign(message: str, secret_key: str):
     return hmac.new(secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()
 
-def fetch_today_realized_pnl():
-    now = datetime.now(timezone("Asia/Seoul"))
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = now
-
-    start_ts = int(start.timestamp() * 1000)
-    end_ts = int(end.timestamp() * 1000)
-
-    path = "/api/mix/v1/position/history-position"
-    query = f"productType=USDT-FUTURES&marginCoin=USDT&startTime={start_ts}&endTime={end_ts}&pageSize=50"
+def fetch_unrealized_pnl(symbol="BTCUSDT", margin_coin="USDT"):
+    path = "/api/mix/v1/position/single-position"
+    query = f"symbol={symbol}&marginCoin={margin_coin}"
     timestamp = get_timestamp()
     message = f"{timestamp}GET{path}?{query}"
     signature = sign(message, SECRET_KEY)
@@ -51,38 +44,44 @@ def fetch_today_realized_pnl():
         res.raise_for_status()
         data = res.json()
 
-        total_pnl = 0.0
-        for item in data.get("data", []):
-            total_pnl += float(item.get("closeProfit", 0))
+        pos = data.get("data", {})
+        if not pos or float(pos.get("total", 0)) == 0:
+            return None, None, None, None
 
-        return round(total_pnl, 2)
+        return (
+            float(pos.get("unrealizedPL", 0)),
+            float(pos.get("entryPrice", 0)),
+            float(pos.get("marketPrice", 0)),
+            pos.get("holdSide", "unknown")
+        )
 
     except Exception as e:
         print("❌ Bitget API 호출 실패:", str(e))
-        return None
+        return None, None, None, None
 
 def main():
-    profit = fetch_today_realized_pnl()
     now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+    profit, entry, current, side = fetch_unrealized_pnl()
+
+    print("📈 [BTC 실시간 미실현 수익 요약]")
+    print(f"시각: {now}")
 
     if profit is None:
-        print("❌ 오늘 수익 데이터를 가져오지 못했습니다.")
+        print("현재 보유 중인 포지션이 없습니다.")
         return
 
-    rate = 1335  # 환율
+    rate = 1335
     profit_krw = int(profit * rate)
-
-    print("📈 [BTC 실시간 수익 요약 - 포지션 기준]")
-    print(f"시각: {now}")
-    print(f"수익: {'+' if profit >= 0 else ''}${profit:.2f}")
+    print(f"포지션 방향: {side.upper()} | 진입가: {entry} | 현재가: {current}")
+    print(f"미실현 수익: {'+' if profit >= 0 else ''}${profit:.2f}")
     print(f"한화 약 {profit_krw:,}원")
 
     if profit > 0:
-        print("🎉 수익 축하드립니다! 오늘도 잘 해내셨어요.")
+        print("✅ 현재 수익 중입니다! 청산 타이밍을 고민해보세요.")
     elif profit < 0:
-        print("🧘 손실은 과정일 뿐. 계속 꾸준히 전략을 따라가요.")
+        print("⚠️ 손실 상태입니다. 전략을 다시 점검해보세요.")
     else:
-        print("📊 수익도 손실도 없었던 하루. 조용히 지나가는 것도 전략입니다.")
+        print("😐 수익도 손실도 없는 상태입니다.")
 
 if __name__ == "__main__":
     main()
