@@ -1,68 +1,93 @@
-Your free instance will spin down with inactivity, which can delay requests by 50 seconds or more.
-Upgrade now
-May 14, 2025 at 10:29 AM
-in progress
-0b2f397
-Update main.py
-Cancel deploy
+import os
+import requests
+import time
+import hmac
+import hashlib
+from datetime import datetime
+from pytz import timezone
+from dotenv import load_dotenv
 
-All logs
-Search
-Search
+# 환경 변수 로딩
+load_dotenv()
 
-Live tail
-GMT+9
+API_KEY = os.getenv("BITGET_API_KEY")
+SECRET_KEY = os.getenv("BITGET_SECRET_KEY")
+PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
 
-Menu
-==> Cloning from https://github.com/xoxoname/btc-daily-report
-==> Checking out commit 0b2f3974615cf57ca3c603c93560768a76292908 in branch main
-==> Using Python version 3.11.11 (default)
-==> Docs on specifying a Python version: https://render.com/docs/python-version
-==> Using Poetry version 1.7.1 (default)
-==> Docs on specifying a Poetry version: https://render.com/docs/poetry-version
-==> Running build command 'pip install -r requirements.txt'...
-Collecting requests (from -r requirements.txt (line 1))
-  Downloading requests-2.32.3-py3-none-any.whl.metadata (4.6 kB)
-Collecting python-dotenv (from -r requirements.txt (line 2))
-  Downloading python_dotenv-1.1.0-py3-none-any.whl.metadata (24 kB)
-Collecting pytz (from -r requirements.txt (line 3))
-  Downloading pytz-2025.2-py2.py3-none-any.whl.metadata (22 kB)
-Collecting charset-normalizer<4,>=2 (from requests->-r requirements.txt (line 1))
-  Downloading charset_normalizer-3.4.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (35 kB)
-Collecting idna<4,>=2.5 (from requests->-r requirements.txt (line 1))
-  Downloading idna-3.10-py3-none-any.whl.metadata (10 kB)
-Collecting urllib3<3,>=1.21.1 (from requests->-r requirements.txt (line 1))
-  Downloading urllib3-2.4.0-py3-none-any.whl.metadata (6.5 kB)
-Collecting certifi>=2017.4.17 (from requests->-r requirements.txt (line 1))
-  Downloading certifi-2025.4.26-py3-none-any.whl.metadata (2.5 kB)
-Downloading requests-2.32.3-py3-none-any.whl (64 kB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 64.9/64.9 kB 7.1 MB/s eta 0:00:00
-Downloading python_dotenv-1.1.0-py3-none-any.whl (20 kB)
-Downloading pytz-2025.2-py2.py3-none-any.whl (509 kB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 509.2/509.2 kB 20.4 MB/s eta 0:00:00
-Downloading certifi-2025.4.26-py3-none-any.whl (159 kB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 159.6/159.6 kB 23.0 MB/s eta 0:00:00
-Downloading charset_normalizer-3.4.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (147 kB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 147.3/147.3 kB 24.0 MB/s eta 0:00:00
-Downloading idna-3.10-py3-none-any.whl (70 kB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 70.4/70.4 kB 11.0 MB/s eta 0:00:00
-Downloading urllib3-2.4.0-py3-none-any.whl (128 kB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 128.7/128.7 kB 18.0 MB/s eta 0:00:00
-Installing collected packages: pytz, urllib3, python-dotenv, idna, charset-normalizer, certifi, requests
-Successfully installed certifi-2025.4.26 charset-normalizer-3.4.2 idna-3.10 python-dotenv-1.1.0 pytz-2025.2 requests-2.32.3 urllib3-2.4.0
-[notice] A new release of pip is available: 24.0 -> 25.1.1
-[notice] To update, run: pip install --upgrade pip
-==> Uploading build...
-==> Uploaded in 4.0s. Compression took 1.0s
-==> Build successful 🎉
-==> Deploying...
-==> Running 'python main.py'
-❌ Bitget API 호출 실패: 404 Client Error: Not Found for url: https://api.bitget.com/api/mix/v1/position/allPositions?productType=USDT-FUTURES&marginCoin=USDT
-📈 [BTC 실시간 포지션 수익 요약 - 전체 조회]
-시각: 2025-05-14 10:30:34
-📭 현재 보유 중인 포지션이 없습니다.
-==> Running 'python main.py'
-❌ Bitget API 호출 실패: 404 Client Error: Not Found for url: https://api.bitget.com/api/mix/v1/position/allPositions?productType=USDT-FUTURES&marginCoin=USDT
-📈 [BTC 실시간 포지션 수익 요약 - 전체 조회]
-시각: 2025-05-14 10:30:44
-📭 현재 보유 중인 포지션이 없습니다.
+BASE_URL = "https://api.bitget.com"
+
+def get_timestamp():
+    return str(int(time.time() * 1000))
+
+def sign(message: str, secret_key: str):
+    return hmac.new(secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+def fetch_open_positions(product_type="USDT-FUTURES", margin_coin="USDT"):
+    path = "/api/mix/v1/position/open-positions"
+    query = f"productType={product_type}&marginCoin={margin_coin}"
+    timestamp = get_timestamp()
+    message = f"{timestamp}GET{path}?{query}"
+    signature = sign(message, SECRET_KEY)
+
+    headers = {
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": signature,
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-PASSPHRASE": PASSPHRASE,
+        "Content-Type": "application/json"
+    }
+
+    url = f"{BASE_URL}{path}?{query}"
+
+    try:
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        return res.json().get("data", [])
+    except Exception as e:
+        print("❌ Bitget API 호출 실패:", str(e))
+        return []
+
+def main():
+    now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+    positions = fetch_open_positions()
+
+    print("📈 [BTC 실시간 포지션 수익 요약 - 현재 보유 중인 종목 기준]")
+    print(f"시각: {now}")
+
+    if not positions:
+        print("📭 현재 보유 중인 포지션이 없습니다.")
+        return
+
+    rate = 1335
+    found = False
+
+    for pos in positions:
+        symbol = pos.get("symbol")
+        side = pos.get("holdSide", "unknown")
+        entry = float(pos.get("entryPrice", 0))
+        current = float(pos.get("marketPrice", 0))
+        unrealized = float(pos.get("unrealizedPL", 0))
+
+        if unrealized == 0:
+            continue
+
+        found = True
+        profit_krw = int(unrealized * rate)
+
+        print(f"\n📌 종목: {symbol} | 방향: {side.upper()}")
+        print(f"진입가: {entry} | 현재가: {current}")
+        print(f"미실현 수익: {'+' if unrealized >= 0 else ''}${unrealized:.2f}")
+        print(f"한화 약 {profit_krw:,}원")
+
+        if unrealized > 0:
+            print("✅ 현재 수익 중입니다!")
+        elif unrealized < 0:
+            print("⚠️ 손실 상태입니다. 전략 점검이 필요해요.")
+        else:
+            print("😐 수익도 손실도 없습니다.")
+
+    if not found:
+        print("✅ 포지션은 있으나 수익은 아직 발생하지 않았습니다.")
+
+if __name__ == "__main__":
+    main()
