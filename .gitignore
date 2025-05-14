@@ -1,10 +1,13 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-*.so
+*$py.class
 
-# Envs
+# Environment
 .env
 
 # Virtualenv
 .venv/
+
+# Logs
+*.log
