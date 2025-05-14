@@ -8,47 +8,26 @@ from datetime import datetime
 from pytz import timezone
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
+from telegram import Update, Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import openai
 
+# 환경 변수 로드 및 설정
 BITGET_APIKEY     = os.getenv('BITGET_APIKEY')
 BITGET_SECRET     = os.getenv('BITGET_SECRET')
 BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
-TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_TOKEN    = "7581311098:AAEr5ZghXGHOLmsduXDlYPZm6l05OULM5nE"
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
+
 TELEGRAM_USER     = '@zzzzzzzz5555'
+openai.api_key    = OPENAI_API_KEY
 
-if not all([BITGET_APIKEY, BITGET_SECRET, BITGET_PASSPHRASE, TELEGRAM_TOKEN]):
-    raise RuntimeError("환경변수가 모두 설정되어 있어야 합니다.")
+if not all([BITGET_APIKEY, BITGET_SECRET, BITGET_PASSPHRASE, TELEGRAM_TOKEN, OPENAI_API_KEY]):
+    raise RuntimeError("모든 환경변수(BITGET, TELEGRAM, OPENAI)가 설정되어 있어야 합니다.")
 
-openapi_spec = {
-    "openapi": "3.0.1",
-    "info": {"title": "BTC Daily Report API", "version": "1.0.0"},
-    "paths": {
-        "/report": {
-            "get": {
-                "summary": "최신 BTC 리포트 가져오기",
-                "responses": {
-                    "200": {
-                        "description": "최신 리포트 JSON",
-                        "content": {"application/json": {"schema": {"type": "object"}}}
-                    }
-                }
-            }
-        }
-    }
-}
+app = Flask(__name__)
 
-plugin_manifest = {
-    "schema_version": "v1",
-    "name_for_human": "BTC 리포트 플러그인",
-    "name_for_model": "btc_report_fetcher",
-    "description_for_human": "최신 BTC 리포트를 불러옵니다",
-    "description_for_model": "BTC Daily Report의 /report 호출",
-    "auth": {"type": "none"},
-    "api": {"type": "openapi", "url": "https://btc-daily-report.onrender.com/.well-known/openapi.json"},
-    "logo_url": "https://your-domain.com/logo.png",
-    "contact_email": "your@email.com",
-    "legal_info_url": "https://your-domain.com/legal"
-}
-
+# Bitget 객체 생성
 def create_bitget():
     return ccxt.bitget({
         'apiKey': BITGET_APIKEY,
@@ -58,6 +37,7 @@ def create_bitget():
         'enableRateLimit': True
     })
 
+# BTC 시세
 def fetch_btc_price():
     try:
         r = requests.get('https://api.coinbase.com/v2/prices/BTC-USD/spot', timeout=5)
@@ -66,6 +46,7 @@ def fetch_btc_price():
     except Exception as e:
         return {"error": f"BTC 시세 오류: {e}"}
 
+# Bitget 잔고/포지션
 def fetch_bitget_account():
     exc = create_bitget()
     info = {}
@@ -74,7 +55,7 @@ def fetch_bitget_account():
         info['equity'] = float(bal['total'].get('USDT', 0))
         info['marginBalance'] = float(bal.get('info', {}).get('marginBalance', 0))
         info['unrealizedPnL'] = float(bal.get('unrealizedPnl', 0.0))
-        info['realizedPnL'] = float(bal.get('realizedPnL', 0.0))
+        info['realizedPnL'] = float(bal.get('realizedPnl', 0.0))
     except Exception as e:
         info['error_balance'] = str(e)
 
@@ -95,6 +76,7 @@ def fetch_bitget_account():
         info['error_positions'] = str(e)
     return info
 
+# 순입금 계산
 def fetch_bitget_net_deposit():
     exc = create_bitget()
     try:
@@ -106,30 +88,72 @@ def fetch_bitget_net_deposit():
     except Exception as e:
         return {"error_deposit": str(e)}
 
-def send_telegram_report(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_USER,
-        "text": message,
-        "parse_mode": "HTML",
-        "reply_markup": {
-            "inline_keyboard": [[{
-                "text": "📊 리포트 전체 보기",
-                "url": "https://chatgpt.com/c/6824689b-ef48-8013-b12a-bbea0de9ffce?model=o4-mini-high"
-            }]]
-        }
-    }
+# GPT 답변 처리
+def gpt_reply(prompt: str) -> str:
     try:
-        requests.post(url, json=payload, timeout=3)
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "비트코인 매매 전문가로서 답변해 주세요."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message['content']
+    except Exception as e:
+        return f"[GPT 오류] {e}"
+
+# 텔레그램 핸들러들
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("안녕하세요! BTC 분석 챗봇입니다. '오늘 리포트 보여줘'와 같이 말씀해주세요.")
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if "리포트" in text or "수익률" in text:
+        report = generate_report()
+        reply = (
+            f"[BTC 리포트 - {report['timestamp']} 기준]\n"
+            f"• BTC: ${report['BTC_USD_spot']}\n"
+            f"• 순입금: {report['netDeposit']} USDT\n"
+            f"• 자산: {report['bitgetAccount'].get('equity', '?')} USDT\n"
+            f"• 총 수익: {report['pnl']} USDT ({report['profitRate']})\n"
+            f"• 포지션 수: {len(report['bitgetAccount'].get('openPositions', []))}\n"
+            f"• 분석: {report['technical']} / {report['forecast12h']['reason']}"
+        )
+        await update.message.reply_text(reply)
+    else:
+        reply = gpt_reply(text)
+        await update.message.reply_text(reply)
+
+# Flask Routes
+@app.route('/')
+def home():
+    return jsonify({'message': 'BTC 리포트 서버 작동 중'})
+
+@app.route('/report')
+def report():
+    return jsonify(generate_report())
+
+@app.route('/instant')
+def manual_report():
+    generate_report(send_telegram=True)
+    return jsonify({'message': '리포트를 텔레그램으로 보냈습니다!'})
+
+# 리포트 생성
+def forecast_12h():
+    return {'upProbability': '57%', 'downProbability': '43%', 'reason': 'RSI 중립 / MACD 약세 / 롱포 과열 없음 → 제한적 상승 가능성'}
+
+def send_telegram_report(message):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_USER,
+                "text": message,
+                "parse_mode": "HTML"
+            }, timeout=3
+        )
     except Exception as e:
         print(f"[텔레그램 전송 실패] {e}")
-
-def forecast_12h():
-    return {
-        'upProbability': '57%',
-        'downProbability': '43%',
-        'reason': 'RSI 중립 / MACD 약세 / 롱포 과열 없음 → 제한적 상승 가능성'
-    }
 
 def generate_report(send_telegram=False):
     seoul = timezone('Asia/Seoul')
@@ -173,24 +197,7 @@ def generate_report(send_telegram=False):
 
     return report
 
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return jsonify({'message': 'BTC 리포트 서버 작동 중'})
-
-@app.route('/report')
-def report():
-    return jsonify(generate_report())
-
-@app.route('/.well-known/openapi.json')
-def serve_openapi():
-    return jsonify(openapi_spec)
-
-@app.route('/ai-plugin.json')
-def serve_plugin():
-    return jsonify(plugin_manifest)
-
+# 스케줄러 설정
 sched = BackgroundScheduler(timezone='Asia/Seoul')
 sched.add_job(lambda: generate_report(send_telegram=True), 'cron', hour=9, minute=0)
 sched.add_job(lambda: generate_report(send_telegram=True), 'cron', hour=13, minute=0)
@@ -199,4 +206,11 @@ sched.add_job(lambda: generate_report(send_telegram=False), 'interval', minutes=
 sched.start()
 
 if __name__ == '__main__':
+    # 텔레그램 봇 실행
+    bot_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    bot_app.run_polling()
+
+    # Flask 실행
     app.run(host='0.0.0.0', port=10000)
