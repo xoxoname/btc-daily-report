@@ -1,73 +1,62 @@
 import os
-import ccxt
-import json
+import time
 from flask import Flask, jsonify
+from apscheduler.schedulers.background import BackgroundScheduler
+from ccxt import bitget
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
+API_KEY = os.getenv("BITGET_API_KEY")
+API_SECRET = os.getenv("BITGET_API_SECRET")
+API_PASSWORD = os.getenv("BITGET_API_PASSWORD")
+
+exch = bitget({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'password': API_PASSWORD,
+    'enableRateLimit': True,
+    'options': {
+        'defaultType': 'swap',
+    }
+})
+
+latest_report = {}
 
 def fetch_data():
-    bitget = ccxt.bitget({
-        'apiKey': os.getenv("BITGET_API_KEY"),
-        'secret': os.getenv("BITGET_API_SECRET"),
-        'password': os.getenv("BITGET_API_PASSWORD"),
-        'enableRateLimit': True,
-        'options': {'defaultType': 'swap'}
-    })
-
-    result = {
-        "equity": None,
-        "realized_pnl": None,
-        "unrealized_pnl": None,
-        "positions": []
-    }
-
+    global latest_report
     try:
-        # 자산 정보
-        balance = bitget.fetch_balance({'type': 'swap'})
-        result["equity"] = float(balance.get('total', {}).get('USDT', 0.0))
+        balance = exch.fetch_balance({'type': 'swap'})
+        equity = balance['total'].get('USDT', 0)
+        positions = exch.fetch_positions()
+        unrealized = sum(p.get('unrealizedPnl', 0) for p in positions if 'unrealizedPnl' in p)
+        realized = sum(p.get('realizedPnl', 0) for p in positions if 'realizedPnl' in p)
 
-        # 포지션 정보
-        positions = bitget.fetch_positions()
-        total_unrealized = 0.0
-
-        for pos in positions:
-            if pos['contracts'] > 0:
-                entry_price = float(pos['entryPrice'])
-                current_price = float(pos['markPrice'])
-                qty = float(pos['contracts'])
-                side = pos['side']
-                pnl = float(pos['unrealizedPnl'])
-                total_unrealized += pnl
-                result['positions'].append({
-                    "symbol": pos['symbol'],
-                    "side": side,
-                    "entry_price": entry_price,
-                    "mark_price": current_price,
-                    "contracts": qty,
-                    "unrealized_pnl": pnl
-                })
-
-        result["unrealized_pnl"] = total_unrealized
-
-        # 실현 손익 추정 (Bitget은 API 제공 미흡)
-        result["realized_pnl"] = 0.0  # 정확한 실현 수익은 별도 처리 필요
-
+        latest_report = {
+            "equity": round(equity, 4),
+            "realized_pnl": round(realized, 4),
+            "unrealized_pnl": round(unrealized, 4),
+            "timestamp": int(time.time())
+        }
     except Exception as e:
-        result["error"] = str(e)
+        latest_report = {"error": str(e)}
 
-    return result
+# Start scheduler for 5-minute updates
+scheduler = BackgroundScheduler()
+scheduler.add_job(fetch_data, 'interval', minutes=5)
+scheduler.start()
+fetch_data()  # Run immediately on startup
+
+# Flask web server
+app = Flask(__name__)
 
 @app.route("/")
-def home():
-    return "BTC Daily Report is Live!"
+def root():
+    return "BTC Daily Report Server is running."
 
 @app.route("/report")
 def report():
-    data = fetch_data()
-    return jsonify(data)
+    return jsonify(latest_report)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
