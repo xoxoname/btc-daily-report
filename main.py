@@ -1,39 +1,52 @@
 import os
 import requests
+import time
+import hmac
+import hashlib
 from datetime import datetime
 from pytz import timezone
 from dotenv import load_dotenv
 
-# 환경 변수 불러오기 (.env)
 load_dotenv()
 
 API_KEY = os.getenv("BITGET_API_KEY")
 SECRET_KEY = os.getenv("BITGET_SECRET_KEY")
+PASSPHRASE = os.getenv("BITGET_PASSPHRASE", "")  # 필요 없다면 비워도 무방
 
-def fetch_sample_pnl():
-    """
-    실제 API 연동 전 테스트용 수익 분석 함수입니다.
-    추후 Bitget API 연동 시 accountBill 또는 positionHistory 등으로 교체 가능합니다.
-    """
+BASE_URL = "https://api.bitget.com"
+
+def get_timestamp():
+    return str(int(time.time() * 1000))
+
+def sign(params: str, secret_key: str):
+    return hmac.new(secret_key.encode(), params.encode(), hashlib.sha256).hexdigest()
+
+def fetch_pnl():
     now = datetime.now(timezone("Asia/Seoul"))
-    today = now.strftime("%Y-%m-%d")
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = now
 
-    # 예시 수익
-    profit_usd = 42.5
-    exchange_rate = 1330  # 고정 환율 가정
-    profit_krw = int(profit_usd * exchange_rate)
+    start_ts = int(start.timestamp() * 1000)
+    end_ts = int(end.timestamp() * 1000)
 
-    return {
-        "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "usd": profit_usd,
-        "krw": profit_krw,
-        "comment": "🔥 작은 이익도 매일 쌓이면 큰 흐름이 됩니다."
+    timestamp = get_timestamp()
+    path = "/api/mix/v1/account/accountBill"
+    query = f"productType=USDT-FUTURES&startTime={start_ts}&endTime={end_ts}&pageSize=50"
+
+    message = timestamp + "GET" + path + "?" + query
+    signature = sign(message, SECRET_KEY)
+
+    headers = {
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": signature,
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-PASSPHRASE": PASSPHRASE,
+        "Content-Type": "application/json"
     }
 
-if __name__ == "__main__":
-    report = fetch_sample_pnl()
-    print("📈 [BTC 수익 요약]")
-    print(f"시각: {report['datetime']}")
-    print(f"수익: +${report['usd']}")
-    print(f"한화 약 {report['krw']}원 (편의점 알바 2.5시간)")
-    print(report['comment'])
+    try:
+        response = requests.get(f"{BASE_URL}{path}?{query}", headers=headers)
+        data = response.json()
+
+        total_pnl = 0.0
+        for
