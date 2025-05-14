@@ -1,113 +1,90 @@
 import os
-import logging
+import requests
 from flask import Flask
-from dotenv import load_dotenv
-from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import requests
-import ccxt
-import openai
 
-# Load environment variables
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-BITGET_APIKEY = os.getenv("BITGET_APIKEY")
-BITGET_SECRET = os.getenv("BITGET_SECRET")
-BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# 텔레그램 환경변수
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
+
+# 실시간 리포트 데이터 URL
+REPORT_URL = "https://btc-daily-report.onrender.com/report"
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-# Set OpenAI key
-openai.api_key = OPENAI_API_KEY
+def krw(value):
+    return f"{int(value * 1350):,}원"
 
-# Set up Bitget client
-bitget = ccxt.bitget({
-    "apiKey": BITGET_APIKEY,
-    "secret": BITGET_SECRET,
-    "password": BITGET_PASSPHRASE,
-    "enableRateLimit": True
-})
-
-def get_coinbase_price():
+def format_profit(data):
     try:
-        res = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot").json()
-        return float(res["data"]["amount"])
-    except:
-        return None
+        equity = data["bitgetAccount"]["equity"]
+        pnl = data["pnl"]
+        rate = data["profitRate"]
+        deposit = data["netDeposit"]
+        realized = data["realizedPnL"]
+        unrealized = data["unrealizedPnL"]
+        now = data["timestamp"]
 
-def get_bitget_data():
-    try:
-        balance = bitget.fetch_balance()
-        equity = balance["total"]["USDT"]
-        positions = bitget.fetch_positions()
-        return {
-            "equity": equity,
-            "positions": positions
-        }
+        return (
+            f"📊 *BTC 수익 요약*\n"
+            f"총자산: {equity:.2f} USDT ({krw(equity)})\n"
+            f"누적 입금: {deposit:.2f} USDT ({krw(deposit)})\n"
+            f"총 손익: {pnl:.2f} USDT ({krw(pnl)})\n"
+            f"수익률: {rate}\n"
+            f"실현 손익: {realized:.2f} USDT / 미실현 손익: {unrealized:.2f} USDT\n"
+            f"⏱ 업데이트: {now}"
+        )
     except Exception as e:
-        return {"error": str(e)}
+        return f"⚠️ 수익 리포트 파싱 오류: {e}"
 
-def generate_report():
-    price = get_coinbase_price()
-    bitget_data = get_bitget_data()
+def format_forecast(data):
+    try:
+        forecast = data["forecast12h"]
+        tech = data["technical"]
+        senti = data["sentiment"]
+        events = data["marketEvents"]
+        now = data["timestamp"]
 
-    if price is None:
-        return "❌ Coinbase 시세를 불러오지 못했습니다."
-
-    if "error" in bitget_data:
-        return f"❌ Bitget 오류: {bitget_data['error']}"
-
-    equity = bitget_data["equity"]
-    positions = bitget_data["positions"]
-
-    position_summary = []
-    for pos in positions:
-        if pos["symbol"] == "BTC/USDT:USDT":
-            entry = pos["entryPrice"]
-            side = pos["side"]
-            size = pos["contracts"]
-            unreal = pos["unrealizedPnl"]
-            position_summary.append(f"- {side.upper()} {size} @ {entry} → 미실현손익 {unreal:.2f} USDT")
-
-    return (
-        f"📊 *BTC 정규 리포트*\n\n"
-        f"🟡 Coinbase 가격: ${price:,.2f}\n"
-        f"📦 총 자산: ${equity:,.2f}\n\n"
-        f"🧾 포지션:\n" + ("\n".join(position_summary) if position_summary else "없음") +
-        "\n\n⏱ 자동 생성 시각 기준\n"
-    )
+        return (
+            f"📈 *BTC 매동 예측 (12H)*\n"
+            f"상승 확률: {forecast['upProbability']} / 하락 확률: {forecast['downProbability']}\n"
+            f"🔍 예측 사유: {forecast['reason']}\n\n"
+            f"📊 기술 분석: {tech}\n"
+            f"🧠 심리 지표: {senti}\n"
+            f"🗞 시장 이벤트: {events}\n"
+            f"⏱ 분석 시각: {now}\n\n"
+            f"💡 다음 12시간 대응 전략을 참고해 주세요!"
+        )
+    except Exception as e:
+        return f"⚠️ 예측 리포트 파싱 오류: {e}"
 
 async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    report = generate_report()
-    await update.message.reply_text(report, parse_mode='Markdown')
+    res = requests.get(REPORT_URL)
+    data = res.json()
+    msg = format_profit(data)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    forecast_text = (
-        "🔮 *12시간 예측*\n\n"
-        "📈 상승 확률: *57%*\n"
-        "📉 하락 확률: *43%*\n"
-        "🧠 사유: RSI 중립 / MACD 약세 / 롱포 과열 없음 → 제한적 상승 가능성\n"
-        "\n📍 시장 심리: Fear & Greed 45 → 중립\n"
-        "🛠 기술 지표: RSI 54 / MACD 데드크로스 → 중립\n"
-    )
-    await update.message.reply_text(forecast_text, parse_mode='Markdown')
+    res = requests.get(REPORT_URL)
+    data = res.json()
+    msg = format_forecast(data)
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
-# Set up Telegram application
-tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-tg_app.add_handler(CommandHandler("profit", handle_profit))
-tg_app.add_handler(CommandHandler("forecast", handle_forecast))
-
-# Schedule automatic reports
-scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: tg_app.bot.send_message(chat_id=os.getenv("TELEGRAM_CHAT_ID"), text=generate_report()), 'interval', minutes=5)
-scheduler.start()
-
-@app.route('/')
+# Flask에서 / 로크 확인
+@app.route("/")
 def index():
-    return "BTC Daily Report Running."
+    return "BTC 리포트 텔레그램 봇 작동 중입니다."
 
-if __name__ == '__main__':
-    tg_app.run_polling()
+# Telegram 봇 실행
+if __name__ == "__main__":
+    from threading import Thread
+
+    def run_telegram_bot():
+        app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
+        app_bot.add_handler(CommandHandler("수익", handle_profit))
+        app_bot.add_handler(CommandHandler("예측", handle_forecast))
+        app_bot.run_polling()
+
+    Thread(target=run_telegram_bot).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
