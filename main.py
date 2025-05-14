@@ -23,7 +23,7 @@ def sign(message: str, secret_key: str):
     return hmac.new(secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()
 
 def fetch_all_positions(product_type="USDT-FUTURES", margin_coin="USDT"):
-    path = "/api/mix/v1/position/all-position"
+    path = "/api/mix/v1/position/allPositions"  # ✅ 여기 수정됨
     query = f"productType={product_type}&marginCoin={margin_coin}"
     timestamp = get_timestamp()
     message = f"{timestamp}GET{path}?{query}"
