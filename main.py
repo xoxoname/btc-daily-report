@@ -1,82 +1,100 @@
-from flask import Flask, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
-import ccxt
 import os
+import time
+import ccxt
+import pytz
+import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
-scheduler = BackgroundScheduler(timezone='Asia/Seoul')
+API_KEY = os.getenv("BITGET_API_KEY")
+API_SECRET = os.getenv("BITGET_API_SECRET")
+API_PASSWORD = os.getenv("BITGET_API_PASSWORD")
 
-exchange = ccxt.bitget({
-    'apiKey': os.getenv('BITGET_API_KEY'),
-    'secret': os.getenv('BITGET_API_SECRET'),
-    'password': os.getenv('BITGET_API_PASSWORD'),
-    'enableRateLimit': True,
-    'options': {
-        'defaultType': 'swap'
-    }
-})
+tz = pytz.timezone("Asia/Seoul")
 
-latest_report = {}
+def get_bitget_exchange():
+    return ccxt.bitget({
+        "apiKey": API_KEY,
+        "secret": API_SECRET,
+        "password": API_PASSWORD,
+        "enableRateLimit": True,
+        "options": {"defaultType": "swap"},
+    })
 
-
-def fetch_data():
-    global latest_report
+def fetch_positions(exchange):
     try:
         positions = exchange.fetch_positions()
-        balance = exchange.fetch_balance({"type": "future"})
-
-        total_equity = float(balance['total']['USDT'])
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        unrealized_pnl = 0
-        position_details = []
-        for pos in positions:
-            if pos['contracts'] and float(pos['contracts']) > 0:
-                pnl = float(pos['unrealizedPnl'])
-                unrealized_pnl += pnl
-                position_details.append({
-                    'symbol': pos['symbol'],
-                    'side': pos['side'],
-                    'entryPrice': pos['entryPrice'],
-                    'contracts': pos['contracts'],
-                    'unrealizedPnl': pnl
-                })
-
-        # 실현 PnL 추정값 (계정 변경 없음 가정)
-        realized_pnl = 0
-        if 'info' in balance and 'data' in balance['info']:
-            data = balance['info']['data']
-            if isinstance(data, list):
-                for item in data:
-                    if item.get('marginCoin') == 'USDT':
-                        realized_pnl = float(item.get('realizedPL', 0))
-
-        latest_report = {
-            'timestamp': timestamp,
-            'equity': round(total_equity, 4),
-            'realized_pnl': round(realized_pnl, 4),
-            'unrealized_pnl': round(unrealized_pnl, 4),
-            'positions': position_details
-        }
-
-        print(f"[리포트 생성됨] {timestamp}")
-
+        btc_positions = [p for p in positions if "BTC/USDT" in p["symbol"] and float(p["contracts"]) > 0]
+        return btc_positions
     except Exception as e:
-        print(f"[오류] 데이터 조회 실패: {e}")
+        print(f"❌ 포지션 조회 실패: {e}")
+        return []
 
+def fetch_balance(exchange):
+    try:
+        return exchange.fetch_balance({"type": "swap"})
+    except Exception as e:
+        print(f"❌ 자산 조회 실패: {e}")
+        return {}
 
-@app.route("/report", methods=["GET"])
+def fetch_today_pnl(exchange):
+    try:
+        since = int(datetime.datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+        now = int(datetime.datetime.now(tz).timestamp() * 1000)
+        response = exchange.fetch('https://api.bitget.com/api/mix/v1/account/accountBill', method='GET', params={
+            'productType': 'USDT-Futures',
+            'marginCoin': 'USDT',
+            'startTime': since,
+            'endTime': now,
+            'pageSize': 100
+        })
+        pnl = 0
+        for tx in response.get("data", []):
+            if tx["billType"] == "realised_pnl":
+                pnl += float(tx["amount"])
+        return pnl
+    except Exception as e:
+        print(f"❌ 오늘 수익 데이터 조회 실패: {e}")
+        return 0
+
+def get_equity(balance):
+    return balance.get("total", {}).get("USDT", 0)
+
 def report():
-    return jsonify(latest_report)
+    exch = get_bitget_exchange()
+    balance = fetch_balance(exch)
+    equity = get_equity(balance)
+    positions = fetch_positions(exch)
+    realized_pnl = fetch_today_pnl(exch)
 
+    position_lines = []
+    unrealized_total = 0
+    for pos in positions:
+        symbol = pos["symbol"]
+        side = pos["side"]
+        size = pos["contracts"]
+        entry = pos["entryPrice"]
+        mark = pos["markPrice"]
+        pnl = pos["unrealizedPnl"]
+        unrealized_total += float(pnl)
+        position_lines.append(
+            f"📊 {symbol} | {side} | 수량: {size} | 진입가: {entry} | 미실현 PNL: {pnl:.4f} USDT"
+        )
 
-scheduler.add_job(fetch_data, 'interval', minutes=5)
-scheduler.start()
+    now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"✅ [BTC 실시간 리포트] {now}",
+        "----------------------------------------",
+        *position_lines if position_lines else ["🚫 오픈 포지션 없음"],
+        f"🧮 총 미실현 PNL: {unrealized_total:.4f} USDT",
+        f"📊 오늘 실현 PNL: {realized_pnl:.4f} USDT",
+        f"💎 총 자산(Equity): {equity:.4f} USDT",
+        "----------------------------------------"
+    ]
+    print("\n".join(lines))
 
 if __name__ == "__main__":
-    fetch_data()
-    app.run(host="0.0.0.0", port=8000)
+    while True:
+        report()
+        time.sleep(300)  # 5분마다 실행
