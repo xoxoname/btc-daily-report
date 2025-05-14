@@ -23,7 +23,7 @@ def sign(message: str, secret_key: str):
     return hmac.new(secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()
 
 def fetch_open_positions(product_type="USDT-FUTURES", margin_coin="USDT"):
-    path = "/api/mix/v1/position/openPositions"  # ✅ 정확한 경로 (대문자 P)
+    path = "/api/mix/v1/position/all-position"  # ✅ Bitget 공식 API 경로
     query = f"productType={product_type}&marginCoin={margin_coin}"
     timestamp = get_timestamp()
     message = f"{timestamp}GET{path}?{query}"
