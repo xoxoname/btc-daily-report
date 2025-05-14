@@ -1,6 +1,7 @@
 import os
 import ccxt
 from flask import Flask, jsonify
+from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,21 +11,23 @@ BITGET_API_SECRET = os.getenv("BITGET_API_SECRET")
 BITGET_API_PASSWORD = os.getenv("BITGET_API_PASSWORD")
 
 app = Flask(__name__)
+cached_report = {}
 
 def fetch_report():
-    exchange = ccxt.bitget({
-        'apiKey': BITGET_API_KEY,
-        'secret': BITGET_API_SECRET,
-        'password': BITGET_API_PASSWORD,
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'swap'
-        }
-    })
-
+    global cached_report
     try:
+        exchange = ccxt.bitget({
+            'apiKey': BITGET_API_KEY,
+            'secret': BITGET_API_SECRET,
+            'password': BITGET_API_PASSWORD,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap'
+            }
+        })
+
         balance = exchange.fetch_balance({'type': 'swap'})
-        equity = balance['total']['USDT']
+        equity = balance['total'].get('USDT', 0)
 
         positions = exchange.fetch_positions()
         total_unrealized = 0
@@ -43,23 +46,27 @@ def fetch_report():
                 'contracts': pos['contracts']
             })
 
-        report = {
+        cached_report = {
             "equity": equity,
-            "pnl_today_realized": 0,  # 실제 구현 시 거래내역 분석 필요
+            "pnl_today_realized": 0,
             "pnl_today_unrealized": total_unrealized,
-            "pnl_cumulative": 0,     # 누적 수익은 DB 연동이 필요
+            "pnl_cumulative": 0,
             "positions": position_list
         }
-
-        return report
-
     except Exception as e:
-        return {"error": str(e)}
+        cached_report = {"error": str(e)}
 
-@app.route('/report')
+@app.route("/report")
 def get_report():
-    return jsonify(fetch_report())
+    return jsonify(cached_report)
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(fetch_report, 'interval', minutes=5)
+    scheduler.start()
+
+    # 최초 실행 시 리포트 수집
+    fetch_report()
+
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
