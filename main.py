@@ -22,7 +22,7 @@ def get_timestamp():
 def sign(message: str, secret_key: str):
     return hmac.new(secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()
 
-def fetch_today_pnl():
+def fetch_today_realized_pnl():
     now = datetime.now(timezone("Asia/Seoul"))
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = now
@@ -30,7 +30,7 @@ def fetch_today_pnl():
     start_ts = int(start.timestamp() * 1000)
     end_ts = int(end.timestamp() * 1000)
 
-    path = "/api/mix/v1/account/accountBill"
+    path = "/api/mix/v1/position/history-position"
     query = f"productType=USDT-FUTURES&marginCoin=USDT&startTime={start_ts}&endTime={end_ts}&pageSize=50"
     timestamp = get_timestamp()
     message = f"{timestamp}GET{path}?{query}"
@@ -53,8 +53,7 @@ def fetch_today_pnl():
 
         total_pnl = 0.0
         for item in data.get("data", []):
-            if item.get("billType") == "realized_pnl":
-                total_pnl += float(item.get("amount", 0))
+            total_pnl += float(item.get("closeProfit", 0))
 
         return round(total_pnl, 2)
 
@@ -63,7 +62,7 @@ def fetch_today_pnl():
         return None
 
 def main():
-    profit = fetch_today_pnl()
+    profit = fetch_today_realized_pnl()
     now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
 
     if profit is None:
@@ -73,7 +72,7 @@ def main():
     rate = 1335  # 환율
     profit_krw = int(profit * rate)
 
-    print("📈 [BTC 실시간 수익 요약]")
+    print("📈 [BTC 실시간 수익 요약 - 포지션 기준]")
     print(f"시각: {now}")
     print(f"수익: {'+' if profit >= 0 else ''}${profit:.2f}")
     print(f"한화 약 {profit_krw:,}원")
