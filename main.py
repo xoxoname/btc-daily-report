@@ -27,4 +27,13 @@ def fetch_sample_pnl():
         "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
         "usd": profit_usd,
         "krw": profit_krw,
-        "comment": "🔥 작은 이익도 매일 쌓
+        "comment": "🔥 작은 이익도 매일 쌓이면 큰 흐름이 됩니다."
+    }
+
+if __name__ == "__main__":
+    report = fetch_sample_pnl()
+    print("📈 [BTC 수익 요약]")
+    print(f"시각: {report['datetime']}")
+    print(f"수익: +${report['usd']}")
+    print(f"한화 약 {report['krw']}원 (편의점 알바 2.5시간)")
+    print(report['comment'])
