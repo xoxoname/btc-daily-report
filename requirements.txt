@@ -1,3 +1,4 @@
 requests>=2.25.1
 python-dotenv>=1.0.0
 pytz>=2025.1
+ccxt>=2.0.0
