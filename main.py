@@ -14,16 +14,10 @@ BASE_URL   = "https://api.bitget.com"
 
 # —— 내부 함수들 ——
 def _sign(timestamp: str, method: str, path: str, body: str = "") -> str:
-    """
-    Bitget 요청에 필요한 HMAC-SHA256 시그니처를 생성합니다.
-    """
     msg = f"{timestamp}{method.upper()}{path}{body}"
     return hmac.new(SECRET_KEY.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
 def _request(method: str, path: str, params: dict = None, body: dict = None) -> requests.Response:
-    """
-    GET/POST 요청을 보내고 에러코드가 돌아오면 예외를 던집니다.
-    """
     ts = str(int(time.time() * 1000))
     body_str = "" if body is None else json.dumps(body)
     signature = _sign(ts, method, path, body_str)
@@ -44,23 +38,22 @@ def fetch_today_pnl() -> float:
     """
     오늘(00:00~현재) 실현 PNL 합계를 가져옵니다.
     """
-    now = int(time.time() * 1000)
-    start_of_day = int(
+    now_ms   = int(time.time() * 1000)
+    start_ms = int(
         datetime.now()
-        .replace(hour=0, minute=0, second=0, microsecond=0)
-        .timestamp()
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .timestamp()
         * 1000
     )
-    # USDT 마진 퍼페츄얼(“USDT-Futures”) 상품
     params = {
         "productType": "USDT-Futures",
-        "startTime": start_of_day,
-        "endTime": now,
-        "pageSize": 50
+        "marginCoin":  "USDT",            # ← 여기에 marginCoin 추가
+        "startTime":   start_ms,
+        "endTime":     now_ms,
+        "pageSize":    50
     }
     r = _request("get", "/api/mix/v1/account/accountBill", params=params)
     data = r.json().get("data", [])
-    # realizedPnl 키 이름은 API 리턴을 확인해보시고, 다를 경우 바꿔주세요.
     return sum(float(item.get("realizedPnl", 0)) for item in data)
 
 def fetch_open_positions() -> list:
@@ -68,7 +61,8 @@ def fetch_open_positions() -> list:
     현재 열린 모든 포지션의 미실현 PNL 리스트를 가져옵니다.
     """
     params = {
-        "productType": "USDT-Futures"
+        "productType": "USDT-Futures",
+        "marginCoin":  "USDT"             # ← 여기도 marginCoin 추가
     }
     r = _request("get", "/api/mix/v1/position/allPositions", params=params)
     return r.json().get("data", [])
