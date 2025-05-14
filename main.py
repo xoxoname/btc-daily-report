@@ -4,100 +4,99 @@ import json
 import hmac
 import hashlib
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
-# ─── 환경 변수 로드 (Render의 Environment Variables에서 설정) ─────────────────────────
-API_KEY     = os.environ["BITGET_API_KEY"]
-SECRET_KEY  = os.environ["BITGET_SECRET_KEY"]
-PASSPHRASE  = os.environ["BITGET_PASSPHRASE"]
-# ─────────────────────────────────────────────────────────────────────────────────────
+# 환경변수에서 읽어옵니다 (Render의 Environment Variables에 등록한 값)
+API_KEY    = os.getenv("BITGET_API_KEY")
+SECRET_KEY = os.getenv("BITGET_SECRET_KEY")
+PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
 
 BASE_URL = "https://api.bitget.com"
 
-def sign(timestamp: str, method: str, request_path: str, body: str = "") -> str:
-    """비밀키로 서명 생성"""
+def _sign(method: str, request_path: str, timestamp: str, body: str = "") -> str:
+    """
+    Bitget REST API 서명 생성
+    """
     message = timestamp + method.upper() + request_path + body
-    mac = hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256)
-    return mac.hexdigest()
+    return hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256).hexdigest()
 
-def _request(method: str, path: str, params: dict = None):
-    """공통 요청 함수 (GET/POST)"""
-    ts = str(int(time.time() * 1000))
-    rb = ""
-    req_path = path
-
-    if method.upper() == "GET" and params:
-        qs = "&".join(f"{k}={v}" for k, v in params.items())
-        req_path = f"{path}?{qs}"
-    elif method.upper() in ("POST", "PUT") and params:
-        rb = json.dumps(params)
-
-    signature = sign(ts, method, req_path, rb)
+def _request(method: str, path: str, params: dict = None) -> requests.Response:
+    """
+    서명 포함 요청 전송
+    """
+    timestamp = str(int(time.time() * 1000))
+    body = ""
+    if method.upper() in ("POST", "PUT") and params:
+        body = json.dumps(params)
+    sign = _sign(method, path, timestamp, body)
     headers = {
         "ACCESS-KEY": API_KEY,
-        "ACCESS-SIGN": signature,
-        "ACCESS-TIMESTAMP": ts,
+        "ACCESS-SIGN": sign,
+        "ACCESS-TIMESTAMP": timestamp,
         "ACCESS-PASSPHRASE": PASSPHRASE,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
+    url = BASE_URL + path
+    return requests.request(method, url, headers=headers, params=params if method.upper()=="GET" else None, data=body or None, timeout=10)
 
-    url = BASE_URL + req_path
-    resp = requests.request(method, url, headers=headers, data=rb)
+def fetch_today_pnl(symbol: str = "BTCUSDT_UMCBL", margin_coin: str = "USDT") -> float:
+    """
+    오늘(UTC 기준) 실현 PNL 합계 조회
+    """
+    now = datetime.now(timezone.utc)
+    start_of_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    params = {
+        "symbol": symbol,
+        "marginCoin": margin_coin,
+        "startTime": int(start_of_day.timestamp() * 1000),
+        "endTime":   int(now.timestamp() * 1000),
+        "pageSize":  50
+    }
+    resp = _request("GET", "/api/mix/v1/account/accountBill", params)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json().get("data", [])
+    return sum(float(x.get("realizedPnl", 0)) for x in data)
 
-def fetch_today_pnl():
-    """오늘자 실현 PNL 합계 (accountBill)"""
-    # 오늘 00:00(KST) 타임스탬프(ms)
-    now = datetime.now(timezone(timedelta(hours=9)))
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone(timedelta(hours=9)))
+def fetch_open_positions(product_type: str = "UMCBL", margin_coin: str = "USDT") -> list:
+    """
+    현재 열린 포지션 리스트 조회
+    """
     params = {
-        "productType": "usdt-futures",  # 반드시 소문자
-        "marginCoin":  "usdt",
-        "startTime":   int(start.timestamp() * 1000),
-        "endTime":     int(now.timestamp() * 1000),
-        "pageSize":    50
+        "productType": product_type,
+        "marginCoin":  margin_coin,
     }
-    data = _request("GET", "/api/mix/v1/account/accountBill", params)
-    lst = data.get("data", [])
-    # 'realizedPnl' 키로 실현 수익이 반환됨
-    return sum(item.get("realizedPnl", 0) for item in lst)
-
-def fetch_open_positions():
-    """현재 열린 포지션들 (allPositions)"""
-    params = {
-        "productType": "usdt-futures",
-        "marginCoin":  "usdt"
-    }
-    data = _request("GET", "/api/mix/v1/position/allPositions", params)
-    return data.get("data", [])
+    resp = _request("GET", "/api/mix/v1/position/all-position", params)
+    resp.raise_for_status()
+    return resp.json().get("data", [])
 
 def main():
-    now = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n✅ [BTC 실시간 리포트] {now}\n" + "-"*40)
+    # 한국시간으로 출력
+    now = datetime.now(timezone(timedelta(hours=9)))
+    print(f"✅ [BTC 실시간 리포트] {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("-" * 40)
 
     # 1) 오늘 실현 PNL
     try:
         pnl = fetch_today_pnl()
-        print(f"▶️ 오늘 실현 PNL: {pnl:.4f} USDT")
+        print(f"📊 오늘 실현 PNL: {pnl:.4f} USDT")
     except Exception as e:
         print(f"❌ 오늘 수익 데이터 조회 실패: {e}")
 
-    # 2) 현재 미실현 PNL
+    # 2) 실시간 미실현 PNL
     try:
-        pos = fetch_open_positions()
-        if not pos:
+        positions = fetch_open_positions()
+        if not positions:
             print("📭 현재 열린 포지션이 없습니다.")
         else:
-            print("📈 열린 포지션 수익 요약:")
-            for p in pos:
-                symbol = p.get("symbol")
-                upnl   = float(p.get("unrealizedProfit", 0))
-                amt    = float(p.get("holdingQty", 0))
-                entry  = float(p.get("avgEntryPrice", 0))
-                print(f"  • {symbol} | 미실현 PNL: {upnl:.4f} USDT | 수량: {amt} | 진입가: {entry}")
+            for p in positions:
+                sym   = p.get("symbol")
+                upnl  = float(p.get("unrealizedProfit", 0))
+                qty   = float(p.get("holdingQty", 0))
+                entry = float(p.get("avgEntryPrice", 0))
+                print(f"▷ {sym} | 미실현 PNL: {upnl:.4f} USDT | 수량: {qty} | 진입가: {entry}")
     except Exception as e:
         print(f"❌ 실시간 포지션 조회 실패: {e}")
 
 if __name__ == "__main__":
     main()
+
