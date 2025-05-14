@@ -5,25 +5,27 @@ from datetime import datetime
 from pytz import timezone
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import openai
-import threading
 
-# 환경 변수 불러오기 (Render의 Environment Variables 사용)
-BITGET_APIKEY     = os.getenv('BITGET_APIKEY')
-BITGET_SECRET     = os.getenv('BITGET_SECRET')
-BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
-TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
+# ✅ Render 환경변수 직접 사용
+BITGET_APIKEY     = os.environ.get('BITGET_APIKEY')
+BITGET_SECRET     = os.environ.get('BITGET_SECRET')
+BITGET_PASSPHRASE = os.environ.get('BITGET_PASSPHRASE')
+TELEGRAM_TOKEN    = os.environ.get('TELEGRAM_TOKEN')
+OPENAI_API_KEY    = os.environ.get('OPENAI_API_KEY')
 TELEGRAM_USER     = '@zzzzzzzz5555'
-OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
-openai.api_key    = OPENAI_API_KEY
+
+openai.api_key = OPENAI_API_KEY
 
 if not all([BITGET_APIKEY, BITGET_SECRET, BITGET_PASSPHRASE, TELEGRAM_TOKEN, OPENAI_API_KEY]):
-    raise RuntimeError("모든 환경변수(BITGET, TELEGRAM, OPENAI)가 설정되어 있어야 합니다.")
+    raise RuntimeError("⚠️ 환경변수가 누락되었습니다. (BITGET, TELEGRAM, OPENAI)")
 
+# ✅ Flask 인스턴스
 app = Flask(__name__)
 
+# ✅ Bitget 객체 생성
 def create_bitget():
     return ccxt.bitget({
         'apiKey': BITGET_APIKEY,
@@ -33,6 +35,7 @@ def create_bitget():
         'enableRateLimit': True
     })
 
+# ✅ 실시간 BTC 시세
 def fetch_btc_price():
     try:
         r = requests.get('https://api.coinbase.com/v2/prices/BTC-USD/spot', timeout=5)
@@ -41,6 +44,7 @@ def fetch_btc_price():
     except Exception as e:
         return {"error": f"BTC 시세 오류: {e}"}
 
+# ✅ Bitget 계정 정보
 def fetch_bitget_account():
     exc = create_bitget()
     info = {}
@@ -52,7 +56,6 @@ def fetch_bitget_account():
         info['realizedPnL'] = float(bal.get('realizedPnl', 0.0))
     except Exception as e:
         info['error_balance'] = str(e)
-
     try:
         positions = exc.fetch_positions()
         open_pos = []
@@ -70,6 +73,7 @@ def fetch_bitget_account():
         info['error_positions'] = str(e)
     return info
 
+# ✅ 순입금 계산
 def fetch_bitget_net_deposit():
     exc = create_bitget()
     try:
@@ -81,12 +85,13 @@ def fetch_bitget_net_deposit():
     except Exception as e:
         return {"error_deposit": str(e)}
 
+# ✅ GPT 분석 응답
 def gpt_reply(prompt: str) -> str:
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-4o",
             messages=[
-                {"role": "system", "content": "비트코인 매매 전문가로서 답변해 주세요."},
+                {"role": "system", "content": "비트코인 매매 전문가로서 기술적 분석, 뉴스, 포지션 기반 전략을 제시하세요."},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -94,30 +99,37 @@ def gpt_reply(prompt: str) -> str:
     except Exception as e:
         return f"[GPT 오류] {e}"
 
+# ✅ 텔레그램 핸들러
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("안녕하세요! BTC 분석 챗봇입니다. '오늘 리포트 보여줘'와 같이 말씀해주세요.")
+    await update.message.reply_text("✅ 안녕하세요! 비트코인 리포트 챗봇입니다. '오늘 리포트 보여줘'처럼 말씀해 주세요.")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    if "리포트" in text or "수익률" in text:
+    if "리포트" in text or "수익" in text:
         report = generate_report()
         reply = (
-            f"[BTC 리포트 - {report['timestamp']} 기준]\n"
+            f"📊 <b>BTC 리포트 - {report['timestamp']}</b>\n"
             f"• BTC: ${report['BTC_USD_spot']}\n"
             f"• 순입금: {report['netDeposit']} USDT\n"
             f"• 자산: {report['bitgetAccount'].get('equity', '?')} USDT\n"
             f"• 총 수익: {report['pnl']} USDT ({report['profitRate']})\n"
             f"• 포지션 수: {len(report['bitgetAccount'].get('openPositions', []))}\n"
-            f"• 분석: {report['technical']} / {report['forecast12h']['reason']}"
+            f"📈 분석: {report['technical']} / {report['forecast12h']['reason']}"
         )
-        await update.message.reply_text(reply)
+        await update.message.reply_text(reply, parse_mode='HTML')
     else:
         reply = gpt_reply(text)
         await update.message.reply_text(reply)
 
+# ✅ 예측
 def forecast_12h():
-    return {'upProbability': '57%', 'downProbability': '43%', 'reason': 'RSI 중립 / MACD 약세 / 롱포 과열 없음 → 제한적 상승 가능성'}
+    return {
+        'upProbability': '57%',
+        'downProbability': '43%',
+        'reason': 'RSI 중립 / MACD 약세 / 롱포 과열 없음 → 제한적 상승 가능성'
+    }
 
+# ✅ 텔레그램 리포트 전송
 def send_telegram_report(message):
     try:
         requests.post(
@@ -129,8 +141,9 @@ def send_telegram_report(message):
             }, timeout=3
         )
     except Exception as e:
-        print(f"[텔레그램 전송 실패] {e}")
+        print(f"[텔레그램 전송 오류] {e}")
 
+# ✅ 리포트 생성
 def generate_report(send_telegram=False):
     seoul = timezone('Asia/Seoul')
     now = datetime.now(seoul).strftime('%Y-%m-%d %H:%M:%S')
@@ -167,25 +180,25 @@ def generate_report(send_telegram=False):
             f"• 자산: {acct.get('equity', '?')} USDT\n"
             f"• 총 수익: {pnl} USDT ({prate})\n"
             f"• 포지션 수: {len(acct.get('openPositions', []))}\n"
-            f"\n🔎 분석: RSI 54 / MACD 데드크로스 → ⚪️ 중립"
+            f"🔍 분석: RSI 54 / MACD 데드크로스 → ⚪️ 중립"
         )
         send_telegram_report(msg)
 
     return report
 
+# ✅ Flask 라우터
 @app.route('/')
-def home():
-    return jsonify({'message': 'BTC 리포트 서버 작동 중'})
+def home(): return jsonify({'message': '✅ BTC 리포트 서버 작동 중'})
 
 @app.route('/report')
-def report():
-    return jsonify(generate_report())
+def report(): return jsonify(generate_report())
 
 @app.route('/instant')
-def manual_report():
+def manual(): 
     generate_report(send_telegram=True)
-    return jsonify({'message': '리포트를 텔레그램으로 보냈습니다!'})
+    return jsonify({'message': '✅ 리포트를 텔레그램으로 전송 완료'})
 
+# ✅ 스케줄러: 5분마다 + 09시 / 13시 / 23시 자동 텔레그램 전송
 sched = BackgroundScheduler(timezone='Asia/Seoul')
 sched.add_job(lambda: generate_report(send_telegram=True), 'cron', hour=9, minute=0)
 sched.add_job(lambda: generate_report(send_telegram=True), 'cron', hour=13, minute=0)
@@ -193,12 +206,11 @@ sched.add_job(lambda: generate_report(send_telegram=True), 'cron', hour=23, minu
 sched.add_job(lambda: generate_report(send_telegram=False), 'interval', minutes=5)
 sched.start()
 
-def run_telegram_bot():
+# ✅ 실행부
+if __name__ == '__main__':
     bot_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     bot_app.run_polling()
 
-if __name__ == '__main__':
-    threading.Thread(target=run_telegram_bot).start()
     app.run(host='0.0.0.0', port=10000)
