@@ -31,7 +31,7 @@ def fetch_today_pnl():
     end_ts = int(end.timestamp() * 1000)
 
     path = "/api/mix/v1/account/accountBill"
-    query = f"productType=USDT-FUTURES&startTime={start_ts}&endTime={end_ts}&pageSize=50"
+    query = f"productType=USDT-FUTURES&marginCoin=USDT&startTime={start_ts}&endTime={end_ts}&pageSize=50"
     timestamp = get_timestamp()
     message = f"{timestamp}GET{path}?{query}"
     signature = sign(message, SECRET_KEY)
@@ -87,4 +87,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
