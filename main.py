@@ -1,188 +1,145 @@
+# main.py
+
 import os
 import requests
-import ccxt
-from datetime import datetime
-from pytz import timezone
-from flask import Flask, jsonify
+import json
+from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
-from telegram import Update, Bot
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-import openai
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from openai import OpenAI
+from dotenv import load_dotenv
 
-# 환경 변수 로드
-BITGET_APIKEY     = os.environ.get('BITGET_APIKEY')
-BITGET_SECRET     = os.environ.get('BITGET_SECRET')
-BITGET_PASSPHRASE = os.environ.get('BITGET_PASSPHRASE')
-TELEGRAM_TOKEN    = os.environ.get('TELEGRAM_TOKEN')
-OPENAI_API_KEY    = os.environ.get("OPENAI_API_KEY")
-TELEGRAM_USER     = '@zzzzzzzz5555'
-
-openai.api_key = OPENAI_API_KEY
+load_dotenv()
 
 app = Flask(__name__)
 
-# Bitget 객체 생성
-def create_bitget():
-    return ccxt.bitget({
-        'apiKey': BITGET_APIKEY,
-        'secret': BITGET_SECRET,
-        'password': BITGET_PASSPHRASE,
-        'options': {'defaultType': 'future'},
-        'enableRateLimit': True
-    })
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+REPORT_URL = "https://btc-daily-report.onrender.com/report"
 
-# BTC 시세 (USD)
-def fetch_btc_price():
-    try:
-        r = requests.get('https://api.coinbase.com/v2/prices/BTC-USD/spot', timeout=5)
-        r.raise_for_status()
-        return float(r.json()['data']['amount'])
-    except Exception as e:
-        return {'error': str(e)}
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# 환율 (USD -> KRW)
-def fetch_usdkrw():
+def fetch_report():
     try:
-        r = requests.get('https://api.exchangerate.host/convert?from=USD&to=KRW', timeout=5)
-        return float(r.json().get('result', 1350))
+        res = requests.get(REPORT_URL)
+        return res.json()
     except:
-        return 1350.0
+        return None
 
-# 계좌 정보
-
-def fetch_bitget_account():
-    exc = create_bitget()
-    info = {}
+def convert_usd_to_krw(usd):
     try:
-        bal = exc.fetch_balance({'type': 'future'})
-        info['equity'] = float(bal['total'].get('USDT', 0))
-        info['marginBalance'] = float(bal.get('info', {}).get('marginBalance', 0))
-        info['unrealizedPnL'] = float(bal.get('unrealizedPnl', 0.0))
-        info['realizedPnL'] = float(bal.get('realizedPnl', 0.0))
-    except Exception as e:
-        info['error_balance'] = str(e)
+        krw_rate = 1340  # 환율 고정 또는 API 연동 가능
+        return round(float(usd) * krw_rate)
+    except:
+        return 0
 
-    try:
-        positions = exc.fetch_positions()
-        open_pos = []
-        for p in positions:
-            if float(p.get('contracts', 0)) > 0:
-                open_pos.append({
-                    'symbol': p['symbol'],
-                    'side': p['side'],
-                    'size': p['contracts'],
-                    'entryPrice': float(p.get('entryPrice', 0)),
-                    'unrealized': float(p.get('unrealizedPnl', 0))
-                })
-        info['openPositions'] = open_pos
-    except Exception as e:
-        info['error_positions'] = str(e)
-    return info
+def format_krw(usd):
+    krw = convert_usd_to_krw(usd)
+    return f"{krw:,}원"
 
-# 순입금
+def build_forecast_prompt(report):
+    btc_price = report.get("btc", 0)
+    net_income = report.get("realized", 0)
+    total_income = report.get("total", 0)
+    position_count = report.get("positions", 0)
+    rsi = report.get("rsi", 0)
+    macd = report.get("macd", "")
 
-def fetch_bitget_net_deposit():
-    exc = create_bitget()
-    try:
-        deposits = exc.fetch_deposits()
-        withdrawals = exc.fetch_withdrawals()
-        dep_amt = sum(float(d['amount']) for d in deposits if d['currency'] == 'USDT')
-        wit_amt = sum(float(w['amount']) for w in withdrawals if w['currency'] == 'USDT')
-        return round(dep_amt - wit_amt, 2)
-    except Exception as e:
-        return {'error_deposit': str(e)}
+    return f"""
+다음 조건에 맞는 BTC 12시간 매매 예측 리포트를 작성해줘:
+- BTC 가격: {btc_price}$
+- RSI: {rsi}, MACD: {macd}
+- 총 수익: {total_income}$ ({format_krw(total_income)})
+- 실현 수익: {net_income}$ ({format_krw(net_income)})
+- 포지션 수: {position_count}
 
-# GPT 예측
+조건:
+1. 시장 이벤트 요약 및 분석
+2. 기술적 분석 (RSI, MACD, MA, 볼린저밴드 등)
+3. 심리 및 구조 지표
+4. 12시간 예측 (상승/하락 확률, 전략 요약)
+5. 예외 탐지 및 예측 검증
+6. 모든 달러 금액은 한화 병기
+7. 마지막엔 위로/멘탈 관리용 문장 추가. 수익 기준으로 편의점 알바 비교도 넣어줘
+8. 한국어로 간결하고 구조적으로 써줘
+"""
 
-def gpt_reply(prompt):
-    try:
-        res = openai.chat.completions.create(
-            model='gpt-4',
-            messages=[
-                {"role": "system", "content": "비트코인 분석 전문가로서 상세하게 분석해줘."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return res.choices[0].message.content.strip()
-    except Exception as e:
-        return f"[GPT 오류] {e}"
+def build_profit_message(report):
+    btc_price = report.get("btc", 0)
+    realized = report.get("realized", 0)
+    total = report.get("total", 0)
+    balance = report.get("balance", 0)
+    deposit = report.get("deposit", 0)
+    positions = report.get("positions", 0)
+    rsi = report.get("rsi", 0)
+    macd = report.get("macd", "")
 
-# 텔레그램 리포트 전송
-
-def send_telegram_report(msg):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_USER, "text": msg, "parse_mode": "HTML"}, timeout=3
-        )
-    except Exception as e:
-        print(f"텔레그램 오류: {e}")
-
-# 리포트 생성
-
-def generate_report(send_tg=False):
-    now = datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S')
-    price = fetch_btc_price()
-    rate = fetch_usdkrw()
-    acct = fetch_bitget_account()
-    dep = fetch_bitget_net_deposit()
-
-    pnl, prate = None, None
-    if isinstance(dep, (int, float)) and 'equity' in acct:
-        pnl = round(acct['equity'] - dep, 2)
-        prate = f"{(pnl / dep * 100):.2f}%" if dep else None
-
-    pnl_krw = f"{round(pnl * rate / 10000, 1)}만원" if pnl else '?'
-
-    msg = (
-        f"📊 <b>BTC 리포트 - {now}</b>\n"
-        f"• BTC: ${price} ≒ {round(price * rate / 10000, 1)}만원\n"
-        f"• 순입금: {dep} USDT ≒ {round(dep * rate / 10000, 1)}만원\n"
-        f"• 자산: {acct.get('equity')} USDT\n"
-        f"• 총 수익: {pnl} USDT ({prate}) ≒ {pnl_krw}\n"
-        f"• 포지션 수: {len(acct.get('openPositions', []))}\n"
-        f"\n📈 분석: RSI 54 / MACD 데드크로스 → ⚪️ 중립"
-    )
-
-    if send_tg:
-        send_telegram_report(msg)
-    return msg
-
-# 텔레그램 핸들러
+    return f"""
+📊 BTC 리포트 - 현재 시각 기준
+• BTC: ${btc_price}
+• 순입금: {deposit} USDT ({format_krw(deposit)})
+• 자산: {balance} USDT ({format_krw(balance)})
+• 총 수익: {total} USDT ({format_krw(total)})
+• 실현 수익: {realized} USDT ({format_krw(realized)})
+• 포지션 수: {positions}
+📈 분석: RSI {rsi} / MACD {macd}
+"""
 
 async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = generate_report()
-    await update.message.reply_text(msg, parse_mode='HTML')
+    report = fetch_report()
+    if not report:
+        await update.message.reply_text("❌ 데이터를 불러오지 못했습니다.")
+        return
+    msg = build_profit_message(report)
+    await update.message.reply_text(msg)
 
 async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = generate_report()
-    analysis = gpt_reply("현재 비트코인 시장의 12시간 예측을 기술적, 심리적, 매크로 지표 중심으로 작성해줘.")
-    footer = "\n\n💬 오늘 수익은 편의점 알바 {0}시간치예요. 너무 과몰입하지 마세요 🙂".format(round(float(msg.split('총 수익: ')[1].split(' ')[0]) / 10, 1))
-    await update.message.reply_text(msg + "\n\n📊 <b>GPT 매동 예측</b>\n" + analysis + footer, parse_mode='HTML')
+    report = fetch_report()
+    if not report:
+        await update.message.reply_text("❌ 데이터를 불러오지 못했습니다.")
+        return
+    prompt = build_forecast_prompt(report)
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "당신은 정확하고 체계적인 크립토 매매 분석가입니다."},
+            {"role": "user", "content": prompt}
+        ]
+    )
+    forecast = response.choices[0].message.content
+    await update.message.reply_text(forecast)
 
-async def handle_default(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("안녕하세요! /수익 또는 /예측 명령어를 사용해주세요.")
+def schedule_push():
+    report = fetch_report()
+    if not report:
+        return
+    prompt = build_forecast_prompt(report)
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "당신은 정확하고 체계적인 크립토 매매 분석가입니다."},
+            {"role": "user", "content": prompt}
+        ]
+    )
+    forecast = response.choices[0].message.content
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": f"📌 GPT 매동 예측 예상\n\n{forecast}"
+        }
+    )
 
-# Flask 라우팅
+scheduler = BackgroundScheduler()
+scheduler.add_job(schedule_push, 'cron', hour='0,4,14', minute='30')  # 한국 기준 9:30, 13:00, 23:00
+scheduler.start()
 
-@app.route('/')
-def home():
-    return jsonify({'status': 'BTC 리포트 서버 작동 중'})
-
-# 스케줄러 설정
-sched = BackgroundScheduler(timezone='Asia/Seoul')
-sched.add_job(lambda: send_telegram_report(generate_report(send_tg=False)), 'cron', hour=9)
-sched.add_job(lambda: send_telegram_report(generate_report(send_tg=False)), 'cron', hour=13)
-sched.add_job(lambda: send_telegram_report(generate_report(send_tg=False)), 'cron', hour=23)
-sched.start()
-
-# 실행
 if __name__ == '__main__':
     tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    tg_app.add_handler(CommandHandler("수익", handle_profit))
-    tg_app.add_handler(CommandHandler("예측", handle_forecast))
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_default))
+    tg_app.add_handler(CommandHandler("profit", handle_profit))
+    tg_app.add_handler(CommandHandler("forecast", handle_forecast))
     tg_app.run_polling()
 
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=10000)
