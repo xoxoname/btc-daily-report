@@ -1,99 +1,116 @@
-import os
-import time
+import ccxt
 import requests
+import time
+import os
+from dotenv import load_dotenv
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
-from dotenv import load_dotenv
-import ccxt
 
 load_dotenv()
 
 app = Flask(__name__)
-latest_report = {}
+report_data = {}
 
-def create_exchange():
-    return ccxt.bitget({
-        'apiKey': os.getenv("BITGET_API_KEY"),
-        'secret': os.getenv("BITGET_API_SECRET"),
-        'password': os.getenv("BITGET_API_PASSWORD"),
-        'enableRateLimit': True,
-        'options': {'defaultType': 'swap'},
-    })
-
-def fetch_coinbase_price():
+def get_coinbase_price():
     try:
-        res = requests.get("https://api.coinbase.com/v2/prices/BTC-USDT/spot").json()
-        return float(res["data"]["amount"])
+        res = requests.get("https://api.coinbase.com/v2/prices/BTC-USDT/spot")
+        return float(res.json()['data']['amount'])
     except Exception as e:
-        print("Coinbase 가격 조회 실패:", e)
         return None
 
-def fetch_data():
-    exch = create_exchange()
-    price = fetch_coinbase_price()
-    if price is None:
-        price = 0
+def fetch_report():
+    global report_data
+
+    api_key = os.getenv("BITGET_API_KEY")
+    api_secret = os.getenv("BITGET_API_SECRET")
+    api_passphrase = os.getenv("BITGET_API_PASSPHRASE")
+
+    exchange = ccxt.bitget({
+        'apiKey': api_key,
+        'secret': api_secret,
+        'password': api_passphrase,
+        'enableRateLimit': True,
+    })
 
     try:
-        balance = exch.fetch_balance({'type': 'swap'})
-        equity = float(balance['total'].get('USDT', 0))
-    except Exception as e:
-        print("잔고 조회 실패:", e)
-        equity = 0
+        # 현재 시세
+        price = get_coinbase_price()
 
-    try:
-        positions = exch.fetch_positions()
-    except Exception as e:
-        print("포지션 조회 실패:", e)
-        positions = []
+        # 잔고 (총 자산)
+        bal = exchange.fetch_balance({'type': 'swap'})
+        total_equity = float(bal['total']['USDT']) if 'USDT' in bal['total'] else 0
 
-    open_positions = []
-    unrealized_pnl_total = 0
-    realized_pnl_total = 0  # Bitget 실현 손익 API로 따로 불러와야 정확하지만 지금은 0 고정
+        # 오늘 날짜 시작 시각 (UTC 00:00)
+        now = int(time.time() * 1000)
+        start_time = now - (now % 86400000)
 
-    for pos in positions:
-        if pos.get("contracts", 0) > 0:
-            side = pos['side']
-            entry = float(pos['entryPrice'])
-            amt = float(pos['contracts'])
-            unreal = float(pos.get('unrealizedPnl', 0))
-            symbol = pos['symbol']
-            change_pct = round(((price - entry) / entry) * 100, 2) if entry else 0
+        # 수익 내역
+        realized_pnl = 0
+        try:
+            bills = exchange.private_mix_get_account_account_bill({
+                "symbol": "BTCUSDT_UMCBL",
+                "marginCoin": "USDT",
+                "startTime": start_time,
+                "endTime": now,
+                "pageSize": 100
+            })
+            for entry in bills.get("data", []):
+                if entry["billType"] == "RealizedPNL":
+                    realized_pnl += float(entry["amount"])
+        except Exception:
+            realized_pnl = 0
 
-            open_positions.append({
-                'symbol': symbol,
-                'side': side,
-                'amount': amt,
-                'entry': entry,
-                'change_pct': change_pct,
-                'unrealized': unreal
+        # 포지션
+        unrealized_pnl = 0
+        pos_summary = ""
+        try:
+            positions = exchange.fetch_positions(["BTC/USDT:USDT"], {
+                "productType": "UMCBL",
+                "marginCoin": "USDT"
             })
 
-            unrealized_pnl_total += unreal
+            for pos in positions:
+                amt = float(pos['contracts'])
+                entry_price = float(pos['entryPrice'])
+                side = pos['side'].lower()
+                unreal = float(pos['unrealizedPnl'])
+                unrealized_pnl += unreal
+                pos_summary += f"📊 {pos['symbol']} | {side} | 수량: {amt:.4f} | 진입가: {entry_price:.1f} | 미실현 PNL: {unreal:.2f} USDT\n"
+        except Exception:
+            pos_summary = "❌ 포지션 조회 실패"
 
-    return {
-        'equity': round(equity, 4),
-        'coinbase_price': round(price, 2),
-        'realized_pnl': round(realized_pnl_total, 4),
-        'unrealized_pnl': round(unrealized_pnl_total, 4),
-        'pnl_rate': round(((realized_pnl_total + unrealized_pnl_total) / equity) * 100, 2) if equity else 0,
-        'positions': open_positions,
-    }
+        # 수익률 계산
+        if total_equity > 0:
+            pnl_rate = (realized_pnl + unrealized_pnl) / (total_equity - realized_pnl - unrealized_pnl) * 100
+        else:
+            pnl_rate = 0
 
-def update_report():
-    global latest_report
-    print("🔁 최신 리포트 갱신 중...")
-    latest_report = fetch_data()
+        report_data = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+            "price": price,
+            "equity": round(total_equity, 2),
+            "realized_pnl": round(realized_pnl, 2),
+            "unrealized_pnl": round(unrealized_pnl, 2),
+            "pnl_rate": round(pnl_rate, 2),
+            "positions": pos_summary.strip()
+        }
+
+    except Exception as e:
+        report_data = {
+            "error": str(e)
+        }
 
 @app.route("/report")
 def report():
-    return jsonify(latest_report)
+    return jsonify(report_data)
+
+# 앱 시작 시 한 번 실행
+fetch_report()
+
+# 5분마다 자동 실행
+scheduler = BackgroundScheduler()
+scheduler.add_job(fetch_report, "interval", minutes=5)
+scheduler.start()
 
 if __name__ == "__main__":
-    update_report()
-
-    scheduler = BackgroundScheduler(daemon=True)
-    scheduler.add_job(update_report, 'interval', minutes=5)
-    scheduler.start()
-
     app.run(host="0.0.0.0", port=10000)
