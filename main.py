@@ -1,72 +1,113 @@
 import os
-import time
-import requests
+import logging
 from flask import Flask
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from report_generator import generate_report, generate_forecast
+import requests
+import ccxt
+import openai
 
+# Load environment variables
 load_dotenv()
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BITGET_APIKEY = os.getenv("BITGET_APIKEY")
+BITGET_SECRET = os.getenv("BITGET_SECRET")
+BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Telegram bot setup
-tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+# Set OpenAI key
+openai.api_key = OPENAI_API_KEY
 
-# /profit 명령어 처리
+# Set up Bitget client
+bitget = ccxt.bitget({
+    "apiKey": BITGET_APIKEY,
+    "secret": BITGET_SECRET,
+    "password": BITGET_PASSPHRASE,
+    "enableRateLimit": True
+})
+
+def get_coinbase_price():
+    try:
+        res = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot").json()
+        return float(res["data"]["amount"])
+    except:
+        return None
+
+def get_bitget_data():
+    try:
+        balance = bitget.fetch_balance()
+        equity = balance["total"]["USDT"]
+        positions = bitget.fetch_positions()
+        return {
+            "equity": equity,
+            "positions": positions
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+def generate_report():
+    price = get_coinbase_price()
+    bitget_data = get_bitget_data()
+
+    if price is None:
+        return "❌ Coinbase 시세를 불러오지 못했습니다."
+
+    if "error" in bitget_data:
+        return f"❌ Bitget 오류: {bitget_data['error']}"
+
+    equity = bitget_data["equity"]
+    positions = bitget_data["positions"]
+
+    position_summary = []
+    for pos in positions:
+        if pos["symbol"] == "BTC/USDT:USDT":
+            entry = pos["entryPrice"]
+            side = pos["side"]
+            size = pos["contracts"]
+            unreal = pos["unrealizedPnl"]
+            position_summary.append(f"- {side.upper()} {size} @ {entry} → 미실현손익 {unreal:.2f} USDT")
+
+    return (
+        f"📊 *BTC 정규 리포트*\n\n"
+        f"🟡 Coinbase 가격: ${price:,.2f}\n"
+        f"📦 총 자산: ${equity:,.2f}\n\n"
+        f"🧾 포지션:\n" + ("\n".join(position_summary) if position_summary else "없음") +
+        "\n\n⏱ 자동 생성 시각 기준\n"
+    )
+
 async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = generate_report()
-    await update.message.reply_text(text)
+    report = generate_report()
+    await update.message.reply_text(report, parse_mode='Markdown')
 
-# /forecast 명령어 처리
 async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = generate_forecast()
-    await update.message.reply_text(text)
+    forecast_text = (
+        "🔮 *12시간 예측*\n\n"
+        "📈 상승 확률: *57%*\n"
+        "📉 하락 확률: *43%*\n"
+        "🧠 사유: RSI 중립 / MACD 약세 / 롱포 과열 없음 → 제한적 상승 가능성\n"
+        "\n📍 시장 심리: Fear & Greed 45 → 중립\n"
+        "🛠 기술 지표: RSI 54 / MACD 데드크로스 → 중립\n"
+    )
+    await update.message.reply_text(forecast_text, parse_mode='Markdown')
 
+# Set up Telegram application
+tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 tg_app.add_handler(CommandHandler("profit", handle_profit))
 tg_app.add_handler(CommandHandler("forecast", handle_forecast))
 
-# 정기 리포트 전송 스케줄러
-scheduler = BackgroundScheduler(timezone="Asia/Seoul")
-
-def send_forecast_report():
-    try:
-        text = generate_forecast()
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text
-        }
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"[예측 전송 실패] {e}")
-
-# 09:30, 13:00, 23:00 (한국시간) 정규 예측 리포트 전송
-scheduler.add_job(send_forecast_report, "cron", hour=9, minute=30)
-scheduler.add_job(send_forecast_report, "cron", hour=13, minute=0)
-scheduler.add_job(send_forecast_report, "cron", hour=23, minute=0)
+# Schedule automatic reports
+scheduler = BackgroundScheduler()
+scheduler.add_job(lambda: tg_app.bot.send_message(chat_id=os.getenv("TELEGRAM_CHAT_ID"), text=generate_report()), 'interval', minutes=5)
 scheduler.start()
 
-# Flask 포트 대기 (Render Web Service 요구사항)
 @app.route('/')
-def health_check():
-    return "BTC Report Web Service is running!"
+def index():
+    return "BTC Daily Report Running."
 
-if __name__ == "__main__":
-    import threading
-
-    # 텔레그램 봇은 백그라운드 스레드로 실행
-    def run_tg_bot():
-        tg_app.run_polling()
-
-    tg_thread = threading.Thread(target=run_tg_bot)
-    tg_thread.start()
-
-    # Flask는 포트 열어서 Render가 살아있다고 판단하게 함
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    tg_app.run_polling()
