@@ -1,53 +1,58 @@
-import os
-import time
-import hmac, hashlib, base64
-import requests
+import os, time, hmac, hashlib, base64, requests
+from datetime import datetime
+from pytz import timezone
+from dotenv import load_dotenv
+
+load_dotenv()
 
 API_KEY    = os.getenv("BITGET_API_KEY")
 SECRET_KEY = os.getenv("BITGET_SECRET_KEY")
 PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
 BASE_URL   = "https://api.bitget.com"
 
-def _sign(timestamp, method, request_path, body=""):
+def sign(timestamp: str, method: str, request_path: str, body: str = "") -> str:
     message = f"{timestamp}{method}{request_path}{body}"
-    hmac_key = hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256)
-    return base64.b64encode(hmac_key.digest()).decode()
+    mac = hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256)
+    return base64.b64encode(mac.digest()).decode()
 
-def _headers(method, path, body=""):
+def headers_for(method: str, path: str, body: str = "") -> dict:
     ts = str(int(time.time() * 1000))
     return {
-        "ACCESS-KEY": API_KEY,
+        "ACCESS-KEY":       API_KEY,
+        "ACCESS-SIGN":      sign(ts, method, path, body),
         "ACCESS-TIMESTAMP": ts,
-        "ACCESS-PASSPHRASE": PASSPHRASE,
-        "ACCESS-SIGN": _sign(ts, method, path, body),
-        "Content-Type": "application/json"
+        "ACCESS-PASSPHRASE":PASSPHRASE,
+        "Content-Type":     "application/json"
     }
 
-def fetch_all_positions():
-    path   = "/api/mix/v1/position/allPositions"
+def fetch_open_positions():
+    path   = "/api/mix/v1/position/openPositions"
     params = "?productType=USDT-FUTURES&marginCoin=USDT"
     url    = BASE_URL + path + params
-    r = requests.get(url, headers=_headers("GET", path))
-    r.raise_for_status()
-    return r.json()["data"]
+    resp   = requests.get(url, headers=headers_for("GET", path))
+    resp.raise_for_status()
+    return resp.json().get("data", [])
 
-def fetch_single_position(symbol):
-    path   = "/api/mix/v1/position/singlePosition"
-    params = f"?symbol={symbol}&marginCoin=USDT"
-    url    = BASE_URL + path + params
-    r = requests.get(url, headers=_headers("GET", path))
-    if r.status_code == 404:
-        # 포지션이 없으면 404를 반환합니다.
-        return None
-    r.raise_for_status()
-    return r.json()["data"]
+def main():
+    now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n📈 실시간 포지션 수익 요약 — {now}\n")
+
+    pos = fetch_open_positions()
+    if not pos:
+        print("📭 현재 보유 중인 open 포지션이 없습니다.")
+        return
+
+    rate = 1335
+    for p in pos:
+        sym   = p["symbol"]
+        side  = p["holdSide"]
+        entry = float(p["entryPrice"])
+        mark  = float(p["marketPrice"])
+        unreal = float(p["unrealizedPL"])
+        krw    = int(unreal * rate)
+        sign   = "+" if unreal>=0 else ""
+        print(f"• {sym} | {side} | 진입 {entry:.2f} → {mark:.2f}")
+        print(f"  미실현 PnL: {sign}${unreal:.2f} ({krw:,}원)\n")
 
 if __name__ == "__main__":
-    positions = fetch_all_positions()
-    if not positions:
-        print("📭 현재 보유 중인 포지션이 없습니다.")
-    else:
-        for pos in positions:
-            sym = pos["symbol"]
-            detail = fetch_single_position(sym)
-            print(f"{sym} 포지션: {detail}")
+    main()
