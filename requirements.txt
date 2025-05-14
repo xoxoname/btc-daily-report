@@ -1,5 +1,5 @@
 flask==2.3.2
-gunicorn==21.2.0
 ccxt==4.4.82
-python-dotenv==1.1.0
+requests
 apscheduler==3.10.4
+python-dotenv==1.1.0
