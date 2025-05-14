@@ -22,9 +22,9 @@ def get_timestamp():
 def sign(message: str, secret_key: str):
     return hmac.new(secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()
 
-def fetch_unrealized_pnl(symbol="BTCUSDT", margin_coin="USDT"):
-    path = "/api/mix/v1/position/single-position"
-    query = f"symbol={symbol}&marginCoin={margin_coin}"
+def fetch_all_positions(product_type="USDT-FUTURES", margin_coin="USDT"):
+    path = "/api/mix/v1/position/all-position"
+    query = f"productType={product_type}&marginCoin={margin_coin}"
     timestamp = get_timestamp()
     message = f"{timestamp}GET{path}?{query}"
     signature = sign(message, SECRET_KEY)
@@ -42,46 +42,52 @@ def fetch_unrealized_pnl(symbol="BTCUSDT", margin_coin="USDT"):
     try:
         res = requests.get(url, headers=headers)
         res.raise_for_status()
-        data = res.json()
-
-        pos = data.get("data", {})
-        if not pos or float(pos.get("total", 0)) == 0:
-            return None, None, None, None
-
-        return (
-            float(pos.get("unrealizedPL", 0)),
-            float(pos.get("entryPrice", 0)),
-            float(pos.get("marketPrice", 0)),
-            pos.get("holdSide", "unknown")
-        )
-
+        return res.json().get("data", [])
     except Exception as e:
         print("❌ Bitget API 호출 실패:", str(e))
-        return None, None, None, None
+        return []
 
 def main():
     now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-    profit, entry, current, side = fetch_unrealized_pnl()
+    positions = fetch_all_positions()
 
-    print("📈 [BTC 실시간 미실현 수익 요약]")
+    print("📈 [BTC 실시간 포지션 수익 요약 - 전체 조회]")
     print(f"시각: {now}")
 
-    if profit is None:
-        print("현재 보유 중인 포지션이 없습니다.")
+    if not positions:
+        print("📭 현재 보유 중인 포지션이 없습니다.")
         return
 
     rate = 1335
-    profit_krw = int(profit * rate)
-    print(f"포지션 방향: {side.upper()} | 진입가: {entry} | 현재가: {current}")
-    print(f"미실현 수익: {'+' if profit >= 0 else ''}${profit:.2f}")
-    print(f"한화 약 {profit_krw:,}원")
+    found = False
 
-    if profit > 0:
-        print("✅ 현재 수익 중입니다! 청산 타이밍을 고민해보세요.")
-    elif profit < 0:
-        print("⚠️ 손실 상태입니다. 전략을 다시 점검해보세요.")
-    else:
-        print("😐 수익도 손실도 없는 상태입니다.")
+    for pos in positions:
+        symbol = pos.get("symbol")
+        side = pos.get("holdSide", "unknown")
+        entry = float(pos.get("entryPrice", 0))
+        current = float(pos.get("marketPrice", 0))
+        unrealized = float(pos.get("unrealizedPL", 0))
+
+        if unrealized == 0:
+            continue
+
+        found = True
+        profit_krw = int(unrealized * rate)
+
+        print(f"\n📌 종목: {symbol} | 방향: {side.upper()}")
+        print(f"진입가: {entry} | 현재가: {current}")
+        print(f"미실현 수익: {'+' if unrealized >= 0 else ''}${unrealized:.2f}")
+        print(f"한화 약 {profit_krw:,}원")
+
+        if unrealized > 0:
+            print("✅ 현재 수익 중입니다!")
+        elif unrealized < 0:
+            print("⚠️ 손실 상태입니다. 전략 점검이 필요해요.")
+        else:
+            print("😐 수익도 손실도 없습니다.")
+
+    if not found:
+        print("✅ 포지션은 있으나 수익은 아직 발생하지 않았습니다.")
 
 if __name__ == "__main__":
     main()
