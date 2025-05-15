@@ -2,7 +2,6 @@ import os
 from openai import OpenAI
 from datetime import datetime
 
-# OpenAI 1.x 방식 클라이언트
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_prediction_report():
@@ -28,10 +27,9 @@ def get_prediction_report():
     return response.choices[0].message.content.strip()
 
 def format_profit_report_text():
-    # Bitget 연동 전 임시 수익 샘플
     realized_pnl = 31.4
     unrealized_pnl = -5.2
-    entry_capital = 1000.0  # 진입 자산
+    entry_capital = 1000.0
 
     total_pnl = realized_pnl + unrealized_pnl
     pnl_ratio = (total_pnl / entry_capital) * 100
