@@ -3,7 +3,6 @@ from openai import OpenAI
 from modules.constants import SYSTEM_PROMPT
 from modules.utils import fetch_report_data
 
-# proxies 제거, 필수
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_profit_report():
