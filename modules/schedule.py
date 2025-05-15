@@ -5,7 +5,7 @@ def get_upcoming_events():
     now = datetime.now(pytz.timezone("Asia/Seoul"))
     return [
         {"time": (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M"), "title": "미국 CPI 발표", "impact": "높음"},
-        {"time": (now + timedelta(days=2)).strftime("%Y-%m-%d %H:%M"), "title": "FOMC 의사록 공개", "impact": "중간"},
+        {"time": (now + timedelta(days=2)).strftime("%Y-%m-%d %H:%M"), "title": "FOMC 의사록", "impact": "중간"},
         {"time": (now + timedelta(days=3)).strftime("%Y-%m-%d %H:%M"), "title": "BTC 온체인 지표", "impact": "낮음"},
     ]
 
