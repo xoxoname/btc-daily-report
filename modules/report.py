@@ -1,11 +1,11 @@
+```python
 import os
-from openai import OpenAI
+import openai
 import logging
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def get_profit_report():
-    # 실현 및 미실현 수익 데이터 (예시용)
     return {
         "price": "64,200 USDT",
         "usdt_pnl": 125.3,
@@ -36,6 +36,6 @@ def get_prediction_report() -> str:
     except Exception as e:
         logging.exception("OpenAI 예측 실패")
         return "❗ 예측 생성 중 오류가 발생했습니다."
-    
+
 def format_prediction_report_text(prediction: str) -> str:
     return f"""📊 *12시간 예측 리포트*\n{prediction}"""
