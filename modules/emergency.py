@@ -11,7 +11,7 @@ def check_btc_price_change():
             f"💰 현재 BTC 가격: $99,999.99\n"
             f"📉 변화율: 3.00%"
         )
-        requests.get(
+        response = requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             params={
                 "chat_id": TELEGRAM_CHAT_ID,
@@ -19,5 +19,6 @@ def check_btc_price_change():
                 "parse_mode": "Markdown"
             }
         )
+        print("[전송 성공]", response.status_code, response.text)
     except Exception as e:
         print(f"[긴급 감지 에러]: {e}")
