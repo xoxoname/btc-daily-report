@@ -1,31 +1,71 @@
-# modules/schedule.py
-
+import os
 import requests
-from datetime import datetime, timedelta
 import pytz
+from datetime import datetime
+import ccxt
+import openai
+from dotenv import load_dotenv
 
-def get_upcoming_events():
-    """
-    향후 1주일간의 BTC/미경제 지표 일정을 가져옵니다.
-    실제 환경에서는 공신력 있는 경제 캘린더 API를 호출하도록 구현하세요.
-    """
-    kst = pytz.timezone("Asia/Seoul")
-    today = datetime.now(kst)
-    week_later = today + timedelta(days=7)
+load_dotenv()
 
-    # TODO: 여기에 진짜 API 호출 로직을 넣으세요.
-    # 아래는 예시 더미 데이터입니다.
-    events = [
-        {"time": (today + timedelta(days=1)).strftime("%Y-%m-%d 21:30"), "event": "미국 CPI 발표",     "impact": "높음"},
-        {"time": (today + timedelta(days=2)).strftime("%Y-%m-%d 22:00"), "event": "FOMC 의사록 공개",   "impact": "중간"},
-        {"time": (today + timedelta(days=3)).strftime("%Y-%m-%d 20:00"), "event": "BTC 주요 온체인 지표", "impact": "낮음"},
-        # ...
-    ]
-    return events
+# 환경변수
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
+BITGET_API_KEY    = os.getenv("BITGET_API_KEY")
+BITGET_SECRET     = os.getenv("BITGET_SECRET")
+BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
+REPORT_URL        = os.getenv("REPORT_URL").rstrip("/")
 
-def format_schedule_text(events):
-    """get_upcoming_events() 결과를 문자열로 포맷팅"""
-    lines = ["📅 *향후 1주일 일정*"]
-    for e in events:
-        lines.append(f"- `{e['time']}`: {e['event']} (영향: {e['impact']})")
-    return "\n".join(lines)
+openai.api_key = OPENAI_API_KEY
+
+# 실현/미실현 손익
+def get_profit_report():
+    try:
+        resp = requests.get(f"{REPORT_URL}/report")
+        return resp.json().get("data", {})
+    except Exception as e:
+        return {"error": str(e)}
+
+def format_profit_report_text(data: dict) -> str:
+    now = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+    usdt_pnl = data.get("usdt_pnl", "N/A")
+    krw_pnl  = data.get("krw_pnl",  "N/A")
+    return (
+        f"[{now}]\n"
+        f"💰 *실현+미실현 손익*\n"
+        f"- {usdt_pnl} USDT\n"
+        f"- 약 {krw_pnl} KRW"
+    )
+
+# 예측 보고서
+def get_prediction_report():
+    try:
+        exchange = ccxt.bitget({
+            'apiKey': BITGET_API_KEY,
+            'secret': BITGET_SECRET,
+            'password': BITGET_PASSPHRASE,
+        })
+        price = exchange.fetch_ticker("BTC/USDT").get("last", "알 수 없음")
+    except:
+        price = "알 수 없음"
+
+    prompt = build_predict_prompt(price)
+    resp = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.6,
+    )
+    return resp.choices[0].message.content
+
+def build_predict_prompt(price: float) -> str:
+    return (
+        f"현재 BTC 가격: {price} USD\n"
+        "아래 기준으로 12시간 예측 보고서를 작성하세요.\n"
+        "1. 시장 이벤트\n"
+        "2. 기술 분석\n"
+        "3. 심리 지표\n"
+        "4. 전략 및 예외\n"
+        "5. 피드백 루프"
+    )
+
+def format_prediction_report_text(text: str) -> str:
+    return f"🔮 *BTC 예측 보고서*\n{text}"
