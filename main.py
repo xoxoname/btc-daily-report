@@ -1,57 +1,108 @@
-📢 GPT 매동 예측 예상
-2025년 5월 13일(화) 오후 1시 기준
+# main.py
 
-📊 미국 CPI 발표 예정 (한국시간 21:30)
-발표 시각: 미국 동부시간 8:30 AM → 한국시간 21:30
+import os
+import logging
+from datetime import datetime
+import pytz
+import requests
+from flask import Flask, request
+from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
 
-예상 수치:
+# 리포트 모듈
+from modules.report import (
+    get_profit_report,
+    format_profit_report_text,
+    get_prediction_report,
+    format_prediction_report_text,
+)
+# 일정 모듈
+from modules.schedule import (
+    get_upcoming_events,
+    format_schedule_text,
+)
 
-헤드라인 CPI: 전년 대비 2.4% 상승 (전월과 동일)
+# 환경변수 로드
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")       # Bot token
+DEFAULT_CHAT_ID = os.getenv("CHAT_ID")            # 기본 Chat ID (스케줄용)
+APP_URL = os.getenv("APP_URL")                    # ex) https://btc-daily-report.onrender.com
 
-코어 CPI: 전년 대비 2.8% 상승 (전월과 동일)
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
 
-전월 대비: 헤드라인 및 코어 CPI 모두 0.3% 상승 예상
+app = Flask(__name__)
 
-시장 영향: 예상치를 상회하는 인플레이션 수치는 연준의 금리 인하 기대를 낮추어 위험자산에 부정적인 영향을 미칠 수 있습니다.
+def send_message(chat_id: int, text: str, parse_mode: str = "Markdown") -> None:
+    """텔레그램에 메시지 전송"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    resp = requests.post(url, json={
+        "chat_id":    chat_id,
+        "text":       text,
+        "parse_mode": parse_mode,
+    })
+    if resp.status_code != 200:
+        logging.error(f"텔레그램 전송 실패 ({resp.status_code}): {resp.text}")
+    else:
+        logging.info(f"텔레그램 전송 성공: chat_id={chat_id}")
 
-🏛️ 미국 대통령 일정 및 발언
-도널드 트럼프 대통령: 사우디아라비아 리야드 도착, 무함마드 빈 살만 왕세자와 회동 예정
+def create_full_report() -> str:
+    """수익/예측 리포트를 하나의 문자열로 합치기"""
+    kst = pytz.timezone("Asia/Seoul")
+    now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
+    # 1) 수익/포지션
+    profit_data = get_profit_report()
+    profit_section = format_profit_report_text(profit_data)
+    # 2) 예측
+    pred_data = get_prediction_report()
+    pred_section = format_prediction_report_text(pred_data)
+    header = f"📢 *GPT 매동 예측 예상*\n{now_str} 기준\n\n"
+    return header + profit_section + "\n\n" + pred_section
 
-주요 일정: 투자 포럼 연설 및 국빈 만찬 참석
+def handle_report(chat_id: int):
+    """/report 요청 처리"""
+    send_message(chat_id, "🔎 자료 검색 중… 잠시만 기다려주세요.")
+    text = create_full_report()
+    send_message(chat_id, text)
 
-시장 영향: 중동과의 경제 협력 강화는 미국 기업에 긍정적인 영향을 줄 수 있으나, 비트코인 시장에 직접적인 영향은 제한적일 것으로 보입니다.
+def handle_schedule(chat_id: int):
+    """/일정 요청 처리"""
+    send_message(chat_id, "🔎 일정 정보 수집 중… 잠시만 기다려주세요.")
+    events = get_upcoming_events()
+    text = format_schedule_text(events)
+    send_message(chat_id, text)
 
-📈 비트코인 기술적 분석
-현재 가격: 약 $102,000
+# ───────────────────────────────────────────────────────
+# 스케줄러: 매일 09:00, 13:00, 23:00 (KST)에 DEFAULT_CHAT_ID로 리포트 발송
+scheduler = BackgroundScheduler(timezone="Asia/Seoul")
+scheduler.add_job(lambda: handle_report(int(DEFAULT_CHAT_ID)), "cron", hour=9,  minute=0)
+scheduler.add_job(lambda: handle_report(int(DEFAULT_CHAT_ID)), "cron", hour=13, minute=0)
+scheduler.add_job(lambda: handle_report(int(DEFAULT_CHAT_ID)), "cron", hour=23, minute=0)
+scheduler.start()
+# ───────────────────────────────────────────────────────
 
-기술적 지표:
+@app.route("/", methods=["GET"])
+def index():
+    return "OK"
 
-지지선: $97,500
+@app.route("/bot", methods=["POST"])
+def telegram_webhook():
+    """Telegram 웹훅 엔드포인트"""
+    update = request.get_json()
+    if not update or "message" not in update:
+        return "OK"
+    msg     = update["message"]
+    chat_id = msg["chat"]["id"]
+    text    = msg.get("text", "").strip()
 
-저항선: $102,000
+    if text.startswith("/report") or "리포트" in text:
+        handle_report(chat_id)
+    elif text.startswith("/일정"):
+        handle_schedule(chat_id)
+    else:
+        send_message(chat_id, "⚡️ 지원하는 명령어: /report, /일정")
+    return "OK"
 
-RSI: 62 (중립 영역)
-
-시장 영향: $102,000 저항선을 돌파하지 못하면 조정 가능성이 있으며, $100,000 이하로 하락할 경우 추가 매도 압력이 발생할 수 있습니다. 
-TradingView
-+29
-The White House
-+29
-Bureau of Labor Statistics
-+29
-Blockchain News
-+10
-en.wikipedia.org
-+10
-en.wikipedia.org
-+10
-
-📊 기타 주요 경제 지표 및 일정
-NFIB 중소기업 낙관지수: 95.0 (전월 97.4)로 하락
-
-시장 영향: 중소기업의 경제 전망 악화는 전반적인 투자 심리에 부정적인 영향을 줄 수 있습니다.
-
-🔍 종합 분석 및 예측
-단기 전망: 오늘 발표될 CPI 수치가 예상치를 상회할 경우, 연준의 금리 인하 기대가 약화되어 비트코인 등 위험자산에 부정적인 영향을 미칠 수 있습니다.
-
-기술적 관점: $102,000 저항선을 돌파하지 못하면 $100,000 이하로 하락할 가능성이 있으며, 이는 추가 매도 압력을 유발할 수 있습니다.
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
