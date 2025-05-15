@@ -26,4 +26,7 @@ def predict():
     build_and_send_report()
     return {"status": "ok", "message": "예측 리포트 전송 요청 완료"}
 
-if __name__ == "__main
+if __name__ == "__main__":
+    start_scheduler()
+    start_emergency_monitor()
+    app.run(host="0.0.0.0", port=10000)
