@@ -1,59 +1,83 @@
-import datetime
+import requests
+from datetime import datetime, timedelta
 import pytz
 
+# 현재 시각 (한국 기준)
+kst = pytz.timezone("Asia/Seoul")
+now = datetime.now(kst)
+
 def get_profit_report():
-    # 샘플 데이터 - 실제 데이터로 대체 필요
-    total_usdt_pnl = 187.2
-    total_krw_pnl = 252000
-    today_usdt_pnl = 21.5
-    today_krw_pnl = 28900
+    try:
+        response = requests.get("https://btc-daily-report.onrender.com/report")
+        data = response.json()
+        return data
+    except Exception as e:
+        return {"error": str(e)}
 
-    report = {
-        "generated_at": datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S"),
-        "today": {
-            "usdt_pnl": f"{today_usdt_pnl:+.2f}",
-            "krw_pnl": f"{today_krw_pnl:,}원"
-        },
-        "total": {
-            "usdt_pnl": f"{total_usdt_pnl:+.2f}",
-            "krw_pnl": f"{total_krw_pnl:,}원"
-        },
-        "comment": get_emotional_comment(today_krw_pnl)
-    }
-    return report
+def format_profit_report_text(data):
+    try:
+        krw_pnl = data.get("krw_pnl", "N/A")
+        usdt_pnl = data.get("usdt_pnl", "N/A")
+        now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+        return f"[{now_str} 기준]\n💰 실현 + 미실현 총 손익:\n- {usdt_pnl} USDT\n- 약 {krw_pnl} KRW"
+    except:
+        return "손익 정보 분석 실패"
 
-def get_emotional_comment(today_krw):
-    if today_krw >= 100000:
-        return "오늘 하루 수익으로 5시간 카페 알바는 거뜬히 대체했어요! 👏"
-    elif today_krw >= 30000:
-        return "오늘 수익은 편의점 야간 2시간 알바 수준이에요. 무리한 진입은 자제하세요. 🤚"
-    elif today_krw >= 0:
-        return "소소한 수익도 누적되면 큽니다. 너무 조급해하지 마세요. 😊"
-    else:
-        return "손실은 회피보다 통제입니다. 무리한 복구매매는 금물! 🧘"
+def get_prediction_report():
+    try:
+        # 향후 연동될 분석 API를 위한 예시
+        return {
+            "market": "미국 CPI 발표: 예상치 부합 (2.4%) → 시장 안도감\nFOMC 발언 없음\n긴급 속보 없음",
+            "technical": "MACD 하락 전환, RSI 68, MA(20/50) 이격 축소 → 기술적 조정 가능성",
+            "psychology": "공포탐욕지수 72 (탐욕), 커뮤니티 정서는 낙관\nDXY 상승세 유지, BTC Dominance 상승",
+            "forecast": {
+                "up_probability": 42,
+                "down_probability": 58,
+                "summary": "📉 하락 가능성 우세: DXY 상승 + MACD 약세"
+            },
+            "exceptions": [],
+            "feedback": {
+                "match": "이전 예측과 유사함",
+                "reason": "DXY 영향 지속 반영됨",
+                "next": "심리 지표 반영 비중 보완 예정"
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
-def format_profit_report_text(report: dict):
-    t = report["today"]
-    total = report["total"]
-    comment = report["comment"]
-    time = report["generated_at"]
+def format_prediction_report_text(data):
+    try:
+        forecast = data.get("forecast", {})
+        up = forecast.get("up_probability", "N/A")
+        down = forecast.get("down_probability", "N/A")
+        summary = forecast.get("summary", "")
 
-    return f"""📊 *BTC 실시간 수익 리포트*
-⏱ 기준시각: {time} (KST)
+        result = f"""📌 BTC 매동 예측 보고서 ({now.strftime('%Y-%m-%d %H:%M')} KST)
 
-💵 *오늘 수익 (자정 이후)*  
-└ USDT: `{t['usdt_pnl']}`  
-└ 원화: `{t['krw_pnl']}`
+[1. 시장 요인 요약]
+{data.get('market', '정보 없음')}
 
-📈 *총 누적 수익*  
-└ USDT: `{total['usdt_pnl']}`  
-└ 원화: `{total['krw_pnl']}`
+[2. 기술적 분석]
+{data.get('technical', '정보 없음')}
 
-🧠 *멘탈 관리 한마디*  
-_{comment}_
+[3. 심리 및 구조 분석]
+{data.get('psychology', '정보 없음')}
+
+[4. 12시간 예측]
+- 상승 확률: {up}%
+- 하락 확률: {down}%
+- 요약: {summary}
+
+[5. 예외 감지]
+{", ".join(data.get('exceptions', [])) or '특이사항 없음'}
+
+[6. 이전 예측 피드백]
+- 평가: {data.get('feedback', {}).get('match', '정보 없음')}
+- 사유: {data.get('feedback', {}).get('reason', '정보 없음')}
+- 다음 보완 방향: {data.get('feedback', {}).get('next', '정보 없음')}
+
+🧾 멘탈 코멘트: "한 순간의 수익에 흔들리지 마세요. 오늘도 꾸준한 전략이 답입니다."
 """
-
-# 예시 테스트 (로컬 실행 시 활용)
-if __name__ == "__main__":
-    rpt = get_profit_report()
-    print(format_profit_report_text(rpt))
+        return result
+    except:
+        return "예측 리포트 분석 실패"
