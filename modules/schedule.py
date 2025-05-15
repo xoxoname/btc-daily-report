@@ -1,1 +1,2 @@
-# 향후 스케줄링 기능 추가 시 사용 예정
+# schedule.py
+# 예정된 기능: APScheduler 연동, Telegram 알림 스케줄러 등
