@@ -1,4 +1,3 @@
-# main.py
 import os
 import logging
 from datetime import datetime
@@ -7,8 +6,6 @@ import requests
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
-
-load_dotenv()
 
 from modules.report import (
     get_profit_report,
@@ -20,6 +17,8 @@ from modules.schedule import (
     get_upcoming_events,
     format_schedule_text,
 )
+
+load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID        = os.getenv("CHAT_ID")
@@ -57,33 +56,25 @@ def create_full_report() -> str:
     kst = pytz.timezone("Asia/Seoul")
     now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M KST")
     header = f"📢 *GPT 매동 예측 예상*\n{now_str} 기준\n\n"
-
     profit = get_profit_report()
-    profit_text = format_profit_report_text(profit)
-
     prediction = get_prediction_report()
-    prediction_text = format_prediction_report_text(prediction)
-
-    return header + profit_text + "\n\n" + prediction_text
+    return header + format_profit_report_text(profit) + "\n\n" + format_prediction_report_text(prediction)
 
 def handle_report(chat_id: int):
     send_message(chat_id, "🔎 자료 검색 중… 잠시만 기다려주세요.")
     try:
-        report_text = create_full_report()
-        send_message(chat_id, report_text)
+        send_message(chat_id, create_full_report())
     except Exception as e:
         logging.exception("리포트 생성 실패")
-        send_message(chat_id, f"⚠️ 리포트 생성 중 오류가 발생했습니다.\n{e}")
+        send_message(chat_id, f"⚠️ 리포트 생성 오류:\n{e}")
 
 def handle_schedule(chat_id: int):
     send_message(chat_id, "🔎 일정 정보 수집 중… 잠시만 기다려주세요.")
     try:
-        events = get_upcoming_events()
-        schedule_text = format_schedule_text(events)
-        send_message(chat_id, schedule_text)
+        send_message(chat_id, format_schedule_text(get_upcoming_events()))
     except Exception as e:
         logging.exception("일정 전송 실패")
-        send_message(chat_id, f"⚠️ 일정 수집 중 오류가 발생했습니다.\n{e}")
+        send_message(chat_id, f"⚠️ 일정 수집 오류:\n{e}")
 
 scheduler = BackgroundScheduler(timezone="Asia/Seoul")
 scheduler.add_job(lambda: handle_report(int(CHAT_ID)), 'cron', hour=9,  minute=0)
@@ -122,13 +113,12 @@ def telegram_webhook():
         return "OK"
     chat_id = msg["chat"]["id"]
     text = msg.get("text", "").strip()
-
     if text.startswith("/report") or "리포트" in text:
         handle_report(chat_id)
     elif text.startswith("/일정"):
         handle_schedule(chat_id)
     else:
-        send_message(chat_id, "⚡️ 지원하는 명령어: /report, /일정")
+        send_message(chat_id, "⚡️ 지원 명령어: /report, /일정")
     return "OK"
 
 if __name__ == "__main__":
