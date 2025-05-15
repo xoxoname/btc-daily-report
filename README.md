@@ -1,15 +1,27 @@
-# BTC Daily Report Automation
+# BTC Daily Report System
 
-비트코인 실시간 수익 및 예측 리포트 자동화 시스템입니다.
+This service provides:
 
-## 주요 기능
-- 매일 09:00 / 13:00 / 23:00 정규 보고
-- 5분 간격 시장 이벤트 감지
-- BTC 포지션 수익 자동 분석
-- 긴급 변동 시 텔레그램 알림
+- 🔄 Real-time PnL monitoring via Bitget API
+- 📊 BTC movement prediction report using OpenAI
+- 📡 Emergency detection for BTC price fluctuations
+- ⏰ Automatic scheduled reports at 09:00, 13:00, 23:00 KST
 
-## 명령어
+## Telegram Bot Commands
+
 - `/수익`: 현재 포지션 및 수익률 조회
 - `/예측`: 심층 분석 기반 예측 보고서 전송
-- `/일정`: 정규 리포트 발송 시간 안내
-- `/리포트`: 지금 리포트 즉시 요청
+- `/리포트`: 실시간 정규 리포트 수동 전송
+- `/일정`: 정규 보고 일정 확인
+
+## Deploy & Run
+
+1. Set the following environment variables on Render:
+   - `BITGET_APIKEY`, `BITGET_SECRETKEY`, `BITGET_PASSPHRASE`
+   - `OPENAI_API_KEY`
+   - `TELEGRAM_TOKEN`
+   - `TELEGRAM_CHAT_ID`
+
+2. Deploy via GitHub to Render using **Web Service** mode.
+
+3. System will auto-start with full monitoring and Telegram interaction.
