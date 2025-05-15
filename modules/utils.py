@@ -1,13 +1,18 @@
 import requests
-import logging
-from modules.constants import TELEGRAM_TOKEN
+import os
+from modules.constants import REPORT_URL
 
-def send_message(chat_id: int, text: str, parse_mode: str = "Markdown"):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    resp = requests.post(url, json={
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode,
-    })
-    if resp.status_code != 200:
-        logging.error(f"Telegram 전송 실패 ({resp.status_code}): {resp.text}")
+def fetch_report_data():
+    try:
+        response = requests.get(REPORT_URL)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print("❌ 리포트 데이터 불러오기 실패:", e)
+        return {
+            "summary": "데이터를 불러오는 데 실패했습니다.",
+            "realized_pnl": 0,
+            "unrealized_pnl": 0,
+            "total_asset": 0,
+            "return_rate": 0,
+        }
