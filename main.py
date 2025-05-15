@@ -22,19 +22,36 @@ from modules.schedule import (
     format_schedule_text,
 )
 
-# 환경변수 로드
+# ── 환경변수 로드 ───────────────────────────────────────
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")       # Bot token
-DEFAULT_CHAT_ID = os.getenv("CHAT_ID")            # 기본 Chat ID (스케줄용)
-APP_URL = os.getenv("APP_URL")                    # ex) https://btc-daily-report.onrender.com
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")       # 봇 토큰
+DEFAULT_CHAT_ID = os.getenv("CHAT_ID")            # 스케줄용 Chat ID
+APP_URL        = os.getenv("APP_URL")             # ex) https://btc-daily-report.onrender.com
+# ───────────────────────────────────────────────────────
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
 
+# Flask 앱 초기화
 app = Flask(__name__)
 
+# ── 자동으로 Telegram Webhook 등록 ─────────────────────
+def register_webhook():
+    if not TELEGRAM_TOKEN or not APP_URL:
+        logging.warning("WEBHOOK 등록에 필요한 TELEGRAM_TOKEN 또는 APP_URL 이 없습니다.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+    try:
+        resp = requests.post(url, json={"url": f"{APP_URL}/bot"})
+        logging.info(f"Webhook 등록 결과: {resp.status_code} {resp.text}")
+    except Exception as e:
+        logging.error(f"Webhook 등록 실패: {e}")
+
+# 배포 시 worker 가 로드될 때 한 번만 실행
+register_webhook()
+# ───────────────────────────────────────────────────────
+
 def send_message(chat_id: int, text: str, parse_mode: str = "Markdown") -> None:
-    """텔레그램에 메시지 전송"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     resp = requests.post(url, json={
         "chat_id":    chat_id,
@@ -47,7 +64,6 @@ def send_message(chat_id: int, text: str, parse_mode: str = "Markdown") -> None:
         logging.info(f"텔레그램 전송 성공: chat_id={chat_id}")
 
 def create_full_report() -> str:
-    """수익/예측 리포트를 하나의 문자열로 합치기"""
     kst = pytz.timezone("Asia/Seoul")
     now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
     # 1) 수익/포지션
@@ -60,20 +76,17 @@ def create_full_report() -> str:
     return header + profit_section + "\n\n" + pred_section
 
 def handle_report(chat_id: int):
-    """/report 요청 처리"""
     send_message(chat_id, "🔎 자료 검색 중… 잠시만 기다려주세요.")
     text = create_full_report()
     send_message(chat_id, text)
 
 def handle_schedule(chat_id: int):
-    """/일정 요청 처리"""
     send_message(chat_id, "🔎 일정 정보 수집 중… 잠시만 기다려주세요.")
     events = get_upcoming_events()
     text = format_schedule_text(events)
     send_message(chat_id, text)
 
-# ───────────────────────────────────────────────────────
-# 스케줄러: 매일 09:00, 13:00, 23:00 (KST)에 DEFAULT_CHAT_ID로 리포트 발송
+# ── 스케줄러: 매일 09:00, 13:00, 23:00 (KST) 자동 리포트 ─────────
 scheduler = BackgroundScheduler(timezone="Asia/Seoul")
 scheduler.add_job(lambda: handle_report(int(DEFAULT_CHAT_ID)), "cron", hour=9,  minute=0)
 scheduler.add_job(lambda: handle_report(int(DEFAULT_CHAT_ID)), "cron", hour=13, minute=0)
@@ -87,7 +100,6 @@ def index():
 
 @app.route("/bot", methods=["POST"])
 def telegram_webhook():
-    """Telegram 웹훅 엔드포인트"""
     update = request.get_json()
     if not update or "message" not in update:
         return "OK"
