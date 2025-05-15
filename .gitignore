@@ -1,17 +1,5 @@
-# 가상 환경
-.venv/
 __pycache__/
 *.pyc
-
-# 환경 변수 파일
 .env
-
-# IDE 설정
-.vscode/
-.idea/
-
-# 로그 파일
-*.log
-
-# 시스템 파일
+.venv/
 .DS_Store
