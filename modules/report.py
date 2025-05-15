@@ -1,48 +1,27 @@
-# modules/report.py
-from .data_fetch import fetch_spot_klines, fetch_ticker
-from .utils import compute_rsi, compute_macd, moving_averages, bollinger_bands
-from .utils import compute_rsi, compute_macd, moving_averages, bollinger_bands
-from .constants import CHAT_ID, TELEGRAM_BOT_TOKEN
-import requests
+from modules.data_fetch import fetch_btc_price
 
-def build_report(symbol="BTCUSDT"):
-    # 1. 현재 ticker
-    tk = fetch_ticker(symbol)
-    price = float(tk["last"])
-    change_24h = float(tk["percentage"])  # % change
+def format_profit_report_text():
+    btc_data = fetch_btc_price()
+    if "price" not in btc_data:
+        return "❌ 비트코인 실시간 가격 조회에 실패했습니다."
 
-    # 2. 차트 데이터
-    df = fetch_spot_klines(symbol, granularity=3600, limit=500)["close"]
+    price = btc_data["price"]
+    change = btc_data["change_percent"]
+    high = btc_data["high_24h"]
+    low = btc_data["low_24h"]
 
-    # 3. 지표 계산
-    rsi = compute_rsi(df)
-    macd, signal = compute_macd(df)
-    ma = moving_averages(df)
-    bb = bollinger_bands(df)
+    report = f"""📊 *BTC 실시간 요약*
+- 현재가: ${price:,.2f}
+- 24H 최고가: ${high:,.2f}
+- 24H 최저가: ${low:,.2f}
+- 24H 변동률: {change:.2f}%
 
-    # 4. 텍스트 조합
-    txt = [
-        f"💰 Symbol: {symbol}",
-        f"• 현재가: {price:.2f} USD (24h {change_24h:+.2f}%)",
-        "",
-        "📈 기술 지표",
-        f"• RSI(14): {rsi}",
-        f"• MACD: {macd:.4f}, Signal: {signal:.4f}",
-        f"• MA20/50/200: {ma[20]}/{ma[50]}/{ma[200]}",
-        f"• Bollinger BB(20): Upper {bb['upper']}, Middle {bb['middle']}, Lower {bb['lower']}",
-        "",
-        "🔍 전략 제안",
-        "- RSI 30~70 사이면 중립, MACD 크로스 확인, BB 상단 근접 시 과열 주의",
-    ]
-    return "\n".join(txt)
+🚨 수익 정보는 아직 비트겟 연동이 활성화되지 않았습니다.
+(비트겟 API Key가 등록되면 자동으로 실현/미실현 손익 리포트가 표시됩니다.)
+"""
 
-def send_telegram(text: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    resp = requests.post(url, json=payload)
-    resp.raise_for_status()
+    return report
 
-def build_and_send_report():
-    rpt = build_report()
-    send_telegram(rpt)
-    return rpt
+def get_prediction_report():
+    # GPT 분석은 GPT 앱 내에서 수행되므로 코드 내에 없음
+    return "📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다."
