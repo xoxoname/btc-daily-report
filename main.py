@@ -1,28 +1,23 @@
 import os
 import logging
 from flask import Flask, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
 import ccxt
 import openai
 import requests
 from dotenv import load_dotenv
 
-# load .env
-load_dotenv()
-
 # 환경변수 로드
+load_dotenv()
 BITGET_API_KEY    = os.getenv('BITGET_API_KEY')
 BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 BITGET_SECRET     = os.getenv('BITGET_SECRET')
 OPENAI_API_KEY    = os.getenv('OPENAI_API_KEY')
 TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID           = os.getenv('CHAT_ID')
-REPORT_URL        = os.getenv('REPORT_URL').rstrip('/')
+REPORT_URL        = os.getenv('REPORT_URL', '').rstrip('/')
 
-# OpenAI API 키 세팅
 openai.api_key = OPENAI_API_KEY
 
-# 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s:%(message)s'
@@ -32,9 +27,9 @@ app = Flask(__name__)
 
 def fetch_price():
     exchange = ccxt.bitget({
-        'apiKey':    BITGET_API_KEY,
-        'secret':    BITGET_SECRET,
-        'password':  BITGET_PASSPHRASE,
+        'apiKey':   BITGET_API_KEY,
+        'secret':   BITGET_SECRET,
+        'password': BITGET_PASSPHRASE,
     })
     ticker = exchange.fetch_ticker('BTC/USDT')
     return ticker.get('last')
@@ -51,7 +46,7 @@ def generate_summary(price: float) -> str:
 
 def send_telegram(price, summary):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        logging.warning("텔레그램 토큰 또는 CHAT_ID가 설정되어 있지 않습니다.")
+        logging.warning("텔레그램 토큰 또는 CHAT_ID 미설정")
         return
     text = (
         f"*Bitcoin Daily Report*\n"
@@ -65,20 +60,22 @@ def send_telegram(price, summary):
         'text':       text,
         'parse_mode': 'Markdown'
     })
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+        logging.info("Sent Telegram message.")
+    except Exception as e:
+        logging.error(f"텔레그램 전송 실패: {e} - resp.text: {resp.text}")
 
 def create_report():
-    price   = None
+    price = None
     summary = None
 
-    # 1) 가격 조회
     try:
         price = fetch_price()
         logging.info(f"Fetched BTC price: {price}")
     except Exception as e:
         logging.error(f"Error fetching price: {e}")
 
-    # 2) 요약 생성
     if price is not None:
         try:
             summary = generate_summary(price)
@@ -86,12 +83,7 @@ def create_report():
         except Exception as e:
             logging.error(f"Error generating summary: {e}")
 
-    # 3) 텔레그램 전송
-    try:
-        send_telegram(price, summary)
-        logging.info("Sent Telegram message.")
-    except Exception as e:
-        logging.error(f"텔레그램 전송 실패: {e}")
+    send_telegram(price, summary)
 
     return {
         'data': {
@@ -109,6 +101,6 @@ def report_endpoint():
     return jsonify(create_report())
 
 if __name__ == '__main__':
-    # Render.com 등에서 $PORT 읽어서 바인딩
     port = int(os.environ.get('PORT', 10000))
+    # 개발용 서버는 gunicorn으로 대체 배포하세요
     app.run(host='0.0.0.0', port=port)
