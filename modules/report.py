@@ -1,4 +1,3 @@
-# modules/report.py
 
 import os
 import openai
