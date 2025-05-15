@@ -1,4 +1,3 @@
-# modules/constants.py
 import os
 
 # Bitget API
@@ -10,5 +9,5 @@ BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID            = os.getenv("CHAT_ID")
 
-# 서버 포트
+# Server
 PORT = int(os.getenv("PORT", 5000))
