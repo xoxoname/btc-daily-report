@@ -4,3 +4,6 @@ python-dotenv==1.1.0
 apscheduler==3.10.4
 pytz==2025.2
 openai==0.28.0
+pandas==2.0.3
+pandas_ta==0.4.0b0
+ccxt==3.0.84
