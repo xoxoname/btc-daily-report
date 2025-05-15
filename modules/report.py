@@ -2,7 +2,6 @@ import requests
 from datetime import datetime
 import pytz
 
-# 현재 시각 (KST)
 kst = pytz.timezone("Asia/Seoul")
 now = datetime.now(kst)
 
