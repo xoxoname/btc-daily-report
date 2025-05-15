@@ -7,6 +7,7 @@ from modules.report import get_prediction_report, format_profit_report_text
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 
 @app.route("/report", methods=["GET"])
