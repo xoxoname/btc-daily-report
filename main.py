@@ -1,19 +1,24 @@
-# main.py
 from flask import Flask, jsonify
-from modules.schedule import sched  # 스케줄러 자동 시작
-from modules.report import build_and_send_report
+from modules.report import format_profit_report_text, get_prediction_report
 
 app = Flask(__name__)
 
 @app.route("/report", methods=["GET"])
 def report():
     try:
-        text = build_and_send_report()
-        return jsonify({"status":"ok","report":text})
+        profit_text = format_profit_report_text()
+        prediction_text = get_prediction_report()
+
+        return jsonify({
+            "status": "success",
+            "profit_report": profit_text,
+            "prediction_report": prediction_text
+        })
     except Exception as e:
-        return jsonify({"status":"error","message":str(e)}), 500
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
 if __name__ == "__main__":
-    import os
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
