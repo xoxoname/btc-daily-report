@@ -3,9 +3,8 @@ from openai import OpenAI
 from modules.constants import SYSTEM_PROMPT
 from modules.utils import fetch_report_data
 
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+# proxies 제거, 필수
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_profit_report():
     return "수익 리포트 기능은 준비 중입니다."
