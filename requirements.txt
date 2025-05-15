@@ -1,9 +1,5 @@
---- requirements.txt
---- old
-+++ new
- flask==2.3.2
- requests==2.32.3
- python-dotenv==1.1.0
- apscheduler==3.10.4
--openai==1.14.3
-+openai==0.28.0
+flask==2.3.2
+requests==2.32.3
+python-dotenv==1.1.0
+apscheduler==3.10.4
+openai==0.28.0
