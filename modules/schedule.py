@@ -1,16 +1,12 @@
-import pytz
 from datetime import datetime, timedelta
 
 def get_upcoming_events():
-    now = datetime.now(pytz.timezone("Asia/Seoul"))
     return [
-        {"time": (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M"), "title": "미국 CPI 발표", "impact": "높음"},
-        {"time": (now + timedelta(days=2)).strftime("%Y-%m-%d %H:%M"), "title": "FOMC 의사록", "impact": "중간"},
-        {"time": (now + timedelta(days=3)).strftime("%Y-%m-%d %H:%M"), "title": "BTC 온체인 지표", "impact": "낮음"},
+        {"event": "🇺🇸 CPI 발표", "time": "2025-05-15 21:30"},
+        {"event": "🇺🇸 FOMC 미팅", "time": "2025-05-22 03:00"},
     ]
 
 def format_schedule_text(events: list) -> str:
-    header = "📅 *향후 1주일 일정*\n"
-    if not events:
-        return header + "일정이 없습니다."
-    return header + "\n".join([f"- `{e['time']}`: {e['title']} (영향: {e['impact']})" for e in events])
+    header = "🗓 *주요 일정*\n"
+    body = "\n".join([f"- {e['event']}: {e['time']}" for e in events])
+    return header + body
