@@ -1,96 +1,110 @@
 import os
-import json
-from datetime import datetime
-
+import threading
 from flask import Flask, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
 import ccxt
 import openai
 from telegram import Bot
 
-# Load environment variables
-BITGET_API_KEY = os.getenv('BITGET_API_KEY')
-BITGET_SECRET = os.getenv('BITGET_SECRET')
-BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
+# Load environment variables from .env (if present)
+load_dotenv()
 
-# Initialize services
-exchange = ccxt.bitget({
-    'apiKey': BITGET_API_KEY,
-    'secret': BITGET_SECRET,
-    'password': BITGET_PASSPHRASE,
-    'enableRateLimit': True,
-    'timeout': 10000,  # ms
-})
+# Required environment variables
+BITGET_APIKEY   = os.environ['BITGET_APIKEY']
+BITGET_PASSPHRASE = os.environ['BITGET_PASSPHRASE']
+BITGET_SECRET   = os.environ['BITGET_SECRET']
+CHAT_ID         = os.environ['CHAT_ID']
+OPENAI_API_KEY  = os.environ['OPENAI_API_KEY']
+TELEGRAM_TOKEN  = os.environ['TELEGRAM_TOKEN']
+# Optional: an external report URL if you need to reference it
+REPORT_URL      = os.environ.get('REPORT_URL')
+
+# Initialize clients
 openai.api_key = OPENAI_API_KEY
-bot = Bot(TELEGRAM_TOKEN)
+bot = Bot(token=TELEGRAM_TOKEN)
 
 app = Flask(__name__)
-REPORT_FILE = '/tmp/latest_report.json'
 
+# In-memory cache of report status
+_report_status = {
+    'started': False,
+    'status': 'pending',  # 'pending' or 'ready'
+    'data': None
+}
 
+# Function to fetch BTC data from Bitget
+def fetch_bitget_ticker():
+    exchange = ccxt.bitget({
+        'apiKey': BITGET_APIKEY,
+        'secret': BITGET_SECRET,
+        'password': BITGET_PASSPHRASE,
+    })
+    return exchange.fetch_ticker('BTC/USDT')
+
+# Background job: generate report, send Telegram, cache data
 def generate_report():
-    """
-    Fetch BTC/USDT daily OHLCV, send analysis to OpenAI,
-    cache report locally, and notify via Telegram.
-    """
+    global _report_status
     try:
-        # 1-week daily OHLCV
-        ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1d', limit=7)
-        # Prepare prompt
-        rows = '\n'.join(','.join(map(str, r)) for r in ohlcv)
-        prompt = f"Analyze the following BTC/USDT daily OHLCV data (timestamp,open,high,low,close,volume):\n{rows}"
-        # Call OpenAI
-        completion = openai.ChatCompletion.create(
-            model='gpt-4o-mini',
-            messages=[{'role': 'system', 'content': 'You are a crypto analyst.'},
-                      {'role': 'user', 'content': prompt}]
+        ticker = fetch_bitget_ticker()
+        price = ticker['last']
+
+        # Build prompt for OpenAI
+        prompt = f"BTC current price is {price}. Write a concise daily crypto report."
+        resp = openai.ChatCompletion.create(
+            model='gpt-3.5-turbo',
+            messages=[{'role': 'user', 'content': prompt}],
+            max_tokens=200
         )
-        analysis = completion.choices[0].message.content
+        summary = resp.choices[0].message.content.strip()
 
-        # Build report
-        report = {
-            'generated_at': datetime.utcnow().isoformat() + 'Z',
-            'ohlcv': ohlcv,
-            'analysis': analysis
-        }
-        # Cache to local file
-        with open(REPORT_FILE, 'w') as f:
-            json.dump(report, f)
-
-        # Send via Telegram
-        bot.send_message(chat_id=CHAT_ID, text=analysis)
+        # Send to Telegram
+        message = f"*Daily BTC Report*\nPrice: {price}\n\n{summary}"
+        bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
     except Exception as e:
-        app.logger.exception('Report generation failed')
-        # Notify failure
-        try:
-            bot.send_message(chat_id=CHAT_ID, text=f'Report failed: {e}')
-        except Exception:
-            app.logger.exception('Telegram notification failed')
+        print(f"Error generating or sending report: {e}")
+        summary = None
+        price = None
 
+    # Update status and data
+    _report_status['data'] = {
+        'price': price,
+        'summary': summary,
+        'report_url': REPORT_URL
+    }
+    _report_status['status'] = 'ready'
 
-@app.route('/report')
-def report_endpoint():
-    """Return latest cached report, or a 202 if pending."""
-    if os.path.exists(REPORT_FILE):
-        with open(REPORT_FILE) as f:
-            data = json.load(f)
-        return jsonify(data)
-    else:
-        return jsonify({
-            'status': 'pending',
-            'message': 'Report is being generated. Please retry in a minute.'
-        }), 202
+# Health-check endpoint
+@app.route('/')
+def health_check():
+    return jsonify({'status':'ok','message':'Service is up'}), 200
 
+# Report endpoint
+@app.route('/report', methods=['GET'])
+def report():
+    global _report_status
+    # First trigger: start background job
+    if not _report_status['started']:
+        _report_status['started'] = True
+        threading.Thread(target=generate_report, daemon=True).start()
+        return jsonify(
+            status='pending',
+            message='Report is being generated. Please retry in a minute.'
+        ), 200
+
+    # Still generating
+    if _report_status['status'] == 'pending':
+        return jsonify(
+            status='pending',
+            message='Report is being generated. Please retry in a minute.'
+        ), 200
+
+    # Ready
+    return jsonify(
+        status='ready',
+        message='Report ready',
+        data=_report_status['data']
+    ), 200
 
 if __name__ == '__main__':
-    # Scheduler to run daily at 00:00 UTC and once on startup
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(generate_report, 'cron', hour=0, minute=0)
-    scheduler.add_job(generate_report, 'date', run_date=datetime.utcnow())
-    scheduler.start()
-
-    port = int(os.environ.get('PORT', 10000))
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
