@@ -1,3 +1,1 @@
-# 유틸 함수 모듈
-def calculate_krw(usdt_amount, exchange_rate=1350):
-    return round(usdt_amount * exchange_rate, 1)
+# 추후 유틸리티 함수 작성 예정 (예: 시간 변환, 포맷팅 함수 등)
