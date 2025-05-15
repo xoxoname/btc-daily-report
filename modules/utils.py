@@ -1,15 +1,9 @@
-# utils.py
-import requests
-from modules.constants import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from modules.report import get_prediction_report, format_profit_report_text
+# 🔧 유틸리티 함수 모음
 
-def send_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    requests.post(url, data=data)
+from datetime import datetime
 
-def send_daily_report():
-    prediction = get_prediction_report()
-    profit = format_profit_report_text()
-    message = f"📌 GPT 매동 예측 예상\n\n{prediction}\n\n{profit}"
-    send_message(message)
+def get_krw_from_usd(usd_amount, rate=1380):
+    return int(usd_amount * rate)
+
+def get_now_timestamp():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
