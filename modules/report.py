@@ -1,8 +1,8 @@
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
-# 현재 시각 (한국 기준)
+# 현재 시각 (KST)
 kst = pytz.timezone("Asia/Seoul")
 now = datetime.now(kst)
 
@@ -25,7 +25,6 @@ def format_profit_report_text(data):
 
 def get_prediction_report():
     try:
-        # 향후 연동될 분석 API를 위한 예시
         return {
             "market": "미국 CPI 발표: 예상치 부합 (2.4%) → 시장 안도감\nFOMC 발언 없음\n긴급 속보 없음",
             "technical": "MACD 하락 전환, RSI 68, MA(20/50) 이격 축소 → 기술적 조정 가능성",
