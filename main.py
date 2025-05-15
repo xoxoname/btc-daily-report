@@ -1,110 +1,114 @@
 import os
-import threading
+import logging
 from flask import Flask, jsonify
-from dotenv import load_dotenv
+from apscheduler.schedulers.background import BackgroundScheduler
 import ccxt
 import openai
-from telegram import Bot
+import requests
+from dotenv import load_dotenv
 
-# Load environment variables from .env (if present)
+# load .env
 load_dotenv()
 
-# Required environment variables
-BITGET_APIKEY   = os.environ['BITGET_APIKEY']
-BITGET_PASSPHRASE = os.environ['BITGET_PASSPHRASE']
-BITGET_SECRET   = os.environ['BITGET_SECRET']
-CHAT_ID         = os.environ['CHAT_ID']
-OPENAI_API_KEY  = os.environ['OPENAI_API_KEY']
-TELEGRAM_TOKEN  = os.environ['TELEGRAM_TOKEN']
-# Optional: an external report URL if you need to reference it
-REPORT_URL      = os.environ.get('REPORT_URL')
+# 환경변수 로드
+BITGET_API_KEY    = os.getenv('BITGET_API_KEY')
+BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+BITGET_SECRET     = os.getenv('BITGET_SECRET')
+OPENAI_API_KEY    = os.getenv('OPENAI_API_KEY')
+TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID           = os.getenv('CHAT_ID')
+REPORT_URL        = os.getenv('REPORT_URL').rstrip('/')
 
-# Initialize clients
+# OpenAI API 키 세팅
 openai.api_key = OPENAI_API_KEY
-bot = Bot(token=TELEGRAM_TOKEN)
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
 
 app = Flask(__name__)
 
-# In-memory cache of report status
-_report_status = {
-    'started': False,
-    'status': 'pending',  # 'pending' or 'ready'
-    'data': None
-}
-
-# Function to fetch BTC data from Bitget
-def fetch_bitget_ticker():
+def fetch_price():
     exchange = ccxt.bitget({
-        'apiKey': BITGET_APIKEY,
-        'secret': BITGET_SECRET,
-        'password': BITGET_PASSPHRASE,
+        'apiKey':    BITGET_API_KEY,
+        'secret':    BITGET_SECRET,
+        'password':  BITGET_PASSPHRASE,
     })
-    return exchange.fetch_ticker('BTC/USDT')
+    ticker = exchange.fetch_ticker('BTC/USDT')
+    return ticker.get('last')
 
-# Background job: generate report, send Telegram, cache data
-def generate_report():
-    global _report_status
+def generate_summary(price: float) -> str:
+    prompt = f"현재 Bitcoin 가격이 {price} USD 입니다. 이 가격에 대한 간단한 한 문장 요약을 만들어 주세요."
+    resp = openai.ChatCompletion.create(
+        model='gpt-3.5-turbo',
+        messages=[{"role":"user","content":prompt}],
+        max_tokens=60,
+        temperature=0.5,
+    )
+    return resp.choices[0].message.content.strip()
+
+def send_telegram(price, summary):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        logging.warning("텔레그램 토큰 또는 CHAT_ID가 설정되어 있지 않습니다.")
+        return
+    text = (
+        f"*Bitcoin Daily Report*\n"
+        f"Price: `{price}` USD\n"
+        f"Summary: {summary}\n\n"
+        f"[View full report]({REPORT_URL}/report)"
+    )
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    resp = requests.post(url, json={
+        'chat_id':    CHAT_ID,
+        'text':       text,
+        'parse_mode': 'Markdown'
+    })
+    resp.raise_for_status()
+
+def create_report():
+    price   = None
+    summary = None
+
+    # 1) 가격 조회
     try:
-        ticker = fetch_bitget_ticker()
-        price = ticker['last']
-
-        # Build prompt for OpenAI
-        prompt = f"BTC current price is {price}. Write a concise daily crypto report."
-        resp = openai.ChatCompletion.create(
-            model='gpt-3.5-turbo',
-            messages=[{'role': 'user', 'content': prompt}],
-            max_tokens=200
-        )
-        summary = resp.choices[0].message.content.strip()
-
-        # Send to Telegram
-        message = f"*Daily BTC Report*\nPrice: {price}\n\n{summary}"
-        bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
+        price = fetch_price()
+        logging.info(f"Fetched BTC price: {price}")
     except Exception as e:
-        print(f"Error generating or sending report: {e}")
-        summary = None
-        price = None
+        logging.error(f"Error fetching price: {e}")
 
-    # Update status and data
-    _report_status['data'] = {
-        'price': price,
-        'summary': summary,
-        'report_url': REPORT_URL
+    # 2) 요약 생성
+    if price is not None:
+        try:
+            summary = generate_summary(price)
+            logging.info("Generated summary.")
+        except Exception as e:
+            logging.error(f"Error generating summary: {e}")
+
+    # 3) 텔레그램 전송
+    try:
+        send_telegram(price, summary)
+        logging.info("Sent Telegram message.")
+    except Exception as e:
+        logging.error(f"텔레그램 전송 실패: {e}")
+
+    return {
+        'data': {
+            'price':      price,
+            'summary':    summary,
+            'report_url': f"{REPORT_URL}/report"
+        },
+        'message': 'Report ready',
+        'status':  'ready'
     }
-    _report_status['status'] = 'ready'
 
-# Health-check endpoint
-@app.route('/')
-def health_check():
-    return jsonify({'status':'ok','message':'Service is up'}), 200
-
-# Report endpoint
 @app.route('/report', methods=['GET'])
-def report():
-    global _report_status
-    # First trigger: start background job
-    if not _report_status['started']:
-        _report_status['started'] = True
-        threading.Thread(target=generate_report, daemon=True).start()
-        return jsonify(
-            status='pending',
-            message='Report is being generated. Please retry in a minute.'
-        ), 200
-
-    # Still generating
-    if _report_status['status'] == 'pending':
-        return jsonify(
-            status='pending',
-            message='Report is being generated. Please retry in a minute.'
-        ), 200
-
-    # Ready
-    return jsonify(
-        status='ready',
-        message='Report ready',
-        data=_report_status['data']
-    ), 200
+def report_endpoint():
+    logging.info("Received /report request.")
+    return jsonify(create_report())
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    # Render.com 등에서 $PORT 읽어서 바인딩
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
