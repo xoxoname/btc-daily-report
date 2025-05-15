@@ -1,58 +1,31 @@
-# modules/report.py
+# modules/schedule.py
+
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
-kst = pytz.timezone("Asia/Seoul")
+def get_upcoming_events():
+    """
+    향후 1주일간의 BTC/미경제 지표 일정을 가져옵니다.
+    실제 환경에서는 공신력 있는 경제 캘린더 API를 호출하도록 구현하세요.
+    """
+    kst = pytz.timezone("Asia/Seoul")
+    today = datetime.now(kst)
+    week_later = today + timedelta(days=7)
 
-def get_profit_report():
-    try:
-        resp = requests.get("https://<YOUR_DOMAIN>/report")
-        return resp.json()
-    except Exception as e:
-        return {"error": str(e)}
+    # TODO: 여기에 진짜 API 호출 로직을 넣으세요.
+    # 아래는 예시 더미 데이터입니다.
+    events = [
+        {"time": (today + timedelta(days=1)).strftime("%Y-%m-%d 21:30"), "event": "미국 CPI 발표",     "impact": "높음"},
+        {"time": (today + timedelta(days=2)).strftime("%Y-%m-%d 22:00"), "event": "FOMC 의사록 공개",   "impact": "중간"},
+        {"time": (today + timedelta(days=3)).strftime("%Y-%m-%d 20:00"), "event": "BTC 주요 온체인 지표", "impact": "낮음"},
+        # ...
+    ]
+    return events
 
-def format_profit_report_text(data):
-    now = datetime.now(kst).strftime('%Y-%m-%d %H:%M:%S')
-    krw_pnl = data.get("krw_pnl", "N/A")
-    usdt_pnl = data.get("usdt_pnl", "N/A")
-    return f"[{now} 기준]\n💰 실현+미실현 총 손익:\n- {usdt_pnl} USDT\n- 약 {krw_pnl} KRW"
-
-def get_prediction_report():
-    # 더 이상 내부 하드코딩되지 않도록, 실제 API 연동으로 변경하세요.
-    return {
-        "market":     "미국 CPI 발표: 예상치 부합 (2.4%) → 시장 안도감",
-        "technical":  "MACD 하락 전환, RSI 68 → 조정 가능성",
-        "psychology": "공포탐욕지수 72 (탐욕)",
-        "forecast": {
-            "up_probability":   42,
-            "down_probability": 58,
-            "summary":          "하락 가능성 우세"
-        },
-        "exceptions": [],
-        "feedback": {
-            "match": "이전 예측과 유사",
-            "reason": "DXY 영향 지속",
-            "next":   "심리 지표 보완 예정"
-        }
-    }
-
-def format_prediction_report_text(data):
-    now = datetime.now(kst).strftime('%Y-%m-%d %H:%M')
-    f = data.get("forecast", {})
-    return (
-        f"📌 BTC 예측 보고서 ({now} KST)\n\n"
-        f"[1] 시장 요인:\n{data.get('market')}\n\n"
-        f"[2] 기술 분석:\n{data.get('technical')}\n\n"
-        f"[3] 심리 분석:\n{data.get('psychology')}\n\n"
-        f"[4] 12시간 예측:\n"
-        f"- 상승: {f.get('up_probability')}%\n"
-        f"- 하락: {f.get('down_probability')}%\n"
-        f"- 요약: {f.get('summary')}\n\n"
-        f"[5] 예외 감지: {', '.join(data.get('exceptions')) or '없음'}\n\n"
-        f"[6] 피드백:\n"
-        f"- 평가: {data['feedback']['match']}\n"
-        f"- 이유: {data['feedback']['reason']}\n"
-        f"- 다음: {data['feedback']['next']}\n\n"
-        f"🧾 멘탈 코멘트: 꾸준함이 답입니다."
-    )
+def format_schedule_text(events):
+    """get_upcoming_events() 결과를 문자열로 포맷팅"""
+    lines = ["📅 *향후 1주일 일정*"]
+    for e in events:
+        lines.append(f"- `{e['time']}`: {e['event']} (영향: {e['impact']})")
+    return "\n".join(lines)
