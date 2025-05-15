@@ -1,121 +1,118 @@
+# main.py
 import os
-import json
+from dotenv import load_dotenv
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from datetime import datetime
 import pytz
-from flask import Flask, jsonify
 
-# Timezone 설정 (한국 시간)
+# 1. 환경변수 로드 & 검증
+load_dotenv()
+REQUIRED_VARS = [
+    "BITGET_API_KEY",
+    "BITGET_PASSPHRASE",
+    "BITGET_SECRET",
+    "OPENAI_API_KEY",
+    "REPORT_URL",
+    "TELEGRAM_TOKEN",
+    "CHAT_ID",
+]
+for var in REQUIRED_VARS:
+    if not os.getenv(var):
+        raise RuntimeError(f"환경변수 {var} 가 설정되지 않았습니다!")
+
+# 2. HTTP 세션 + 재시도 설정
+session = requests.Session()
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
+
+# 3. 시간대 설정
 kst = pytz.timezone("Asia/Seoul")
 
-def get_current_time_str(fmt='%Y-%m-%d %H:%M:%S'):
-    return datetime.now(kst).strftime(fmt)
-
-# 실현 및 미실현 손익 데이터를 외부 엔드포인트에서 가져옵니다.
+# 4. 리포트 가져오기
 def get_profit_report():
     try:
-        response = requests.get("https://btc-daily-report.onrender.com/report")
-        data = response.json()
-        return data
+        r = session.get(os.getenv("REPORT_URL"), timeout=10)
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
         return {"error": str(e)}
 
-# 손익 데이터를 텍스트로 포맷팅합니다.
+# 5. 리포트 포맷팅
 def format_profit_report_text(data):
-    try:
-        krw_pnl = data.get("krw_pnl", "N/A")
-        usdt_pnl = data.get("usdt_pnl", "N/A")
-        now_str = get_current_time_str()
-        return f"[{now_str} 기준]\n💰 실현 + 미실현 총 손익:\n- {usdt_pnl} USDT\n- 약 {krw_pnl} KRW"
-    except:
-        return "손익 정보 분석 실패"
+    now = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
+    if data.get("error"):
+        return f"[{now}] 실현·미실현 손익 조회 실패: {data['error']}"
+    krw = data.get("krw_pnl", "N/A")
+    usdt = data.get("usdt_pnl", "N/A")
+    return f"[{now} 기준]\n💰 총 손익:\n- {usdt} USDT\n- 약 {krw} KRW"
 
-# 예측 보고서 데이터를 생성합니다.
+# 6. 예측 리포트 (예시)
 def get_prediction_report():
     try:
+        # 예시: 실제는 OpenAI나 다른 API 호출
         return {
-            "market": "미국 CPI 발표: 예상치 부합 (2.4%) → 시장 안도감\nFOMC 발언 없음\n긴급 속보 없음",
-            "technical": "MACD 하락 전환, RSI 68, MA(20/50) 이격 축소 → 기술적 조정 가능성",
-            "psychology": "공포탐욕지수 72 (탐욕), 커뮤니티 정서는 낙관\nDXY 상승세 유지, BTC Dominance 상승",
-            "forecast": {
-                "up_probability": 42,
-                "down_probability": 58,
-                "summary": "📉 하락 가능성 우세: DXY 상승 + MACD 약세"
-            },
+            "market": "미국 CPI 발표: 예상치 부합 (2.4%) → 시장 안도",
+            "technical": "MACD 하락 전환, RSI 68 → 기술적 조정 가능성",
+            "psychology": "공포탐욕지수 72 (탐욕), BTC Dominance 상승",
+            "forecast": {"up_probability": 42, "down_probability": 58, "summary": "하락 우세"},
             "exceptions": [],
-            "feedback": {
-                "match": "이전 예측과 유사함",
-                "reason": "DXY 영향 지속 반영됨",
-                "next": "심리 지표 반영 비중 보완 예정"
-            }
+            "feedback": {"match": "이전 예측과 유사", "reason": "DXY 영향 지속", "next": "심리 반영 보완"}
         }
     except Exception as e:
         return {"error": str(e)}
 
-# 예측 보고서를 텍스트로 포맷팅합니다.
 def format_prediction_report_text(data):
+    now = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
+    if data.get("error"):
+        return f"[{now}] 예측 리포트 조회 실패: {data['error']}"
+    f = data["forecast"]
+    return (
+        f"📌 BTC 예측 보고서 ({now} KST)\n\n"
+        f"[1] 시장 요인:\n{data['market']}\n\n"
+        f"[2] 기술적 분석:\n{data['technical']}\n\n"
+        f"[3] 심리·구조:\n{data['psychology']}\n\n"
+        f"[4] 12시간 예측:\n"
+        f"- 상승: {f['up_probability']}%\n"
+        f"- 하락: {f['down_probability']}%\n"
+        f"- 요약: {f['summary']}\n\n"
+        f"[5] 예외사항: {', '.join(data['exceptions']) or '없음'}\n\n"
+        f"[6] 이전 피드백:\n"
+        f"- 평가: {data['feedback']['match']}\n"
+        f"- 사유: {data['feedback']['reason']}\n"
+        f"- 보완: {data['feedback']['next']}\n\n"
+        f"🧾 멘탈 코멘트: 꾸준함이 답입니다."
+    )
+
+# 7. 텔레그램 전송
+def send_telegram(text: str):
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        forecast = data.get("forecast", {})
-        up = forecast.get("up_probability", "N/A")
-        down = forecast.get("down_probability", "N/A")
-        summary = forecast.get("summary", "")
-
-        result = f"""📌 BTC 매동 예측 보고서 ({get_current_time_str('%Y-%m-%d %H:%M')} KST)
-
-[1. 시장 요인 요약]
-{data.get('market', '정보 없음')}
-
-[2. 기술적 분석]
-{data.get('technical', '정보 없음')}
-
-[3. 심리 및 구조 분석]
-{data.get('psychology', '정보 없음')}
-
-[4. 12시간 예측]
-- 상승 확률: {up}%
-- 하락 확률: {down}%
-- 요약: {summary}
-
-[5. 예외 감지]
-{", ".join(data.get('exceptions', [])) or '특이사항 없음'}
-
-[6. 이전 예측 피드백]
-- 평가: {data.get('feedback', {}).get('match', '정보 없음')}
-- 사유: {data.get('feedback', {}).get('reason', '정보 없음')}
-- 다음 보완 방향: {data.get('feedback', {}).get('next', '정보 없음')}
-
-🧾 멘탈 코멘트: "한 순간의 수익에 흔들리지 마세요. 오늘도 꾸준한 전략이 답입니다."
-"""
-        return result
-    except:
-        return "예측 리포트 분석 실패"
-
-# Flask 앱 구성
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return 'BTC Report Service Running'
-
-@app.route('/report')
-def report():
-    try:
-        profit = get_profit_report()
-        prediction = get_prediction_report()
-
-        profit_text = format_profit_report_text(profit)
-        prediction_text = format_prediction_report_text(prediction)
-
-        response = {
-            "profit_raw": profit,
-            "prediction_raw": prediction,
-            "profit_text": profit_text,
-            "prediction_text": prediction_text
-        }
-        return jsonify(response)
+        resp = session.post(
+            url,
+            json={"chat_id": chat_id, "text": text},
+            timeout=5
+        )
+        resp.raise_for_status()
     except Exception as e:
-        return jsonify({"error": str(e)})
+        print("텔레그램 전송 실패:", e)
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+# 8. 메인 실행 흐름
+def main():
+    profit = get_profit_report()
+    send_telegram(format_profit_report_text(profit))
+
+    prediction = get_prediction_report()
+    send_telegram(format_prediction_report_text(prediction))
+
+if __name__ == "__main__":
+    main()
