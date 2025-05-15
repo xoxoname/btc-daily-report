@@ -1,0 +1,8 @@
+import os
+
+BITGET_APIKEY = os.environ.get("BITGET_APIKEY")
+BITGET_SECRET = os.environ.get("BITGET_SECRET")
+BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = "1038440081"  # 사용자 전용
