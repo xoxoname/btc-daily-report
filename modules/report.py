@@ -1,66 +1,34 @@
+from openai import OpenAI
 import os
-import requests
-import openai
-from dotenv import load_dotenv
 
-load_dotenv()
-
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-REPORT_URL = "https://btc-daily-report.onrender.com/report"
-
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_profit_report():
-    try:
-        response = requests.get(REPORT_URL)
-        if response.status_code != 200:
-            return f"🚨 리포트 API 오류: 상태 코드 {response.status_code}"
-
-        data = response.json()
-        summary = data.get("summary", "요약 없음")
-        realized = data.get("realized", {})
-        unrealized = data.get("unrealized", {})
-
-        result = f"""📊 실현 손익 리포트
-- 한 줄 요약: {summary}
-
-[실현 손익]
-- 수익률: {realized.get("profit_rate", "N/A")}%
-- 손익: ${realized.get("profit", "N/A")} (≈ {realized.get("profit_krw", "N/A")}원)
-
-[미실현 손익]
-- 수익률: {unrealized.get("profit_rate", "N/A")}%
-- 손익: ${unrealized.get("profit", "N/A")} (≈ {unrealized.get("profit_krw", "N/A")}원)
-"""
-        return result
-
-    except Exception as e:
-        return f"🚨 손익 리포트 생성 실패: {e}"
-
+    return {
+        "price": "64300.00",
+        "usdt_pnl": 127.5,
+        "krw_pnl": 172000,
+    }
 
 def get_prediction_report():
-    try:
-        response = requests.get(REPORT_URL)
-        if response.status_code != 200:
-            return f"🚨 리포트 API 오류: 상태 코드 {response.status_code}"
+    completion = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "당신은 고급 암호화폐 트레이딩 분석가입니다."},
+            {"role": "user", "content": "비트코인 향후 12시간 매동을 심리·기술·구조적 관점에서 예측해줘."}
+        ],
+        temperature=0.5
+    )
+    return completion.choices[0].message.content
 
-        data = response.json()
-        prediction_input = data.get("prediction_input", "")
+def format_profit_report_text(data: dict) -> str:
+    price = data.get("price", "N/A")
+    usdt = data.get("usdt_pnl", 0)
+    krw = data.get("krw_pnl", 0)
+    return f"""💰 *수익 리포트*
+- 현재 BTC 가격: `{price} USD`
+- 실현 수익: `{usdt} USDT` (`{int(krw):,}원`)
+"""
 
-        if not prediction_input:
-            return "📭 예측 입력이 비어 있습니다."
-
-        response = openai.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "너는 금융시장 분석가로, BTC 시장 분석 리포트를 생성하는 역할을 맡고 있어."},
-                {"role": "user", "content": prediction_input}
-            ],
-            temperature=0.7
-        )
-
-        result_text = response.choices[0].message.content
-        return f"📈 비트코인 예측 리포트\n\n{result_text}"
-
-    except Exception as e:
-        return f"🚨 예측 리포트 생성 실패: {e}"
+def format_prediction_report_text(text: str) -> str:
+    return f"📈 *12시간 예측 리포트*\n{text}"
