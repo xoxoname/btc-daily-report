@@ -1,3 +1,4 @@
-# constants.py
-# 추후 상수 정의용
-# 예) API 엔드포인트, Telegram 토큰, 스케줄 주기 등
+# Bitget, OpenAI, 외부 API 키 등
+BITGET_API_KEY    = "your_bitget_api_key"
+BITGET_API_SECRET = "your_bitget_api_secret"
+OPENAI_API_KEY    = "your_openai_api_key"
