@@ -1,4 +1,5 @@
-# 텔레그램 설정
-TELEGRAM_BOT_TOKEN = "your_bot_token"
-AUTHORIZED_CHAT_ID = 1038440081  # 사용자만 접근 가능
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+# 📌 공통 상수 정의 파일
+
+# 추후 공통 메시지, 고정 텍스트, 텔레그램 토큰 등 상수로 분리 가능
+DEFAULT_ENTRY_CAPITAL = 1000.0  # 기본 진입 자산 (USD)
+KRW_EXCHANGE_RATE = 1380        # 달러 → 원 환율
