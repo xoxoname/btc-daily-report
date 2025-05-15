@@ -1,41 +1,58 @@
 import os
 import json
+import requests
 from flask import Flask, jsonify
-from report import get_profit_report, format_profit_report_text, get_prediction_report, format_prediction_report_text
+from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+from openai import OpenAI
 from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Bot
-from datetime import datetime
-import pytz
+from report import get_profit_report, format_profit_report_text, get_prediction_report, format_prediction_report_text
 
-# 환경 변수 세팅
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-TZ = pytz.timezone("Asia/Seoul")
-
+load_dotenv()
 app = Flask(__name__)
-bot = Bot(token=BOT_TOKEN)
 
-# 리포트 전송 함수
-def send_all_reports():
-    profit = get_profit_report()
-    prediction = get_prediction_report()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-    profit_msg = format_profit_report_text(profit)
-    prediction_msg = format_prediction_report_text(prediction)
+bot = Bot(token=TELEGRAM_TOKEN)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-    final_msg = "\n".join(["\ud83c\udf1f *BTC 실시간 보고서*", profit_msg, prediction_msg])
-    bot.send_message(chat_id=CHAT_ID, text=final_msg, parse_mode="Markdown")
+KST = timezone(timedelta(hours=9))
+
+def send_telegram_message(message):
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+def send_profit_report():
+    try:
+        profit_data = get_profit_report()
+        message = format_profit_report_text(profit_data)
+        send_telegram_message(message)
+    except Exception as e:
+        send_telegram_message(f"[오류] 수익 리포트 전송 실패: {e}")
+
+def send_prediction_report():
+    try:
+        prediction_data = get_prediction_report()
+        message = format_prediction_report_text(prediction_data)
+        send_telegram_message(message)
+    except Exception as e:
+        send_telegram_message(f"[오류] 예측 리포트 전송 실패: {e}")
 
 @app.route("/report")
 def report():
-    report = get_profit_report()
-    return jsonify(report)
+    try:
+        profit_data = get_profit_report()
+        return jsonify(profit_data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-# 스케줄링: 매일 9:00, 13:00, 23:00 (KST 기준)
-scheduler = BackgroundScheduler(timezone=TZ)
-scheduler.add_job(send_all_reports, "cron", hour=9, minute=0)
-scheduler.add_job(send_all_reports, "cron", hour=13, minute=0)
-scheduler.add_job(send_all_reports, "cron", hour=23, minute=0)
+scheduler = BackgroundScheduler(timezone=KST)
+scheduler.add_job(send_profit_report, "interval", minutes=5)
+scheduler.add_job(send_prediction_report, "cron", hour=9, minute=0)
+scheduler.add_job(send_prediction_report, "cron", hour=13, minute=0)
+scheduler.add_job(send_prediction_report, "cron", hour=23, minute=0)
 scheduler.start()
 
 if __name__ == "__main__":
