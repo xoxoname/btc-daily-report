@@ -1,7 +1,6 @@
-import os
 from openai import OpenAI
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI()  # 환경변수 OPENAI_API_KEY 를 자동 인식함
 
 def get_prediction_report():
     response = client.chat.completions.create(
@@ -14,5 +13,4 @@ def get_prediction_report():
     return response.choices[0].message.content
 
 def format_profit_report_text():
-    # 예시 수익 포맷
     return "현재 수익률: +3.2% (USD 320, 약 43만 원)"
