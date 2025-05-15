@@ -1,38 +1,48 @@
-import os
-import openai
-from modules.data_fetch import fetch_ohlcv, calc_technical_indicators, get_latest_price
-from modules.constants import OPENAI_API_KEY
+# modules/report.py
+from .data_fetch import fetch_spot_klines, fetch_ticker
+from .utils import compute_rsi, compute_macd, moving_averages, bollinger_bands
+from .utils import compute_rsi, compute_macd, moving_averages, bollinger_bands
+from .constants import CHAT_ID, TELEGRAM_BOT_TOKEN
+import requests
 
-openai.api_key = OPENAI_API_KEY
+def build_report(symbol="BTCUSDT"):
+    # 1. 현재 ticker
+    tk = fetch_ticker(symbol)
+    price = float(tk["last"])
+    change_24h = float(tk["percentage"])  # % change
+
+    # 2. 차트 데이터
+    df = fetch_spot_klines(symbol, granularity=3600, limit=500)["close"]
+
+    # 3. 지표 계산
+    rsi = compute_rsi(df)
+    macd, signal = compute_macd(df)
+    ma = moving_averages(df)
+    bb = bollinger_bands(df)
+
+    # 4. 텍스트 조합
+    txt = [
+        f"💰 Symbol: {symbol}",
+        f"• 현재가: {price:.2f} USD (24h {change_24h:+.2f}%)",
+        "",
+        "📈 기술 지표",
+        f"• RSI(14): {rsi}",
+        f"• MACD: {macd:.4f}, Signal: {signal:.4f}",
+        f"• MA20/50/200: {ma[20]}/{ma[50]}/{ma[200]}",
+        f"• Bollinger BB(20): Upper {bb['upper']}, Middle {bb['middle']}, Lower {bb['lower']}",
+        "",
+        "🔍 전략 제안",
+        "- RSI 30~70 사이면 중립, MACD 크로스 확인, BB 상단 근접 시 과열 주의",
+    ]
+    return "\n".join(txt)
+
+def send_telegram(text: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
 
 def build_and_send_report():
-    # 1) 데이터 수집
-    df = fetch_ohlcv(limit=100)
-    df = calc_technical_indicators(df)
-    price = get_latest_price()
-
-    # 2) 가장 최신 바(현재) 지표
-    latest = df.iloc[-1]
-    tech_summary = (
-        f"현재가: ${price:.2f}\n"
-        f"RSI(14): {latest.rsi:.1f}, MACD: {latest.MACD_12_26_9:.4f}, Signal: {latest.MACDs_12_26_9:.4f}\n"
-        f"MA20/50/200: {latest.ma20:.2f}/{df['close'].rolling(50).mean().iloc[-1]:.2f}/{df['close'].rolling(200).mean().iloc[-1]:.2f}\n"
-        f"Bollinger Upper/Lower: {latest.bb_upper:.2f}/{latest.bb_lower:.2f}"
-    )
-
-    # 3) GPT 프롬프트 작성 (실제 분석은 GPT에 위임)
-    prompt = (
-        "아래 실시간 시장 기술 지표를 바탕으로 12시간 BTC 예측 리포트를 작성해주세요.\n\n"
-        f"{tech_summary}\n\n"
-        "– 상승·하락 확률, 근거 요약, 전략 제안 포함\n"
-    )
-
-    resp = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "당신은 전문 암호화폐 애널리스트입니다."},
-            {"role": "user",   "content": prompt}
-        ],
-        temperature=0.7,
-    )
-    return resp.choices[0].message.content
+    rpt = build_report()
+    send_telegram(rpt)
+    return rpt
