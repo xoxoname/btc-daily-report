@@ -2,8 +2,10 @@ import os
 from datetime import datetime
 from openai import OpenAI
 
-# OpenAI 클라이언트 초기화
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# 최신 방식으로 클라이언트 객체 생성
+client = OpenAI(
+    api_key=os.environ["OPENAI_API_KEY"],
+)
 
 def get_prediction_report():
     prompt = (
@@ -34,7 +36,7 @@ def format_profit_report_text():
 
     total_pnl = realized_pnl + unrealized_pnl
     profit_rate = (total_pnl / entry_capital) * 100
-    krw_rate = 1350  # 환율 고정값
+    krw_rate = 1350  # 환율
 
     return f"""\
 🧾 수익 리포트
