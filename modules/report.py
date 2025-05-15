@@ -1,11 +1,9 @@
-import os
-from datetime import datetime
 from openai import OpenAI
+from datetime import datetime
+import os
 
-# 최신 방식으로 클라이언트 객체 생성
-client = OpenAI(
-    api_key=os.environ["OPENAI_API_KEY"],
-)
+# 최신 방식으로 클라이언트 생성
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_prediction_report():
     prompt = (
