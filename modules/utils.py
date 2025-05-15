@@ -1,5 +1,1 @@
-# utils.py
-# 도움 함수용
-
-def some_helper():
-    pass
+# 추가적인 헬퍼 함수나 공통 로직 위치
