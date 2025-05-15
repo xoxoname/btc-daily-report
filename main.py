@@ -1,118 +1,96 @@
-# main.py
 import os
-from dotenv import load_dotenv
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import json
 from datetime import datetime
-import pytz
 
-# 1. 환경변수 로드 & 검증
-load_dotenv()
-REQUIRED_VARS = [
-    "BITGET_API_KEY",
-    "BITGET_PASSPHRASE",
-    "BITGET_SECRET",
-    "OPENAI_API_KEY",
-    "REPORT_URL",
-    "TELEGRAM_TOKEN",
-    "CHAT_ID",
-]
-for var in REQUIRED_VARS:
-    if not os.getenv(var):
-        raise RuntimeError(f"환경변수 {var} 가 설정되지 않았습니다!")
+from flask import Flask, jsonify
+from apscheduler.schedulers.background import BackgroundScheduler
+import ccxt
+import openai
+from telegram import Bot
 
-# 2. HTTP 세션 + 재시도 설정
-session = requests.Session()
-retry_strategy = Retry(
-    total=3,
-    backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
-)
-adapter = HTTPAdapter(max_retries=retry_strategy)
-session.mount("https://", adapter)
-session.mount("http://", adapter)
+# Load environment variables
+BITGET_API_KEY = os.getenv('BITGET_API_KEY')
+BITGET_SECRET = os.getenv('BITGET_SECRET')
+BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
 
-# 3. 시간대 설정
-kst = pytz.timezone("Asia/Seoul")
+# Initialize services
+exchange = ccxt.bitget({
+    'apiKey': BITGET_API_KEY,
+    'secret': BITGET_SECRET,
+    'password': BITGET_PASSPHRASE,
+    'enableRateLimit': True,
+    'timeout': 10000,  # ms
+})
+openai.api_key = OPENAI_API_KEY
+bot = Bot(TELEGRAM_TOKEN)
 
-# 4. 리포트 가져오기
-def get_profit_report():
+app = Flask(__name__)
+REPORT_FILE = '/tmp/latest_report.json'
+
+
+def generate_report():
+    """
+    Fetch BTC/USDT daily OHLCV, send analysis to OpenAI,
+    cache report locally, and notify via Telegram.
+    """
     try:
-        r = session.get(os.getenv("REPORT_URL"), timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-# 5. 리포트 포맷팅
-def format_profit_report_text(data):
-    now = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
-    if data.get("error"):
-        return f"[{now}] 실현·미실현 손익 조회 실패: {data['error']}"
-    krw = data.get("krw_pnl", "N/A")
-    usdt = data.get("usdt_pnl", "N/A")
-    return f"[{now} 기준]\n💰 총 손익:\n- {usdt} USDT\n- 약 {krw} KRW"
-
-# 6. 예측 리포트 (예시)
-def get_prediction_report():
-    try:
-        # 예시: 실제는 OpenAI나 다른 API 호출
-        return {
-            "market": "미국 CPI 발표: 예상치 부합 (2.4%) → 시장 안도",
-            "technical": "MACD 하락 전환, RSI 68 → 기술적 조정 가능성",
-            "psychology": "공포탐욕지수 72 (탐욕), BTC Dominance 상승",
-            "forecast": {"up_probability": 42, "down_probability": 58, "summary": "하락 우세"},
-            "exceptions": [],
-            "feedback": {"match": "이전 예측과 유사", "reason": "DXY 영향 지속", "next": "심리 반영 보완"}
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-def format_prediction_report_text(data):
-    now = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
-    if data.get("error"):
-        return f"[{now}] 예측 리포트 조회 실패: {data['error']}"
-    f = data["forecast"]
-    return (
-        f"📌 BTC 예측 보고서 ({now} KST)\n\n"
-        f"[1] 시장 요인:\n{data['market']}\n\n"
-        f"[2] 기술적 분석:\n{data['technical']}\n\n"
-        f"[3] 심리·구조:\n{data['psychology']}\n\n"
-        f"[4] 12시간 예측:\n"
-        f"- 상승: {f['up_probability']}%\n"
-        f"- 하락: {f['down_probability']}%\n"
-        f"- 요약: {f['summary']}\n\n"
-        f"[5] 예외사항: {', '.join(data['exceptions']) or '없음'}\n\n"
-        f"[6] 이전 피드백:\n"
-        f"- 평가: {data['feedback']['match']}\n"
-        f"- 사유: {data['feedback']['reason']}\n"
-        f"- 보완: {data['feedback']['next']}\n\n"
-        f"🧾 멘탈 코멘트: 꾸준함이 답입니다."
-    )
-
-# 7. 텔레그램 전송
-def send_telegram(text: str):
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("CHAT_ID")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        resp = session.post(
-            url,
-            json={"chat_id": chat_id, "text": text},
-            timeout=5
+        # 1-week daily OHLCV
+        ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1d', limit=7)
+        # Prepare prompt
+        rows = '\n'.join(','.join(map(str, r)) for r in ohlcv)
+        prompt = f"Analyze the following BTC/USDT daily OHLCV data (timestamp,open,high,low,close,volume):\n{rows}"
+        # Call OpenAI
+        completion = openai.ChatCompletion.create(
+            model='gpt-4o-mini',
+            messages=[{'role': 'system', 'content': 'You are a crypto analyst.'},
+                      {'role': 'user', 'content': prompt}]
         )
-        resp.raise_for_status()
+        analysis = completion.choices[0].message.content
+
+        # Build report
+        report = {
+            'generated_at': datetime.utcnow().isoformat() + 'Z',
+            'ohlcv': ohlcv,
+            'analysis': analysis
+        }
+        # Cache to local file
+        with open(REPORT_FILE, 'w') as f:
+            json.dump(report, f)
+
+        # Send via Telegram
+        bot.send_message(chat_id=CHAT_ID, text=analysis)
     except Exception as e:
-        print("텔레그램 전송 실패:", e)
+        app.logger.exception('Report generation failed')
+        # Notify failure
+        try:
+            bot.send_message(chat_id=CHAT_ID, text=f'Report failed: {e}')
+        except Exception:
+            app.logger.exception('Telegram notification failed')
 
-# 8. 메인 실행 흐름
-def main():
-    profit = get_profit_report()
-    send_telegram(format_profit_report_text(profit))
 
-    prediction = get_prediction_report()
-    send_telegram(format_prediction_report_text(prediction))
+@app.route('/report')
+def report_endpoint():
+    """Return latest cached report, or a 202 if pending."""
+    if os.path.exists(REPORT_FILE):
+        with open(REPORT_FILE) as f:
+            data = json.load(f)
+        return jsonify(data)
+    else:
+        return jsonify({
+            'status': 'pending',
+            'message': 'Report is being generated. Please retry in a minute.'
+        }), 202
 
-if __name__ == "__main__":
-    main()
+
+if __name__ == '__main__':
+    # Scheduler to run daily at 00:00 UTC and once on startup
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(generate_report, 'cron', hour=0, minute=0)
+    scheduler.add_job(generate_report, 'date', run_date=datetime.utcnow())
+    scheduler.start()
+
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
