@@ -2,7 +2,6 @@ gunicorn==20.1.0
 flask==2.3.2
 ccxt==4.4.82
 requests>=2.18.4
-apscheduler==3.10.4
 python-telegram-bot==20.7
 openai==1.14.3
 python-dotenv==1.0.1
