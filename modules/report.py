@@ -1,71 +1,65 @@
 import os
 import requests
-import pytz
-from datetime import datetime
-import ccxt
-import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# 환경변수
-OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
-BITGET_API_KEY    = os.getenv("BITGET_API_KEY")
-BITGET_SECRET     = os.getenv("BITGET_SECRET")
-BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
-REPORT_URL        = os.getenv("REPORT_URL").rstrip("/")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-openai.api_key = OPENAI_API_KEY
+REPORT_URL = "https://btc-daily-report.onrender.com/report"
 
-# 실현/미실현 손익
 def get_profit_report():
     try:
-        resp = requests.get(f"{REPORT_URL}/report")
-        return resp.json().get("data", {})
+        response = requests.get(REPORT_URL)
+        if response.status_code != 200:
+            return "🚨 리포트 API 오류: 상태 코드 {}".format(response.status_code)
+
+        data = response.json()
+        summary = data.get("summary", "요약 없음")
+        realized = data.get("realized", {})
+        unrealized = data.get("unrealized", {})
+
+        result = f"""📊 실현 손익 리포트
+- 한 줄 요약: {summary}
+
+[실현 손익]
+- 수익률: {realized.get("profit_rate", "N/A")}%
+- 손익: ${realized.get("profit", "N/A")} (≈ {realized.get("profit_krw", "N/A")}원)
+
+[미실현 손익]
+- 수익률: {unrealized.get("profit_rate", "N/A")}%
+- 손익: ${unrealized.get("profit", "N/A")} (≈ {unrealized.get("profit_krw", "N/A")}원)
+"""
+        return result
+
     except Exception as e:
-        return {"error": str(e)}
+        return f"🚨 손익 리포트 생성 실패: {e}"
 
-def format_profit_report_text(data: dict) -> str:
-    now = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-    usdt_pnl = data.get("usdt_pnl", "N/A")
-    krw_pnl  = data.get("krw_pnl",  "N/A")
-    return (
-        f"[{now}]\n"
-        f"💰 *실현+미실현 손익*\n"
-        f"- {usdt_pnl} USDT\n"
-        f"- 약 {krw_pnl} KRW"
-    )
 
-# 예측 보고서
 def get_prediction_report():
     try:
-        exchange = ccxt.bitget({
-            'apiKey': BITGET_API_KEY,
-            'secret': BITGET_SECRET,
-            'password': BITGET_PASSPHRASE,
-        })
-        price = exchange.fetch_ticker("BTC/USDT").get("last", "알 수 없음")
-    except:
-        price = "알 수 없음"
+        response = requests.get(REPORT_URL)
+        if response.status_code != 200:
+            return "🚨 리포트 API 오류: 상태 코드 {}".format(response.status_code)
 
-    prompt = build_predict_prompt(price)
-    resp = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.6,
-    )
-    return resp.choices[0].message.content
+        data = response.json()
+        prediction_input = data.get("prediction_input", "")
 
-def build_predict_prompt(price: float) -> str:
-    return (
-        f"현재 BTC 가격: {price} USD\n"
-        "아래 기준으로 12시간 예측 보고서를 작성하세요.\n"
-        "1. 시장 이벤트\n"
-        "2. 기술 분석\n"
-        "3. 심리 지표\n"
-        "4. 전략 및 예외\n"
-        "5. 피드백 루프"
-    )
+        if not prediction_input:
+            return "📭 예측 입력이 비어 있습니다."
 
-def format_prediction_report_text(text: str) -> str:
-    return f"🔮 *BTC 예측 보고서*\n{text}"
+        completion = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "너는 금융시장 분석가로, BTC 시장 분석 리포트를 생성하는 역할을 맡고 있어."},
+                {"role": "user", "content": prediction_input}
+            ],
+            temperature=0.7
+        )
+
+        result_text = completion.choices[0].message.content
+        return f"📈 비트코인 예측 리포트\n\n{result_text}"
+
+    except Exception as e:
+        return f"🚨 예측 리포트 생성 실패: {e}"
