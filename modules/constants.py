@@ -1,5 +1,8 @@
 import os
 
+BITGET_API_KEY = os.getenv("BITGET_API_KEY")
+BITGET_API_SECRET = os.getenv("BITGET_API_SECRET")
+BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-REPORT_URL = os.getenv("REPORT_URL", "https://btc-daily-report.onrender.com/report")
+REPORT_URL = os.getenv("REPORT_URL")
