@@ -1,5 +1,6 @@
-# modules/constants.py
+import os
 
+# 시스템 프롬프트
 SYSTEM_PROMPT = """당신은 비트코인 선물 시장 전문가입니다. 사용자가 제공하는 수익 보고서와 시장 정보를 바탕으로, 다음 항목들을 분석해 정리해야 합니다:
 
 1. 📊 기술적 분석 (현재 차트 상황 요약 및 주요 지지/저항 구간)
@@ -11,3 +12,8 @@ SYSTEM_PROMPT = """당신은 비트코인 선물 시장 전문가입니다. 사�
 
 분석은 단순 요약이 아닌 인과관계를 설명하며, 모든 항목은 실제 트레이딩 전략 수립에 도움이 되도록 논리적으로 작성해주세요.
 """
+
+# 환경 변수 (utils, report 등에서 import 용)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+REPORT_URL     = os.getenv("APP_URL", "") + "/report"
