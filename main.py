@@ -1,16 +1,15 @@
-# main.py
 import os
 import logging
 from flask import Flask, jsonify
 from dotenv import load_dotenv
 from modules.report import get_prediction_report, format_profit_report_text
-from modules.schedule import start_scheduler
+from modules.telegram_bot import handle_telegram_update
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
-start_scheduler()
 
 @app.route("/report", methods=["GET"])
 def report_api():
@@ -28,6 +27,17 @@ def profit_api():
         return jsonify({"profit_report": text})
     except Exception as e:
         logger.error("/profit API 실패", exc_info=e)
+        return jsonify({"message": str(e), "status": "error"}), 500
+
+@app.route("/telegram", methods=["POST"])
+def telegram_webhook():
+    from flask import request
+    try:
+        data = request.json
+        handle_telegram_update(data)
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        logger.error("Telegram Webhook 처리 실패", exc_info=e)
         return jsonify({"message": str(e), "status": "error"}), 500
 
 if __name__ == "__main__":
