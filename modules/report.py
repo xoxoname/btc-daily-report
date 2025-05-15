@@ -1,10 +1,8 @@
 import os
 from openai import OpenAI
-import requests
 from httpx import Client as HttpxClient
 
-# Render 환경에서 proxies 문제를 피하기 위해 직접 http_client 지정
-http_client = HttpxClient(proxies=None)
+http_client = HttpxClient(proxies=None)  # 핵심 수정
 
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
