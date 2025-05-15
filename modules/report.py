@@ -1,27 +1,43 @@
-from modules.data_fetch import fetch_btc_price
+import os
+import requests
+from modules.utils import format_currency
+from modules.constants import TELEGRAM_BOT_TOKEN, CHAT_ID, REPORT_URL
 
-def format_profit_report_text():
-    btc_data = fetch_btc_price()
-    if "price" not in btc_data:
-        return "❌ 비트코인 실시간 가격 조회에 실패했습니다."
+def get_bitget_price():
+    try:
+        url = "https://api.bitget.com/api/mix/v1/market/ticker?symbol=BTCUSDT_UMCBL"
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        return float(data["data"]["last"]) if "data" in data and "last" in data["data"] else None
+    except Exception as e:
+        print(f"[가격 조회 실패] {e}")
+        return None
 
-    price = btc_data["price"]
-    change = btc_data["change_percent"]
-    high = btc_data["high_24h"]
-    low = btc_data["low_24h"]
+def build_and_send_report():
+    price = get_bitget_price()
 
-    report = f"""📊 *BTC 실시간 요약*
-- 현재가: ${price:,.2f}
-- 24H 최고가: ${high:,.2f}
-- 24H 최저가: ${low:,.2f}
-- 24H 변동률: {change:.2f}%
+    prediction_report = "📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다."
 
-🚨 수익 정보는 아직 비트겟 연동이 활성화되지 않았습니다.
-(비트겟 API Key가 등록되면 자동으로 실현/미실현 손익 리포트가 표시됩니다.)
-"""
+    if price is None:
+        profit_report = "❌ 비트코인 실시간 가격 조회에 실패했습니다."
+    else:
+        krw_price = int(price * 1350)
+        profit_report = f"📊 현재 BTC 가격: ${price:.2f} ({format_currency(krw_price)} KRW 기준)"
 
-    return report
+    send_telegram_message(f"{prediction_report}\n\n{profit_report}")
 
-def get_prediction_report():
-    # GPT 분석은 GPT 앱 내에서 수행되므로 코드 내에 없음
-    return "📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다."
+    return {
+        "prediction_report": prediction_report,
+        "profit_report": profit_report,
+        "status": "success" if price else "warning"
+    }
+
+def send_telegram_message(message: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message}
+    try:
+        res = requests.post(url, json=payload, timeout=5)
+        res.raise_for_status()
+    except Exception as e:
+        print(f"[텔레그램 전송 실패] {e}")
