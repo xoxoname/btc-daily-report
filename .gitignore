@@ -1,34 +1,21 @@
-# Python bytecode
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*$py.class
 
-# Distribution / packaging
-*.egg-info/
-dist/
-build/
-.eggs/
-
-# Virtual environments
-.env
+# Virtual environment
 .venv/
-venv/
-ENV/
 
-# Logs and temp files
-*.log
-*.tmp
-*.bak
-
-# IDE settings
+# VS Code config
 .vscode/
-.idea/
-*.swp
 
-# macOS
+# Environment
+.env
+.env.*
+
+# Render build artifacts
+*.log
+*.cache/
+
+# OS
 .DS_Store
-
-# Render/Secrets
-apikey.txt
-secrets.json
-config.json
-.env.local
