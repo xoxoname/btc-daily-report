@@ -1,7 +1,15 @@
-# BTC Daily Report System
+# BTC Daily Report Bot
 
-Automated BTC price monitoring and report delivery system.
+📈 비트코인 실시간 수익 및 매매 동향 리포트를 Telegram으로 자동 전송하는 Python 기반 Web Service입니다.  
+Render + GitHub 기반 자동화 서버로, 비트코인 급등락 및 주요 이벤트도 실시간 감지하여 푸시 알림으로 전달합니다.
 
-- Sends regular reports to Telegram
-- Monitors for sudden price movements
-- Scheduled with APScheduler
+## 주요 기능
+
+- 매일 3회 (KST 기준 09:30, 13:00, 23:00) 정기 BTC 매매 리포트 전송
+- 실현 손익, 미실현 손익, 수익률 계산 및 한화(KRW) 환산
+- OpenAI 기반 시장 분석 요약 (예정)
+- BTC 실시간 급변동 감지 및 푸시 경고
+- 트럼프 발언, 미증시 급등락 등 이벤트 탐지 (추가 예정)
+
+## 폴더 구조
+
