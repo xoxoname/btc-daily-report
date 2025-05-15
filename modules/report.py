@@ -1,7 +1,7 @@
-from openai import OpenAI
+import openai
 import os
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def get_profit_report():
     return {
@@ -11,7 +11,7 @@ def get_profit_report():
     }
 
 def get_prediction_report():
-    completion = client.chat.completions.create(
+    completion = openai.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "당신은 고급 암호화폐 트레이딩 분석가입니다."},
