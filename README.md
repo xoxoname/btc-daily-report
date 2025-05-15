@@ -1,3 +1,7 @@
-# BTC 데일리 리포트
+# BTC Daily Report
 
-텔레그램 기반 비트코인 실시간 리포트 시스템
+Flask 기반 비트코인 12시간 예측 리포트 API
+
+## 설치
+```bash
+pip install -r requirements.txt
