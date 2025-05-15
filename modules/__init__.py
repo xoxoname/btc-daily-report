@@ -1,1 +1,2 @@
-# Placeholder content for __init__.py
+# __init__.py 파일은 비어 있어도 무방하지만, 모듈 인식을 위해 존재해야 합니다.
+# 이 주석은 placeholder 용도로 남겨두었습니다.
