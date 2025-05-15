@@ -1,25 +1,16 @@
-import os
 from flask import Flask, jsonify
-from modules.report import format_profit_report_text, get_prediction_report
+from modules.report import build_and_send_report
 
 app = Flask(__name__)
 
-@app.route("/report", methods=["GET"])
+@app.route("/report")
 def report():
     try:
-        profit_text = format_profit_report_text()
-        prediction_text = get_prediction_report()
-
-        return jsonify({
-            "status": "success",
-            "profit_report": profit_text,
-            "prediction_report": prediction_text
-        })
+        result = build_and_send_report()
+        return jsonify(result)
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"error": str(e), "status": "failed"})
 
 if __name__ == "__main__":
+    import os
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
