@@ -1,3 +1,4 @@
+import os
 from flask import Flask, jsonify
 from modules.report import format_profit_report_text, get_prediction_report
 
