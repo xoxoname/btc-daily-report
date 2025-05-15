@@ -8,14 +8,22 @@ import openai
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+# 리포트 포맷팅 모듈
+from modules.report import (
+    get_profit_report,
+    format_profit_report_text,
+    get_prediction_report,
+    format_prediction_report_text,
+)
 
+# 환경 변수 로드
+load_dotenv()
 BITGET_API_KEY    = os.getenv('BITGET_API_KEY')
 BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 BITGET_SECRET     = os.getenv('BITGET_SECRET')
 OPENAI_API_KEY    = os.getenv('OPENAI_API_KEY')
 TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID           = os.getenv('CHAT_ID')  # 반드시 숫자로만 구성된 값
+CHAT_ID           = os.getenv('CHAT_ID')  # 숫자만
 REPORT_URL        = os.getenv('REPORT_URL', '').rstrip('/')
 
 openai.api_key = OPENAI_API_KEY
@@ -44,53 +52,65 @@ def generate_summary(price: float) -> str:
         max_tokens=60,
         temperature=0.5,
     )
-    # v1 interface: choices[0].message.content
     return resp.choices[0].message.content.strip()
 
-def send_telegram(price, summary):
+def send_telegram(full_text: str):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         logging.warning("텔레그램 토큰 또는 CHAT_ID가 설정되어 있지 않습니다.")
         return
-    text = (
-        f"*Bitcoin Daily Report*\n"
-        f"Price: `{price}` USD\n"
-        f"Summary: {summary or '요약 생성 실패'}\n\n"
-        f"[View full report]({REPORT_URL}/report)"
-    )
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    r = requests.post(url, json={
+    payload = {
         'chat_id':    CHAT_ID,
-        'text':       text,
-        'parse_mode': 'Markdown'
-    })
+        'text':       full_text,
+        'parse_mode': 'Markdown',
+        'disable_web_page_preview': True,
+    }
+    r = requests.post(url, json=payload)
     try:
         r.raise_for_status()
+        logging.info("Sent Telegram message.")
     except Exception as e:
-        logging.error(f"텔레그램 전송 실패: {e} - resp.text: {r.text}")
+        logging.error(f"텔레그램 전송 실패: {e} - {r.text}")
 
 def create_report():
     price = None
     summary = None
 
+    # 1) 가격 fetch
     try:
         price = fetch_price()
         logging.info(f"Fetched BTC price: {price}")
     except Exception as e:
         logging.error(f"Error fetching price: {e}")
 
+    # 2) 한줄 요약
     if price is not None:
         try:
             summary = generate_summary(price)
             logging.info("Generated summary.")
         except Exception as e:
             logging.error(f"Error generating summary: {e}")
+            summary = None
 
-    try:
-        send_telegram(price, summary)
-        logging.info("Sent Telegram message.")
-    except Exception as e:
-        logging.error(f"텔레그램 전송 실패: {e}")
+    # 3) 수익 리포트
+    profit_data = get_profit_report()
+    profit_text = format_profit_report_text(profit_data)
 
+    # 4) 예측 리포트
+    pred_data = get_prediction_report()
+    pred_text = format_prediction_report_text(pred_data)
+
+    # 5) Telegram에 보낼 풀 메시지 조합
+    full_text = (
+        "*📊 Bitcoin Daily Report*\n\n"
+        f"*1) 현재 가격:* `{price or 'N/A'}` USD\n"
+        f"*2) 한줄 요약:* {summary or '생성 실패'}\n\n"
+        f"*💰 실현+미실현 손익 보고서*\n{profit_text}\n\n"
+        f"*🔮 BTC 예측 보고서*\n{pred_text}"
+    )
+    send_telegram(full_text)
+
+    # 6) HTTP API 응답
     return {
         'data': {
             'price':      price,
