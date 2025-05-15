@@ -1,19 +1,20 @@
 import os
 import requests
-from openai import OpenAI
+import openai
 from dotenv import load_dotenv
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 REPORT_URL = "https://btc-daily-report.onrender.com/report"
+
 
 def get_profit_report():
     try:
         response = requests.get(REPORT_URL)
         if response.status_code != 200:
-            return "🚨 리포트 API 오류: 상태 코드 {}".format(response.status_code)
+            return f"🚨 리포트 API 오류: 상태 코드 {response.status_code}"
 
         data = response.json()
         summary = data.get("summary", "요약 없음")
@@ -41,7 +42,7 @@ def get_prediction_report():
     try:
         response = requests.get(REPORT_URL)
         if response.status_code != 200:
-            return "🚨 리포트 API 오류: 상태 코드 {}".format(response.status_code)
+            return f"🚨 리포트 API 오류: 상태 코드 {response.status_code}"
 
         data = response.json()
         prediction_input = data.get("prediction_input", "")
@@ -49,7 +50,7 @@ def get_prediction_report():
         if not prediction_input:
             return "📭 예측 입력이 비어 있습니다."
 
-        completion = client.chat.completions.create(
+        response = openai.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "너는 금융시장 분석가로, BTC 시장 분석 리포트를 생성하는 역할을 맡고 있어."},
@@ -58,7 +59,7 @@ def get_prediction_report():
             temperature=0.7
         )
 
-        result_text = completion.choices[0].message.content
+        result_text = response.choices[0].message.content
         return f"📈 비트코인 예측 리포트\n\n{result_text}"
 
     except Exception as e:
