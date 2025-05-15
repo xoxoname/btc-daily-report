@@ -1,17 +1,23 @@
-# BTC Daily Report Bot
+# BTC Daily Report
 
-비트코인 실시간 수익 리포트 및 급변동 감지 알림 시스템
+This project automatically generates and sends BTC trading reports, emergency alerts, and prediction summaries via Telegram.
 
-## 기능
+## Features
+- Scheduled market prediction reports
+- Real-time BTC price anomaly detection
+- Emergency news/event analysis alerts
+- Full support for Bitget API integration
 
-- Coinbase 실시간 BTC 가격 모니터링
-- Bitget API를 통한 포지션 수익률 계산
-- 매일 오전 9시 / 오후 1시 / 오후 11시 자동 리포트 전송
-- 5분 간격 급변동 감지 시스템
-- 트럼프 발언, 미국 지표, 증시 영향 등 GPT 기반 이슈 요약
+## Usage
+Deploy to Render with Web Service mode.
 
-## 설치 방법
+### Required Environment Variables
+- `TELEGRAM_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `BITGET_APIKEY`
+- `BITGET_APISECRET`
+- `BITGET_PASSPHRASE`
 
-1. 레포지토리 클론
-```bash
-git clone https://github.com/사용자명/btc-daily-report.git
+---
+
+Visit: `https://your-app.onrender.com/report` to trigger a manual report.
