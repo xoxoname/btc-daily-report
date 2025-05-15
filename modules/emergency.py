@@ -1,41 +1,47 @@
-# modules/emergency.py
-
 import requests
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from modules.constants import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
-from modules.utils import fetch_coinbase_price, fetch_latest_event_summary_kr
+from modules.utils import format_currency
 
 last_price = None
 
+def fetch_current_btc_price():
+    try:
+        response = requests.get("https://api.coinbase.com/v2/prices/spot?currency=USD")
+        return float(response.json()["data"]["amount"])
+    except Exception as e:
+        print(f"[BTC 가격 조회 실패]: {e}")
+        return None
+
+def send_telegram_alert(message: str):
+    try:
+        requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            params={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"},
+            timeout=5
+        )
+    except Exception as e:
+        print(f"[텔레그램 전송 오류]: {e}")
+
 def check_btc_price_change():
     global last_price
-    try:
-        price = fetch_coinbase_price()
-        if price is None:
-            return
+    current_price = fetch_current_btc_price()
+    if current_price is None:
+        return
 
-        if last_price is None:
-            last_price = price
-            return
-
-        change_percent = abs(price - last_price) / last_price * 100
-
-        if change_percent >= 2:
-            summary_kr = fetch_latest_event_summary_kr()
+    if last_price is not None:
+        change_percent = ((current_price - last_price) / last_price) * 100
+        if abs(change_percent) >= 2.5:
+            direction = "급등" if change_percent > 0 else "급락"
             message = (
-                f"🚨 *BTC 급변동 감지!*\n"
-                f"💰 현재 BTC 가격: ${price:,.2f}\n"
-                f"📈 변화율: {change_percent:.2f}%\n"
-                f"📰 감지된 이슈: {summary_kr}"
+                f"🚨 *BTC {direction} 감지!*\n"
+                f"💰 현재 BTC 가격: {format_currency(current_price)}\n"
+                f"📊 변화율: {change_percent:.2f}%"
             )
-            requests.get(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                params={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-            )
-            last_price = price
-    except Exception as e:
-        print(f"[긴급 감지 에러]: {e}")
+            send_telegram_alert(message)
+
+    last_price = current_price
 
 def start_emergency_monitor():
     scheduler = BackgroundScheduler(timezone="Asia/Seoul")
