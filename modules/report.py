@@ -1,37 +1,31 @@
-from openai import OpenAI
 import os
+from openai import OpenAI
 import requests
+from httpx import Client as HttpxClient
 
-# OpenAI 클라이언트 초기화 (proxies 인자 제거됨)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Render 환경에서 proxies 문제를 피하기 위해 직접 http_client 지정
+http_client = HttpxClient(proxies=None)
 
-def fetch_report_data():
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    http_client=http_client
+)
+
+def get_prediction_report():
     try:
-        response = requests.get("https://btc-daily-report.onrender.com/report")
-        response.raise_for_status()
-        return response.json()
+        completion = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "비트코인 매매 리포트를 생성해 주세요."},
+                {"role": "user", "content": "오늘의 비트코인 시장 예측을 알려줘."}
+            ],
+            temperature=0.7,
+        )
+        return completion.choices[0].message.content
     except Exception as e:
-        return {"message": str(e), "status": "error"}
+        return f"[오류 발생] {str(e)}"
 
-def format_profit_report_text(data: dict) -> str:
-    realized_pnl = data.get("realized_pnl", 0)
-    unrealized_pnl = data.get("unrealized_pnl", 0)
-    total_asset = data.get("total_asset", 0)
-    krw_rate = data.get("krw_rate", 1350)
-
-    realized_krw = int(realized_pnl * krw_rate)
-    unrealized_krw = int(unrealized_pnl * krw_rate)
-    total_krw = int(total_asset * krw_rate)
-
-    return f"""📊 *수익 리포트*
-
-- 실현 손익: {realized_pnl:.2f} USDT ({realized_krw:,}원)
-- 미실현 손익: {unrealized_pnl:.2f} USDT ({unrealized_krw:,}원)
-- 총 자산: {total_asset:.2f} USDT ({total_krw:,}원)
-"""
-
-def get_profit_report():
-    data = fetch_report_data()
-    if data.get("status") == "error":
-        return f"⚠️ 오류: {data.get('message')}"
-    return format_profit_report_text(data)
+def format_profit_report_text(pnl_data):
+    realized = pnl_data.get("realized_pnl", 0)
+    unrealized = pnl_data.get("unrealized_pnl", 0)
+    return f"📊 실현 손익: {realized} USDT\n📈 미실현 손익: {unrealized} USDT"
