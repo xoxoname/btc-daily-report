@@ -1,7 +1,6 @@
-gunicorn==20.1.0
 flask==2.3.2
-ccxt==4.4.82
-requests>=2.18.4
+requests
+python-dotenv
 apscheduler==3.10.4
+pytz
 openai==1.14.3
-python-dotenv==1.0.1
