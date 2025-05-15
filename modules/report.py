@@ -8,18 +8,18 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_prediction_report():
     try:
-        completion = client.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "비트코인 시장 예측 전문가입니다."},
-                {"role": "user", "content": "향후 12시간 비트코인 시세를 예측해줘."}
+                {"role": "system", "content": "You are a professional crypto analyst."},
+                {"role": "user", "content": "Predict the next 12 hours of Bitcoin price movement."}
             ],
-            max_tokens=1000,
             temperature=0.7,
+            max_tokens=1000
         )
-        return completion.choices[0].message.content.strip()
+        return response.choices[0].message.content
     except Exception as e:
-        return f"예측 실패: {str(e)}"
+        return f"[오류] 예측 실패: {str(e)}"
 
 def format_profit_report_text(profit_data):
     return f"""
@@ -32,12 +32,3 @@ def format_profit_report_text(profit_data):
 
 📅 기준 시각: {profit_data['timestamp']}
 """
-
-def get_dummy_profit_data():
-    return {
-        "realized_pnl": "125.40",
-        "unrealized_pnl": "-32.10",
-        "total_assets": "1032.55",
-        "roi": "12.4",
-        "timestamp": "2025-05-15 14:00:00"
-    }
