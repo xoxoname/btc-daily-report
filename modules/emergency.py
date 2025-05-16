@@ -1,29 +1,21 @@
 import time
-import requests
-from apscheduler.schedulers.background import BackgroundScheduler
 from modules.utils import fetch_coinbase_price, send_telegram_message
 from modules.constants import EMERGENCY_THRESHOLD_PERCENT
-
-scheduler = BackgroundScheduler()
-last_price = None
-
-def check_btc_price_change():
-    global last_price
-    try:
-        current_price = fetch_coinbase_price()
-        if last_price is None:
-            last_price = current_price
-            return
-
-        change_percent = abs((current_price - last_price) / last_price) * 100
-        if change_percent >= EMERGENCY_THRESHOLD_PERCENT:
-            # 실제 메시지 발송이 아닌 로그나 비동기 분석 처리 등으로 교체할 수 있음
-            print(f"[긴급 감지] BTC 가격 급변: {change_percent:.2f}%")
-        last_price = current_price
-
-    except Exception as e:
-        print(f"[에러] 긴급 감지 실패: {e}")
+from threading import Thread
 
 def start_emergency_monitor():
-    scheduler.add_job(check_btc_price_change, 'interval', minutes=5)
-    scheduler.start()
+    def monitor():
+        last_price = fetch_coinbase_price()
+        while True:
+            time.sleep(300)  # 5분마다
+            current_price = fetch_coinbase_price()
+            if current_price and last_price:
+                change = abs((current_price - last_price) / last_price) * 100
+                if change >= EMERGENCY_THRESHOLD_PERCENT:
+                    send_telegram_message(
+                        f"🚨 *BTC 긴급 변동 감지!*\n"
+                        f"💰 현재 BTC 가격: ${current_price:,.2f}\n"
+                        f"📉 변화율: {change:.2f}%"
+                    )
+                    last_price = current_price
+    Thread(target=monitor, daemon=True).start()
