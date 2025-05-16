@@ -1,7 +1,6 @@
-from modules.utils import send_telegram_message
-import os
+from modules.utils import send_telegram_message, get_kst_now
 
 def build_and_send_report():
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    message = "🧾 자동 스케줄링 리포트입니다.\n\n(자산 및 분석 내용은 추후 삽입)"
-    send_telegram_message(chat_id, message)
+    now = get_kst_now().strftime('%Y-%m-%d %H:%M:%S')
+    msg = f"📈 정규 BTC 예측 분석 리포트\n\n🕒 {now}\n\n📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다."
+    send_telegram_message(msg)
