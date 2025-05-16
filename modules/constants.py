@@ -1,1 +1,8 @@
-# Placeholder if needed for constants (empty for now)
+import os
+
+BITGET_APIKEY = os.getenv("BITGET_APIKEY")
+BITGET_APISECRET = os.getenv("BITGET_APISECRET")
+BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
