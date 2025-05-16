@@ -1,18 +1,20 @@
 import os
 import requests
-from datetime import datetime
-import pytz
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    requests.post(url, json=payload)
 
-def send_telegram_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": text}
-    requests.post(url, json=data)
+def format_currency(val):
+    return f"{val:,.2f}"
 
-def format_currency(value):
-    return f"{value:,.2f}"
-
-def get_kst_now():
-    return datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+def convert_usd_to_krw(usd):
+    try:
+        rate = 1310  # Fix or replace with real-time rate if needed
+        return f"{usd * rate:,.0f}"
+    except:
+        return "N/A"
