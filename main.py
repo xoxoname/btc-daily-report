@@ -1,39 +1,54 @@
-from flask import Flask, request
+# main.py
+
+from flask import Flask, request, jsonify
 from modules.schedule import start_scheduler
-from modules.utils import send_telegram_message
 from modules.constants import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from modules.utils import send_telegram_message
+from modules.report import (
+    build_profit_report,
+    build_schedule_report,
+    build_prediction_report,
+    build_regular_report,
+)
 
 app = Flask(__name__)
 start_scheduler()
 
-@app.route("/")
+@app.route('/')
 def index():
-    return "✅ BTC 리포트 서버 실행 중"
+    return "BTC 자동 리포트 시스템"
 
-@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
-    if not data or "message" not in data:
-        return "no content"
-
-    chat_id = data["message"]["chat"]["id"]
-    text = data["message"].get("text", "").strip()
+    message = data.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    text = message.get("text", "")
 
     if str(chat_id) != TELEGRAM_CHAT_ID:
-        return "unauthorized"
+        return "Unauthorized", 403
 
-    if text == "/리포트":
-        send_telegram_message("📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다.")
-    elif text == "/수익":
-        send_telegram_message("🔍 수익 분석 준비 중입니다.")
-    elif text == "/예측":
-        send_telegram_message("🔮 예측 분석 처리 중입니다.")
+    if text == "/수익":
+        response = build_profit_report()
+        send_telegram_message(chat_id, response)
+        return jsonify({"status": "ok"})
+
     elif text == "/일정":
-        send_telegram_message("📅 주요 경제 일정 분석 준비 중입니다.")
-    else:
-        send_telegram_message("❓ 지원하지 않는 명령어입니다.")
+        response = build_schedule_report()
+        send_telegram_message(chat_id, response)
+        return jsonify({"status": "ok"})
 
-    return "ok"
+    elif text == "/예측":
+        response = build_prediction_report()
+        send_telegram_message(chat_id, response)
+        return jsonify({"status": "ok"})
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    elif text == "/리포트":
+        response = build_regular_report()
+        send_telegram_message(chat_id, response)
+        return jsonify({"status": "ok"})
+
+    return jsonify({"message": "알 수 없는 명령어입니다."})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
