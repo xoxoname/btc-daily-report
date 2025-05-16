@@ -1,20 +1,14 @@
-import os
 import requests
+import os
+from datetime import datetime, timedelta, timezone
 
-def send_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    requests.post(url, json=payload)
+def send_telegram_message(chat_id, text):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text})
 
-def format_currency(val):
-    return f"{val:,.2f}"
+def format_currency(value):
+    return f"${value:,.2f}"
 
-def convert_usd_to_krw(usd):
-    try:
-        rate = 1310  # Fix or replace with real-time rate if needed
-        return f"{usd * rate:,.0f}"
-    except:
-        return "N/A"
+def get_kst_now():
+    return datetime.now(timezone(timedelta(hours=9)))
