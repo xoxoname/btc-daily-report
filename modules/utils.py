@@ -1,15 +1,27 @@
 import requests
+from modules.constants import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, BITGET_APIKEY, BITGET_APISECRET, BITGET_PASSPHRASE
 
 def fetch_coinbase_price():
-    url = "https://api.coinbase.com/v2/prices/spot?currency=USD"
-    response = requests.get(url)
-    data = response.json()
-    return float(data["data"]["amount"])
+    response = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot")
+    return float(response.json()["data"]["amount"])
+
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+    }
+    requests.post(url, data=payload)
+
+def format_currency(amount):
+    return f"${amount:,.2f}"
 
 def fetch_bitget_position_data():
-    # Bitget API를 사용하여 포지션 데이터를 조회하는 로직을 구현합니다.
-    # 예시로 빈 딕셔너리를 반환합니다.
-    return {}
-
-def format_currency(value):
-    return "${:,.2f}".format(value)
+    # 이 부분은 실제 Bitget API 연동 시 아래 구조를 바꿔야 함
+    # 여기서는 테스트용 데이터 사용
+    return {
+        "total_pnl": 78.5,  # USD
+        "positions": [
+            {"symbol": "BTCUSDT", "entryPrice": 10200, "pnl": 78.5},
+        ],
+    }
