@@ -5,15 +5,14 @@ from modules.emergency import start_emergency_monitor
 from modules.utils import get_kst_now
 
 def start_scheduler():
-    scheduler = BackgroundScheduler()
+    scheduler = BackgroundScheduler(timezone="Asia/Seoul")
 
     for t in REPORT_TIMES_KST:
         scheduler.add_job(
             build_and_send_report,
             'cron',
             hour=t['hour'],
-            minute=t['minute'],
-            timezone='Asia/Seoul'
+            minute=t['minute']
         )
 
     scheduler.start()
