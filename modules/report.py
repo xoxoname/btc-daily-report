@@ -1,37 +1,37 @@
-# modules/report.py
-
-import requests
-import datetime
-from modules.constants import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+import openai
+import telegram
+from modules.constants import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY
 from modules.utils import fetch_coinbase_price, fetch_bitget_position_data, format_currency
 
+bot = telegram.Bot(token=TELEGRAM_TOKEN)
+openai.api_key = OPENAI_API_KEY
+
 def build_and_send_report():
-    try:
-        # 실시간 가격
-        price = fetch_coinbase_price()
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    price = fetch_coinbase_price()
+    bitget_data = fetch_bitget_position_data()
 
-        # 비트겟 수익 분석
-        position_data = fetch_bitget_position_data()
-        entry_usdt = position_data["entry_value"]
-        pnl_usdt = position_data["pnl"]
-        pnl_krw = pnl_usdt * 1375  # 환율 예시
-        entry_krw = entry_usdt * 1375
-        pnl_rate = (pnl_usdt / entry_usdt * 100) if entry_usdt else 0
+    if not price or not bitget_data:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="❌ 실시간 데이터 조회에 실패했습니다.")
+        return
 
-        message = (
-            f"📡 *BTC 정규 매매 리포트*\n\n"
-            f"📅 시각: {now}\n"
-            f"💰 현재 BTC 가격: ${price:,.2f}\n\n"
-            f"📊 *포지션 요약*\n"
-            f"• 진입 자산: {format_currency(entry_usdt)} USDT ({format_currency(entry_krw)}원)\n"
-            f"• 수익: {format_currency(pnl_usdt)} USDT ({format_currency(pnl_krw)}원)\n"
-            f"• 수익률: {pnl_rate:.2f}%\n"
-        )
+    total_usdt = bitget_data.get("total_usdt", 0)
+    total_krw = bitget_data.get("total_krw", 0)
+    pnl_usdt = bitget_data.get("total_pnl", 0)
+    pnl_krw = bitget_data.get("total_pnl_krw", 0)
+    entry_usdt = bitget_data.get("entry_usdt", 1)
+    roi = (pnl_usdt / entry_usdt) * 100 if entry_usdt else 0
 
-        requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            params={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        )
-    except Exception as e:
-        print(f"[리포트 오류]: {e}")
+    usd = format_currency(price)
+    krw = format_currency(price * 1350, "KRW")
+
+    report = (
+        f"📡 *GPT 기반 비트코인 매매 분석 리포트*\n\n"
+        f"📊 *현재 BTC 시세*: {usd} ({krw})\n"
+        f"💼 *진입 자산*: {format_currency(entry_usdt)} ({format_currency(entry_usdt * 1350, 'KRW')})\n"
+        f"📈 *총 수익*: {format_currency(pnl_usdt)} ({format_currency(pnl_krw, 'KRW')})\n"
+        f"📊 *총 자산*: {format_currency(total_usdt)} ({format_currency(total_krw, 'KRW')})\n"
+        f"📌 *수익률*: {roi:.2f}%\n"
+        f"\n🧠 예측 보고서 및 시장 심층 분석은 GPT 처리 시스템에서 곧 도착합니다."
+    )
+
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report, parse_mode="Markdown")
