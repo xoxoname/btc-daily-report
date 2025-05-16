@@ -53,4 +53,8 @@ def get_profit_report_text():
         return f"❌ 수익 리포트 생성 오류: {str(e)}"
 
 def get_prediction_report_text():
-    return "📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다
+    return "📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다."
+
+def get_schedule_report_text():
+    now = get_kst_now()
+    return f"🕒 현재 시각: {now.strftime('%Y-%m-%d %H:%M:%S')}\n정규 리포트는 오전 9시, 오후 1시, 오후 11시에 전송됩니다."
