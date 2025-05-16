@@ -9,6 +9,9 @@ BITGET_APIKEY = os.environ.get("BITGET_APIKEY")
 BITGET_APISECRET = os.environ.get("BITGET_APISECRET")
 BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
 
+# OpenAI API
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
 # 가격 급변 기준 (단위: 퍼센트)
 EMERGENCY_THRESHOLD_PERCENT = 2.5
 
