@@ -9,7 +9,7 @@ BITGET_APIKEY = os.environ.get("BITGET_APIKEY")
 BITGET_APISECRET = os.environ.get("BITGET_APISECRET")
 BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
 
-# OpenAI
+# OpenAI API
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # 가격 급변 기준 (단위: 퍼센트)
@@ -22,5 +22,8 @@ REPORT_TIMES_KST = [
     {"hour": 23, "minute": 0},
 ]
 
-# 메시지 안내 문구
-ANALYSIS_LOADING_MESSAGE = "📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다."
+# 보고서 전송 메시지 안내
+ANALYSIS_LOADING_MESSAGE = "📱 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다."
+
+# 수익률이 음수일 때 멘탈 관리용 기준 기간
+MENTAL_CARE_DAYS = [7, 14]
