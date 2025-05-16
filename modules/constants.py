@@ -22,4 +22,5 @@ REPORT_TIMES_KST = [
     {"hour": 23, "minute": 0},
 ]
 
+# 메시지 안내 문구
 ANALYSIS_LOADING_MESSAGE = "📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다."
