@@ -1,28 +1,30 @@
-from modules.utils import send_telegram_message, format_currency, get_kst_now
-from modules.bitget_api import fetch_bitget_wallet_balance, fetch_bitget_positions
+from modules.bitget_api import fetch_wallet_balance, fetch_positions
+from modules.utils import format_currency, convert_usd_to_krw
+from datetime import datetime
 
-def build_and_send_report():
-    balance = fetch_bitget_wallet_balance()
-    positions = fetch_bitget_positions()
+def generate_profit_report():
+    available, total = fetch_wallet_balance()
+    positions = fetch_positions()
 
-    msg = "📊 [정규 리포트]\n"
-    msg += f"⏰ 기준 시각: {get_kst_now()}\n\n"
-    msg += f"💰 총 자산: {format_currency(balance['totalEquity'])} USDT\n"
-    msg += f"🔓 사용 가능: {format_currency(balance['available'])} USDT\n\n"
+    report = f"📊 [정규 리포트]\n⏰ 기준 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    report += f"💰 총 자산: {format_currency(total)} USDT ({convert_usd_to_krw(total)}원)\n"
+    report += f"🔓 사용 가능: {format_currency(available)} USDT ({convert_usd_to_krw(available)}원)\n\n"
+
     if positions:
-        msg += "📈 포지션:\n"
+        report += "📈 포지션:\n"
         for p in positions:
-            msg += f"- {p['symbol']} | 진입가: {p['entryPrice']} | 현재가: {p['markPrice']} | PnL: {p['unrealizedPnl']} USDT\n"
+            symbol = p["symbol"]
+            entry = float(p["entryPrice"])
+            mark = float(p["markPrice"])
+            pnl = float(p["unrealizedPL"])
+            report += f"- {symbol} | 진입가: {entry} | 현재가: {mark} | PnL: {format_currency(pnl)} USDT ({convert_usd_to_krw(pnl)}원)\n"
     else:
-        msg += "현재 보유 중인 포지션이 없습니다.\n"
+        report += "📉 현재 보유 포지션이 없습니다."
 
-    send_telegram_message(msg)
+    return report
 
-def handle_command(command):
-    if command.startswith("/수익"):
-        send_telegram_message("📊 수익 분석 준비 중입니다...\n잠시만 기다려 주세요.")
-        build_and_send_report()
-    elif command.startswith("/일정"):
-        send_telegram_message("🗓️ 금일 보고 일정은 다음과 같습니다:\n- 오전 9시\n- 오후 1시\n- 오후 11시\n(모두 KST 기준)")
-    elif command.startswith("/리포트"):
-        send_telegram_message("📡 예측 분석은 GPT 기반 외부 처리 시스템에서 수행 중입니다.")
+def generate_schedule_report():
+    return (
+        "🗓️ 금일 보고 일정은 다음과 같습니다:\n"
+        "- 오전 9시\n- 오후 1시\n- 오후 11시\n(모두 KST 기준)"
+    )
