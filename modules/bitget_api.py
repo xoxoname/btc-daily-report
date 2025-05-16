@@ -1,44 +1,54 @@
 import requests
-import time
+import os
 import hmac
 import hashlib
-import os
+import time
+import base64
 
-API_KEY = os.getenv("BITGET_APIKEY")
-API_SECRET = os.getenv("BITGET_APISECRET")
-PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
-BASE_URL = "https://api.bitget.com"
+API_URL = "https://api.bitget.com"
 
-def _get_headers(method, path, body=""):
+def _headers(api_key, api_secret, passphrase, method, path, body=''):
     timestamp = str(int(time.time() * 1000))
-    prehash = f"{timestamp}{method}{path}{body}"
-    signature = hmac.new(
-        API_SECRET.encode(),
-        prehash.encode(),
-        hashlib.sha256
-    ).hexdigest()
-
+    message = timestamp + method + path + body
+    sign = base64.b64encode(hmac.new(api_secret.encode(), message.encode(), hashlib.sha256).digest()).decode()
     return {
-        "ACCESS-KEY": API_KEY,
-        "ACCESS-SIGN": signature,
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": PASSPHRASE,
-        "Content-Type": "application/json"
+        'ACCESS-KEY': api_key,
+        'ACCESS-SIGN': sign,
+        'ACCESS-TIMESTAMP': timestamp,
+        'ACCESS-PASSPHRASE': passphrase,
+        'Content-Type': 'application/json'
     }
 
 def fetch_wallet_balance():
-    path = "/api/v2/account/accounts"
-    url = BASE_URL + path
-    headers = _get_headers("GET", path)
-    res = requests.get(url, headers=headers).json()
-    for acc in res.get("data", []):
-        if acc["marginCoin"] == "USDT":
-            return float(acc["available"]), float(acc["totalEquity"])
+    path = '/api/v2/account/assets'
+    headers = _headers(
+        os.getenv("BITGET_APIKEY"),
+        os.getenv("BITGET_APISECRET"),
+        os.getenv("BITGET_PASSPHRASE"),
+        'GET', path
+    )
+    response = requests.get(API_URL + path, headers=headers).json()
+    for item in response['data']:
+        if item['coin'] == 'USDT':
+            return float(item['available']), float(item['equity'])
     return 0.0, 0.0
 
-def fetch_positions():
-    path = "/api/v2/position/allPosition"
-    url = BASE_URL + path + "?productType=umcbl"
-    headers = _get_headers("GET", path + "?productType=umcbl")
-    res = requests.get(url, headers=headers).json()
-    return res.get("data", [])
+def fetch_position():
+    path = '/api/v2/position/futures/USDT'
+    headers = _headers(
+        os.getenv("BITGET_APIKEY"),
+        os.getenv("BITGET_APISECRET"),
+        os.getenv("BITGET_PASSPHRASE"),
+        'GET', path
+    )
+    response = requests.get(API_URL + path, headers=headers).json()
+    positions = []
+    for p in response['data']:
+        if float(p['total']) != 0:
+            positions.append({
+                'symbol': p['symbol'],
+                'entry_price': float(p['entryPrice']),
+                'market_price': float(p['markPrice']),
+                'pnl': float(p['unrealizedPL'])
+            })
+    return positions
