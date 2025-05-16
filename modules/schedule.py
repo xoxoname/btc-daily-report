@@ -2,12 +2,20 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from modules.constants import REPORT_TIMES_KST
 from modules.report import build_and_send_report
 from modules.emergency import start_emergency_monitor
-
-scheduler = BackgroundScheduler()
+from modules.utils import get_kst_now
 
 def start_scheduler():
-    for time in REPORT_TIMES_KST:
-        scheduler.add_job(build_and_send_report, 'cron', hour=time["hour"], minute=time["minute"])
+    scheduler = BackgroundScheduler()
+
+    for t in REPORT_TIMES_KST:
+        scheduler.add_job(
+            build_and_send_report,
+            'cron',
+            hour=t['hour'],
+            minute=t['minute'],
+            timezone='Asia/Seoul'
+        )
 
     scheduler.start()
     start_emergency_monitor()
+    print("✅ 스케줄러 시작됨")
