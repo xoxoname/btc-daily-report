@@ -1,4 +1,0 @@
-COIN = "BTCUSDT"
-EXCHANGE = "bitget"
-CURRENCY = "USD"
-KRW_RATE = 1370
