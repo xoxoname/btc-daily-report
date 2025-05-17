@@ -5,6 +5,10 @@ from modules.utils import send_telegram_message, authorized
 
 app = Flask(__name__)
 
+@app.route("/", methods=["GET"])
+def index():
+    return "✅ BTC 데일리 리포트 서버가 정상 작동 중입니다."
+
 @app.route("/report", methods=["GET", "HEAD"])
 def report():
     if request.method == "HEAD":
@@ -37,7 +41,7 @@ def telegram_webhook():
     message = data.get("message", {})
     text = message.get("text", "")
     chat_id = str(message.get("chat", {}).get("id", ""))
-    
+
     if chat_id != TELEGRAM_CHAT_ID:
         return "unauthorized", 403
 
