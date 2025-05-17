@@ -2,12 +2,13 @@ from flask import Flask, request
 from modules.report import generate_full_report, generate_profit_report, generate_prediction
 from modules.constants import TELEGRAM_CHAT_ID
 from modules.utils import send_telegram_message, authorized
-import os
 
 app = Flask(__name__)
 
-@app.route("/report", methods=["GET"])
+@app.route("/report", methods=["GET", "HEAD"])
 def report():
+    if request.method == "HEAD":
+        return "", 200
     if not authorized(request):
         return "Unauthorized", 403
     msg = generate_full_report()
@@ -31,4 +32,4 @@ def prediction():
     return {"status": "success", "prediction": msg}
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=10000)  # 🔥 Render 인식 가능하게 수정
