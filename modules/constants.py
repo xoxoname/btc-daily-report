@@ -1,0 +1,3 @@
+# Constants
+TELEGRAM_CHAT_ID = 1038440081
+BOT_NAME = 'BTC 리포트 시스템'
