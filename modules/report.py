@@ -1,6 +1,7 @@
 import openai
 import requests
 from modules.constants import OPENAI_API_KEY
+from modules.utils import get_bitget_data
 
 openai.api_key = OPENAI_API_KEY
 
@@ -40,10 +41,23 @@ def generate_full_report():
     return res.choices[0].message.content
 
 def generate_profit_report():
-    prompt = """
+    usdkrw = get_btc_price()[1]
+    bitget = get_bitget_data()
+    realized = bitget["realized"]
+    unrealized = bitget["unrealized"]
+    total = realized + unrealized
+    krw_realized = realized * usdkrw
+    krw_unrealized = unrealized * usdkrw
+    krw_total = total * usdkrw
+
+    prompt = f"""
 📊 [비트코인 수익 리포트 요청]
 
-현재 투자자의 실현 손익, 미실현 손익, 총 수익률, 오늘 수익 등 항목을 아래와 같은 형식으로 실시간 데이터를 기반으로 작성해줘.
+현재 실현 손익은 ${realized:.2f} ≈ {krw_realized:,.0f}원,  
+미실현 손익은 ${unrealized:.2f} ≈ {krw_unrealized:,.0f}원,  
+총 수익은 ${total:.2f} ≈ {krw_total:,.0f}원입니다.
+
+이 데이터를 반영하여 아래 항목을 보고서 형식으로 작성해줘:
 
 1. 💵 실현 손익 / 미실현 손익 → *BTC 없이*, $USD 및 원화만
 2. 📅 오늘 수익 → $USD 및 원화만
