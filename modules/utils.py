@@ -1,67 +1,41 @@
+import os
+import json
 import requests
-import time
-import hmac
-import hashlib
-from modules.constants import BITGET_APIKEY, BITGET_APISECRET, BITGET_PASSPHRASE
 
-BASE_URL = "https://api.bitget.com"
+PREDICTION_FILE = "latest_prediction.json"
 
-def _get_timestamp():
-    return str(int(time.time() * 1000))
+def save_prediction(data):
+    try:
+        with open(PREDICTION_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"Prediction save failed: {e}")
 
-def _sign(method, path, timestamp, query_string="", body=""):
-    pre_hash = f"{timestamp}{method}{path}{query_string}{body}"
-    return hmac.new(BITGET_APISECRET.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
-
-def _headers(method, path, query_string="", body=""):
-    timestamp = _get_timestamp()
-    signature = _sign(method, path, timestamp, query_string, body)
-    return {
-        "ACCESS-KEY": BITGET_APIKEY,
-        "ACCESS-SIGN": signature,
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": BITGET_PASSPHRASE,
-        "Content-Type": "application/json"
-    }
-
-def get_bitget_positions():
-    path = "/api/mix/v1/position/allPosition?productType=umcbl"
-    url = BASE_URL + path
-    headers = _headers("GET", path)
-    res = requests.get(url, headers=headers)
-    return res.json()
-
-def get_bitget_account():
-    path = "/api/mix/v1/account/account?productType=umcbl"
-    url = BASE_URL + path
-    headers = _headers("GET", path)
-    res = requests.get(url, headers=headers)
-    return res.json()
+def load_previous_prediction():
+    try:
+        if os.path.exists(PREDICTION_FILE):
+            with open(PREDICTION_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Prediction load failed: {e}")
+    return None
 
 def get_bitget_data():
-    pos_data = get_bitget_positions()
-    acc_data = get_bitget_account()
-
-    total_realized = 0
-    total_unrealized = 0
-    margin = 0
-    assets = []
-
-    if pos_data.get("code") == "00000":
-        for p in pos_data["data"]:
-            if p["marginMode"] == "crossed" and p["margin"] != "0":
-                upnl = float(p["unrealizedPL"])
-                rpnl = float(p["realizedPL"])
-                total_unrealized += upnl
-                total_realized += rpnl
-                margin += float(p["margin"])
-
-    if acc_data.get("code") == "00000":
-        assets = acc_data["data"]
-
+    try:
+        response = requests.get("https://btc-daily-report.onrender.com/report")
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "realized": float(data.get("realized_pnl", 0)),
+                "unrealized": float(data.get("unrealized_pnl", 0)),
+                "margin": float(data.get("initial_margin", 1)),
+                "positions": data.get("positions", [])
+            }
+    except Exception as e:
+        print(f"Bitget fetch failed: {e}")
     return {
-        "realized": total_realized,
-        "unrealized": total_unrealized,
-        "margin": margin,
-        "assets": assets
+        "realized": 0,
+        "unrealized": 0,
+        "margin": 1,
+        "positions": []
     }
