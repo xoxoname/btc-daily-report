@@ -1,22 +1,23 @@
 import os
-from openai import OpenAI
+import openai
 from modules.utils import (
     get_current_timestamp,
     get_bitget_data,
     format_usd,
     format_krw,
-    get_prediction_result,
-    get_prediction_feedback,
+    save_prediction,
+    load_previous_prediction
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 def generate_profit_report():
     data = get_bitget_data()
     pos = data["positions"][0]
 
-    msg = f"""📆 *{get_current_timestamp()} 기준 수익 리포트*
+    msg = f"""
+📆 *{get_current_timestamp()} 기준 수익 리포트*
 
 💸 [실시간 수익 리포트]
 
@@ -31,7 +32,7 @@ def generate_profit_report():
 📊 *총 수익:* {format_usd(data['total_pnl'])} (약 {format_krw(data['total_krw'])})
 """
 
-    if data["total_pnl"] < 0:
+    if data['total_pnl'] < 0:
         msg += f"""
 😥 *멘탈 코멘트:*
 오늘은 살짝 흔들렸지만, 포커 게임에서도 한두 번 접는 건 전략입니다.
@@ -48,6 +49,10 @@ def generate_profit_report():
     return msg
 
 
+def generate_full_report():
+    return "📡 GPT 기반 정규 분석 리포트는 현재 생성 중입니다."
+
+
 def generate_prediction():
     prompt = (
         "비트코인 매매 동향 예측 보고서를 다음 형식으로 작성해줘:\n"
@@ -61,25 +66,10 @@ def generate_prediction():
         "8. 센스있고 위트있는 멘탈 관리 코멘트 (수익 여부 따라 다르게)"
     )
 
-    res = client.chat.completions.create(
+    completion = openai.chat.completions.create(
         model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": prompt}]
     )
 
-    return f"📆 *{get_current_timestamp()} 기준 분석 결과입니다.*\n\n{res.choices[0].message.content}"
-
-
-def generate_full_report():
-    news_analysis = get_prediction_result()
-    feedback = get_prediction_feedback()
-
-    return f"""📍 [BTC 매매 동향 예측 분석]  
-발행 시각: {get_current_timestamp()}
-
-━━━━━━━━━━━━━━━━━━━━
-{news_analysis}
-━━━━━━━━━━━━━━━━━━━━
-🔁 *이전 예측 검증 결과*
-{feedback}
-━━━━━━━━━━━━━━━━━━━━
-"""
+    result = completion.choices[0].message.content
+    return f"📡 *{get_current_timestamp()} 기준 분석 결과입니다.*\n\n{result}"
