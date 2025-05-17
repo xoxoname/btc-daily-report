@@ -1,19 +1,41 @@
-import os
+# modules/telegram.py
+import asyncio
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from modules.report import get_formatted_report
+from telegram.ext import Application, CommandHandler, ContextTypes
+from modules.report import generate_report, generate_profit, generate_forecast, generate_schedule
+import os
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-AUTHORIZED_CHAT_ID = "1038440081"  # 사용자의 Chat ID
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID"))
 
-# 명령어 응답 핸들러
-async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.effective_chat.id) != AUTHORIZED_CHAT_ID:
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != CHAT_ID:
         return
-    await update.message.reply_text(get_formatted_report())
+    message = await generate_report()
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=message)
 
-# 명령어 등록 및 봇 실행
+async def profit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != CHAT_ID:
+        return
+    message = await generate_profit()
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=message)
+
+async def forecast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != CHAT_ID:
+        return
+    message = await generate_forecast()
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=message)
+
+async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != CHAT_ID:
+        return
+    message = await generate_schedule()
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=message)
+
 def start_bot():
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("report", report))
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("report", report_command))
+    app.add_handler(CommandHandler("profit", profit_command))
+    app.add_handler(CommandHandler("forecast", forecast_command))
+    app.add_handler(CommandHandler("schedule", schedule_command))
     app.run_polling()
