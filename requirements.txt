@@ -1,0 +1,6 @@
+flask
+requests
+openai
+python-telegram-bot
+python-dateutil
+pytz
