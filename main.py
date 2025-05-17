@@ -1,4 +1,3 @@
-# Main entry point
 from modules.telegram import start_bot
 
 if __name__ == '__main__':
