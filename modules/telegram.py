@@ -27,7 +27,7 @@ async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "📅 향후 7일간 주요 일정 (/일정 명령어 예시)\n"
+        "📅 향후 7일간 주요 일정 (/schedule 명령어 예시)\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "📌 5/18 (토) 21:30 — FOMC 의사록 공개\n"
         "📌 5/20 (월) 09:00 — 🇰🇷 수출입지수 발표\n"
@@ -45,10 +45,10 @@ def run_bot():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("리포트", report))
-    app.add_handler(CommandHandler("수익", profit))
-    app.add_handler(CommandHandler("예측", forecast))
-    app.add_handler(CommandHandler("일정", schedule))
+    app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("profit", profit))
+    app.add_handler(CommandHandler("forecast", forecast))
+    app.add_handler(CommandHandler("schedule", schedule))
 
     print("✅ Telegram Bot started with polling...")
     app.run_polling()
