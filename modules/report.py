@@ -1,151 +1,85 @@
-import openai
-import datetime
-import requests
-import json
-from pytz import timezone
-from modules.constants import OPENAI_API_KEY
-from modules.utils import save_prediction, load_previous_prediction, get_bitget_data
+# modules/report.py
+import os
+from openai import OpenAI
+from modules.utils import (
+    get_current_timestamp,
+    get_bitget_data,
+    format_usd,
+    format_krw,
+    load_previous_prediction,
+    save_prediction
+)
 
-openai.api_key = OPENAI_API_KEY
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def generate_full_report():
-    now = datetime.datetime.now(timezone("Asia/Seoul"))
-    formatted_time = now.strftime("⏱️ 수집 시각: %Y년 %m월 %d일 %p %I:%M (KST)").replace("AM", "오전").replace("PM", "오후")
-
-    prev = load_previous_prediction()
-    prev_section = ""
-    if prev:
-        prev_section = f"""
-━━━━━━━━━━━━━━━━━━━━
-
-🔁 6. 이전 예측 검증
-- 전 리포트 예측: {prev['trend']} 확률 {prev['prob']}%
-- 실제 시세 범위: {prev['range']} / 실제 마감 시세: {prev['actual']}
-- 검증 결과: {"✅ 예측 적중" if prev['hit'] else "❌ 예측 실패"}
-"""
-
-    prompt = """
-📌 아래 항목을 포함한 비트코인 정규 리포트를 실시간 기반으로 생성해줘.
-1. 📌 시장 뉴스 및 이벤트 요약 (호재/중립/악재)
-2. 📈 기술 분석 (RSI, MACD, 지지/저항 등)
-3. 🧠 심리 및 구조 분석 (공포탐욕지수, 펀딩비, 롱/숏 비율 등)
-4. ⏱ 12시간 매매 전망 (확률 및 가격 범위 제시)
-5. 🚨 예외 상황 여부 (있다면 요약)
-6. 💰 수익 정보 요약 (실현, 미실현, 총 수익률)
-7. 😌 멘탈 코멘트 (센스 있고 수익 상태 반영)
-- 출력은 마크다운 + 이모지 + 구역 구분선(━━━━━━━━━━━━━) 사용
-- 이전 예측 검증은 6번에 이어 붙여줘
-"""
-    res = openai.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.4,
-    )
-    content = res.choices[0].message.content.strip()
-
-    save_prediction({
-        "trend": "상승",
-        "prob": 63,
-        "range": "$10250 ~ $10400",
-        "actual": "$10310",
-        "hit": True
-    })
-
-    return f"{formatted_time}\n\n📍 [BTC 매매 동향 예측 분석]  \n발행 시각: {now.strftime('%Y년 %m월 %d일 %p %I:%M')} (KST 기준)\n\n━━━━━━━━━━━━━━━━━━━━\n\n{content}{prev_section}"
-
-def generate_prediction_report():
-    now = datetime.datetime.now(timezone("Asia/Seoul"))
-    formatted_time = now.strftime("⏱️ 수집 시각: %Y년 %m월 %d일 %p %I:%M (KST)").replace("AM", "오전").replace("PM", "오후")
-
-    prompt = """
-📌 아래 항목에 대해 실시간 데이터 기준으로 BTC 12시간 예측 리포트를 생성해줘.
-1. 🗞️ 시장 이벤트 요약 (호재/중립/악재)
-2. 📈 기술적 분석 (RSI, MACD 등)
-3. 🧠 심리 및 구조 분석 (공포탐욕지수, 펀딩비, 롱숏비율 등)
-4. 📡 12시간 가격 흐름 예측 (확률 포함, 시세 범위 제시)
-5. 💡 Whale Ratio 등 보조지표와 전략 코멘트
-6. 🧾 오늘 손익 요약 (실현/미실현)
-7. 😌 수익 상태에 따라 다른 위트 있고 센스 있는 멘탈 코멘트
-마크다운 + 이모지 사용해서 각 구간은 ━━━━ 로 구분해줘.
-"""
-    res = openai.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.4,
-    )
-    content = res.choices[0].message.content.strip()
-    return f"{formatted_time}\n\n{content}"
 
 def generate_profit_report():
-    now = datetime.datetime.now(timezone("Asia/Seoul"))
-    formatted_time = now.strftime("⏱️ 수집 시각: %Y년 %m월 %d일 %p %I:%M (KST)").replace("AM", "오전").replace("PM", "오후")
+    data = get_bitget_data()
+    pos = data["positions"][0]
 
-    usdkrw = 1350000
-    try:
-        r = requests.get("https://btc-daily-report.onrender.com/report")
-        data = r.json()
-        usdkrw = float(data["btc_price_krw"])
-    except:
-        pass
-
-    bitget = get_bitget_data()
-    realized = bitget["realized"]
-    unrealized = bitget["unrealized"]
-    margin = bitget["margin"]
-    positions = bitget["positions"]
-
-    total = realized + unrealized
-    krw_realized = realized * usdkrw
-    krw_unrealized = unrealized * usdkrw
-    krw_total = total * usdkrw
-    entry_asset = margin
-    total_asset = entry_asset + total
-    pnl_rate = (total / entry_asset) * 100 if entry_asset else 0
-
-    pos_lines = []
-    for p in positions:
-        symbol = p["symbol"]
-        entry = float(p["entryPrice"])
-        last = float(p["markPrice"])
-        upnl = float(p["unrealizedPL"])
-        margin_amt = float(p["margin"])
-        liq = float(p["liqPrice"])
-        leverage = p["leverage"]
-        rate = (upnl / margin_amt) * 100 if margin_amt else 0
-        distance = ((last - liq) / last) * 100 if liq else 0
-        risk = "⚠️ 주의" if distance < 5 else "✅ 안정"
-
-        pos_lines.append(f"""🔹 {symbol}
-- 진입가: ${entry:.2f} / 현재가: ${last:.2f}
-- 미실현 손익: ${upnl:.2f} ({rate:+.2f}%)
-- 청산가: ${liq:.2f} / 레버리지: {leverage}배
-- 리스크 수준: {risk} (청산까지 {distance:.2f}% 여유)
-""")
-
-    positions_text = "\n".join(pos_lines)
-    profit_text = f"""
-{formatted_time}
+    msg = f"""📆 {get_current_timestamp()} 기준 수익 리포트
 
 💸 [실시간 수익 리포트]
 
-{positions_text}
+🔹 포지션: {pos['symbol']}
+🔹 진입가: {format_usd(pos['entry_price'])}
+🔹 현재가: {format_usd(pos['current_price'])}
+🔹 미실현 손익: {format_usd(pos['pnl_usd'])} (약 {format_krw(pos['pnl_krw'])})
+🔹 수익률: {data['return_rate']}%
 
-🧾 오늘 실현 손익: ${realized:.2f} (약 {krw_realized:,.0f}원)
-💼 진입 자산: ${entry_asset:.2f} → 현재 평가 자산: ${total_asset:.2f}
-📊 총 수익 : ${total:+.2f} (약 {krw_total:,.0f}원) / 수익률: {pnl_rate:+.2f}%
+🧾 오늘 실현 손익: {format_usd(data['realized'])} (약 {format_krw(data['realized'] * 1370)})
+💼 입금 기준 자산: ${data['deposit']} → ${data['now_asset']}
+📊 총 수익 : {format_usd(data['total_pnl'])} (약 {format_krw(data['total_krw'])})
+"""
 
-😌 멘탈 코멘트:"""
-
-    if total < 0:
-        comment = (
-            "오늘은 살짝 흔들렸지만, 포커 게임에서도 한두 번 접는 건 전략입니다.\n"
-            f"📊 최근 수익률이 양호했다면, 지금은 {abs(total):,.0f}원 휴식 타임이라 생각해도 좋아요."
-        )
+    if data['total_pnl'] < 0:
+        msg += f"""
+😥 멘탈 코멘트:
+오늘은 살짝 흔들렸지만, 포커 게임에서도 한두 번 접는 건 전략입니다.
+📊 지난 7일 누적 수익률은 여전히 +{data['weekly_return']}%로 수익권 유지 중이에요!
+지금은 조급함보다 침착함이 자산을 지키는 열쇠입니다.
+"""
     else:
-        comment = (
-            "수익으로 하루 시작이라니 멋지네요! 🎉\n"
-            "편의점 알바 2시간은 그냥 넘긴 수익이에요.\n"
-            "*성급한 손가락은 수익을 밀어내는 법입니다.*"
-        )
+        msg += """
+😌 멘탈 코멘트:
+오늘은 꽤 잘 버셨네요! 🍕 야식 3번은 시켜 먹을 수 있을 정도입니다.
+무리하지 말고 이 흐름 유지해보세요. 장기전이니까요.
+"""
+    return msg
 
-    return profit_text + "\n" + comment
+
+def generate_full_report():
+    # 향후 실시간 분석용 기능 통합 예정
+    return "📡 GPT 기반 정규 분석 리포트는 현재 생성 중입니다."
+
+
+def generate_prediction():
+    previous = load_previous_prediction()
+    prompt = f"""
+비트코인 매매 동향 예측 보고서를 다음 형식으로 작성해줘. 간결하게, 명확하게, 예시처럼 가독성 좋게 만들어줘. (이전 예측: {previous['direction']} / 실제 결과: {previous['result']}) 참고해서 피드백까지 포함시켜줘.
+
+1. 시장 뉴스 및 이벤트 요약 (호재/악재/중립)
+2. 기술적 분석 요약 (호재/악재/중립)
+3. 심리 및 구조 분석 (호재/악재/중립)
+4. 향후 12시간 예측 (상승/하락/횡보 확률 + 시세 구간)
+5. 예외 상황 감지 (있으면 원인 포함)
+6. 이전 예측 검증 결과 요약
+7. 오늘 손익 및 수익률 (한화 환산 포함)
+8. 위트 있고 센스 있는 멘탈 코멘트 (수익 여부 따라 다르게)
+
+출력은 다음과 같은 Markdown 형식으로 줄 간격 포함해서 보내줘:
+━━━━━━━━━━━━━━━━━━━━
+제목  
+내용
+━━━━━━━━━━━━━━━━━━━━
+이런 느낌으로 출력해.
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    result = response.choices[0].message.content
+    save_prediction(result)
+    return f"📡 {get_current_timestamp()} 기준 분석 결과입니다.\n\n{result}"
