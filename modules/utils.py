@@ -1,41 +1,59 @@
+# modules/utils.py
+
 import os
-import json
 import requests
+from datetime import datetime
+from pytz import timezone
 
-PREDICTION_FILE = "latest_prediction.json"
+def get_current_timestamp():
+    now = datetime.now(timezone("Asia/Seoul"))
+    return now.strftime("%Y-%m-%d %H:%M")
 
-def save_prediction(data):
-    try:
-        with open(PREDICTION_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        print(f"Prediction save failed: {e}")
+def format_usd(value):
+    return f"${value:,.2f}"
+
+def format_krw(value):
+    return f"{int(value):,}원"
+
+# 🔌 비트겟 실시간 포지션 및 수익 정보 (현재는 mock)
+def get_bitget_data():
+    # 실제 Bitget API 연동 시 여기에 구현
+    return {
+        "positions": [
+            {
+                "symbol": "BTCUSDT",
+                "entry_price": 10200.00,
+                "current_price": 10050.00,
+                "pnl_usd": -150.00,
+                "pnl_krw": -205000
+            }
+        ],
+        "return_rate": -7.1,
+        "realized": -20.00,
+        "deposit": 2100.00,
+        "now_asset": 1930.00,
+        "total_pnl": 170.00,
+        "total_krw": 232000,
+        "weekly_return": 4.2
+    }
+
+# 📄 GPT 예측 결과 저장 및 불러오기
+def save_prediction(text):
+    with open("latest_prediction.txt", "w", encoding="utf-8") as f:
+        f.write(text)
 
 def load_previous_prediction():
     try:
-        if os.path.exists(PREDICTION_FILE):
-            with open(PREDICTION_FILE, "r") as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Prediction load failed: {e}")
-    return None
+        with open("latest_prediction.txt", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "(이전 예측 없음)"
 
-def get_bitget_data():
-    try:
-        response = requests.get("https://btc-daily-report.onrender.com/report")
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                "realized": float(data.get("realized_pnl", 0)),
-                "unrealized": float(data.get("unrealized_pnl", 0)),
-                "margin": float(data.get("initial_margin", 1)),
-                "positions": data.get("positions", [])
-            }
-    except Exception as e:
-        print(f"Bitget fetch failed: {e}")
-    return {
-        "realized": 0,
-        "unrealized": 0,
-        "margin": 1,
-        "positions": []
-    }
+# 📅 향후 7일간 일정 제공
+def get_schedule_data():
+    return [
+        {"date": "5월 17일", "event": "트럼프 대통령 연설", "impact": "시장에 긍정적 신호 제공 가능성"},
+        {"date": "5월 20일", "event": "연준 금리 발표", "impact": "시장 변동성 증가 예상"},
+        {"date": "5월 22일", "event": "미-중 무역 회담", "impact": "시장 안정성 영향 가능성"},
+        {"date": "5월 25일", "event": "비트코인 국제 컨퍼런스", "impact": "시장 관심도 증가 예상"}
+    ]
