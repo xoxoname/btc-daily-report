@@ -1,71 +1,70 @@
-
-def generate_report():
-    return """📍 [BTC Market Movement Forecast Report]
-Published: May 16, 2028, 09:00 (KST)
-Reference Price: $10278.50
-
-━━━━━━━━━━━━━━━━━━━━
-
-📌 1. Market Events & News Summary (Neutral)
-- US PPI matches expectations → Limited impact
-- Trump speech scheduled 10PM KST → Possible short-term volatility
-- ETF approval rumors re-emerging but no official confirmation
-
-🧩 *News currently not enough to trigger big swings, but volatility may increase before weekend.*
+def get_formatted_report():
+    return """📍 [BTC 매매 동향 예측 분석]  
+발행 시각: 2028년 5월 16일 오전 9:00 (KST 기준)  
+분석 기준 시세: $10278.50 
 
 ━━━━━━━━━━━━━━━━━━━━
 
-📈 2. Technical Analysis (Bullish)
-- RSI: 58.1 (Not overheated, room for uptrend)
-- MACD: Golden Cross on 1H & 4H charts
-- Support: $10180 / Resistance: $10400
-- OBV rising → Buying pressure visible
+📌 1. 시장 이벤트 및 뉴스 요약 (중립)
+- 미국 PPI 발표 결과 예상치 부합 → 시장 영향 제한적
+- 트럼프 연설 예고(한국시간 오늘 밤 10시) → 단기 변동성 유발 가능성
+- ETF 승인 루머 재확산 중이나 공식 발표 無
 
-📌 *Maintaining short-term bullish momentum.*
-
-━━━━━━━━━━━━━━━━━━━━
-
-🧠 3. Sentiment/Structural Analysis (Neutral)
-- Fear/Greed Index: 63 (Greed)
-- Funding Rate: +0.009% (mild long bias)
-- Unfilled long positions rising → Caution near resistance
-
-📌 *Market sentiment optimistic but cautious near top.*
+🧩 *현재 뉴스는 가격 급등/급락을 야기할 수준은 아니나, 주말 전 변동성 확대는 유효.*
 
 ━━━━━━━━━━━━━━━━━━━━
 
-⏱ 4. 12-Hour Forecast
+📈 2. 기술적 분석 (호재)
+- RSI: 58.1 (과열 아님, 상승 여력 있음)
+- MACD: 1H 및 4H 기준 골든크로스 유지
+- 주요 지지선: $10180 / 주요 저항선: $10400
+- OBV 상승 중 → 매수세 유입 확인
 
-- 🔼 Upside Probability: 63%
-- ➖ Sideways Probability: 24%
-- 🔽 Downside Probability: 13%
-- 📍 Expected Range: **$10250 ~ $10400**
-
-🎯 *This breakout range may set weekly direction.*
-
-━━━━━━━━━━━━━━━━━━━━
-
-🚨 5. Exception Detection
-- Trump speech (22:00 KST) & China industrial data (11:00 KST) → Watch for volatility spikes
+📌 *기술적으로는 단기 상승 모멘텀 유지.*
 
 ━━━━━━━━━━━━━━━━━━━━
 
-🔁 6. Previous Forecast Review
-- Yesterday AM forecast: 70% up probability
-- Actual: $10160 → $10310 close → ✅ **Forecast accurate**
+🧠 3. 심리·구조 분석 (중립)
+- 공포·탐욕지수: 63 (탐욕)
+- 펀딩비: +0.009% (롱 쏠림 약화)
+- 거래소 내 미체결 롱 비중 증가 → 고점 저항 주의 필요
+
+📌 *시장 참여자들의 기대 심리는 높지만, 일부 포지션 청산 주의.*
 
 ━━━━━━━━━━━━━━━━━━━━
 
-💰 Profit Summary
-- Realized PnL Today: **+$55.40** (₩76,000)
-- Unrealized PnL: **+$78.50** (₩107,000)
-- Total PnL: **+$133.90** (₩183,000)
+⏱ 4. 향후 12시간 매매 전망
+
+- 🔼 상승 확률: 63%
+- ➖ 횡보 확률: 24%
+- 🔽 하락 확률: 13%
+- 📍 예상 변동 구간: **$10250 ~ $10400**
+
+🎯 *이 구간 돌파 여부가 주간 방향성을 결정할 핵심 트리거.*
 
 ━━━━━━━━━━━━━━━━━━━━
 
-😌 Mental Note
-"The patient one laughs last in this market.
-If you're in profit, there's no rush.
-Today's gain buys 5 late-night meal sets 🍕
-*Impatience pushes profits away.*"
+🚨 5. 예외 상황 감지
+- 트럼프 연설(한국시간 22시) 및 중국 산업생산 지표(오전 11시) → 변동성 확대 주의
+
+━━━━━━━━━━━━━━━━━━━━
+
+🔁 6. 이전 예측 검증
+- 전일 오전 리포트: 상승 확률 70% 제시  
+- 실제 시세: $10160 → $10310 마감 → ✅ **예측 적중**
+
+━━━━━━━━━━━━━━━━━━━━
+
+💰 수익 정보 요약
+- 금일 실현 손익: **+$55.40** (약 7만 6천원)
+- 미실현 손익: **+$78.50** (약 10만 7천원)
+- 총 수익: **+$133.90** (약 18만 3천원)
+
+━━━━━━━━━━━━━━━━━━━━
+
+😌 오늘의 멘탈 코멘트
+“시장에선 느긋한 자가 끝에 웃습니다.  
+지금 벌고 있으면, 급하지 않아도 됩니다.  
+오늘 수익은 야식 세트 5번 시켜도 남을 정도네요 🍕  
+*성급한 손가락은 수익을 밀어내는 법입니다.*”
 """
