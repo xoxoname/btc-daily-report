@@ -28,12 +28,12 @@ def generate_full_report():
 
     위 기준으로 가장 정밀한 분석을 한국어로 작성해줘. GPT 캐시 없이 최신 정보 기준으로.
     """
-    res = openai.ChatCompletion.create(
+    res = openai.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.4,
     )
-    return res.choices[0].message["content"]
+    return res.choices[0].message.content
 
 def generate_profit_report():
     prompt = """
@@ -45,12 +45,12 @@ def generate_profit_report():
     - 불안 심리 완화 멘트 작성
     한국어로 전체 보고서 형식으로 작성해줘.
     """
-    res = openai.ChatCompletion.create(
+    res = openai.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.4,
     )
-    return res.choices[0].message["content"]
+    return res.choices[0].message.content
 
 def generate_prediction():
     prompt = """
@@ -63,9 +63,9 @@ def generate_prediction():
 
     위 내용을 실시간 데이터 기준으로 작성해줘. 자연어 한국어 형식으로.
     """
-    res = openai.ChatCompletion.create(
+    res = openai.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.45,
     )
-    return res.choices[0].message["content"]
+    return res.choices[0].message.content
