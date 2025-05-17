@@ -1,104 +1,96 @@
+# modules/report.py
+from modules.utils import fetch_realtime_data, krw, get_now_kst
 
-def generate_report():
-    return """📍 [BTC 매매 동향 예측 분석]
-발행 시각: 2028년 5월 16일 오전 9:00 (KST 기준)
-분석 기준 시세: $10278.50
-
+async def generate_report():
+    data = await fetch_realtime_data()
+    now = get_now_kst()
+    return f"""
+📍 [BTC 매매 동향 예측 분석]  
+발행 시각: {now} (KST 기준)  
+분석 기준 시세: ${data['price']:,.2f} 
 ━━━━━━━━━━━━━━━━━━━━
-📌 1. 시장 이벤트 및 뉴스 요약 (중립)
-- 미국 PPI 발표 결과 예상치 부합 → 시장 영향 제한적
-- 트럼프 연설 예고(한국시간 오늘 밤 10시) → 단기 변동성 유발 가능성
-- ETF 승인 루머 재확산 중이나 공식 발표 無
-
-🧩 현재 뉴스는 가격 급등/급락을 야기할 수준은 아니나, 주말 전 변동성 확대는 유효.
+📌 1. 시장 이벤트 및 뉴스 요약 ({data['news_grade']})
+{data['news_summary']}
 ━━━━━━━━━━━━━━━━━━━━
-📈 2. 기술적 분석 (호재)
-- RSI: 58.1 (과열 아님, 상승 여력 있음)
-- MACD: 1H 및 4H 기준 골든크로스 유지
-- 주요 지지선: $10180 / 주요 저항선: $10400
-- OBV 상승 중 → 매수세 유입 확인
-
-📌 기술적으로는 단기 상승 모멘텀 유지.
+📈 2. 기술적 분석 ({data['tech_grade']})
+{data['tech_summary']}
 ━━━━━━━━━━━━━━━━━━━━
-🧠 3. 심리·구조 분석 (중립)
-- 공포·탐욕지수: 63 (탐욕)
-- 펀딩비: +0.009% (롱 쏠림 약화)
-- 거래소 내 미체결 롱 비중 증가 → 고점 저항 주의 필요
-
-📌 시장 참여자들의 기대 심리는 높지만, 일부 포지션 청산 주의.
+🧠 3. 심리·구조 분석 ({data['sentiment_grade']})
+{data['sentiment_summary']}
 ━━━━━━━━━━━━━━━━━━━━
 ⏱ 4. 향후 12시간 매매 전망
-- 🔼 상승 확률: 63%
-- ➖ 횡보 확률: 24%
-- 🔽 하락 확률: 13%
-- 📍 예상 변동 구간: $10250 ~ $10400
-
-🎯 이 구간 돌파 여부가 주간 방향성을 결정할 핵심 트리거.
+- 🔼 상승 확률: {data['forecast_up']}%
+- ➖ 횡보 확률: {data['forecast_side']}%
+- 🔽 하락 확률: {data['forecast_down']}%
+- 📍 예상 변동 구간: **${data['range_low']:,} ~ ${data['range_high']:,}**
 ━━━━━━━━━━━━━━━━━━━━
 🚨 5. 예외 상황 감지
-- 트럼프 연설(한국시간 22시) 및 중국 산업생산 지표(오전 11시) → 변동성 확대 주의
+{data['exception_summary']}
 ━━━━━━━━━━━━━━━━━━━━
 🔁 6. 이전 예측 검증
-- 전일 오전 리포트: 상승 확률 70% 제시
-- 실제 시세: $10160 → $10310 마감 → ✅ 예측 적중
+{data['backtest_result']}
 ━━━━━━━━━━━━━━━━━━━━
 💰 수익 정보 요약
-- 금일 실현 손익: +$55.40 (약 7만 6천원)
-- 미실현 손익: +$78.50 (약 10만 7천원)
-- 총 수익: +$133.90 (약 18만 3천원)
+- 금일 실현 손익: **${data['realized']:.2f}** (약 {krw(data['realized'])})
+- 미실현 손익: **${data['unrealized']:.2f}** (약 {krw(data['unrealized'])})
+- 총 수익: **${data['total_profit']:.2f}** (약 {krw(data['total_profit'])})
 ━━━━━━━━━━━━━━━━━━━━
 😌 오늘의 멘탈 코멘트
-“시장에선 느긋한 자가 끝에 웃습니다.
-지금 벌고 있으면, 급하지 않아도 됩니다.
-오늘 수익은 야식 세트 5번 시켜도 남을 정도네요 🍕
-성급한 손가락은 수익을 밀어내는 법입니다.”
+{data['comment']}
+━━━━━━━━━━━━━━━━━━━━
 """
 
-def generate_profit():
-    return """💸 [실시간 수익 리포트]
+async def generate_profit():
+    data = await fetch_realtime_data()
+    return f"""
+💸 [실시간 수익 리포트]
+
 🔹 포지션: BTCUSDT
-🔹 진입가: $10200.00
-🔹 현재가: $10050.00
-🔹 미실현 손익: -$150.00 (약 -20만 5천원)
-🔹 수익률: -7.1%
-🧾 오늘 실현 손익: -$20.00 (약 -2만 7천원)
-💼 입금 기준 자산: $2100.00 → $1930.00
-📊 총 수익 : +$170.00 (약 +23만 2천원)
-😥 멘탈 코멘트:
-오늘은 살짝 흔들렸지만, 포커 게임에서도 한두 번 접는 건 전략입니다.
-📊 지난 7일 누적 수익률은 여전히 +4.2%로 수익권 유지 중이에요!
-지금은 조급함보다 침착함이 자산을 지키는 열쇠입니다."""
+🔹 진입가: ${data['entry_price']}
+🔹 현재가: ${data['price']}
+🔹 미실현 손익: {data['unrealized']} ({krw(data['unrealized'])})
+🔹 수익률: {data['pnl_percent']}%
 
-def generate_forecast():
-    return """🔮 [BTC 12시간 예측 리포트]
+🧾 오늘 실현 손익: {data['realized']} ({krw(data['realized'])})
+💼 입금 기준 자산: ${data['initial']} → ${data['current']}
+📊 총 수익 : {data['total_profit']} ({krw(data['total_profit'])})
+
+{data['comment']}
+"""
+
+async def generate_forecast():
+    data = await fetch_realtime_data()
+    return f"""
+🔮 [BTC 12시간 예측 리포트]
+
 🗞️ 시장 이벤트 요약
-- 미국 실업수당 신규 청구건수 예상치 상회 → 📉 약간의 악재
-- FOMC 위원 발언 "연내 1회 금리 인하 가능성" → 📈 중장기적 호재
+{data['news_summary']}
 📈 기술적 분석
-- RSI: 39 (약세 영역 진입)
-- MACD: 데드크로스 근접
-📉 단기적으로는 하락 시그널이 우세
+{data['tech_summary']}
 🧠 심리/구조적 분석
-- 숏 비율 급증 + Funding Rate -0.015%
-📉 과매도 구간 진입 예상, 단기 반등 가능성은 있음
-📡 12시간 내 예상 흐름
-- 하락 가능성: 65%
-- 횡보 가능성: 25%
-- 상승 가능성: 10%
-➡️ 예측 시세 범위: $99,300 ~ $100,600
-💡 GPT 보조 지표: Whale Ratio(고래 거래소 유입량 증가 중) → 단기 리스크 신호
-🧾 오늘 손익
-- 금일 실현 손익: -$20.00
-- 현재 미실현 손익: -$150.00
-- 📉 금일 총 손익: -$170.00
-😌 멘탈 코멘트:
-오늘은 좀 꼬였지만, 이럴 땐 오히려 덤덤하게! 📉
-급락 후 급등도 있는 게 BTC예요. 무리한 매매보단, 체력 회복의 시간으로 삼아보세요 :)"""
+{data['sentiment_summary']}
 
-def generate_schedule():
-    return """📅 향후 7일간 주요 일정
+📡 12시간 내 예상 흐름
+- 하락 가능성: {data['forecast_down']}%
+- 횡보 가능성: {data['forecast_side']}%
+- 상승 가능성: {data['forecast_up']}%
+➡️ 예측 시세 범위: ${data['range_low']} ~ ${data['range_high']}
+
+💡 GPT 보조 지표: {data['gpt_signal']}
+
+🧾 오늘 손익
+- 금일 실현 손익: {data['realized']}
+- 현재 미실현 손익: {data['unrealized']}
+- 📉 금일 총 손익: {data['total_profit']}
+
+😌 멘탈 코멘트
+{data['comment']}
+"""
+
+async def generate_schedule():
+    data = await fetch_realtime_data()
+    return f"""
+📅 향후 7일간 주요 일정
 날짜 (KST)	이벤트	예상 영향
-5월 17일	트럼프 대통령의 암호화폐 관련 연설	시장에 긍정적 신호 제공 가능성
-5월 20일	연준의 금리 결정 발표	시장 변동성 증가 예상
-5월 22일	미국-중국 무역 협상 회담	시장 안정성에 영향 가능성
-5월 25일	비트코인 관련 국제 컨퍼런스	시장 관심도 증가 예상"""
+{data['schedule']}
+"""
