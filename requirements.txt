@@ -1,1 +1,4 @@
-# requirements.txt - placeholder content
+flask
+requests
+openai
+python-telegram-bot==22.1
