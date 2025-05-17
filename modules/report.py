@@ -1,16 +1,16 @@
 import os
-import openai
+from openai import OpenAI
 from modules.utils import (
     get_current_timestamp,
     get_bitget_data,
     format_usd,
     format_krw,
     save_prediction,
-    load_previous_prediction
+    load_previous_prediction,
 )
+from modules.constants import MODEL
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def generate_profit_report():
     data = get_bitget_data()
@@ -27,8 +27,8 @@ def generate_profit_report():
 🔹 *미실현 손익:* {format_usd(pos['pnl_usd'])} (약 {format_krw(pos['pnl_krw'])})
 🔹 *수익률:* {data['return_rate']}%
 
-🧾 *오늘 실현 손익:* {format_usd(data['realized'])} (약 {format_krw(data['realized'] * 1370)})
-💼 *입금 기준 자산:* ${data['deposit']} → ${data['now_asset']}
+🧾 *오늘 실현 손익:* {format_usd(data['realized'])} (약 {format_krw(data['realized_krw'])})
+💼 *입금 기준 자산:* {format_usd(data['deposit'])} → {format_usd(data['now_asset'])}
 📊 *총 수익:* {format_usd(data['total_pnl'])} (약 {format_krw(data['total_krw'])})
 """
 
@@ -49,10 +49,6 @@ def generate_profit_report():
     return msg
 
 
-def generate_full_report():
-    return "📡 GPT 기반 정규 분석 리포트는 현재 생성 중입니다."
-
-
 def generate_prediction():
     prompt = (
         "비트코인 매매 동향 예측 보고서를 다음 형식으로 작성해줘:\n"
@@ -66,10 +62,20 @@ def generate_prediction():
         "8. 센스있고 위트있는 멘탈 관리 코멘트 (수익 여부 따라 다르게)"
     )
 
-    completion = openai.chat.completions.create(
-        model="gpt-4",
+    completion = client.chat.completions.create(
+        model=MODEL,
         messages=[{"role": "user", "content": prompt}]
     )
 
     result = completion.choices[0].message.content
+    save_prediction(result)
+
     return f"📡 *{get_current_timestamp()} 기준 분석 결과입니다.*\n\n{result}"
+
+
+def generate_full_report():
+    try:
+        previous = load_previous_prediction()
+        return f"📡 *{get_current_timestamp()} 정규 리포트*\n\n{previous}"
+    except Exception:
+        return "📡 이전 예측 결과를 불러올 수 없습니다. 새 리포트를 생성해 주세요."
