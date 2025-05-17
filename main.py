@@ -31,5 +31,27 @@ def prediction():
     send_telegram_message(msg)
     return {"status": "success", "prediction": msg}
 
+@app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    data = request.json
+    message = data.get("message", {})
+    text = message.get("text", "")
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    
+    if chat_id != TELEGRAM_CHAT_ID:
+        return "unauthorized", 403
+
+    if text == "/리포트":
+        msg = generate_full_report()
+    elif text == "/수익":
+        msg = generate_profit_report()
+    elif text == "/예측":
+        msg = generate_prediction()
+    else:
+        msg = "❌ 지원하지 않는 명령어입니다.\n가능한 명령어: /리포트 /수익 /예측"
+
+    send_telegram_message(msg)
+    return {"ok": True}
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)  # 🔥 Render 인식 가능하게 수정
+    app.run(host="0.0.0.0", port=10000)
