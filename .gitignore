@@ -1,8 +1,6 @@
 __pycache__/
-.env
 *.pyc
-venv/
-*.log
-.DS_Store
-.idea/
-*.sqlite3
+*.pyo
+*.pyd
+.env
+latest_prediction.json
