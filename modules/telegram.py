@@ -1,15 +1,14 @@
-import requests
 import os
+import requests
 
-def send_telegram_message(chat_id, message):
-    token = os.environ['TELEGRAM_BOT_TOKEN']
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {
-        "chat_id": chat_id,
-        "text": message,
+        "chat_id": CHAT_ID,
+        "text": text,
         "parse_mode": "Markdown"
     }
-
-    response = requests.post(url, json=payload)
-    return response.json()
+    requests.post(url, json=payload)
