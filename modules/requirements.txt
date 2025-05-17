@@ -1,0 +1,6 @@
+flask
+requests
+openai
+python-telegram-bot==22.1
+python-dateutil
+pytz
