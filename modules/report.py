@@ -1,25 +1,22 @@
-# modules/report.py
-
 import os
-import openai
-from datetime import datetime
+from openai import OpenAI
 from modules.utils import (
     get_current_timestamp,
     get_bitget_data,
     format_usd,
     format_krw,
-    save_prediction,
-    load_previous_prediction,
-    get_schedule_data,
+    get_prediction_result,
+    get_prediction_feedback,
 )
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 
 def generate_profit_report():
     data = get_bitget_data()
     pos = data["positions"][0]
 
-    report = f"""📆 *{get_current_timestamp()} 기준 수익 리포트*
+    msg = f"""📆 *{get_current_timestamp()} 기준 수익 리포트*
 
 💸 [실시간 수익 리포트]
 
@@ -31,23 +28,24 @@ def generate_profit_report():
 
 🧾 *오늘 실현 손익:* {format_usd(data['realized'])} (약 {format_krw(data['realized'] * 1370)})
 💼 *입금 기준 자산:* ${data['deposit']} → ${data['now_asset']}
-📊 *총 수익 :* {format_usd(data['total_pnl'])} (약 {format_krw(data['total_krw'])})
+📊 *총 수익:* {format_usd(data['total_pnl'])} (약 {format_krw(data['total_krw'])})
 """
 
-    if data['total_pnl'] < 0:
-        report += f"""
+    if data["total_pnl"] < 0:
+        msg += f"""
 😥 *멘탈 코멘트:*
 오늘은 살짝 흔들렸지만, 포커 게임에서도 한두 번 접는 건 전략입니다.
 📊 지난 7일 누적 수익률은 여전히 +{data['weekly_return']}%로 수익권 유지 중이에요!
 지금은 조급함보다 침착함이 자산을 지키는 열쇠입니다.
 """
     else:
-        report += """
+        msg += """
 😌 *멘탈 코멘트:*
 오늘은 꽤 잘 버셨네요! 🍕 야식 3번은 시켜 먹을 수 있을 정도입니다.
 무리하지 말고 이 흐름 유지해보세요. 장기전이니까요.
 """
-    return report
+
+    return msg
 
 
 def generate_prediction():
@@ -63,35 +61,25 @@ def generate_prediction():
         "8. 센스있고 위트있는 멘탈 관리 코멘트 (수익 여부 따라 다르게)"
     )
 
-    completion = openai.chat.completions.create(
+    res = client.chat.completions.create(
         model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
     )
 
-    result = completion.choices[0].message.content
-    save_prediction(result)
-    return f"📡 *{get_current_timestamp()} 기준 분석 결과입니다.*\n\n{result}"
+    return f"📆 *{get_current_timestamp()} 기준 분석 결과입니다.*\n\n{res.choices[0].message.content}"
 
 
 def generate_full_report():
-    try:
-        current = generate_prediction()
-        previous = load_previous_prediction()
-        verification = "\n\n🔁 *예측 검증:* 이전 예측과 실제 결과 비교 후 정확도 및 보완점 자동 분석 예정입니다."
+    news_analysis = get_prediction_result()
+    feedback = get_prediction_feedback()
 
-        return f"{current}{verification}"
-    except Exception as e:
-        return f"⚠️ 정규 리포트 생성 중 오류 발생: {e}"
+    return f"""📍 [BTC 매매 동향 예측 분석]  
+발행 시각: {get_current_timestamp()}
 
-
-def generate_schedule_report():
-    items = get_schedule_data()
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    msg = f"📅 *{today} 기준 향후 7일간 주요 일정 (/일정)*\n"
-
-    msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-    for item in items:
-        msg += f"{item['date']} | {item['event']} → {item['impact']}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━\n"
-
-    return msg
+━━━━━━━━━━━━━━━━━━━━
+{news_analysis}
+━━━━━━━━━━━━━━━━━━━━
+🔁 *이전 예측 검증 결과*
+{feedback}
+━━━━━━━━━━━━━━━━━━━━
+"""
