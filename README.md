@@ -1,3 +1,1 @@
-# BTC Futures Forecast System
-
-See `main.py` for entry point.
+# BTC 실시간 GPT 예측 시스템
