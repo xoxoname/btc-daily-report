@@ -1,1 +1,1 @@
-# Bitget API 연동 모듈
+# Bitget exchange integration

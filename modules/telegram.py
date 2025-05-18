@@ -1,1 +1,1 @@
-# 텔레그램 봇 핸들러 및 명령어 처리
+# Telegram bot logic

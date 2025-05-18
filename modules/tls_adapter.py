@@ -1,0 +1,1 @@
+# TLS adapter for HTTPS
