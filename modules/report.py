@@ -1,83 +1,51 @@
-import openai
-import requests
+from modules.bitget_api import fetch_position_info
+from modules.utils import get_btc_price, format_datetime
+from modules.gpt import ask_gpt
+from modules.publicity import get_publicity_events
 import datetime
-from modules.constants import OPENAI_API_KEY, PUBLICITY_API_KEY
-
-openai.api_key = OPENAI_API_KEY
-
-def get_coinbase_price():
-    try:
-        resp = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot")
-        return float(resp.json()["data"]["amount"])
-    except:
-        return None
-
-def get_publicity_events():
-    try:
-        headers = {"Authorization": f"Bearer {PUBLICITY_API_KEY}"}
-        res = requests.get("https://api.publicity.com/v1/events/upcoming", headers=headers)
-        data = res.json()
-        events = [f"- {e['time']} {e['title']}" for e in data.get("events", []) if e.get("importance") == "high"]
-        return "\n".join(events) if events else "- 고변동 이벤트 없음"
-    except:
-        return "- Publicity 일정 불러오기 실패"
 
 def generate_report():
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (KST)")
-    price = get_coinbase_price()
-    events = get_publicity_events()
-    prompt = f"""
-[GPT 역할]
-당신은 비트코인 시장 예측 시스템입니다. 다음 실시간 데이터를 기반으로 /report 형식에 맞춰 리포트를 생성하세요.
-
-- 현재 시각: {now}
-- 현재 BTC 가격: ${price}
-- 예정된 고변동 이벤트:
-{events}
-
-형식 고정:
-📡 GPT 매동 예측 분석 리포트
-📌 시장 이벤트, 기술적 분석, 심리 분석, 예외 감지, 예측 검증, 손익, 멘탈 코멘트 등 포함
-"""
     try:
-        res = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": "비트코인 리포트 작성 시스템"},
-                      {"role": "user", "content": prompt}]
-        )
-        return res.choices[0].message.content.strip()
+        btc_price = get_btc_price()
+        now = format_datetime(datetime.datetime.now())
+        gpt_response = ask_gpt(f"현재 비트코인 가격은 ${btc_price}입니다. 기술적 분석, 심리 분석, 예외 감지, 예측 검증, 손익 분석 및 멘탈 코멘트를 포함한 전체 리포트를 작성해줘.")
+        return f"📡 GPT 매동 예측 분석 리포트
+
+🕘 작성 시각: {now}
+
+📊 현재 BTC 가격: ${btc_price}
+
+{gpt_response}"
     except Exception as e:
-        return f"⚠️ GPT 응답 실패: {str(e)}"
+        return f"⚠️ GPT 분석 실패: {str(e)}"
+
+def generate_profit():
+    try:
+        result = fetch_position_info()
+        return result
+    except Exception as e:
+        return f"⚠️ Bitget 응답 오류: {str(e)}"
 
 def generate_forecast():
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (KST)")
-    price = get_coinbase_price()
-    prompt = f"""
-[GPT 역할]
-당신은 비트코인 단기 예측 시스템입니다. 현재 가격과 추세 기반으로 향후 12시간 내 가격 흐름을 예측하세요.
-
-- 현재 시각: {now}
-- 현재 BTC 가격: ${price}
-
-출력 형식:
-📈 오늘의 단기 매동 예측
-- 기술/심리/구조 분석 요약 + 12시간 예측 확률 + 멘탈 코멘트 포함
-"""
     try:
-        res = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": "비트코인 단기 예측 시스템"},
-                      {"role": "user", "content": prompt}]
-        )
-        return res.choices[0].message.content.strip()
+        btc_price = get_btc_price()
+        gpt_response = ask_gpt(f"비트코인 현재 가격은 ${btc_price}야. 다음 12시간의 매매 동향을 예측해줘. 확률과 함께.")
+        now = format_datetime(datetime.datetime.now())
+        return f"📈 단기 매매 동향 예측
+
+🕘 기준 시각: {now}
+
+📊 현재 BTC 가격: ${btc_price}
+
+{gpt_response}"
     except Exception as e:
-        return f"⚠️ Forecast 생성 실패: {str(e)}"
+        return f"⚠️ GPT 예측 실패: {str(e)}"
 
 def generate_schedule():
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (KST)")
-    events = get_publicity_events()
-    return f"""
-📆 자동 리포트 일정 안내
+    try:
+        events = get_publicity_events()
+        now = format_datetime(datetime.datetime.now())
+        return f"""📆 자동 리포트 일정 안내
 📅 기준 시각: {now}
 ━━━━━━━━━━━━━━━━━━━
 🕓 정규 리포트 발송 시간 (KST 기준)
@@ -87,11 +55,7 @@ def generate_schedule():
 - 오후 11시
 
 📡 예정 주요 이벤트 (Publicity 기준)
-{events}
-━━━━━━━━━━━━━━━━━━━
-📌 명령어 요약
-- /report: GPT 분석 리포트
-- /forecast: 단기 매동 예측
-- /profit: 현재 포지션 및 수익
-- /schedule: 발송 시간 및 주요 일정
-"""
+{events if events else '- Publicity 일정 없음'}
+━━━━━━━━━━━━━━━━━━━"""
+    except Exception as e:
+        return f"⚠️ 일정 생성 실패: {str(e)}"
