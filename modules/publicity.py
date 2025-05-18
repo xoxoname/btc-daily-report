@@ -1,18 +1,12 @@
 import os
 import requests
 
-PUBLICITY_BASE_URL = "https://api.publicity.com/v1"
-
-def fetch_upcoming_events():
+def fetch_publicity_events():
     api_key = os.getenv("PUBLICITY_API_KEY")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    url = f"{PUBLICITY_BASE_URL}/events/upcoming?importance=high&market=crypto"
+    url = "https://api.publicity.com/v1/events/upcoming?importance=high&market=crypto"
+    headers = {"Authorization": f"Bearer {api_key}"}
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.raise_for_status()
+        res = requests.get(url, headers=headers)
         return res.json()
-    except requests.RequestException as e:
+    except Exception as e:
         return {"error": str(e)}

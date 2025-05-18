@@ -1,36 +1,35 @@
 import os
-import requests
+import time
 import hmac
 import hashlib
-import time
+import requests
 
-def _get_headers(api_key, api_secret, method, path, params=""):
-    timestamp = str(int(time.time() * 1000))
-    pre_hash = timestamp + method + path + params
-    sign = hmac.new(api_secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
+BASE_URL = "https://api.bitget.com"
+
+def _get_headers(api_key, api_secret, timestamp, method, path, query=""):
+    to_sign = f"{timestamp}{method}{path}{query}"
+    sign = hmac.new(api_secret.encode(), to_sign.encode(), hashlib.sha256).hexdigest()
     return {
         "ACCESS-KEY": api_key,
         "ACCESS-SIGN": sign,
-        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-TIMESTAMP": str(timestamp),
         "ACCESS-PASSPHRASE": os.getenv("BITGET_PASSPHRASE"),
         "Content-Type": "application/json"
     }
 
-def fetch_bitget_account_info():
-    api_key = os.getenv("BITGET_APIKEY")
-    api_secret = os.getenv("BITGET_APISECRET")
+def fetch_account_info():
+    timestamp = int(time.time() * 1000)
     path = "/api/mix/v1/account/accounts?productType=USDT-FUTURES"
-    url = "https://api.bitget.com" + path
-    headers = _get_headers(api_key, api_secret, "GET", path)
-    res = requests.get(url, headers=headers)
-    return res.json()
+    url = f"{BASE_URL}{path}"
+    headers = _get_headers(os.getenv("BITGET_APIKEY"), os.getenv("BITGET_APISECRET"), timestamp, "GET", "/api/mix/v1/account/accounts", "")
+    response = requests.get(url, headers=headers)
+    return response.json()
 
-def fetch_bitget_positions():
-    api_key = os.getenv("BITGET_APIKEY")
-    api_secret = os.getenv("BITGET_APISECRET")
+def fetch_position_info():
+    timestamp = int(time.time() * 1000)
     symbol = "BTCUSDT_UMCBL"
     path = f"/api/mix/v1/position/singlePosition?symbol={symbol}&marginCoin=USDT"
-    url = "https://api.bitget.com" + path
-    headers = _get_headers(api_key, api_secret, "GET", path)
-    res = requests.get(url, headers=headers)
-    return res.json()
+    url = f"{BASE_URL}{path}"
+    headers = _get_headers(os.getenv("BITGET_APIKEY"), os.getenv("BITGET_APISECRET"), timestamp, "GET", "/api/mix/v1/position/singlePosition", f"?symbol={symbol}&marginCoin=USDT")
+    response = requests.get(url, headers=headers)
+    return response.json()
