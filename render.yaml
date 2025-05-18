@@ -1,0 +1,21 @@
+services:
+  - type: worker
+    name: bitcoin-forecast-bot
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    envVars:
+      - key: BITGET_APIKEY
+        fromEnvVar: BITGET_APIKEY
+      - key: BITGET_APISECRET
+        fromEnvVar: BITGET_APISECRET
+      - key: BITGET_PASSPHRASE
+        fromEnvVar: BITGET_PASSPHRASE
+      - key: TELEGRAM_BOT_TOKEN
+        fromEnvVar: TELEGRAM_BOT_TOKEN
+      - key: TELEGRAM_CHAT_ID
+        fromEnvVar: TELEGRAM_CHAT_ID
+      - key: PUBLICITY_API_KEY
+        fromEnvVar: PUBLICITY_API_KEY
+build:
+  pythonVersion: 3.11.11
