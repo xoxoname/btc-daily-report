@@ -1,3 +1,3 @@
-# BTC Daily Report
+# BTC Futures Forecast System
 
-This project provides BTC trading reports via Telegram.
+See `main.py` for entry point.
