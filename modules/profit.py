@@ -24,8 +24,11 @@ def generate_profit():
             "ACCESS-PASSPHRASE": BITGET_PASSPHRASE,
         }
         res = requests.get(url, headers=headers)
-        data = res.json().get("data", {})
+        json_data = res.json()
+        if not json_data or "data" not in json_data or json_data["data"] is None:
+            return f"⚠️ Bitget 응답 없음 또는 인증 실패: {json_data}"
 
+        data = json_data["data"]
         entry_price = float(data.get("openPrice", 0))
         mark_price = float(data.get("marketPrice", 0))
         pnl = float(data.get("unrealizedPL", 0))
@@ -52,7 +55,7 @@ def generate_profit():
 - 수익률: {profit_rate:.2f}%
 ━━━━━━━━━━━━━━━━━━━
 🧠 멘탈 코멘트
-지금 수익이 적어도 방향이 맞다면 기다리는 것도 전략입니다.
+수익률은 낮아도 꾸준히 유지하는 것이 중요합니다.
 """
     except Exception as e:
         return f"⚠️ Bitget API 실패: {str(e)}"
