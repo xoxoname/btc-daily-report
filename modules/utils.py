@@ -1,1 +1,1 @@
-# Utility functions
+# 공통 함수 모음 (예: 시간 포맷)

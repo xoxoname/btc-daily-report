@@ -1,1 +1,1 @@
-# Report generation logic
+# GPT 분석 + 형식화 리포트 생성
