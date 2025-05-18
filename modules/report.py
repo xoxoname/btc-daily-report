@@ -1,130 +1,50 @@
-# modules/report.py
+import openai
+import requests
+import datetime
+from modules.constants import OPENAI_API_KEY, PUBLICITY_API_KEY
+
+openai.api_key = OPENAI_API_KEY
+
+def get_coinbase_price():
+    try:
+        resp = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot")
+        return float(resp.json()["data"]["amount"])
+    except:
+        return None
+
+def get_publicity_events():
+    try:
+        headers = {"Authorization": f"Bearer {PUBLICITY_API_KEY}"}
+        res = requests.get("https://api.publicity.com/v1/events/upcoming", headers=headers)
+        data = res.json()
+        events = [f"- {e['time']} {e['title']}" for e in data.get("events", []) if "BTC" in e.get("title", "") or e.get("importance") == "high"]
+        return "\n".join(events) if events else "- Publicity 고변동 이벤트 없음"
+    except:
+        return "- Publicity 이벤트 로딩 실패"
 
 def generate_report():
-    return (
-        "📡 GPT 매동 예측 분석 리포트\n"
-        "📅 기준 시각: 2025-05-18 13:00 (KST)\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📌 시장 이벤트 및 속보\n"
-        "- 바이든 관련 비트코인 언급 無\n"
-        "- ETF 관련 보도 無\n"
-        "- FOMC 발표 8시간 전 대기 중\n"
-        "- 📡 [Publicity API] 내일 21:00 FOMC 금리 발표 예정\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📉 기술적 분석\n"
-        "- 현재가: $66,210\n"
-        "- 주요 지지선: $65,400 / 저항선: $67,000\n"
-        "- RSI(4H): 61.5 (중립 강세)\n"
-        "- 볼린저밴드 수축 중 → 변동성 확장 예고\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🧠 심리·구조적 분석\n"
-        "- 펀딩비: +0.012% (롱 과열 경계)\n"
-        "- 미결제약정: +3.2% 증가\n"
-        "- 공포탐욕지수: 71 (탐욕)\n"
-        "- Publicity 데이터 기준 ETF 청문 일정 無\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🔮 향후 12시간 예측\n"
-        "- 상승 확률: 62%\n"
-        "- 횡보 확률: 28%\n"
-        "- 하락 확률: 10%\n"
-        "📈 GPT 전략 제안: 롱 스팟 진입 또는 저점 눌림 매수 후 익절 전략\n"
-        "※ 레버리지 고배율은 단기 리스크 있음\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🚨 예외 감지\n"
-        "- Whale Alert: 1,000 BTC 이체 감지\n"
-        "- 변동성 급등 조건 만족 X → 정상 추세\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📊 예측 검증 (지난 리포트 대비)\n"
-        "- 5/17 23:00 리포트: 횡보 예측 → 실제 ±0.9% → ✅ 적중\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "💰 금일 수익 및 미실현 손익\n"
-        "- 진입 자산: $2,000\n"
-        "- 현재 포지션: BTCUSDT 롱 (진입가 $65,400 / 현재가 $66,210)\n"
-        "- 미실현 손익: +$81.0 (11.0만원)\n"
-        "- 실현 손익: +$24.3 (3.3만원)\n"
-        "- 금일 총 수익: +$105.3 (14.3만원)\n"
-        "- 수익률: +5.26%\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🧠 멘탈 케어 코멘트\n"
-        "“수익은 습관입니다. 오늘 한 걸음이 내일 계단이 됩니다.”\n"
-        "👟 오늘 수익은 편의점 알바 약 4시간 분량입니다."
-    )
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (KST)")
+    price = get_coinbase_price()
+    events = get_publicity_events()
+    prompt = f"""
+당신은 비트코인 시장 전문가입니다. 다음 정보를 바탕으로 고정 포맷의 분석 리포트를 생성하세요:
 
+- 현재 시각: {now}
+- 현재 BTC 가격: ${price}
+- 예정된 이벤트:
+{events}
 
-def generate_forecast():
-    return (
-        "📈 오늘의 단기 매동 예측\n"
-        "📅 기준 시각: 2025-05-18 13:00 (KST)\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📊 분석 요약\n"
-        "- 기술적 분석: 저항선 돌파 시도 중 → 📈 호재\n"
-        "- 심리 분석: 포지션 과열 / 펀딩비 증가 → ⚠️ 악재\n"
-        "- 구조 분석: 미결제약정 급증 / 롱비율 과다 → ⚠️ 악재\n"
-        "- Publicity 기준 오늘 ETF/지표 일정 無\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🔮 12시간 매동 전망\n"
-        "- 상승 확률: 58%\n"
-        "- 횡보 확률: 30%\n"
-        "- 하락 확률: 12%\n"
-        "📌 전략 제안: 분할 진입 + 익절 설정 필수\n"
-        "레버리지 포지션은 고점 추격 유의\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "💰 금일 손익\n"
-        "- 실현 손익: +$24.3 (3.3만원)\n"
-        "- 미실현 손익: +$81.0 (11.0만원)\n"
-        "- 수익률: +5.26%\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🧠 멘탈 케어 코멘트\n"
-        "오늘처럼 이기는 날에도, 내일은 내일의 리스크가 있습니다. 초심을 지켜주세요 😊\n"
-        "📌 오늘 수익은 알바 약 4.5시간치입니다."
-    )
-
-
-def generate_profit():
-    return (
-        "💰 현재 수익 현황 요약\n"
-        "📅 기준 시각: 2025-05-18 13:00 (KST)\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📌 포지션 정보\n"
-        "- 종목: BTCUSDT\n"
-        "- 방향: 롱\n"
-        "- 진입가: $65,400 / 현재가: $66,210\n"
-        "- 레버리지: 10x\n"
-        "- 청산가: $60,930\n"
-        "- 청산까지 남은 거리: 약 -8.0% ($5,280 하락 시 청산)\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "💸 손익 정보\n"
-        "- 미실현 손익: +$81.0 (11.0만원)\n"
-        "- 실현 손익: +$24.3 (3.3만원)\n"
-        "- 금일 총 수익: +$105.3 (14.3만원)\n"
-        "- 진입 자산: $2,000\n"
-        "- 수익률: +5.26%\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🧠 멘탈 케어\n"
-        "오늘 수익이 적다고 아쉬워 마세요. 최근 7일 평균 수익률 +12%입니다.\n"
-        "📌 오늘 수익은 대학교 보조강사 2시간 강의 수준입니다."
-    )
-
-
-def generate_schedule():
-    return (
-        "📆 자동 리포트 일정 안내\n"
-        "📅 기준 시각: 2025-05-18 13:00 (KST)\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🕓 정규 리포트 발송 시간 (KST 기준)\n"
-        "- 오전 9시\n"
-        "- 오후 1시\n"
-        "- 오후 5시\n"
-        "- 오후 11시\n"
-        "📌 명령어 요약\n"
-        "- /profit: 현재 손익 및 포지션 요약\n"
-        "- /forecast: 12시간 단기 전망\n"
-        "- /report: 전체 GPT 예측 분석\n"
-        "- /schedule: 현재 발송 시간 안내\n"
-        "🚨 예외 이벤트 발생 시 → 실시간 긴급 리포트 자동 발송\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📡 [Publicity 연동] 예정 주요 이벤트\n"
-        "- 2025-05-19 21:00: FOMC 결과 발표 예정 (변동성 경고)\n"
-        "- 2025-05-21 18:00: 비트코인 현물 ETF 심사 마감 예정\n"
-        "※ 이 일정은 실시간 Publicity API를 통해 자동 수집됩니다."
-    )
+[출력 포맷]
+📡 GPT 매동 예측 분석 리포트
+📅 기준 시각: {now}
+(이후 형식은 당신이 작성하며 고정 포맷과 실제 자료 기반 분석을 반드시 포함하세요.)
+"""
+    try:
+        res = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[{"role": "system", "content": "형식을 고정하고 실제 시장 자료로 분석하는 비트코인 리포트 생성기입니다."},
+                      {"role": "user", "content": prompt}]
+        )
+        return res.choices[0].message.content.strip()
+    except Exception as e:
+        return f"⚠️ GPT 응답 실패: {str(e)}"
