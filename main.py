@@ -1,1 +1,1 @@
-# Entry point for the Telegram bot
+# main entrypoint
