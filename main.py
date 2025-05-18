@@ -1,1 +1,1 @@
-# Entry point for bot
+# main entrypoint

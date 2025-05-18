@@ -1,7 +1,6 @@
 services:
-  - type: background
-    name: bitcoin-bot
+  - type: web
+    name: bitcoin-forecast-bot
     env: python
-    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
