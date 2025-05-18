@@ -1,1 +1,1 @@
-# /report, /forecast, /profit, /schedule 리포트 포맷 생성
+# GPT 분석 + 형식화 리포트 생성
