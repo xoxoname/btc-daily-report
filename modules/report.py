@@ -1,13 +1,14 @@
 from datetime import datetime
-from modules.exchange import fetch_account_info, fetch_position_info
+from modules.exchange import BitgetAPI
 from modules.publicity import fetch_publicity_events
 from modules.openai_bot import generate_forecast
 
 def generate_report(command="/report"):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    bitget = BitgetAPI()
+    acc = bitget.get_account_info()
+    pos = bitget.get_position_info()
     pub = fetch_publicity_events()
-    acc = fetch_account_info()
-    pos = fetch_position_info()
 
     prompt = f"시각: {now}\nPublicity 이벤트: {pub}\n계정 정보: {acc}\n포지션 정보: {pos}\n명령어: {command}\n위 정보를 바탕으로 {command} 리포트를 출력 형식에 맞게 작성해줘."
 
