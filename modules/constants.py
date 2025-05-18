@@ -1,1 +1,0 @@
-API_TIMEOUT = 10
