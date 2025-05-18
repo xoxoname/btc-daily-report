@@ -17,5 +17,7 @@ services:
         fromEnvVar: TELEGRAM_CHAT_ID
       - key: PUBLICITY_API_KEY
         fromEnvVar: PUBLICITY_API_KEY
+      - key: OPENAI_API_KEY
+        fromEnvVar: OPENAI_API_KEY
 build:
   pythonVersion: 3.11.11
