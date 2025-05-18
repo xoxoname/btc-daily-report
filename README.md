@@ -1,1 +1,1 @@
-# BTC 실시간 예측 시스템 - GPT + Bitget + Publicity 연동
+# 완성형 BTC GPT 예측 시스템 (에러 수정 포함)
