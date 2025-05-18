@@ -36,6 +36,7 @@ def generate_profit():
 
         return f"""
 💰 현재 수익 현황 요약
+━━━━━━━━━━━━━━━━━━━
 📌 포지션 정보
 - 종목: BTCUSDT
 - 방향: 롱
@@ -50,7 +51,7 @@ def generate_profit():
 - 진입 자산: ${margin}
 - 수익률: {profit_rate:.2f}%
 ━━━━━━━━━━━━━━━━━━━
-🧠 멘탈 케어
+🧠 멘탈 코멘트
 지금 수익이 적어도 방향이 맞다면 기다리는 것도 전략입니다.
 """
     except Exception as e:

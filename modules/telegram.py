@@ -1,9 +1,7 @@
-import os
 from telegram.ext import Updater, CommandHandler
-from modules.report import generate_report
-from modules.profit import generate_profit
-from modules.report import generate_forecast, generate_schedule
 from modules.constants import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from modules.report import generate_report, generate_forecast, generate_schedule
+from modules.profit import generate_profit
 
 def handle_report(update, context):
     if update.effective_chat.id == TELEGRAM_CHAT_ID:
@@ -11,7 +9,7 @@ def handle_report(update, context):
 
 def handle_forecast(update, context):
     if update.effective_chat.id == TELEGRAM_CHAT_ID:
-        context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="📈 단기 예측은 GPT 분석 중입니다.")
+        context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=generate_forecast())
 
 def handle_profit(update, context):
     if update.effective_chat.id == TELEGRAM_CHAT_ID:
