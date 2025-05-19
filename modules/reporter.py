@@ -1,7 +1,7 @@
 import pytz
 import datetime
 from .bitget import get_positions, get_profit_history
-from .gpt import ask_gpt, get_dynamic_mental_comment
+from .gpt import get_dynamic_mental_comment
 
 def get_krw(val_usd, usdkrw=1350):
     try:
@@ -18,7 +18,7 @@ def format_profit_report():
     pos = get_positions()
     profit = get_profit_history()
     now = get_kst_now()  # 한국시간
-    usdkrw = 1350  # 환율 고정(실환율은 추후 API)
+    usdkrw = 1350  # 환율 고정
     mental = ""
 
     if pos:
