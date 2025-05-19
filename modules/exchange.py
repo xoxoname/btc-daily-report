@@ -1,1 +1,0 @@
-# Bitget exchange integration
