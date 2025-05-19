@@ -12,7 +12,7 @@ def gpt_analyze(prompt: str, system_prompt=None):
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=messages,
-            temperature=0.3,
+            temperature=0.5,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -36,4 +36,11 @@ def gpt_12h_forecast():
 
 def gpt_exception_alert():
     prompt = "5분 전 대비 비트코인 가격 급등락, 트럼프 발언, ETF 승인, 대량 이체 등 긴급 시장변수 발생 여부와 위험요인만 엄선 요약. 악재/호재/경고도 붙여줘."
+    return gpt_analyze(prompt)
+
+def gpt_mental_comment(profit_rate, total_profit_krw):
+    prompt = (
+        f"비트코인 선물 실현/미실현 수익률이 {profit_rate:.2f}%이고, 금일 총수익이 {total_profit_krw:,}원일 때, 상황에 꼭 맞는 실시간 멘탈 케어 코멘트를 1~2문장으로 유머·위로·경험적 조언을 섞어 참신하게 써줘. "
+        f"항상 새로운 문장으로, 짧지 않고 중복/틀에 박히지 않은 자연스러운 한국어로 부탁해."
+    )
     return gpt_analyze(prompt)
