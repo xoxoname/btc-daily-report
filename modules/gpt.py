@@ -1,36 +1,21 @@
-import os
 import random
-from openai import OpenAI
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-def ask_gpt(prompt, max_tokens=220, temperature=0.85):
-    completion = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "system", "content": prompt}],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    return completion.choices[0].message.content.strip()
-
-def get_dynamic_mental_comment(pnl, day_pnl_krw, last7=None, last14=None):
-    base = []
-    if pnl > 0:
-        base = [
-            f"오늘 선물로 {day_pnl_krw:,}원을 벌었어요. 이 수익은 편의점 알바 {day_pnl_krw // 8000}시간을 해야 벌 수 있는 돈이에요! 지금은 수익을 지키며 차분히 다음 타점을 기다려 보세요.",
-            f"수익도 좋지만, 꾸준히 지키는 습관이 더 중요해요. 오늘 수익은 잠깐의 기쁨, 내일은 새로운 시작!",
-            f"축하해요! 오늘의 수익은 한달 넷플릭스 구독료 {day_pnl_krw // 17000}개월치를 벌었습니다. 내일은 다시 차분하게 시장을 보며 기회를 기다려봐요.",
+def get_dynamic_mental_comment(pnl_usd, pnl_krw):
+    if pnl_usd > 0:
+        candidates = [
+            f"오늘 {pnl_krw:,}원의 수익! 이 정도면 하루 커피값 걱정 끝이죠. 하지만 오늘의 이득에 취하지 말고, 다음 기회가 올 때까지 침착하게!",
+            f"수익 {pnl_krw:,}원, 현실 알바 6시간! 매매는 매일 오는 게 아니니, 내일은 휴식도 고려해보세요.",
+            f"수익 축하! {pnl_krw:,}원은 정말 큰 성과입니다. 과도한 자신감은 금물, 항상 원칙을 지켜주세요."
         ]
-    elif pnl < 0:
-        base = [
-            f"손실이 있어도 괜찮아요. 시장은 항상 새로운 기회를 주니까, 충동적으로 추가 진입하지 말고 오늘은 휴식도 좋겠어요.",
-            f"오늘 손실이 {abs(day_pnl_krw):,}원 발생했지만, 최근 7일간 평균 수익이 {last7 or 0}%라면 충분히 복구할 수 있습니다. 침착하게 전략을 지켜봐요.",
-            "크게 흔들릴 필요 없습니다. 장기적인 승자가 되려면 단기 손실에도 흔들리지 않는 멘탈이 중요해요.",
+    elif pnl_usd < 0:
+        candidates = [
+            f"{abs(pnl_krw):,}원의 손실이 발생했어요. 아직 1주일 전체로 보면 수익권입니다. 조급함 대신 침착함을 챙겨봐요.",
+            f"오늘은 살짝 힘들었지만, {abs(pnl_krw):,}원 손실도 경험입니다. 충동 매매는 꼭 자제, 리프레시 하면서 다음 기회를!",
+            f"손실 {abs(pnl_krw):,}원, 누구나 겪는 과정이니 자신을 탓하지 마세요. 내일 더 좋은 매매로 복구 가능합니다."
         ]
     else:
-        base = [
-            "오늘은 수익도 손실도 없는 조용한 날이에요. 다음 기회를 차분히 준비해봐요.",
-            "변동성이 적은 날엔 마음도 쉬어가세요.",
+        candidates = [
+            "큰 수익도, 큰 손실도 없는 하루. 평온한 마음으로 오늘 하루를 정리해보세요.",
+            "시장 관망도 실력! 다음 기회엔 더 신중하게."
         ]
-    return random.choice(base)
+    return random.choice(candidates)
