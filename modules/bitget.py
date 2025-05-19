@@ -13,13 +13,10 @@ class BitgetClient:
     PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
 
     @staticmethod
-    def _headers(method, path, params=""):
+    def _headers(method, path, query=None, body=""):
         timestamp = str(int(time.time() * 1000))
-        if method == "GET":
-            body = ""
-        else:
-            body = json.dumps(params) if params else ""
-        pre_sign = timestamp + method + path + body
+        query_str = f"?{query}" if query else ""
+        pre_sign = f"{timestamp}{method}{path}{query_str}{body}"
         sign = base64.b64encode(
             hmac.new(BitgetClient.APISECRET.encode(), pre_sign.encode(), hashlib.sha256).digest()
         ).decode()
@@ -42,46 +39,47 @@ class BitgetClient:
     def get_positions():
         method = "GET"
         path = "/api/mix/v1/position/singlePosition"
-        params = {
-            "symbol": "BTCUSDT_UMCBL",
-            "marginCoin": "USDT",
-        }
-        url = BitgetClient.BASE_URL + path + f"?symbol={params['symbol']}&marginCoin={params['marginCoin']}"
-        headers = BitgetClient._headers(method, path)
+        query = "symbol=BTCUSDT_UMCBL&marginCoin=USDT"
+        url = BitgetClient.BASE_URL + path + "?" + query
+        headers = BitgetClient._headers(method, path, query)
         resp = requests.get(url, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("code") != "00000":
+        # [핵심] 오류 발생 시 빈 리스트 반환
+        try:
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") != "00000":
+                return []
+            pos = data.get("data")
+            if not pos or float(pos.get("holdVol", 0)) == 0:
+                return []
+            return [{
+                "symbol": pos["symbol"],
+                "holdSide": pos["holdSide"],  # "long" or "short"
+                "avgOpenPrice": float(pos["avgOpenPrice"]),
+                "margin": float(pos["margin"]),
+                "upl": float(pos["unrealizedPL"]),
+                "realisedPnl": float(pos["achievedProfits"]),
+                "leverage": int(pos["leverage"]),
+                "liquidationPrice": float(pos["liquidationPrice"]),
+            }]
+        except Exception as e:
+            print("Bitget Position API 오류:", e)
             return []
-        result = []
-        for pos in data["data"]:
-            if float(pos["holdVol"]) > 0:
-                result.append({
-                    "symbol": pos["symbol"],
-                    "holdSide": pos["holdSide"],  # "long" or "short"
-                    "avgOpenPrice": float(pos["avgOpenPrice"]),
-                    "margin": float(pos["margin"]),
-                    "upl": float(pos["unrealizedPL"]),
-                    "realisedPnl": float(pos["achievedProfits"]),
-                    "leverage": int(pos["leverage"]),
-                    "liquidationPrice": float(pos["liquidationPrice"]),
-                })
-        return result
 
     @staticmethod
     def get_wallet():
         method = "GET"
         path = "/api/v2/mix/account/account"
-        params = {
-            "symbol": "BTCUSDT_UMCBL",
-            "marginCoin": "USDT",
-        }
-        url = BitgetClient.BASE_URL + path + f"?symbol={params['symbol']}&marginCoin={params['marginCoin']}"
-        headers = BitgetClient._headers(method, path)
-        resp = requests.get(url, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("code") != "00000":
+        query = "symbol=BTCUSDT_UMCBL&marginCoin=USDT"
+        url = BitgetClient.BASE_URL + path + "?" + query
+        headers = BitgetClient._headers(method, path, query)
+        try:
+            resp = requests.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") != "00000":
+                return {"equity": 0}
+            return {"equity": float(data["data"]["marginEquity"])}
+        except Exception as e:
+            print("Bitget Wallet API 오류:", e)
             return {"equity": 0}
-        return {"equity": float(data["data"]["marginEquity"])}
-
