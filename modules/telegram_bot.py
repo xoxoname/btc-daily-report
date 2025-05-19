@@ -1,6 +1,5 @@
 import os
-import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from modules.reporter import format_report, format_forecast, format_profit
 from modules.exchange import get_position_info
 
@@ -31,12 +30,10 @@ async def text_handler(update, context):
         await update.message.reply_text("지원 명령: /report, /forecast, /profit, /schedule")
 
 def run_telegram_bot():
-    async def main():
-        app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-        app.add_handler(CommandHandler("report", report_command))
-        app.add_handler(CommandHandler("forecast", forecast_command))
-        app.add_handler(CommandHandler("profit", profit_command))
-        app.add_handler(CommandHandler("schedule", schedule_command))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-        await app.run_polling()
-    asyncio.run(main())
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("report", report_command))
+    app.add_handler(CommandHandler("forecast", forecast_command))
+    app.add_handler(CommandHandler("profit", profit_command))
+    app.add_handler(CommandHandler("schedule", schedule_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.run_polling()  # asyncio.run() 절대 사용 금지!
