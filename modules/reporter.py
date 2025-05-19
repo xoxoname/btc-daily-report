@@ -1,70 +1,92 @@
-import pytz
-import datetime
-from .bitget import get_positions, get_profit_history
-from .gpt import get_dynamic_mental_comment
+import os
+import requests
+import time
+import hmac
+import hashlib
+import base64
 
-def get_krw(val_usd, usdkrw=1350):
+BITGET_APIKEY = os.environ.get('BITGET_APIKEY')
+BITGET_APISECRET = os.environ.get('BITGET_APISECRET')
+BITGET_PASSPHRASE = os.environ.get('BITGET_PASSPHRASE')
+
+BASE_URL = "https://api.bitget.com"
+
+def _timestamp():
+    return str(int(time.time() * 1000))
+
+def _sign(message, secret):
+    return base64.b64encode(
+        hmac.new(secret.encode('utf-8'), message.encode('utf-8'), digestmod=hashlib.sha256).digest()
+    ).decode('utf-8')
+
+def _headers(path, method, body=""):
+    timestamp = _timestamp()
+    prehash = timestamp + method + path + body
+    sign = _sign(prehash, BITGET_APISECRET)
+    return {
+        'ACCESS-KEY': BITGET_APIKEY,
+        'ACCESS-SIGN': sign,
+        'ACCESS-TIMESTAMP': timestamp,
+        'ACCESS-PASSPHRASE': BITGET_PASSPHRASE,
+        'Content-Type': 'application/json',
+        'locale': 'en-US'
+    }
+
+def get_positions():
+    # BTCUSDT 포지션만 조회 (선물)
+    url = f"{BASE_URL}/api/v2/mix/position/singlePosition"
+    params = {
+        "symbol": "BTCUSDT",
+        "marginCoin": "USDT"
+    }
+    path = f"/api/v2/mix/position/singlePosition?symbol=BTCUSDT&marginCoin=USDT"
+    headers = _headers(path, "GET")
+    r = requests.get(url, params=params, headers=headers)
     try:
-        return int(float(val_usd) * usdkrw)
-    except Exception:
-        return 0
+        data = r.json()
+        pos = data['data']
+        if not pos or float(pos.get('total',0)) == 0:
+            return None
+        # 리턴값 표준화
+        return {
+            "symbol": pos['symbol'],
+            "side": "롱" if pos['holdSide']=='long' else "숏",
+            "openPrice": float(pos['openPrice']),
+            "currentPrice": float(pos['lastPrice']),
+            "leverage": int(pos['leverage']),
+            "liquidationPrice": float(pos['liqPrice']),
+            "unrealizedPnl": float(pos['unrealizedPL']),
+            "margin": float(pos['margin'])
+        }
+    except Exception as e:
+        print(f"Bitget API Error (positions): {e}")
+        return None
 
-def get_kst_now():
-    tz = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(tz)
-    return now.strftime("%Y-%m-%d %H:%M:%S")
-
-def format_profit_report():
-    pos = get_positions()
-    profit = get_profit_history()
-    now = get_kst_now()  # 한국시간
-    usdkrw = 1350  # 환율 고정
-    mental = ""
-
-    if pos:
-        day_pnl = float(pos.get("unrealizedPnl", 0)) + float(profit.get("realizedPnl", 0))
-        day_pnl_krw = get_krw(day_pnl, usdkrw)
-        mental = get_dynamic_mental_comment(day_pnl, day_pnl_krw)
-        msg = f"""💰 현재 수익 현황 요약
-📅 작성 시각: {now}
-━━━━━━━━━━━━━━━━━━━
-📌 포지션 정보
-
-종목: {pos['symbol']}
-방향: {pos['side']}
-진입가: ${pos['openPrice']:,} / 현재가: ${pos['currentPrice']:,}
-레버리지: {pos['leverage']}x
-청산가: ${pos['liquidationPrice']:,}
-청산까지 남은 거리: 약 {round(100*(1-pos['liquidationPrice']/pos['openPrice']),1)}%
-
-━━━━━━━━━━━━━━━━━━━
-💸 손익 정보
-미실현 손익: {pos['unrealizedPnl']:+.2f} (약 {get_krw(pos['unrealizedPnl'], usdkrw):,}원)
-실현 손익: {profit['realizedPnl']:+.2f} (약 {get_krw(profit['realizedPnl'], usdkrw):,}원)
-금일 총 수익: {day_pnl:+.2f} (약 {day_pnl_krw:,}원)
-진입 자산: ${pos['margin']:,}
-수익률: {round(100*day_pnl/max(1,pos['margin']),2)}%
-━━━━━━━━━━━━━━━━━━━
-🧠 멘탈 케어
-{mental}
-━━━━━━━━━━━━━━━━━━━
-"""
-    else:
-        # 포지션 없음/손익만 보여주기
-        realized = profit.get("realizedPnl", 0)
-        today = profit.get("todayPnl", 0)
-        msg = f"""💰 현재 수익 현황 요약
-📅 작성 시각: {now}
-━━━━━━━━━━━━━━━━━━━
-포지션 없음(BTCUSDT). 현재 오픈된 포지션이 없습니다.
-
-━━━━━━━━━━━━━━━━━━━
-💸 손익 정보
-실현 손익: {realized:+.2f} (약 {get_krw(realized):,}원)
-금일 총 수익: {today:+.2f} (약 {get_krw(today):,}원)
-━━━━━━━━━━━━━━━━━━━
-🧠 멘탈 케어
-{get_dynamic_mental_comment(today, get_krw(today))}
-━━━━━━━━━━━━━━━━━━━
-"""
-    return msg
+def get_profit_history():
+    # 금일 실현손익 등 조회 (예시: 거래내역 최근 24시간 기준)
+    url = f"{BASE_URL}/api/v2/mix/order/history"
+    params = {
+        "symbol": "BTCUSDT",
+        "marginCoin": "USDT",
+        "startTime": int((time.time() - 86400) * 1000),
+        "endTime": int(time.time() * 1000),
+        "pageSize": 100,
+        "lastEndId": ""
+    }
+    path = f"/api/v2/mix/order/history?symbol=BTCUSDT&marginCoin=USDT&startTime={params['startTime']}&endTime={params['endTime']}&pageSize=100&lastEndId="
+    headers = _headers(path, "GET")
+    r = requests.get(url, params=params, headers=headers)
+    realized = 0
+    try:
+        data = r.json()
+        if 'data' in data and 'orderList' in data['data']:
+            for order in data['data']['orderList']:
+                if 'realizedPL' in order:
+                    realized += float(order['realizedPL'])
+        return {
+            "realizedPnl": realized,
+            "todayPnl": realized
+        }
+    except Exception as e:
+        print(f"Bitget API Error (profit): {e}")
+        return {"realizedPnl": 0, "todayPnl": 0}
