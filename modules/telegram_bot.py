@@ -1,5 +1,4 @@
 import os
-import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from modules.reporter import format_profit_report
@@ -21,4 +20,4 @@ async def profit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def run_telegram_bot():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("profit", profit_command))
-    asyncio.run(app.run_polling())
+    app.run_polling()
