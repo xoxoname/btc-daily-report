@@ -1,7 +1,7 @@
-
 services:
-  - type: worker
-    name: bitcoin-forecast-bot
-    runtime: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python main.py"
+  - type: web
+    name: btc-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
