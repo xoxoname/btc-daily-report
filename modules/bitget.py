@@ -1,63 +1,58 @@
 import os
-import requests
 import time
+import requests
 import hmac
 import hashlib
 import base64
 
-BITGET_APIKEY = os.getenv("BITGET_APIKEY")
-BITGET_APISECRET = os.getenv("BITGET_APISECRET")
-BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
+BASE_URL = "https://api.bitget.com/api/v2/mix"
 
-BASE_URL = "https://api.bitget.com/api/mix/v1"
+API_KEY = os.environ.get("BITGET_APIKEY")
+API_SECRET = os.environ.get("BITGET_APISECRET")
+PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
 
-def _signature(timestamp, method, request_path, body):
-    message = f"{timestamp}{method}{request_path}{body}"
-    mac = hmac.new(BITGET_APISECRET.encode(), message.encode(), hashlib.sha256)
-    return base64.b64encode(mac.digest()).decode()
-
-def _headers(method, path, body=""):
+def _headers(method, path):
     timestamp = str(int(time.time() * 1000))
-    sign = _signature(timestamp, method, path, body)
+    prehash = f"{timestamp}{method.upper()}{path}"
+    sign = hmac.new(API_SECRET.encode(), prehash.encode(), hashlib.sha256).digest()
+    sign_b64 = base64.b64encode(sign).decode()
     return {
-        "ACCESS-KEY": BITGET_APIKEY,
-        "ACCESS-SIGN": sign,
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": sign_b64,
         "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": BITGET_PASSPHRASE,
+        "ACCESS-PASSPHRASE": PASSPHRASE,
         "Content-Type": "application/json"
     }
 
 def get_positions():
+    # BTCUSDT 포지션 조회
     path = "/position/singlePosition"
     url = f"{BASE_URL}{path}?symbol=BTCUSDT&marginCoin=USDT"
-    r = requests.get(url, headers=_headers("GET", path))
     try:
+        r = requests.get(url, headers=_headers("GET", path))
         data = r.json()
-        if data["code"] == "00000":
+        if data.get("code") == "00000" and data.get("data"):
             pos = data["data"]
             return {
-                "symbol": pos["symbol"],
-                "side": pos["holdSide"].capitalize(),
-                "openPrice": float(pos["openPrice"]),
-                "currentPrice": float(pos["latestPrice"]),
-                "leverage": float(pos["leverage"]),
-                "liquidationPrice": float(pos["liquidationPrice"]),
-                "positionAmt": float(pos["total"]),
-                "unrealizedPnl": float(pos["unrealizedPL"]),
-                "margin": float(pos["margin"]),
+                "symbol": pos.get("symbol", "BTCUSDT"),
+                "side": pos.get("holdSide", "-").capitalize(),
+                "openPrice": float(pos.get("openPrice", 0)),
+                "currentPrice": float(pos.get("latestPrice", 0)),
+                "leverage": float(pos.get("leverage", 0)),
+                "liquidationPrice": float(pos.get("liquidationPrice", 0)),
+                "positionAmt": float(pos.get("total", 0)),
+                "unrealizedPnl": float(pos.get("unrealizedPL", 0)),
+                "margin": float(pos.get("margin", 0)),
             }
-        else:
-            return None
+        return None
     except Exception as e:
         return None
 
-def get_wallet():
-    # Bitget API 계정 자산 조회 (USDT만 예시)
-    url = "https://api.bitget.com/api/spot/v1/account/assets"
-    r = requests.get(url, headers=_headers("GET", "/account/assets"))
-    try:
-        data = r.json()
-        usdt = next(x for x in data["data"] if x["coinName"] == "USDT")
-        return float(usdt["available"])
-    except Exception as e:
-        return 0.0
+def get_profit_history():
+    # 실현 손익은 예시! 실제로는 비트겟 Closed PnL API 필요
+    # 없으면 임시로 0 출력
+    return {
+        "realizedPnl": 0.0,
+        "todayPnl": 0.0,  # 금일 총 수익
+        "entryValue": 0.0,  # 진입 자산
+    }
