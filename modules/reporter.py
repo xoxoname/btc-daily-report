@@ -1,56 +1,64 @@
 import datetime
-from modules.bitget import get_positions, get_wallet
-from modules.gpt import get_gpt_comment
+from .bitget import get_positions, get_profit_history
+from .gpt import ask_gpt, get_dynamic_mental_comment
+
+def get_krw(val_usd, usdkrw=1350):
+    try:
+        return int(float(val_usd) * usdkrw)
+    except Exception:
+        return 0
 
 def format_profit_report():
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     pos = get_positions()
-    wallet = get_wallet()
-    if not pos:
-        return f"수익 정보 조회 오류. Bitget API 연동 또는 인증키 확인 필요!"
+    profit = get_profit_history()
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    usdkrw = 1350  # 환율 고정(실환율은 추후 API)
+    mental = ""
 
-    entry = pos["openPrice"]
-    price = pos["currentPrice"]
-    side = pos["side"]
-    qty = pos["positionAmt"]
-    liq = pos["liquidationPrice"]
-    lev = pos["leverage"]
-    unreal = pos["unrealizedPnl"]
-    margin = pos["margin"]
-    asset = wallet
-
-    pnl_percent = (unreal / margin) * 100 if margin > 0 else 0
-    liq_gap = ((price - liq) / price) * 100 if price > liq else ((liq - price) / price) * 100
-
-    krw_rate = 1350  # 환율 임시 고정, 원하면 환율 API로 자동화
-    krw_unreal = int(unreal * krw_rate)
-    krw_margin = int(margin * krw_rate)
-    krw_asset = int(asset * krw_rate)
-
-    comment = get_gpt_comment(pnl_percent, unreal)
-
-    return f"""
-💰 현재 수익 현황 요약
+    if pos:
+        day_pnl = float(pos.get("unrealizedPnl", 0)) + float(profit.get("realizedPnl", 0))
+        day_pnl_krw = get_krw(day_pnl, usdkrw)
+        mental = get_dynamic_mental_comment(day_pnl, day_pnl_krw)
+        msg = f"""💰 현재 수익 현황 요약
 📅 작성 시각: {now}
 ━━━━━━━━━━━━━━━━━━━
 📌 포지션 정보
 
-종목: BTCUSDT
-방향: {side}
-진입가: ${entry:.2f} / 현재가: ${price:.2f}
-레버리지: {lev}x
-청산가: ${liq}
-청산까지 남은 거리: 약 {liq_gap:.2f}%
+종목: {pos['symbol']}
+방향: {pos['side']}
+진입가: ${pos['openPrice']:,} / 현재가: ${pos['currentPrice']:,}
+레버리지: {pos['leverage']}x
+청산가: ${pos['liquidationPrice']:,}
+청산까지 남은 거리: 약 {round(100*(1-pos['liquidationPrice']/pos['openPrice']),1)}%
 
 ━━━━━━━━━━━━━━━━━━━
 💸 손익 정보
-미실현 손익: {unreal:+.2f} USDT (약 {krw_unreal:,}원)
-진입 증거금: {margin:.2f} USDT (약 {krw_margin:,}원)
-총 자산: {asset:.2f} USDT (약 {krw_asset:,}원)
-수익률: {pnl_percent:+.2f}%
-
+미실현 손익: {pos['unrealizedPnl']:+.2f} (약 {get_krw(pos['unrealizedPnl'], usdkrw):,}원)
+실현 손익: {profit['realizedPnl']:+.2f} (약 {get_krw(profit['realizedPnl'], usdkrw):,}원)
+금일 총 수익: {day_pnl:+.2f} (약 {day_pnl_krw:,}원)
+진입 자산: ${pos['margin']:,}
+수익률: {round(100*day_pnl/max(1,pos['margin']),2)}%
 ━━━━━━━━━━━━━━━━━━━
 🧠 멘탈 케어
-{comment}
+{mental}
 ━━━━━━━━━━━━━━━━━━━
-""".strip()
+"""
+    else:
+        # 포지션 없음/손익만 보여주기
+        realized = profit.get("realizedPnl", 0)
+        today = profit.get("todayPnl", 0)
+        msg = f"""💰 현재 수익 현황 요약
+📅 작성 시각: {now}
+━━━━━━━━━━━━━━━━━━━
+포지션 없음(BTCUSDT). 현재 오픈된 포지션이 없습니다.
+
+━━━━━━━━━━━━━━━━━━━
+💸 손익 정보
+실현 손익: {realized:+.2f} (약 {get_krw(realized):,}원)
+금일 총 수익: {today:+.2f} (약 {get_krw(today):,}원)
+━━━━━━━━━━━━━━━━━━━
+🧠 멘탈 케어
+{get_dynamic_mental_comment(today, get_krw(today))}
+━━━━━━━━━━━━━━━━━━━
+"""
+    return msg
