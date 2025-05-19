@@ -2,26 +2,16 @@ from datetime import datetime
 from modules.constants import *
 from modules.exchange import get_position_info
 from modules.analyst import (
-    gpt_event_scan, gpt_technical_analysis, gpt_sentiment_analysis, gpt_12h_forecast
+    gpt_event_scan, gpt_technical_analysis, gpt_sentiment_analysis, gpt_12h_forecast, gpt_mental_comment
 )
-
-def pick_mental_comment(rate):
-    if rate > 10:
-        return MENTAL_COMMENTS[0][1]
-    elif rate > 1:
-        return MENTAL_COMMENTS[1][1]
-    elif rate > -1:
-        return MENTAL_COMMENTS[2][1]
-    elif rate > -5:
-        return MENTAL_COMMENTS[3][1]
-    else:
-        return MENTAL_COMMENTS[4][1]
 
 def format_profit(data):
     total_profit = data['unrealized_pnl'] + data['realized_pnl']
     profit_rate = (total_profit / data['margin']) * 100
-    comment = pick_mental_comment(profit_rate)
     krw = data['krw_usd']
+    total_profit_krw = int(total_profit * krw)
+    # 멘탈 코멘트: GPT 실시간 생성
+    comment = gpt_mental_comment(profit_rate, total_profit_krw)
     return f"""\
 {PROFIT_HEADER}
 📅 작성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -37,7 +27,7 @@ def format_profit(data):
 💸 손익 정보
 - 미실현 손익: +${data['unrealized_pnl']} (약 {int(data['unrealized_pnl']*krw):,}원)
 - 실현 손익: +${data['realized_pnl']} (약 {int(data['realized_pnl']*krw):,}원)
-- 금일 총 수익: +${total_profit:.1f} (약 {int(total_profit*krw):,}원)
+- 금일 총 수익: +${total_profit:.1f} (약 {total_profit_krw:,}원)
 - 진입 자산: ${data['margin']}
 - 수익률: +{profit_rate:.2f}%
 ━━━━━━━━━━━━━━━━━━━
