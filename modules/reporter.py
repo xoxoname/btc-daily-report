@@ -3,9 +3,7 @@ import pytz
 import datetime
 import random
 from modules.bitget import get_futures_account, get_asset_balance, test_bitget_api
-from modules.coinbase import get_coinbase_btc_price
 import openai
-from modules.telegram_bot import send_long_message
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -19,7 +17,6 @@ def get_krw(usd):
         return int(float(usd) * 1350)
 
 def gpt_generate_mental_comment(pnl, pnl_ratio, pnl_krw):
-    # 상황·손익·충동억제 기반 GPT 멘탈 멘트 자동 생성
     prompt = (
         f"비트코인 선물 트레이더에게 충동적 매매를 억제할 현실적이고 재치 있는 멘탈 케어 코멘트를 작성하세요.\n"
         f"- 오늘 실현/미실현 합산 수익: {pnl:.2f} USD ({pnl_krw:,}원)\n"
@@ -33,7 +30,6 @@ def gpt_generate_mental_comment(pnl, pnl_ratio, pnl_krw):
         )
         return completion.choices[0].message.content.strip()
     except Exception as e:
-        # Fallback
         basic = [
             "오늘 벌어들인 수익은 알바 몇 시간치! 잠깐 쉬며 내일을 준비하세요.",
             "수익에 취하지 말고, 오늘은 전략 복기에 집중해보는 건 어떨까요?",
@@ -43,13 +39,11 @@ def gpt_generate_mental_comment(pnl, pnl_ratio, pnl_krw):
 
 def format_profit_report():
     now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
-    price = get_coinbase_btc_price()
     pos = get_futures_account()
     asset = get_asset_balance()
     test_api_msg = test_bitget_api() if isinstance(pos, dict) and "error" in pos else ""
-    # 실제 파싱 예시
-    entry_price = float(pos.get("openPrice", price or 0)) if isinstance(pos, dict) else 0
-    current_price = price or entry_price
+    entry_price = float(pos.get("openPrice", 0)) if isinstance(pos, dict) else 0
+    current_price = float(pos.get("currentMarketPrice", entry_price))
     leverage = float(pos.get("leverage", 1)) if isinstance(pos, dict) else 1
     pnl = float(pos.get("unrealizedPL", 0)) if isinstance(pos, dict) else 0
     realized_pnl = float(pos.get("realizedPL", 0)) if isinstance(pos, dict) else 0
@@ -59,9 +53,8 @@ def format_profit_report():
     total_pnl = pnl + realized_pnl
     pnl_ratio = ((total_pnl) / margin * 100) if margin else 0
     pnl_krw = get_krw(total_pnl)
-    mental = gpt_generate_mental_comment(total_pnl, pnl_ratio, pnl_krw)
-    # 알바 환산
     alba_hr = max(1, pnl_krw // 14000)
+    mental = gpt_generate_mental_comment(total_pnl, pnl_ratio, pnl_krw)
     report = f"""💰 현재 수익 현황 요약
 📅 작성 시각: {now.strftime('%Y-%m-%d %H:%M:%S')}
 ━━━━━━━━━━━━━━━━━━━
@@ -86,7 +79,7 @@ def format_profit_report():
     return report
 
 def send_scheduled_reports():
+    # 순환참조 방지: 함수 내부에서 import!
+    from modules.telegram_bot import send_long_message
     msg = format_profit_report()
     send_long_message(msg)
-
-# 명령어별 리포트 생성 함수도 같은 구조로 제작 가능
