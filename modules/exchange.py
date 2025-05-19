@@ -1,0 +1,1 @@
+# Simulated Bitget API connector

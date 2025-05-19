@@ -1,0 +1,1 @@
+# Constant templates for reports
