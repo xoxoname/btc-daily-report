@@ -17,5 +17,4 @@ async def profit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def run_telegram_bot():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("profit", profit_command))
-    # 필요시 다른 핸들러도 등록
     threading.Thread(target=app.run_polling, daemon=True).start()
