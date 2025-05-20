@@ -1,18 +1,24 @@
+import os
 import time
 import requests
 import hmac
 import hashlib
 import base64
-from .constants import BITGET_APIKEY, BITGET_APISECRET, BITGET_PASSPHRASE
+import json
+
+BITGET_APIKEY = os.environ.get('BITGET_APIKEY')
+BITGET_APISECRET = os.environ.get('BITGET_APISECRET')
+BITGET_PASSPHRASE = os.environ.get('BITGET_PASSPHRASE')
 
 def get_bitget_signature(timestamp, method, request_path, body, secret):
-    prehash = f"{timestamp}{method.upper()}{request_path}{body}"
+    # Bitget 공식 문서: sign = HMAC_SHA256(timestamp + method + request_path + body, secretKey), Base64 인코딩
+    prehash = f"{timestamp}{method}{request_path}{body}"
     sign = hmac.new(secret.encode('utf-8'), prehash.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(sign).decode()
 
 def get_bitget_headers(method, request_path, body=""):
     timestamp = str(int(time.time() * 1000))
-    signature = get_bitget_signature(timestamp, method, request_path, body, BITGET_APISECRET)
+    signature = get_bitget_signature(timestamp, method.upper(), request_path, body, BITGET_APISECRET)
     return {
         "ACCESS-KEY": BITGET_APIKEY,
         "ACCESS-SIGN": signature,
@@ -27,10 +33,12 @@ def get_bitget_accounts():
     url = "https://api.bitget.com" + request_path
     body = ""
     headers = get_bitget_headers(method, request_path, body)
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        return {"error": f"HTTP {resp.status_code}", "response": resp.text}
-    data = resp.json()
-    if "code" in data and data["code"] != "00000":
-        return {"error": f'Bitget API 오류: {data}'}
-    return data
+    response = requests.get(url, headers=headers)
+    return response.json()
+
+if __name__ == "__main__":
+    print("BITGET_APIKEY:", repr(BITGET_APIKEY))
+    print("BITGET_APISECRET:", repr(BITGET_APISECRET))
+    print("BITGET_PASSPHRASE:", repr(BITGET_PASSPHRASE))
+    result = get_bitget_accounts()
+    print("Bitget API 응답:", json.dumps(result, ensure_ascii=False, indent=2))
