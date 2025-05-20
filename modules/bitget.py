@@ -1,17 +1,11 @@
-import os
 import time
 import requests
 import hmac
 import hashlib
 import base64
-
-# 환경 변수에서 키값 로딩 (Render 환경변수 사용)
-BITGET_APIKEY = os.environ.get('BITGET_APIKEY')
-BITGET_APISECRET = os.environ.get('BITGET_APISECRET')
-BITGET_PASSPHRASE = os.environ.get('BITGET_PASSPHRASE')
+from .constants import BITGET_APIKEY, BITGET_APISECRET, BITGET_PASSPHRASE
 
 def get_bitget_signature(timestamp, method, request_path, body, secret):
-    # prehash 포맷(문서 기준)
     prehash = f"{timestamp}{method.upper()}{request_path}{body}"
     sign = hmac.new(secret.encode('utf-8'), prehash.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(sign).decode()
@@ -31,13 +25,12 @@ def get_bitget_accounts():
     method = "GET"
     request_path = "/api/v2/mix/account/accounts?productType=USDT-FUTURES"
     url = "https://api.bitget.com" + request_path
-    body = ""  # GET은 body 없음
+    body = ""
     headers = get_bitget_headers(method, request_path, body)
-    response = requests.get(url, headers=headers)
-    return response.json()
-
-if __name__ == "__main__":
-    print("APIKEY:", repr(BITGET_APIKEY))
-    print("APISECRET:", repr(BITGET_APISECRET))
-    print("PASSPHRASE:", repr(BITGET_PASSPHRASE))
-    print("응답:", get_bitget_accounts())
+    resp = requests.get(url, headers=headers)
+    if resp.status_code != 200:
+        return {"error": f"HTTP {resp.status_code}", "response": resp.text}
+    data = resp.json()
+    if "code" in data and data["code"] != "00000":
+        return {"error": f'Bitget API 오류: {data}'}
+    return data
