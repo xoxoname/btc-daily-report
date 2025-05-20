@@ -3,7 +3,6 @@ import time
 import requests
 import base64
 import hmac
-import json
 
 API_KEY = os.getenv("BITGET_APIKEY")
 API_SECRET = os.getenv("BITGET_APISECRET")
@@ -25,24 +24,58 @@ def get_headers(method, path, body=""):
         "Content-Type": "application/json"
     }
 
-def get_profit_summary(symbol="BTCUSDT"):
-    # 1. 계좌 정보
-    account_path = "/api/v2/mix/account/accounts"
-    account_url = f"https://api.bitget.com{account_path}?productType=USDT-FUTURES"
-    account_headers = get_headers("GET", account_path, "")
-    acc_resp = requests.get(account_url, headers=account_headers)
-    acc_json = acc_resp.json()
-    asset = 0
-    if "data" in acc_json and isinstance(acc_json["data"], dict):
-        asset = float(acc_json["data"].get("marginBalance", 0))
+def robust_request(url, headers, max_retry=3):
+    for attempt in range(max_retry):
+        try:
+            resp = requests.get(url, headers=headers, timeout=5)
+            if resp.status_code == 429:
+                print("Bitget API Rate Limit, Retrying...")
+                time.sleep(2)
+                continue
+            data = resp.json()
+            # Bitget 고유 에러 메시지 감지
+            if "code" in data and data["code"] not in ("00000", 0):
+                print(f"Bitget API 오류: {data.get('msg', data.get('code', 'Unknown error'))}")
+                return {"error": data.get("msg", data.get("code", "Unknown error")), "data": None}
+            return {"error": None, "data": data.get("data", None)}
+        except requests.exceptions.RequestException as e:
+            print(f"네트워크 에러: {e}, 재시도 {attempt+1}")
+            time.sleep(2)
+        except Exception as e:
+            print(f"응답 파싱 에러: {e}, 재시도 {attempt+1}")
+            time.sleep(1)
+    # 모두 실패 시
+    return {"error": "네트워크/Bitget API 응답 없음", "data": None}
 
-    # 2. 포지션 정보
-    pos_path = "/api/v2/mix/position/single-position"
-    pos_url = f"https://api.bitget.com{pos_path}?symbol={symbol}&productType=USDT-FUTURES"
-    pos_headers = get_headers("GET", pos_path, "")
-    pos_resp = requests.get(pos_url, headers=pos_headers)
-    pos_json = pos_resp.json()
-    pos_data = pos_json.get("data", {})
+def get_usdt_futures_account():
+    path = "/api/v2/mix/account/accounts"
+    url = f"https://api.bitget.com{path}?productType=USDT-FUTURES"
+    headers = get_headers("GET", path, "")
+    result = robust_request(url, headers)
+    if result["error"]:
+        return {"error": result["error"], "data": None}
+    return {"error": None, "data": result["data"]}
+
+def get_positions(symbol="BTCUSDT"):
+    path = "/api/v2/mix/position/single-position"
+    url = f"https://api.bitget.com{path}?symbol={symbol}&productType=USDT-FUTURES"
+    headers = get_headers("GET", path, "")
+    result = robust_request(url, headers)
+    if result["error"]:
+        return {"error": result["error"], "data": None}
+    return {"error": None, "data": result["data"]}
+
+def get_profit_summary(symbol="BTCUSDT"):
+    acc = get_usdt_futures_account()
+    if acc["error"]:
+        return {"error": f"계좌 조회 오류: {acc['error']}"}
+    asset = 0
+    if acc["data"] and isinstance(acc["data"], dict):
+        asset = float(acc["data"].get("marginBalance", 0))
+    pos = get_positions(symbol)
+    if pos["error"]:
+        return {"error": f"포지션 조회 오류: {pos['error']}"}
+    pos_data = pos["data"] or {}
     try:
         return {
             "종목": symbol,
@@ -56,6 +89,7 @@ def get_profit_summary(symbol="BTCUSDT"):
             "실현 손익": pos_data.get("realizedPL", "-"),
             "진입 자산": asset,
             "수익률": f"{(float(pos_data.get('unrealizedPL', 0)) / asset * 100):.2f}%" if asset else "-",
+            "error": None
         }
-    except Exception:
-        return None
+    except Exception as e:
+        return {"error": f"Bitget 데이터 파싱 오류: {e}"}
