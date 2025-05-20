@@ -1,57 +1,68 @@
-import os
+import time
+import hmac
+import hashlib
+import base64
 import requests
+import os
 
-def get_position_info():
-    # Bitget API 키 환경변수
-    API_KEY = os.environ.get("BITGET_APIKEY")
-    API_SECRET = os.environ.get("BITGET_APISECRET")
-    API_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
-    # 실시간 자산/포지션 가져오기 (샘플: 실제 연동 필요)
-    # 참고: Bitget REST API v2 - /api/mix/v1/position/singlePosition
-    # 아래는 예시, 실제 production에서는 제대로 된 인증 필요!
-    # 문서: https://www.bitget.com/api-doc/contract/positions/Get-Current-Position
+# 환경변수에서 안전하게 불러오기 (깃허브에는 노출 X)
+API_KEY = os.environ.get("BITGET_APIKEY")
+API_SECRET = os.environ.get("BITGET_APISECRET")
+API_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
+
+def bitget_request(method, path, params=None, data=None):
+    timestamp = str(int(time.time() * 1000))
+    method = method.upper()
+
+    if params and method == "GET":
+        qs = "?" + "&".join([f"{k}={params[k]}" for k in sorted(params)])
+        full_path = path + qs
+        body = ""
+    elif data and method == "POST":
+        full_path = path
+        body = data
+    else:
+        full_path = path
+        body = ""
+
+    # prehash: 쿼리스트링 붙이면 안됨!
+    prehash = timestamp + method + path
+    if method == "POST" and body:
+        prehash += body
+
+    sign = base64.b64encode(
+        hmac.new(
+            API_SECRET.encode('utf-8'),
+            prehash.encode('utf-8'),
+            digestmod=hashlib.sha256
+        ).digest()
+    ).decode()
+
+    headers = {
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": sign,
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-PASSPHRASE": API_PASSPHRASE,
+        "Content-Type": "application/json"
+    }
+    url = "https://api.bitget.com" + path
+    if method == "GET":
+        resp = requests.get(url, headers=headers, params=params)
+    elif method == "POST":
+        resp = requests.post(url, headers=headers, data=body)
+    else:
+        raise ValueError("지원하지 않는 메서드")
     try:
-        url = "https://api.bitget.com/api/mix/v1/position/singlePosition"
-        params = {
-            "symbol": "BTCUSDT",
-            "marginCoin": "USDT",
-            "productType": "umcbl"
-        }
-        headers = {
-            "ACCESS-KEY": API_KEY,
-            "ACCESS-SIGN": "",
-            "ACCESS-TIMESTAMP": "",
-            "ACCESS-PASSPHRASE": API_PASSPHRASE,
-            "Content-Type": "application/json"
-        }
-        # 실제 Bitget 인증과정은 별도 util로 분리 필요, 아래는 샘플/임시
-        resp = requests.get(url, params=params, headers=headers, timeout=5)
-        data = resp.json()
-        pos = data.get('data', {})
-        # 여기서 실제 데이터 파싱
-        return {
-            "symbol": pos.get('symbol', 'BTCUSDT'),
-            "side": "롱" if float(pos.get('holdSide', 1)) > 0 else "숏",
-            "entry_price": float(pos.get('openPrice', 65400)),
-            "current_price": float(pos.get('marketPrice', 66210)),
-            "leverage": float(pos.get('leverage', 10)),
-            "liq_price": float(pos.get('liquidationPrice', 60930)),
-            "margin": float(pos.get('margin', 2000)),
-            "unrealized_pnl": float(pos.get('unrealizedPL', 81)),
-            "realized_pnl": float(pos.get('realizedPL', 24)),
-            "krw_usd": 1350
-        }
+        return resp.status_code, resp.json()
     except Exception as e:
-        # 오류시 임시 더미값 반환
-        return {
-            "symbol": "BTCUSDT",
-            "side": "롱",
-            "entry_price": 65400,
-            "current_price": 66210,
-            "leverage": 10,
-            "liq_price": 60930,
-            "margin": 2000,
-            "unrealized_pnl": 81.0,
-            "realized_pnl": 24.3,
-            "krw_usd": 1350
-        }
+        return resp.status_code, resp.text
+
+# 아래는 연동 예시. 실제 봇에서 함수로 호출하여 사용.
+def get_single_position(symbol="BTCUSDT_UMCBL", margin_coin="USDT"):
+    path = "/api/mix/v1/position/singlePosition"
+    params = {"symbol": symbol, "marginCoin": margin_coin}
+    return bitget_request("GET", path, params=params)
+
+def get_spot_balance():
+    path = "/api/spot/v1/account/assets"
+    return bitget_request("GET", path)
