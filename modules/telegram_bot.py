@@ -11,8 +11,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
-    # (아래는 예측/분석 리포트용, profit 리포트는 별도 함수!)
-    # 예시 생략
+    # 예측 리포트 텍스트(예시)
+    msg = f"📡 GPT 매동 예측 분석 리포트\n📅 작성 시각: 실시간\n━━━━━━━━━━━━━━━━━━━\n(이하 생략)"
+    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
 
 async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
@@ -22,7 +23,6 @@ async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "❗️비트겟 API 오류: 실시간 자산/포지션을 가져올 수 없습니다."
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         return
-
     msg = f"""💰 현재 수익 현황 요약
 📅 작성 시각: {kr_now_str()}
 ━━━━━━━━━━━━━━━━━━━
@@ -64,3 +64,17 @@ def run_telegram_bot():
     application.add_handler(CommandHandler("schedule", handle_schedule))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     application.run_polling()
+
+# 스케줄러에서 호출할 수 있게 별도 함수로 제공!
+def send_report():
+    # 직접 텔레그램 전송(비동기 루프에서 실행 필요)
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.create_task(handle_report(
+        Update.de_json({"message":{"chat":{"id":TELEGRAM_CHAT_ID}}}, None),
+        None  # 실제 context 생성/전달 필요. 여기선 생략
+    ))
+
+def send_exception():
+    # 예외 알림 전송
+    pass  # 필요 시 구현
