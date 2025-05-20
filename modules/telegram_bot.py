@@ -26,3 +26,34 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "수익률": "+5.26%"
     }
     msg = build_report(market_data, tech_data, psych_data, forecast, alerts, prev_check, pnl, user_prompt)
+    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+
+async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_report(update, context)
+
+async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_report(update, context)
+
+async def handle_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = f"📅 작성 시각: {kr_now_str()}\n📡 예정 주요 이벤트\n- 2025-05-19 21:00: FOMC 결과 발표 예정 (변동성 경고)\n- 2025-05-21 18:00: 비트코인 현물 ETF 심사 마감 예정"
+    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_report(update, context)
+
+def run_telegram_bot():
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("report", handle_report))
+    application.add_handler(CommandHandler("profit", handle_profit))
+    application.add_handler(CommandHandler("forecast", handle_forecast))
+    application.add_handler(CommandHandler("schedule", handle_schedule))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    application.run_polling()
+
+async def send_report():
+    await handle_report(Update.de_json({"message":{"chat":{"id":TELEGRAM_CHAT_ID}}}, None), ContextTypes.DEFAULT_TYPE)
+
+async def send_exception():
+    msg = f"🚨 [BTC 예외 리포트] {kr_now_str()}\n❗ Whale Alert: 3,200 BTC 이체 감지\n📉 최근 10분 간 -2.3% 급락\n📌 GPT 판단: 공포 유입, 유동성 위축\n👉 향후 2시간 내 추가 하락 확률↑\n━━━━━━━━━━━━━━━━━━━\n※ 포지션 관리 강화, 레버리지 축소 권고"
+    pass
