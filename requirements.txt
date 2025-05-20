@@ -2,5 +2,5 @@ python-telegram-bot==20.7
 requests
 openai
 schedule
+python-dotenv
 pytz
-nest_asyncio
