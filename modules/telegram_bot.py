@@ -1,9 +1,9 @@
-import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from modules.constants import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from modules.report import build_report
 from modules.utils import kr_now_str
+from modules.bitget_api import get_profit_summary
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="비트코인 예측 봇에 오신 것을 환영합니다!")
@@ -11,25 +11,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
-    user_prompt = "실시간 BTC 시장 리포트 및 전략 분석을 아래 항목 순서대로 한국어로 작성: ..."
-    market_data = ["ETF 승인 이슈 없음 → 호재", "FOMC 8시간 전 대기 중 → 악재 예상"]
-    tech_data = ["현재가: $66,210", "RSI(4H): 61.5 (중립 강세) → 호재"]
-    psych_data = ["펀딩비: +0.012% (롱 과열) → 호재", "공포탐욕지수: 71 (탐욕) → 호재"]
-    forecast = ["상승 확률: 62%", "전략: 분할 매수/익절"]
-    alerts = ["Whale Alert: 1,000 BTC 이체 감지 → 호재"]
-    prev_check = ["5/17 23:00 횡보 예측 → 변동폭 ±0.9% → ✅ 적중"]
-    pnl = {
-        "진입 자산": "$2,000",
-        "미실현 손익": "+$81.0 (11.0만원)",
-        "실현 손익": "+$24.3 (3.3만원)",
-        "금일 총 수익": "+$105.3 (14.3만원)",
-        "수익률": "+5.26%"
-    }
-    msg = build_report(market_data, tech_data, psych_data, forecast, alerts, prev_check, pnl, user_prompt)
-    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+    # (아래는 예측/분석 리포트용, profit 리포트는 별도 함수!)
+    # 예시 생략
 
 async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await handle_report(update, context)
+    if update.effective_chat.id != TELEGRAM_CHAT_ID:
+        return
+    profit = get_profit_summary()
+    if not profit:
+        msg = "❗️비트겟 API 오류: 실시간 자산/포지션을 가져올 수 없습니다."
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        return
+
+    msg = f"""💰 현재 수익 현황 요약
+📅 작성 시각: {kr_now_str()}
+━━━━━━━━━━━━━━━━━━━
+📌 포지션 정보
+- 종목: {profit['종목']}
+- 방향: {profit['방향']}
+- 진입가: {profit['진입가']} / 현재가: {profit['현재가']}
+- 레버리지: {profit['레버리지']}
+- 청산가: {profit['청산가']}
+- 청산까지 남은 거리: {profit['청산까지 남은 거리']}
+━━━━━━━━━━━━━━━━━━━
+💸 손익 정보
+- 미실현 손익: {profit['미실현 손익']}
+- 실현 손익: {profit['실현 손익']}
+- 진입 자산: {profit['진입 자산']}
+- 수익률: {profit['수익률']}
+━━━━━━━━━━━━━━━━━━━
+🧠 멘탈 케어
+오늘 수익이 적다고 아쉬워 마세요. 한 번의 승리가 내일의 기회를 만듭니다! 😊
+━━━━━━━━━━━━━━━━━━━"""
+    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
 
 async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_report(update, context)
@@ -50,10 +64,3 @@ def run_telegram_bot():
     application.add_handler(CommandHandler("schedule", handle_schedule))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     application.run_polling()
-
-async def send_report():
-    await handle_report(Update.de_json({"message":{"chat":{"id":TELEGRAM_CHAT_ID}}}, None), ContextTypes.DEFAULT_TYPE)
-
-async def send_exception():
-    msg = f"🚨 [BTC 예외 리포트] {kr_now_str()}\n❗ Whale Alert: 3,200 BTC 이체 감지\n📉 최근 10분 간 -2.3% 급락\n📌 GPT 판단: 공포 유입, 유동성 위축\n👉 향후 2시간 내 추가 하락 확률↑\n━━━━━━━━━━━━━━━━━━━\n※ 포지션 관리 강화, 레버리지 축소 권고"
-    pass
