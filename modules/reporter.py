@@ -1,70 +1,72 @@
-import pytz
 from datetime import datetime
-from modules.bitget import get_btc_position, get_btc_balance, get_today_realized_profit
+import pytz
 import random
 
-def now_kst():
-    return datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-
-def get_mental_comment(profit_krw, profit_pct):
-    # 예시: 현실 알바 비교, 충동 억제, 상황별 동적 멘트
-    hourly_wage = 12000  # 현실 알바 시급(편의점 등)
-    hours = round(profit_krw / hourly_wage, 1) if profit_krw else 0
-    if profit_krw > 0:
-        choices = [
-            f"수익 {profit_krw:,.0f}원, 현실 알바 {hours}시간! 오늘의 성과로 충분합니다. 무리한 추가 매매는 피하고, 내일을 준비하세요.",
-            f"오늘 선물로 {profit_krw:,.0f}원을 벌었어요! 이 수익이면 알바 {hours}시간 분량입니다. 차분히 다음 기회를 기다려봅시다.",
-            f"수익률 {profit_pct:.2f}%. 수익을 지키는 것도 실력! 오늘은 여기까지, 휴식도 투자입니다.",
-        ]
-    elif profit_krw < 0:
-        choices = [
-            f"손실 {profit_krw:,.0f}원 발생. 무리한 만회보다, 원인 분석 후 내일을 준비해요.",
-            f"손실 {profit_krw:,.0f}원, 알바 {hours}시간과 비슷. 감정 매매는 위험, 충분히 쉬어주세요.",
-            f"수익률 {profit_pct:.2f}%. 손실을 빠르게 인정하고, 포지션 청산 후 휴식! 오늘의 경험이 내일을 만듭니다.",
+# 동적 멘탈 코멘트 생성
+def make_mental_comment(profit_krw, total_time=0, is_loss=False):
+    hourly = 12000  # 편의점 시급 예시
+    if profit_krw is None:
+        return "매매는 휴식도 중요합니다. 오늘은 쉬어가요!"
+    hours = round(abs(profit_krw) / hourly, 1)
+    if profit_krw == 0:
+        return "수익/손실이 없네요. 냉정하게 관망하는 것도 실력입니다."
+    if is_loss:
+        comment_list = [
+            f"손실 {abs(profit_krw):,}원... 알바 {hours}시간치입니다. 급하게 복구하려다 더 잃지 말고 천천히 돌아보세요.",
+            f"이번엔 {abs(profit_krw):,}원 손실이지만, 아직 기회는 많습니다. 리벤지 매매는 금물!",
+            f"오늘은 손실 {abs(profit_krw):,}원. 내일 더 좋은 타이밍이 올 거예요. 괜찮아요!"
         ]
     else:
-        choices = [
-            "포지션 없음! 기다림도 전략입니다. 시장의 기회를 찬찬히 관찰하세요.",
-            "수익도 손실도 없던 하루, 꾸준한 관찰이 내일의 승리로 연결됩니다.",
+        comment_list = [
+            f"{profit_krw:,}원 수익! 알바 {hours}시간. 오늘 수익으로 자신에게 작은 선물을 해보는 건 어떨까요?",
+            f"오늘 수익 {profit_krw:,}원! 이런 날은 과감한 추가매수보단, 휴식하면서 내일 타이밍을 기다려요.",
+            f"수익 {profit_krw:,}원, 현실 알바 {hours}시간! 수익에 집착 말고, 차분히 다음 타점까지 기다려봐요."
         ]
-    return random.choice(choices)
+    return random.choice(comment_list)
 
-def format_profit_report():
-    pos = get_btc_position()
-    if "error" in pos:
-        return f"수익 정보 조회 오류: {pos['error']}"
+def format_profit_report(position, realized_pnl=0, today_profit=0):
+    seoul = pytz.timezone("Asia/Seoul")
+    now = datetime.now(seoul)
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    report = f"💰 현재 수익 현황 요약\n📅 작성 시각: {now_str}\n━━━━━━━━━━━━━━━━━━━\n"
+    if not position:
+        report += "📌 포지션 없음\n\n━━━━━━━━━━━━━━━━━━━\n💸 손익 정보\n"
+        report += "미실현 손익: 0\n실현 손익: 0\n금일 총 수익: 0\n━━━━━━━━━━━━━━━━━━━\n"
+        report += "🧠 멘탈 케어\n매매는 기회가 올 때만! 오늘은 여유롭게 관망하세요.\n━━━━━━━━━━━━━━━━━━━"
+        return report
 
-    balance = get_btc_balance()
-    realized = get_today_realized_profit()
-    profit_usdt = pos.get("upl", 0) + realized
-    profit_krw = round(profit_usdt * 1350)
-    profit_pct = round(profit_usdt / balance * 100, 2) if balance else 0
+    entry = float(position.get("openPrice", 0))
+    cur = float(position.get("marketPrice", 0))
+    leverage = position.get("leverage", "N/A")
+    liq = float(position.get("liqPrice", 0))
+    pnl = float(position.get("unrealizedPL", 0))
+    pnl_krw = int(pnl * 1350)
+    realized = float(position.get("achievedPL", 0))  # Bitget에서 실현 손익
+    realized_krw = int(realized * 1350)
+    total_profit = pnl + realized
+    total_profit_krw = int(total_profit * 1350)
+    margin = float(position.get("margin", 0))
+    direction = position.get("holdSide", "N/A")  # long/short
 
-    lines = []
-    lines.append("💰 현재 수익 현황 요약")
-    lines.append(f"📅 작성 시각: {now_kst()}")
-    lines.append("━━━━━━━━━━━━━━━━━━━")
-    if pos:
-        lines.append("📌 포지션 정보\n")
-        lines.append(f"종목: {pos.get('symbol', '-')}")
-        lines.append(f"방향: {pos.get('side', '-')}")
-        lines.append(f"진입가: ${pos.get('avg_open', 0):,.2f} / 현재가: ${pos.get('current_price', 0):,.2f}")
-        lines.append(f"레버리지: {pos.get('leverage', '-') }x")
-        lines.append(f"청산가: ${pos.get('liquidation', 0):,.2f}")
-        distance = (pos.get('current_price', 0) - pos.get('liquidation', 0)) / pos.get('current_price', 1) * 100
-        lines.append(f"청산까지 남은 거리: 약 {distance:.2f}%")
-        lines.append("━━━━━━━━━━━━━━━━━━━")
-    else:
-        lines.append("현재 보유 포지션이 없습니다.\n━━━━━━━━━━━━━━━━━━━")
-
-    lines.append("💸 손익 정보")
-    lines.append(f"미실현 손익: {pos.get('upl', 0):+.2f} (약 {round(pos.get('upl', 0) * 1350):,}원)")
-    lines.append(f"실현 손익: {realized:+.2f} (약 {round(realized * 1350):,}원)")
-    lines.append(f"금일 총 수익: {profit_usdt:+.2f} (약 {profit_krw:,}원)")
-    lines.append(f"진입 자산: ${balance:,.0f}")
-    lines.append(f"수익률: {profit_pct:.2f}%")
-    lines.append("━━━━━━━━━━━━━━━━━━━")
-    lines.append("🧠 멘탈 케어")
-    lines.append(get_mental_comment(profit_krw, profit_pct))
-    lines.append("━━━━━━━━━━━━━━━━━━━")
-    return "\n".join(lines)
+    report += "📌 포지션 정보\n\n"
+    report += f"종목: {position.get('symbol', 'BTCUSDT')}\n"
+    report += f"방향: {direction}\n"
+    report += f"진입가: ${entry:,.2f} / 현재가: ${cur:,.2f}\n"
+    report += f"레버리지: {leverage}x\n"
+    report += f"청산가: ${liq:,.2f}\n"
+    liq_gap = (entry - liq) if direction.lower().startswith("long") else (liq - entry)
+    liq_percent = abs(liq_gap / entry) * 100 if entry else 0
+    report += f"청산까지 남은 거리: 약 {liq_percent:.1f}%\n\n"
+    report += "━━━━━━━━━━━━━━━━━━━\n"
+    report += "💸 손익 정보\n"
+    report += f"미실현 손익: {pnl:.2f} (약 {pnl_krw:,}원)\n"
+    report += f"실현 손익: {realized:.2f} (약 {realized_krw:,}원)\n"
+    report += f"금일 총 수익: {total_profit:.2f} (약 {total_profit_krw:,}원)\n"
+    report += f"진입 자산: ${margin:,.2f}\n"
+    roi = (total_profit / margin * 100) if margin else 0
+    report += f"수익률: {roi:.1f}%\n"
+    report += "━━━━━━━━━━━━━━━━━━━\n"
+    is_loss = total_profit < 0
+    report += f"🧠 멘탈 케어\n{make_mental_comment(total_profit_krw, is_loss=is_loss)}\n"
+    report += "━━━━━━━━━━━━━━━━━━━"
+    return report
