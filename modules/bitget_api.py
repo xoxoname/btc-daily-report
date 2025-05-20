@@ -1,65 +1,75 @@
-import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from modules.constants import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from modules.report import build_report
-from modules.utils import kr_now_str
+import requests
+import time
+import hmac
+import hashlib
+import json
+from modules.constants import BITGET_APIKEY, BITGET_APISECRET, BITGET_PASSPHRASE
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="비트코인 예측 봇에 오신 것을 환영합니다!")
-
-async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != TELEGRAM_CHAT_ID:
-        return
-    # 실제 데이터 분석/수집/요약 파트 (임시 예시)
-    user_prompt = "실시간 BTC 시장 리포트 및 전략 분석을 아래 항목 순서대로 한국어로 작성: ..."
-    market_data = ["ETF 승인 이슈 없음 → 호재", "FOMC 8시간 전 대기 중 → 악재 예상"]
-    tech_data = ["현재가: $66,210", "RSI(4H): 61.5 (중립 강세) → 호재"]
-    psych_data = ["펀딩비: +0.012% (롱 과열) → 호재", "공포탐욕지수: 71 (탐욕) → 호재"]
-    forecast = ["상승 확률: 62%", "전략: 분할 매수/익절"]
-    alerts = ["Whale Alert: 1,000 BTC 이체 감지 → 호재"]
-    prev_check = ["5/17 23:00 횡보 예측 → 변동폭 ±0.9% → ✅ 적중"]
-    # 반드시 딕셔너리 형태로!
-    pnl = {
-        "진입 자산": "$2,000",
-        "미실현 손익": "+$81.0 (11.0만원)",
-        "실현 손익": "+$24.3 (3.3만원)",
-        "금일 총 수익": "+$105.3 (14.3만원)",
-        "수익률": "+5.26%"
+def get_bitget_headers(method, path, query=''):
+    timestamp = str(int(time.time() * 1000))
+    pre_hash = timestamp + method + path + query
+    sign = hmac.new(BITGET_APISECRET.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
+    return {
+        'ACCESS-KEY': BITGET_APIKEY,
+        'ACCESS-SIGN': sign,
+        'ACCESS-TIMESTAMP': timestamp,
+        'ACCESS-PASSPHRASE': BITGET_PASSPHRASE,
+        'Content-Type': 'application/json'
     }
-    msg = build_report(market_data, tech_data, psych_data, forecast, alerts, prev_check, pnl, user_prompt)
-    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
 
-async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await handle_report(update, context)
+def get_positions(symbol='BTCUSDT'):
+    method = 'GET'
+    path = '/api/mix/v1/position/singlePosition'
+    query = f'?symbol={symbol}&marginCoin=USDT'
+    url = 'https://api.bitget.com' + path + query
+    headers = get_bitget_headers(method, path, query)
+    res = requests.get(url, headers=headers)
+    data = res.json()
+    if data.get("code") != "00000":
+        return None
+    return data["data"]
 
-async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await handle_report(update, context)
+def get_account():
+    method = 'GET'
+    path = '/api/mix/v1/account/account'
+    query = '?symbol=BTCUSDT&marginCoin=USDT'
+    url = 'https://api.bitget.com' + path + query
+    headers = get_bitget_headers(method, path, query)
+    res = requests.get(url, headers=headers)
+    data = res.json()
+    if data.get("code") != "00000":
+        return None
+    return data["data"]
 
-async def handle_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = f"📅 작성 시각: {kr_now_str()}\n📡 예정 주요 이벤트\n- 2025-05-19 21:00: FOMC 결과 발표 예정 (변동성 경고)\n- 2025-05-21 18:00: 비트코인 현물 ETF 심사 마감 예정"
-    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+def get_profit_summary():
+    pos = get_positions()
+    acc = get_account()
+    if not pos or not acc:
+        return None
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await handle_report(update, context)
+    entry_price = float(pos['openPrice'])
+    mark_price = float(pos['marketPrice'])
+    size = float(pos['holdVol'])
+    direction = pos['holdSide']
+    leverage = float(pos['leverage'])
+    liq_price = float(pos['liquidationPrice'])
+    pnl = float(pos['unrealizedPL'])
+    realized = float(acc.get('realizedPL', 0))
+    margin = float(pos['margin'])
+    margin_coin = 'USDT'
 
-def run_telegram_bot():
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("report", handle_report))
-    application.add_handler(CommandHandler("profit", handle_profit))
-    application.add_handler(CommandHandler("forecast", handle_forecast))
-    application.add_handler(CommandHandler("schedule", handle_schedule))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    application.run_polling()
+    pnl_ratio = (pnl + realized) / margin * 100 if margin else 0
 
-async def send_report():
-    # 정규 스케줄러에서 호출, 예시 메시지
-    await handle_report(Update.de_json({"message":{"chat":{"id":TELEGRAM_CHAT_ID}}}, None), ContextTypes.DEFAULT_TYPE)
-
-async def send_exception():
-    # 예외 감지/긴급 알림 (5분마다)
-    # 실제 예외 탐지 시 아래 메시지 수정
-    msg = f"🚨 [BTC 예외 리포트] {kr_now_str()}\n❗ Whale Alert: 3,200 BTC 이체 감지\n📉 최근 10분 간 -2.3% 급락\n📌 GPT 판단: 공포 유입, 유동성 위축\n👉 향후 2시간 내 추가 하락 확률↑\n━━━━━━━━━━━━━━━━━━━\n※ 포지션 관리 강화, 레버리지 축소 권고"
-    # Send only if critical event is detected!
-    pass
+    return {
+        "종목": pos['symbol'],
+        "방향": direction,
+        "진입가": f"${entry_price:,.2f}",
+        "현재가": f"${mark_price:,.2f}",
+        "레버리지": f"{leverage}x",
+        "청산가": f"${liq_price:,.2f}",
+        "미실현 손익": f"{pnl:,.2f} {margin_coin}",
+        "실현 손익": f"{realized:,.2f} {margin_coin}",
+        "진입 자산": f"{margin:,.2f} {margin_coin}",
+        "수익률": f"{pnl_ratio:.2f}%",
+        "청산까지 남은 거리": f"{((mark_price-liq_price)/mark_price*100):.2f}%"
+    }
