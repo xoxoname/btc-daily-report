@@ -18,10 +18,29 @@ async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != TELEGRAM_CHAT_ID:
         return
     profit = get_profit_summary()
-    if not profit:
-        msg = "❗️비트겟 API 오류: 실시간 자산/포지션을 가져올 수 없습니다."
+
+    # 오류/None 반환 및 모든 오류 처리
+    if not profit or "error" in profit and profit["error"]:
+        err_msg = profit["error"] if profit and profit.get("error") else "비트겟 API 응답이 없습니다."
+        msg = (
+            f"❗️비트겟 API 오류: 실시간 자산/포지션을 가져올 수 없습니다.\n\n"
+            f"원인: {err_msg}\n"
+            f"1) API키/시크릿/패스프레이즈 확인\n"
+            f"2) 키 권한 및 요청제한, 네트워크, IP락, 서버 오류, 유지보수, 구조 변경, 파라미터 입력오류 등 포함\n"
+            f"3) 문제가 지속되면 Bitget 공식 사이트에서 키 상태/권한/쿼터/접속 제한/실행 서버 위치 등을 직접 점검"
+        )
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         return
+
+    required_keys = [
+        '종목', '방향', '진입가', '현재가', '레버리지', '청산가',
+        '청산까지 남은 거리', '미실현 손익', '실현 손익', '진입 자산', '수익률'
+    ]
+    if not all(k in profit for k in required_keys):
+        msg = "❗️Bitget API 데이터 구조 변경 또는 키값 누락 발생! 리포트 형식 재확인 필요."
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        return
+
     msg = f"""💰 현재 수익 현황 요약
 📅 작성 시각: {kr_now_str()}
 ━━━━━━━━━━━━━━━━━━━
@@ -43,23 +62,3 @@ async def handle_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 오늘 수익이 적다고 아쉬워 마세요. 한 번의 승리가 내일의 기회를 만듭니다! 😊
 ━━━━━━━━━━━━━━━━━━━"""
     await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-
-async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await handle_report(update, context)
-
-async def handle_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = f"📅 작성 시각: {kr_now_str()}\n📡 예정 주요 이벤트\n- 2025-05-19 21:00: FOMC 결과 발표 예정 (변동성 경고)\n- 2025-05-21 18:00: 비트코인 현물 ETF 심사 마감 예정"
-    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await handle_report(update, context)
-
-def run_telegram_bot():
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("report", handle_report))
-    application.add_handler(CommandHandler("profit", handle_profit))
-    application.add_handler(CommandHandler("forecast", handle_forecast))
-    application.add_handler(CommandHandler("schedule", handle_schedule))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    application.run_polling()
