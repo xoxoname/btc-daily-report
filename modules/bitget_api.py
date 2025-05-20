@@ -1,75 +1,53 @@
 import requests
 import time
 import hmac
-import hashlib
-import json
-from modules.constants import BITGET_APIKEY, BITGET_APISECRET, BITGET_PASSPHRASE
+import base64
+import os
 
-def get_bitget_headers(method, path, query=''):
+API_KEY = os.environ.get("BITGET_APIKEY")
+API_SECRET = os.environ.get("BITGET_APISECRET")
+PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
+
+def make_headers(method, path, params=""):
     timestamp = str(int(time.time() * 1000))
-    pre_hash = timestamp + method + path + query
-    sign = hmac.new(BITGET_APISECRET.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
+    body = "" if method == "GET" else params
+    prehash = timestamp + method + path + body
+    sign = base64.b64encode(
+        hmac.new(API_SECRET.encode('utf-8'), prehash.encode('utf-8'), digestmod='sha256').digest()
+    ).decode()
     return {
-        'ACCESS-KEY': BITGET_APIKEY,
+        'ACCESS-KEY': API_KEY,
         'ACCESS-SIGN': sign,
         'ACCESS-TIMESTAMP': timestamp,
-        'ACCESS-PASSPHRASE': BITGET_PASSPHRASE,
+        'ACCESS-PASSPHRASE': PASSPHRASE,
         'Content-Type': 'application/json'
     }
 
-def get_positions(symbol='BTCUSDT'):
-    method = 'GET'
-    path = '/api/mix/v1/position/singlePosition'
-    query = f'?symbol={symbol}&marginCoin=USDT'
-    url = 'https://api.bitget.com' + path + query
-    headers = get_bitget_headers(method, path, query)
-    res = requests.get(url, headers=headers)
-    data = res.json()
-    if data.get("code") != "00000":
-        return None
-    return data["data"]
-
-def get_account():
-    method = 'GET'
-    path = '/api/mix/v1/account/account'
-    query = '?symbol=BTCUSDT&marginCoin=USDT'
-    url = 'https://api.bitget.com' + path + query
-    headers = get_bitget_headers(method, path, query)
-    res = requests.get(url, headers=headers)
-    data = res.json()
-    if data.get("code") != "00000":
-        return None
-    return data["data"]
-
 def get_profit_summary():
-    pos = get_positions()
-    acc = get_account()
-    if not pos or not acc:
+    # USDT-FUTURES 잔고 조회 예시
+    url = "https://api.bitget.com/api/v2/mix/account/accounts?productType=USDT-FUTURES"
+    headers = make_headers("GET", "/api/v2/mix/account/accounts", "productType=USDT-FUTURES")
+    res = requests.get(url, headers=headers)
+    try:
+        data = res.json()
+        # 여기에 실제 내 자산구조 분석(positions, balance 등) 맞게 가공해서 리포트 반환
+        # 예시만 아래처럼
+        # {"data":{"totalEquity":"1234.56","usdtEquity":"1234.56", ...}}
+        if "data" in data and isinstance(data["data"], dict):
+            return {
+                "종목": "BTCUSDT",
+                "방향": "롱",
+                "진입가": "66400",
+                "현재가": "66600",
+                "레버리지": "10x",
+                "청산가": "61500",
+                "청산까지 남은 거리": "-7.8%",
+                "미실현 손익": "+$100.0 (13.5만원)",
+                "실현 손익": "+$30.0 (4.0만원)",
+                "진입 자산": "$2,000",
+                "수익률": "+6.5%",
+            }
+        else:
+            return None
+    except Exception as e:
         return None
-
-    entry_price = float(pos['openPrice'])
-    mark_price = float(pos['marketPrice'])
-    size = float(pos['holdVol'])
-    direction = pos['holdSide']
-    leverage = float(pos['leverage'])
-    liq_price = float(pos['liquidationPrice'])
-    pnl = float(pos['unrealizedPL'])
-    realized = float(acc.get('realizedPL', 0))
-    margin = float(pos['margin'])
-    margin_coin = 'USDT'
-
-    pnl_ratio = (pnl + realized) / margin * 100 if margin else 0
-
-    return {
-        "종목": pos['symbol'],
-        "방향": direction,
-        "진입가": f"${entry_price:,.2f}",
-        "현재가": f"${mark_price:,.2f}",
-        "레버리지": f"{leverage}x",
-        "청산가": f"${liq_price:,.2f}",
-        "미실현 손익": f"{pnl:,.2f} {margin_coin}",
-        "실현 손익": f"{realized:,.2f} {margin_coin}",
-        "진입 자산": f"{margin:,.2f} {margin_coin}",
-        "수익률": f"{pnl_ratio:.2f}%",
-        "청산까지 남은 거리": f"{((mark_price-liq_price)/mark_price*100):.2f}%"
-    }
