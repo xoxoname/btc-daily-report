@@ -1,8 +1,27 @@
 import os
 
-BITGET_APIKEY = os.environ.get('BITGET_APIKEY')
-BITGET_APISECRET = os.environ.get('BITGET_APISECRET')
-BITGET_PASSPHRASE = os.environ.get('BITGET_PASSPHRASE')
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+BITGET_APIKEY = os.getenv('BITGET_APIKEY')
+BITGET_APISECRET = os.getenv('BITGET_APISECRET')
+BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = int(os.getenv('TELEGRAM_CHAT_ID'))
+
+TIMEZONE = "Asia/Seoul"
+
+# 리포트 포맷 고정: (변경 절대 금지)
+REPORT_HEADER = "📡 GPT 매동 예측 분석 리포트"
+FORECAST_HEADER = "📈 오늘의 단기 매동 예측"
+PROFIT_HEADER = "💰 현재 수익 현황 요약"
+SCHEDULE_HEADER = "📅 예정 주요 이벤트"
+ERROR_HEADER = "⚠️ [시스템 응답 실패]"
+EXCEPTION_HEADER = "🚨 [BTC 예외 리포트]"
+
+# 멘탈 코멘트 예시
+MENTAL_COMMENTS = {
+    "big_gain": "🎉 오늘 수익은 주말 여행 항공권에 해당합니다!",
+    "normal_gain": "💰 수익은 습관입니다. 오늘 한 걸음이 내일 계단이 됩니다.",
+    "neutral": "⏳ 조용한 날도 내일의 기회를 위해 꼭 필요합니다.",
+    "small_loss": "📉 작은 손실은 기회비용입니다. 다시 시작하면 됩니다.",
+    "big_loss": "🛑 손실이 크더라도 패닉은 금물입니다. 시스템을 믿으세요."
+}
