@@ -3,3 +3,4 @@ requests
 pytz
 schedule
 openai
+nest_asyncio
