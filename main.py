@@ -1,7 +1,9 @@
-import nest_asyncio
-nest_asyncio.apply()
-
-from modules.telegram import run_telegram_bot
+import asyncio
+from modules.telegram_bot import run_telegram_bot
+from modules.schedule import start_schedulers
 
 if __name__ == "__main__":
-    run_telegram_bot()
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_telegram_bot())
+    start_schedulers(loop)
+    loop.run_forever()
