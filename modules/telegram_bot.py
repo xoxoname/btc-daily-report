@@ -18,7 +18,7 @@ async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     forecast = ["상승 확률: 62%", "전략: 분할 매수/익절"]
     alerts = ["Whale Alert: 1,000 BTC 이체 감지 → 호재"]
     prev_check = ["5/17 23:00 횡보 예측 → 변동폭 ±0.9% → ✅ 적중"]
-    pnl = {  # 반드시 dict!
+    pnl = {
         "진입 자산": "$2,000",
         "미실현 손익": "+$81.0 (11.0만원)",
         "실현 손익": "+$24.3 (3.3만원)",
