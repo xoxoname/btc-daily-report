@@ -1,10 +1,8 @@
 import os
-import timeimport os
 import time
 import requests
 import hmac
 import hashlib
-import base64
 
 BITGET_APIKEY = os.environ.get('BITGET_APIKEY')
 BITGET_APISECRET = os.environ.get('BITGET_APISECRET')
@@ -12,8 +10,8 @@ BITGET_PASSPHRASE = os.environ.get('BITGET_PASSPHRASE')
 
 def get_bitget_signature(timestamp, method, request_path, body, secret):
     prehash = f"{timestamp}{method.upper()}{request_path}{body}"
-    sign = hmac.new(secret.encode('utf-8'), prehash.encode('utf-8'), hashlib.sha256).digest()
-    return base64.b64encode(sign).decode()
+    sign = hmac.new(secret.encode('utf-8'), prehash.encode('utf-8'), hashlib.sha256).hexdigest()
+    return sign
 
 def get_bitget_headers(method, request_path, body=""):
     timestamp = str(int(time.time() * 1000))
@@ -30,7 +28,7 @@ def get_bitget_accounts():
     method = "GET"
     request_path = "/api/v2/mix/account/accounts?productType=USDT-FUTURES"
     url = "https://api.bitget.com" + request_path
-    body = ""
+    body = ""  # GET/DELETE는 무조건 빈 문자열
     headers = get_bitget_headers(method, request_path, body)
     response = requests.get(url, headers=headers)
     return response.json()
