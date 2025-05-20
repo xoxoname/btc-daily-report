@@ -1,5 +1,6 @@
 import schedule
 import threading
+import time
 from modules.telegram_bot import send_report, send_exception
 
 def job_send_report():
@@ -18,5 +19,7 @@ def start_schedulers():
     def run():
         while True:
             schedule.run_pending()
+            time.sleep(1)  # 너무 빠르지 않게 1초 sleep
+
     t = threading.Thread(target=run, daemon=True)
     t.start()
