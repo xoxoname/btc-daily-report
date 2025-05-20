@@ -48,4 +48,18 @@ async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_report(update, context)
 
 async def handle_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = f"📅 작성 시각: {kr_now_str()}\n📡 예정 주요 이벤트\n- 2025-05-19 21:00: FOMC 결과 발표 예정 (변동성 경고)\n- 2025-05-21 18:00: 비트코인 현물 ETF 심사
+    msg = f"📅 작성 시각: {kr_now_str()}\n📡 예정 주요 이벤트\n- 2025-05-19 21:00: FOMC 결과 발표 예정 (변동성 경고)\n- 2025-05-21 18:00: 비트코인 현물 ETF 심사 마감 예정"
+    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_report(update, context)
+
+def run_telegram_bot():
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("report", handle_report))
+    application.add_handler(CommandHandler("profit", handle_profit))
+    application.add_handler(CommandHandler("forecast", handle_forecast))
+    application.add_handler(CommandHandler("schedule", handle_schedule))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    application.run_polling()
