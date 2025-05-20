@@ -1,27 +1,20 @@
 import os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from modules.bitget import get_position
-from modules.report import format_profit_report
+from telegram.ext import Application, CommandHandler
+import logging
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ALLOWED_CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID", "0"))
-BITGET_APIKEY = os.environ.get("BITGET_APIKEY")
-BITGET_APISECRET = os.environ.get("BITGET_APISECRET")
-BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
+logging.basicConfig(level=logging.INFO)
 
-async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ALLOWED_CHAT_ID:
-        await update.message.reply_text("❌ 접근 권한이 없습니다.")
-        return
-    try:
-        position = get_position(BITGET_APIKEY, BITGET_APISECRET, BITGET_PASSPHRASE)
-        msg = format_profit_report(position)
-    except Exception as e:
-        msg = f"수익 정보 조회 오류: {e}"
-    await update.message.reply_text(msg)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+async def start(update, context):
+    await update.message.reply_text("✅ 봇이 정상적으로 실행되었습니다! /profit 명령어를 입력해 테스트해보세요.")
+
+async def profit(update, context):
+    await update.message.reply_text("💰 수익 리포트 샘플\n- (여기에 비트겟 연동 결과가 표시됩니다.)")
 
 def run_telegram_bot():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("profit", profit))
     app.run_polling()
