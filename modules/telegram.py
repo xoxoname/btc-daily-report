@@ -1,26 +1,27 @@
 import os
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram import Update
-from modules.reporter import format_profit_report
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from modules.bitget import get_position
+from modules.report import format_profit_report
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID", "0"))
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+ALLOWED_CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID", "0"))
+BITGET_APIKEY = os.environ.get("BITGET_APIKEY")
+BITGET_APISECRET = os.environ.get("BITGET_APISECRET")
+BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
 
 async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != TELEGRAM_CHAT_ID:
-        await update.message.reply_text("접근 권한 없음.")
+    if update.effective_chat.id != ALLOWED_CHAT_ID:
+        await update.message.reply_text("❌ 접근 권한이 없습니다.")
         return
-    report = format_profit_report()
-    await update.message.reply_text(report)
+    try:
+        position = get_position(BITGET_APIKEY, BITGET_APISECRET, BITGET_PASSPHRASE)
+        msg = format_profit_report(position)
+    except Exception as e:
+        msg = f"수익 정보 조회 오류: {e}"
+    await update.message.reply_text(msg)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != TELEGRAM_CHAT_ID:
-        await update.message.reply_text("접근 권한 없음.")
-        return
-    await update.message.reply_text("BTC 데일리 리포트 봇입니다. /profit 입력!")
-
-async def run_telegram_bot():
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
+def run_telegram_bot():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("profit", profit))
-    await app.run_polling()
+    app.run_polling()
