@@ -28,23 +28,33 @@ def get_headers(method, endpoint, body=""):
         "Content-Type": "application/json"
     }
 
-def get_usdt_balance():
+def get_btcusdt_position_info():
+    endpoint = "/api/mix/v1/position/singlePosition?symbol=BTCUSDT&productType=umcbl"
+    headers = get_headers("GET", endpoint)
+    url = BASE_URL + endpoint
+    res = requests.get(url, headers=headers)
+    data = res.json()
+    if data["code"] != "00000":
+        raise Exception(f"Bitget API 오류: {data['msg']}")
+    return data["data"]
+
+def get_spot_balance_usdt():
     endpoint = "/api/spot/v1/account/assets"
     headers = get_headers("GET", endpoint)
-    response = requests.get(BASE_URL + endpoint, headers=headers)
-    data = response.json()
-    if data.get("code") != "00000":
-        raise Exception(f"Bitget API 오류: {data.get('msg')}")
-    for asset in data.get("data", []):
+    url = BASE_URL + endpoint
+    res = requests.get(url, headers=headers)
+    data = res.json()
+    if data["code"] != "00000":
+        raise Exception(f"Bitget API 오류: {data['msg']}")
+    for asset in data["data"]:
         if asset["coinName"] == "USDT":
             return float(asset["available"])
     return 0.0
 
-def get_btcusdt_position():
-    endpoint = "/api/mix/v1/position/singlePosition?productType=umcbl&symbol=BTCUSDT"
-    headers = get_headers("GET", endpoint)
-    response = requests.get(BASE_URL + endpoint, headers=headers)
-    data = response.json()
-    if data.get("code") != "00000":
-        raise Exception(f"Bitget API 오류: {data.get('msg')}")
-    return data.get("data", {})
+def get_btc_price():
+    url = "https://api.bitget.com/api/spot/v1/market/ticker?symbol=BTCUSDT"
+    res = requests.get(url)
+    data = res.json()
+    if data["code"] != "00000":
+        raise Exception(f"Bitget 가격 API 오류: {data['msg']}")
+    return float(data["data"]["close"])
