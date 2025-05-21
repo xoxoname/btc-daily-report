@@ -28,8 +28,23 @@ def get_headers(method, endpoint, body=""):
         "Content-Type": "application/json"
     }
 
-def get_account_info():
-    endpoint = "/api/mix/v1/account/account?productType=umcbl"
+def get_usdt_balance():
+    endpoint = "/api/spot/v1/account/assets"
     headers = get_headers("GET", endpoint)
     response = requests.get(BASE_URL + endpoint, headers=headers)
-    return response.json()
+    data = response.json()
+    if data.get("code") != "00000":
+        raise Exception(f"Bitget API 오류: {data.get('msg')}")
+    for asset in data.get("data", []):
+        if asset["coinName"] == "USDT":
+            return float(asset["available"])
+    return 0.0
+
+def get_btcusdt_position():
+    endpoint = "/api/mix/v1/position/singlePosition?productType=umcbl&symbol=BTCUSDT"
+    headers = get_headers("GET", endpoint)
+    response = requests.get(BASE_URL + endpoint, headers=headers)
+    data = response.json()
+    if data.get("code") != "00000":
+        raise Exception(f"Bitget API 오류: {data.get('msg')}")
+    return data.get("data", {})
