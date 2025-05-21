@@ -3,15 +3,17 @@ import time
 import requests
 import base64
 import hmac
+import json
 
+# 환경변수에서 값 가져오기
 BITGET_APIKEY = os.environ.get("BITGET_APIKEY")
 BITGET_APISECRET = os.environ.get("BITGET_APISECRET")
 BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
 
-# 환경 변수 체크(디버깅용, 실제 배포시 print 삭제해도 됨)
-print(f"API_KEY = [{BITGET_APIKEY}]")
-print(f"API_SECRET = [{BITGET_APISECRET}] ({len(BITGET_APISECRET)})")
-print(f"API_PASSPHRASE = [{BITGET_PASSPHRASE}]")
+# 디버깅용 실제 값 출력
+print(f"BITGET_APIKEY = [{BITGET_APIKEY}]")
+print(f"BITGET_APISECRET = [{BITGET_APISECRET}] (len={len(BITGET_APISECRET) if BITGET_APISECRET else 0})")
+print(f"BITGET_PASSPHRASE = [{BITGET_PASSPHRASE}]")
 
 def bitget_signature(timestamp, method, path, body):
     prehash = f"{timestamp}{method}{path}{body}"
@@ -33,36 +35,60 @@ def get_usdt_futures_account():
     path = "/api/v2/mix/account/accounts"
     url = f"https://api.bitget.com{path}?productType=USDT-FUTURES"
     headers = get_headers("GET", path, "")
+    resp = requests.get(url, headers=headers)
     try:
-        resp = requests.get(url, headers=headers, timeout=5)
         data = resp.json()
-        # 비트겟 오류 메시지 직접 반환
-        if "code" in data and data["code"] != "00000":
-            return {"error": f"{data.get('msg') or data.get('message', '')}"}
+        print("get_usdt_futures_account 응답:", data)
         if "data" in data and isinstance(data["data"], dict):
             return data["data"]
+        elif "msg" in data:
+            return {"error": data["msg"]}
         else:
-            return {"error": "No account data"}
+            return None
     except Exception as e:
-        return {"error": str(e)}
+        print("get_usdt_futures_account 예외:", e)
+        return None
+
+def get_positions(symbol="BTCUSDT"):
+    path = "/api/v2/mix/position/single-position"
+    url = f"https://api.bitget.com{path}?symbol={symbol}&productType=USDT-FUTURES"
+    headers = get_headers("GET", path, "")
+    resp = requests.get(url, headers=headers)
+    try:
+        data = resp.json()
+        print("get_positions 응답:", data)
+        if "data" in data and data["data"]:
+            return data["data"]
+        elif "msg" in data:
+            return {"error": data["msg"]}
+        else:
+            return None
+    except Exception as e:
+        print("get_positions 예외:", e)
+        return None
 
 def get_profit_summary():
-    # 실제 데이터 연동 안된 상태 예시
-    # 아래 코드는 비트겟 정상 응답/에러 모두 캐치 가능
-    account = get_usdt_futures_account()
-    if "error" in account:
-        return {"error": account["error"]}
-    # 아래는 임시 값
+    # (샘플) 포지션과 계좌 정보를 활용해 리턴 포맷 생성
+    acc = get_usdt_futures_account()
+    pos = get_positions()
+    if acc is None or pos is None:
+        if isinstance(acc, dict) and "error" in acc:
+            return {"error": acc["error"]}
+        if isinstance(pos, dict) and "error" in pos:
+            return {"error": pos["error"]}
+        return {"error": "실시간 자산/포지션을 가져올 수 없습니다."}
+
+    # (예시) 데이터에서 필요한 값만 추출해서 리턴 (실제 데이터 구조에 맞게 수정 필요)
     return {
-        "종목": "BTCUSDT",
-        "방향": "LONG",
-        "진입가": "68200.5",
-        "현재가": "68510.2",
-        "레버리지": "20x",
-        "청산가": "61000.0",
-        "청산까지 남은 거리": "7.5%",
-        "미실현 손익": "+190 USDT",
-        "실현 손익": "+500 USDT",
-        "진입 자산": "2500 USDT",
-        "수익률": "+28.0%"
+        "종목": pos.get("symbol", "BTCUSDT"),
+        "방향": pos.get("holdSide", "-"),
+        "진입가": pos.get("openPriceAvg", "-"),
+        "현재가": pos.get("last", "-"),
+        "레버리지": pos.get("leverage", "-"),
+        "청산가": pos.get("liquidationPrice", "-"),
+        "청산까지 남은 거리": "-",
+        "미실현 손익": pos.get("unrealizedPL", "-"),
+        "실현 손익": acc.get("realizedPL", "-"),
+        "진입 자산": acc.get("margin", "-"),
+        "수익률": "-",
     }
