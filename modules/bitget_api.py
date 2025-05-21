@@ -1,102 +1,73 @@
-import os
-import time
 import requests
-import base64
+import time
 import hmac
-import json
+import hashlib
+import base64
+import os
 
-BITGET_APIKEY = os.environ.get("BITGET_APIKEY")
-BITGET_APISECRET = os.environ.get("BITGET_APISECRET")
-BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
+def get_env(key):
+    v = os.environ.get(key, '').strip()
+    print(f"[bitget_api] ENV {key} = [{v}]")
+    return v
 
-# 1. 인증정보 확인
-print(f"BITGET_APIKEY = [{BITGET_APIKEY}]")
-print(f"BITGET_APISECRET = [{BITGET_APISECRET}] (len={len(BITGET_APISECRET) if BITGET_APISECRET else 0})")
-print(f"BITGET_PASSPHRASE = [{BITGET_PASSPHRASE}]")
-
-def bitget_signature(timestamp, method, path, body):
+def sign_request(timestamp, method, path, body, secret):
     prehash = f"{timestamp}{method}{path}{body}"
-    # print("prehash:", prehash)
-    sign = hmac.new(BITGET_APISECRET.encode(), prehash.encode(), digestmod='sha256').digest()
-    signature = base64.b64encode(sign).decode()
-    print(f"Signature: {signature}")
-    return signature
+    print(f"[bitget_api] sign prehash: {prehash}")
+    hmac_key = secret.encode('utf-8')
+    message = prehash.encode('utf-8')
+    signature = hmac.new(hmac_key, message, digestmod=hashlib.sha256).digest()
+    signature_b64 = base64.b64encode(signature).decode()
+    print(f"[bitget_api] SIGNATURE: {signature_b64}")
+    return signature_b64
 
-def get_headers(method, path, body=""):
+def api_request(method, endpoint, params=None):
+    api_key = get_env('BITGET_APIKEY')
+    api_secret = get_env('BITGET_APISECRET')
+    passphrase = get_env('BITGET_PASSPHRASE')
+
     timestamp = str(int(time.time() * 1000))
-    sign = bitget_signature(timestamp, method, path, body)
+    method = method.upper()
+    body = ''
+    if method == "GET":
+        if params:
+            query_str = '&'.join(f"{k}={v}" for k, v in params.items())
+            path = f"{endpoint}?{query_str}"
+        else:
+            path = endpoint
+    else:
+        path = endpoint
+        body = params and json.dumps(params) or ''
+
+    sign = sign_request(timestamp, method, endpoint, body, api_secret)
+
     headers = {
-        "ACCESS-KEY": BITGET_APIKEY,
+        "ACCESS-KEY": api_key,
         "ACCESS-SIGN": sign,
         "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": BITGET_PASSPHRASE,
+        "ACCESS-PASSPHRASE": passphrase,
         "Content-Type": "application/json"
     }
-    print("Headers:", headers)
-    return headers
+    url = f"https://api.bitget.com{endpoint}"
+    print(f"[bitget_api] Request: {method} {url}")
+    print(f"[bitget_api] Headers: {headers}")
 
-def get_usdt_futures_account():
-    path = "/api/v2/mix/account/accounts"
-    url = f"https://api.bitget.com{path}?productType=USDT-FUTURES"
-    headers = get_headers("GET", path, "")
-    print("Request URL:", url)
     try:
-        resp = requests.get(url, headers=headers)
-        print("Raw Response:", resp.status_code, resp.text)
-        data = resp.json()
-        if "data" in data and isinstance(data["data"], dict):
-            return data["data"]
-        elif "msg" in data:
-            return {"error": data["msg"], "raw": data}
+        if method == "GET":
+            response = requests.get(url, headers=headers, timeout=10)
         else:
-            return {"error": "unknown_error", "raw": data}
+            response = requests.post(url, headers=headers, data=body, timeout=10)
     except Exception as e:
-        print("get_usdt_futures_account Exception:", e)
-        return {"error": str(e)}
+        print(f"[bitget_api] Network ERROR: {e}")
+        return None
 
-def get_positions(symbol="BTCUSDT"):
-    path = "/api/v2/mix/position/single-position"
-    url = f"https://api.bitget.com{path}?symbol={symbol}&productType=USDT-FUTURES"
-    headers = get_headers("GET", path, "")
-    print("Request URL:", url)
+    print(f"[bitget_api] Raw Response: {response.status_code} {response.text}")
     try:
-        resp = requests.get(url, headers=headers)
-        print("Raw Response:", resp.status_code, resp.text)
-        data = resp.json()
-        if "data" in data and data["data"]:
-            return data["data"]
-        elif "msg" in data:
-            return {"error": data["msg"], "raw": data}
-        else:
-            return {"error": "unknown_error", "raw": data}
-    except Exception as e:
-        print("get_positions Exception:", e)
-        return {"error": str(e)}
+        return response.json()
+    except:
+        return {"error": response.text}
 
-def get_profit_summary():
-    acc = get_usdt_futures_account()
-    pos = get_positions()
-    # 오류가 있으면 명확하게 반환
-    if isinstance(acc, dict) and "error" in acc:
-        print("[Bitget 계정 에러]", acc["error"], acc.get("raw"))
-        return {"error": acc["error"]}
-    if isinstance(pos, dict) and "error" in pos:
-        print("[Bitget 포지션 에러]", pos["error"], pos.get("raw"))
-        return {"error": pos["error"]}
-    if acc is None or pos is None:
-        print("[Bitget 데이터 없음]")
-        return {"error": "실시간 자산/포지션을 가져올 수 없습니다."}
-    # 정상일 때만 실제 값 리턴(포맷 예시)
-    return {
-        "종목": pos.get("symbol", "BTCUSDT"),
-        "방향": pos.get("holdSide", "-"),
-        "진입가": pos.get("openPriceAvg", "-"),
-        "현재가": pos.get("last", "-"),
-        "레버리지": pos.get("leverage", "-"),
-        "청산가": pos.get("liquidationPrice", "-"),
-        "청산까지 남은 거리": "-",
-        "미실현 손익": pos.get("unrealizedPL", "-"),
-        "실현 손익": acc.get("realizedPL", "-"),
-        "진입 자산": acc.get("margin", "-"),
-        "수익률": "-",
-    }
+def test_bitget():
+    """간단한 계좌 조회(정상시 'code': '00000' 반환)"""
+    res = api_request("GET", "/api/v2/mix/account/accounts", params={"productType": "USDT-FUTURES"})
+    print(f"[bitget_api] test_bitget result: {res}")
+    return res
