@@ -1,6 +1,4 @@
-requests
 python-telegram-bot==20.7
 openai
-schedule
-python-dotenv
+requests
 pytz

@@ -1,24 +1,39 @@
-def generate_report():
-    return (
-        "📡 GPT 매동 예측 분석 리포트\n"
-        "📅 작성 시각: 2025-05-21 17:00\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📌 시장 이벤트 및 속보\n"
-        "- FOMC 대기 중 → 악재\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📉 기술적 분석\n"
-        "- RSI 강세 / 볼린저 수축 → 📈 호재\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🧠 심리·구조적 분석\n"
-        "- 펀딩비 과열 → ⚠️ 주의\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🔮 향후 12시간 예측\n"
-        "- 상승 확률: 62% / 하락 10%\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "💰 손익 요약\n"
-        "- 미실현 +$81 (11만원)\n"
-        "- 실현 +$24.3 (3.3만원)\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🧠 멘탈 코멘트\n"
-        "오늘 수익은 편의점 알바 4시간 수준입니다. 수익은 습관입니다."
-    )
+from .bitget_api import get_btc_price, get_spot_balance_usdt, get_btcusdt_position
+from datetime import datetime
+import pytz
+
+def generate_profit_report():
+    now = datetime.now(pytz.timezone("Asia/Seoul")).strftime('%Y-%m-%d %H:%M')
+    price = get_btc_price()
+    usdt = get_spot_balance_usdt()
+    pos = get_btcusdt_position()
+    entry = float(pos.get("openPrice", 0))
+    mark = float(pos.get("marketPrice", price))
+    size = float(pos.get("total", 0))
+    leverage = float(pos.get("leverage", 1))
+    direction = pos.get("holdSide", "N/A").upper()
+    pnl = float(pos.get("unrealizedPL", 0))
+    liquidation = float(pos.get("liquidationPrice", 0))
+
+    profit_pct = round((pnl / (entry * size / leverage)) * 100, 2) if entry and size else 0
+    krw = round(pnl * 1350)
+    comment = "오늘 수익은 편의점 알바 {}시간치입니다.".format(round(krw / 3500, 1))
+
+    return f"""💰 현재 수익 현황 요약
+📅 작성 시각: {now}
+━━━━━━━━━━━━━━━━━━━
+📌 포지션 정보
+- 종목: BTCUSDT
+- 방향: {direction}
+- 진입가: ${entry:,} / 현재가: ${mark:,}
+- 레버리지: {leverage}x
+- 청산가: ${liquidation:,}
+━━━━━━━━━━━━━━━━━━━
+💸 손익 정보
+- 미실현 손익: ${pnl:.2f} ({krw:,}원)
+- 수익률: {profit_pct:.2f}%
+- 총 자산: ${usdt:.2f}
+━━━━━━━━━━━━━━━━━━━
+🧠 멘탈 케어
+{comment}
+━━━━━━━━━━━━━━━━━━━"""
