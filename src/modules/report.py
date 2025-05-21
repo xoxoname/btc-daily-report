@@ -7,6 +7,13 @@ def generate_profit_report():
     price = get_btc_price()
     usdt = get_spot_balance_usdt()
     pos = get_btcusdt_position()
+
+    if price is None:
+        return f"⚠️ [시세 조회 실패] 현재 BTC 가격을 받아오지 못했습니다.\n작성 시각: {now}"
+
+    if usdt is None:
+        return f"⚠️ [자산 조회 실패] 비트겟 계정 연동 또는 API 키 확인 필요\n작성 시각: {now}"
+
     entry = float(pos.get("openPrice", 0))
     mark = float(pos.get("marketPrice", price))
     size = float(pos.get("total", 0))

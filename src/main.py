@@ -7,13 +7,16 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BTC 봇에 오신 걸 환영합니다!")
+    await update.message.reply_text("BTC 리포트 봇입니다.")
 
 async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
         return
-    msg = generate_profit_report()
-    await update.message.reply_text(msg)
+    try:
+        msg = generate_profit_report()
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text(f"🚨 오류 발생: {e}")
 
 def run():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()

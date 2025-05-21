@@ -30,12 +30,18 @@ def _headers(method, path, body=""):
 def get_btc_price():
     url = BASE_URL + "/api/spot/v1/market/ticker?symbol=BTCUSDT"
     r = requests.get(url)
-    return float(r.json()["data"]["close"])
+    res = r.json()
+    if res.get("code") != "00000":
+        return None
+    return float(res["data"]["close"])
 
 def get_spot_balance_usdt():
     endpoint = "/api/spot/v1/account/assets"
     r = requests.get(BASE_URL + endpoint, headers=_headers("GET", endpoint))
-    for asset in r.json().get("data", []):
+    data = r.json()
+    if data.get("code") != "00000":
+        return None
+    for asset in data.get("data", []):
         if asset["coinName"] == "USDT":
             return float(asset["available"])
     return 0.0
@@ -43,4 +49,7 @@ def get_spot_balance_usdt():
 def get_btcusdt_position():
     endpoint = "/api/mix/v1/position/singlePosition?symbol=BTCUSDT&productType=umcbl"
     r = requests.get(BASE_URL + endpoint, headers=_headers("GET", endpoint))
-    return r.json().get("data", {})
+    data = r.json()
+    if data.get("code") != "00000":
+        return {}
+    return data.get("data", {})
