@@ -2,14 +2,12 @@ import time
 import hmac
 import hashlib
 import base64
-import json
-import requests
 import os
+import requests
 
 BITGET_APIKEY = os.getenv("BITGET_APIKEY")
 BITGET_APISECRET = os.getenv("BITGET_APISECRET")
 BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
-
 BASE_URL = "https://api.bitget.com"
 
 def get_timestamp():
@@ -17,13 +15,11 @@ def get_timestamp():
 
 def get_signature(timestamp, method, request_path, body, secret):
     prehash = f"{timestamp}{method.upper()}{request_path}{body}"
-    hash_bytes = hmac.new(secret.encode(), prehash.encode(), hashlib.sha256).digest()
-    return base64.b64encode(hash_bytes).decode()
+    return base64.b64encode(hmac.new(secret.encode(), prehash.encode(), hashlib.sha256).digest()).decode()
 
 def get_headers(method, endpoint, body=""):
     timestamp = get_timestamp()
     signature = get_signature(timestamp, method, endpoint, body, BITGET_APISECRET)
-
     return {
         "ACCESS-KEY": BITGET_APIKEY,
         "ACCESS-SIGN": signature,
@@ -33,9 +29,7 @@ def get_headers(method, endpoint, body=""):
     }
 
 def get_account_info():
-    method = "GET"
     endpoint = "/api/mix/v1/account/account?productType=umcbl"
-    url = BASE_URL + endpoint
-    headers = get_headers(method, endpoint)
-    response = requests.get(url, headers=headers)
+    headers = get_headers("GET", endpoint)
+    response = requests.get(BASE_URL + endpoint, headers=headers)
     return response.json()
