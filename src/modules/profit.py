@@ -7,17 +7,16 @@ def generate_profit_report():
     now = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M:%S")
     try:
         data = get_positions()
-        pos = data['data']
+        pos = data.get('data') or {}
 
-        entry_price = float(pos['openPrice'])
-        mark_price = float(pos['markPrice'])
-        leverage = int(pos['leverage'])
-        pnl = float(pos['unrealizedPL'])
-        margin = float(pos['margin'])
-
+        entry_price = float(pos.get('openPrice', 0))
+        mark_price = float(pos.get('markPrice', 0))
+        leverage = int(pos.get('leverage', 1))
+        pnl = float(pos.get('unrealizedPL', 0))
+        margin = float(pos.get('margin', 1))
+        direction = "롱" if pos.get('holdSide') == 'long' else '숏'
         rate = (pnl / margin) * 100 if margin != 0 else 0
         krw_total = pnl * 1350
-        direction = "롱" if pos['holdSide'] == 'long' else '숏'
 
         if rate >= 10:
             comment = f"🎉 오늘 선물로 {krw_total:,.0f}원을 벌었다니, 해외여행 항공권에 가까운 수익이에요!"

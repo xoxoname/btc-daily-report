@@ -8,7 +8,7 @@ from modules.profit import generate_profit_report
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ 봇이 정상적으로 작동 중입니다. /report 또는 /profit을 입력해보세요.")
+    await update.message.reply_text("✅ 봇이 작동 중입니다. /report 또는 /profit 명령어를 입력해보세요.")
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(generate_report())
