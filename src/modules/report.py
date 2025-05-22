@@ -1,3 +1,4 @@
+
 def generate_report():
     return (
         "📡 GPT 매동 예측 분석 리포트\n"
