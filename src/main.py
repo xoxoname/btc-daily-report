@@ -1,11 +1,4 @@
-# 📁 src/main.py
-
-import asyncio
-from modules.telegram_bot import application
+from modules.telegram_bot import start_bot
 
 if __name__ == "__main__":
-    print("✅ 텔레그램 봇 실행 시작됨")
-    asyncio.run(application.run_polling(
-        allowed_updates=application.bot.allowed_updates,
-        close_loop=False
-    ))
+    start_bot()

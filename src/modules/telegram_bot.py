@@ -7,16 +7,16 @@ from modules.profit import generate_profit_report
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"📩 /report 호출 - 사용자: {update.effective_user.id}")
+    print(f"[LOG] /report 명령 호출됨 - 사용자 ID: {update.effective_user.id}")
     await update.message.reply_text(generate_report())
 
 async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"📩 /profit 호출 - 사용자: {update.effective_user.id}")
+    print(f"[LOG] /profit 명령 호출됨 - 사용자 ID: {update.effective_user.id}")
     await update.message.reply_text(generate_profit_report())
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"📩 /start 호출 - 사용자: {update.effective_user.id}")
-    await update.message.reply_text("📡 BTC 예측 시스템 정상 작동 중입니다. /report, /profit 등을 입력하세요!")
+    print(f"[LOG] /start 명령 호출됨 - 사용자 ID: {update.effective_user.id}")
+    await update.message.reply_text("✅ 봇 정상 작동 중입니다. /report 또는 /profit 명령어를 입력해보세요!")
 
 def start_bot():
     print("🟢 텔레그램 봇 초기화 중...")
