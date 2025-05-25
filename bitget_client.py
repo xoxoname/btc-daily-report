@@ -136,11 +136,11 @@ class BitgetClient:
             if symbol:
                 positions = [pos for pos in positions if pos.get('symbol') == symbol]
             
-            # 포지션이 있는 것만 필터링 (사이즈가 0이 아닌 것)
+            # 포지션이 있는 것만 필터링 (Bitget V2에서는 'total' 필드 사용)
             active_positions = []
             for pos in positions:
-                size = float(pos.get('size', 0))
-                if size > 0:
+                total_size = float(pos.get('total', 0))  # 'size' -> 'total'로 변경
+                if total_size > 0:
                     active_positions.append(pos)
             
             return active_positions
@@ -197,6 +197,34 @@ class BitgetClient:
         except Exception as e:
             logger.error(f"미결제약정 조회 실패: {e}")
             raise
+    
+    async def get_spot_account(self) -> Dict:
+        """현물 계정 정보 조회 (대안)"""
+        endpoint = "/api/v2/spot/account/assets"
+        
+        try:
+            response = await self._request('GET', endpoint)
+            logger.info(f"현물 계정 정보: {response}")
+            return response
+        except Exception as e:
+            logger.error(f"현물 계정 조회 실패: {e}")
+            return {}
+    
+    async def get_all_accounts(self) -> Dict:
+        """모든 계정 정보 조회 (종합)"""
+        try:
+            # 선물 계정
+            futures_account = await self.get_account_info()
+            # 현물 계정  
+            spot_account = await self.get_spot_account()
+            
+            return {
+                'futures': futures_account,
+                'spot': spot_account
+            }
+        except Exception as e:
+            logger.error(f"전체 계정 조회 실패: {e}")
+            return {'futures': {}, 'spot': {}}
     
     async def close(self):
         """세션 종료"""
