@@ -1,1 +1,0 @@
-def krw(amount): return f"{round(amount * 1350):,}원"
