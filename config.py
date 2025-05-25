@@ -22,7 +22,7 @@ class Config:
     
     # 거래 설정 (V2 API에 맞게 수정)
     symbol: str = 'BTCUSDT'  # V2에서는 _UMCBL 없이 사용
-    product_type: str = 'UMCBL'  # 호환성을 위해 유지하지만 V2에서는 사용하지 않음
+    product_type: str = 'USDT-FUTURES'  # V2에서는 USDT-FUTURES 형식 사용
     
     # 예외 감지 임계값
     price_change_threshold: float = 2.0  # 2% 변동
