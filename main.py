@@ -1,5 +1,4 @@
-
-from modules.profit import generate_profit_report
+from modules.telegram_bot import start_bot
 
 if __name__ == "__main__":
-    print(generate_profit_report())
+    start_bot()
