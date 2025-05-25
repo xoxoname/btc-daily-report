@@ -493,10 +493,11 @@ class AnalysisEngine:
             
             if positions:
                 pos = positions[0]  # 첫 번째 포지션
-                size = float(pos.get('size', 0))
-                side = pos.get('side', '')
-                entry_price = float(pos.get('averageOpenPrice', 0))
-                current_price = float(ticker.get('lastPr', 0))
+                # Bitget API에서는 'total' 필드가 실제 포지션 크기
+                size = float(pos.get('total', 0))  # 'size' -> 'total'로 변경
+                side = pos.get('holdSide', '')  # 'side' -> 'holdSide'로 변경
+                entry_price = float(pos.get('openPriceAvg', 0))  # 'averageOpenPrice' -> 'openPriceAvg'로 변경
+                current_price = float(pos.get('markPrice', 0))  # ticker 대신 포지션의 markPrice 사용
                 leverage = float(pos.get('leverage', 1))
                 unrealized_pnl = float(pos.get('unrealizedPL', 0))
                 
