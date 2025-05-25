@@ -138,3 +138,4 @@ class TelegramBot:
             logger.info("텔레그램 봇 중지됨")
         except Exception as e:
             logger.error(f"봇 중지 실패: {e}")
+            
