@@ -198,3 +198,4 @@ class ExceptionDetector:
         if self.session:
             await self.session.close()
             logger.info("예외 감지기 세션 종료")
+            
