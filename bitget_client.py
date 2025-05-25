@@ -87,7 +87,8 @@ class BitgetClient:
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/market/ticker"
         params = {
-            'symbol': symbol  # V2에서는 productType 불필요
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES'  # V2에서는 USDT-FUTURES 형식 사용
         }
         
         try:
@@ -105,6 +106,7 @@ class BitgetClient:
         endpoint = "/api/v2/mix/market/candles"
         params = {
             'symbol': symbol,
+            'productType': 'USDT-FUTURES',
             'granularity': granularity,
             'limit': str(limit)
         }
@@ -121,7 +123,8 @@ class BitgetClient:
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/position/all-position"
         params = {
-            'marginCoin': 'USDT'  # V2에서는 productType 대신 marginCoin 사용
+            'productType': 'USDT-FUTURES',  # V2에서는 USDT-FUTURES 사용
+            'marginCoin': 'USDT'
         }
         
         try:
@@ -148,7 +151,8 @@ class BitgetClient:
         """계정 정보 조회 (V2 API)"""
         endpoint = "/api/v2/mix/account/accounts"
         params = {
-            'marginCoin': 'USDT'  # V2에서는 productType 대신 marginCoin 사용
+            'productType': 'USDT-FUTURES',  # V2에서는 USDT-FUTURES 사용
+            'marginCoin': 'USDT'
         }
         
         try:
@@ -165,7 +169,8 @@ class BitgetClient:
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/market/current-fund-rate"
         params = {
-            'symbol': symbol  # V2에서는 productType 불필요
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES'  # V2에서는 USDT-FUTURES 사용
         }
         
         try:
@@ -180,7 +185,8 @@ class BitgetClient:
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/market/open-interest"
         params = {
-            'symbol': symbol  # V2에서는 productType 불필요
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES'  # V2에서는 USDT-FUTURES 사용
         }
         
         try:
