@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py - 메인 애플리케이션
+# main.py - 메인 애플리케이션 (진행 상황 안내 포함)
 import os
 import asyncio
 import logging
@@ -43,6 +43,9 @@ class BitcoinPredictionSystem:
     async def handle_report_command(self, update=None, context=None):
         """정규 리포트 생성 및 전송"""
         try:
+            # 진행 상황 안내
+            await self.telegram_bot.send_message("📊 전체 분석 리포트를 생성 중입니다... (예상 소요 시간: 30-60초)")
+            
             logger.info("정규 리포트 생성 시작")
             report = await self.analysis_engine.generate_full_report()
             await self.telegram_bot.send_message(report)
@@ -59,6 +62,9 @@ class BitcoinPredictionSystem:
     async def handle_forecast_command(self, update=None, context=None):
         """단기 예측 리포트 생성"""
         try:
+            # 진행 상황 안내
+            await self.telegram_bot.send_message("📈 단기 예측 분석을 수행 중입니다... (예상 소요 시간: 20-40초)")
+            
             logger.info("단기 예측 리포트 생성 시작")
             forecast = await self.analysis_engine.generate_forecast_report()
             await self.telegram_bot.send_message(forecast)
@@ -70,6 +76,9 @@ class BitcoinPredictionSystem:
     async def handle_profit_command(self, update=None, context=None):
         """수익 현황 리포트 생성"""
         try:
+            # 진행 상황 안내
+            await self.telegram_bot.send_message("💰 수익 현황을 분석하고 개인화된 조언을 준비 중입니다... (예상 소요 시간: 15-30초)")
+            
             logger.info("수익 현황 리포트 생성 시작")
             profit_report = await self.analysis_engine.generate_profit_report()
             await self.telegram_bot.send_message(profit_report)
@@ -81,6 +90,9 @@ class BitcoinPredictionSystem:
     async def handle_schedule_command(self, update=None, context=None):
         """일정 안내 리포트 생성"""
         try:
+            # 진행 상황 안내
+            await self.telegram_bot.send_message("📅 일정 정보를 수집 중입니다... (예상 소요 시간: 10-15초)")
+            
             logger.info("일정 안내 리포트 생성 시작")
             schedule_report = await self.analysis_engine.generate_schedule_report()
             await self.telegram_bot.send_message(schedule_report)
