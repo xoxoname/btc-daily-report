@@ -1,4 +1,4 @@
-# bitget_client.py - Bitget API 클라이언트
+# bitget_client.py - Bitget API 클라이언트 (V2 API 대응)
 import hmac
 import hashlib
 import base64
@@ -83,12 +83,11 @@ class BitgetClient:
             raise
     
     async def get_ticker(self, symbol: str = None) -> Dict:
-        """현재가 정보 조회"""
+        """현재가 정보 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/market/ticker"
         params = {
-            'symbol': symbol,
-            'productType': self.config.product_type
+            'symbol': symbol  # V2에서는 productType 불필요
         }
         
         try:
@@ -101,12 +100,11 @@ class BitgetClient:
             raise
     
     async def get_kline(self, symbol: str = None, granularity: str = '1H', limit: int = 100) -> List[Dict]:
-        """K라인 데이터 조회"""
+        """K라인 데이터 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/market/candles"
         params = {
             'symbol': symbol,
-            'productType': self.config.product_type,
             'granularity': granularity,
             'limit': str(limit)
         }
@@ -119,12 +117,11 @@ class BitgetClient:
             raise
     
     async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """포지션 조회"""
+        """포지션 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/position/all-position"
         params = {
-            'productType': self.config.product_type,
-            'marginCoin': 'USDT'
+            'marginCoin': 'USDT'  # V2에서는 productType 대신 marginCoin 사용
         }
         
         try:
@@ -148,10 +145,10 @@ class BitgetClient:
             raise
     
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회"""
+        """계정 정보 조회 (V2 API)"""
         endpoint = "/api/v2/mix/account/accounts"
         params = {
-            'productType': self.config.product_type
+            'marginCoin': 'USDT'  # V2에서는 productType 대신 marginCoin 사용
         }
         
         try:
@@ -164,12 +161,11 @@ class BitgetClient:
             raise
     
     async def get_funding_rate(self, symbol: str = None) -> Dict:
-        """펀딩비 조회"""
+        """펀딩비 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/market/current-fund-rate"
         params = {
-            'symbol': symbol,
-            'productType': self.config.product_type
+            'symbol': symbol  # V2에서는 productType 불필요
         }
         
         try:
@@ -180,12 +176,11 @@ class BitgetClient:
             raise
     
     async def get_open_interest(self, symbol: str = None) -> Dict:
-        """미결제약정 조회"""
+        """미결제약정 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/market/open-interest"
         params = {
-            'symbol': symbol,
-            'productType': self.config.product_type
+            'symbol': symbol  # V2에서는 productType 불필요
         }
         
         try:
