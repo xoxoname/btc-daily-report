@@ -102,7 +102,7 @@ async def _generate_gpt_mental_comment(self, profit_info: Dict) -> str:
                 comments = [
                     f"📉 -{krw_profit:.0f}원 손실이지만 큰 문제없어요. 이 정도는 수업료라고 생각하시고, 복수 매매만 하지 마세요. 감정적으로 대응하면 더 큰 손실로 이어질 수 있어요.",
                     f"🌱 -{profit_rate:.2f}% 손실이네요. 아깝긴 하지만 이런 경험이 실력 향상에 도움이 될 거예요. 손절은 빨리, 익절은 천천히가 원칙이에요.",
-                    f"🔄 -{krw_profit:.0f}원 손실! 지금 당장 만회하고 싶겠지# analysis_engine.py - GPT 분석 엔진
+                    f"🔄 -{krw_profit:.0f}원 손실! 지금 당장 만회하고 싶겠지만 감정적 매매는 위험합니다."
 import logging
 import json
 import random
