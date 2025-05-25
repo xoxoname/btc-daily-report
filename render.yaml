@@ -1,0 +1,24 @@
+services:
+  - type: worker
+    name: bitcoin-prediction-system
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BITGET_APIKEY
+        sync: false
+      - key: BITGET_APISECRET
+        sync: false
+      - key: BITGET_PASSPHRASE
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        value: "1038440081"
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHONUNBUFFERED
+        value: "1"
