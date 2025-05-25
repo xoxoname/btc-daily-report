@@ -1,4 +1,4 @@
-# config.py - 설정 관리
+# config.py - 설정 관리 (V2 API 대응)
 import os
 from dataclasses import dataclass
 
@@ -20,9 +20,9 @@ class Config:
     telegram_bot_token: str = os.getenv('TELEGRAM_BOT_TOKEN', '')
     telegram_chat_id: str = os.getenv('TELEGRAM_CHAT_ID', '1038440081')
     
-    # 거래 설정
-    symbol: str = 'BTCUSDT'
-    product_type: str = 'UMCBL'  # USDT-M 선물
+    # 거래 설정 (V2 API에 맞게 수정)
+    symbol: str = 'BTCUSDT'  # V2에서는 _UMCBL 없이 사용
+    product_type: str = 'UMCBL'  # 호환성을 위해 유지하지만 V2에서는 사용하지 않음
     
     # 예외 감지 임계값
     price_change_threshold: float = 2.0  # 2% 변동
