@@ -129,6 +129,7 @@ class BitgetClient:
         
         try:
             response = await self._request('GET', endpoint, params=params)
+            logger.info(f"포지션 정보 원본 응답: {response}")  # 디버그 로그 추가
             positions = response if isinstance(response, list) else []
             
             # 특정 심볼 필터링
@@ -157,6 +158,7 @@ class BitgetClient:
         
         try:
             response = await self._request('GET', endpoint, params=params)
+            logger.info(f"계정 정보 원본 응답: {response}")  # 디버그 로그 추가
             if isinstance(response, list) and len(response) > 0:
                 return response[0]
             return response
