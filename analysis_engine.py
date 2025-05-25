@@ -1,4 +1,48 @@
-# analysis_engine.py - GPT 분석 엔진
+def _generate_mental_comment(self, profit_info: Dict) -> str:
+        """멘탈 케어 코멘트 생성 (매번 다르게, 실시간 상황 반영)"""
+        try:
+            total_profit_usd = profit_info.get('total_profit_usd', 0)
+            profit_rate = profit_info.get('profit_rate', 0)
+            total_equity = profit_info.get('total_equity', 0)
+            has_position = profit_info.get('position_info') != '포지션 없음'
+            
+            # 실시간 상황 기반 코멘트 생성
+            krw_profit = abs(total_profit_usd) * self.config.usd_to_krw
+            
+            if profit_rate >= 5:
+                # 큰 수익
+                comments = [
+                    f"🎉 와! {krw_profit:.0f}원 수익이라니! 이 정도면 오늘은 정말 성공적인 거래였어요. 하지만 여기서 욕심 부리지 말고 적당한 선에서 익절하는 것도 고려해봐요. 시장은 항상 변하니까요.",
+                    f"💎 {profit_rate:.2f}% 수익률! 대단해요! 하지만 승리에 취해서 레버리지를 더 올리거나 추가 매매하고 싶은 충동을 억제해봐요. 지금처럼 차근차근 하는 게 최고예요.",
+                    f"🚀 {krw_profit:.0f}원이면 편의점 알바 하루치 급여네요! 하지만 시장은 언제든 변할 수 있으니 방심은 금물이에요. 적절한 익절 타이밍을 놓치지 마세요."
+                ]
+            elif profit_rate >= 1:
+                # 적당한 수익
+                comments = [
+                    f"💰 {krw_profit:.0f}원의 꾸준한 수익! 작아 보일 수 있지만 이런 작은 수익들이 모여서 큰 자산이 되는 거예요. 조급해하지 말고 이 페이스 유지해봐요.",
+                    f"📈 {profit_rate:.2f}% 수익률로 플러스 행진 중! 큰 수익은 아니지만 손실보다 훨씬 좋죠. 무리하지 말고 지금처럼만 해도 충분해요.",
+                    f"☕ {krw_profit:.0f}원이면 좋은 커피 몇 잔은 마실 수 있겠네요! 작은 수익에 만족하며 다음 기회를 기다리는 것도 투자의 지혜입니다."
+                ]
+            elif -1 <= profit_rate <= 1:
+                # 횡보/소폭 변동
+                if has_position:
+                    comments = [
+                        f"⏳ 지금은 시장이 고민하는 시간인 것 같아요. 포지션이 있으니 조금 더 기다려봐도 될 것 같지만, 너무 오래 버티지는 마세요. 손절선도 중요해요.",
+                        f"🧘‍♂️ 포지션을 들고 있는 상황에서 횡보라니 조금 답답하시겠어요. 하지만 급하게 추가 매매하지 말고 시장의 방향성이 나올 때까지 인내해봐요.",
+                        f"📊 {total_equity:.0f}달러의 자산으로 안전하게 운용 중이시네요. 수익이 크지 않아도 손실 없이 유지하는 것만으로도 충분히 훌륭해요."
+                    ]
+                else:
+                    comments = [
+                        f"⏳ 포지션 없이 관망 중이시군요! 이럴 때일수록 섣불리 진입하지 말고 확실한 신호가 나올 때까지 기다리는 게 현명해요.",
+                        f"🧘‍♂️ 현금 보유 상태에서 시장을 지켜보는 것도 훌륭한 전략이에요. 무리해서 포지션 잡지 말고 좋은 타이밍을 기다려봐요.",
+                        f"📊 {total_equity:.0f}달러의 안전한 현금으로 다음 기회를 준비하고 계시네요. 조급해하지 마세요."
+                    ]
+            elif -5 <= profit_rate < -1:
+                # 소폭 손실
+                comments = [
+                    f"📉 -{krw_profit:.0f}원 손실이지만 큰 문제없어요. 이 정도는 수업료라고 생각하시고, 복수 매매만 하지 마세요. 감정적으로 대응하면 더 큰 손실로 이어질 수 있어요.",
+                    f"🌱 -{profit_rate:.2f}% 손실이네요. 아깝긴 하지만 이런 경험이 실력 향상에 도움이 될 거예요. 손절은 빨리, 익절은 천천히가 원칙이에요.",
+                    f"🔄 -{krw_profit:.0f}원 손실! 지금 당장 만회하고 싶겠지# analysis_engine.py - GPT 분석 엔진
 import logging
 import json
 import random
@@ -358,7 +402,7 @@ class AnalysisEngine:
             raise
     
     async def generate_profit_report(self) -> str:
-        """수익 현황 리포트 생성"""
+        """수익 현황 리포트 생성 (개선된 형식)"""
         try:
             market_data = await self._get_market_data()
             profit_info = await self._calculate_profit_info(market_data)
@@ -371,17 +415,28 @@ class AnalysisEngine:
 
 ━━━━━━━━━━━━━━━━━━━
 📌 포지션 정보
-{profit_info.get('position_details', '현재 포지션이 없습니다.')}
+{profit_info.get('position_details', '보유 중인 포지션이 없습니다.')}
 
 ━━━━━━━━━━━━━━━━━━━
 💸 손익 정보
 - 미실현 손익: ${profit_info.get('unrealized_pnl', 0):.1f} ({profit_info.get('unrealized_pnl', 0) * self.config.usd_to_krw:.0f}원)
 - 실현 손익: ${profit_info.get('realized_pnl', 0):.1f} ({profit_info.get('realized_pnl', 0) * self.config.usd_to_krw:.0f}원)
 - 금일 총 수익: ${profit_info.get('total_profit_usd', 0):.1f} ({profit_info.get('total_profit_usd', 0) * self.config.usd_to_krw:.0f}원)
-- 진입 자산: ${profit_info.get('initial_balance', 0):.1f}
-- 수익률: {profit_info.get('profit_rate', 0):+.2f}%
+- 총 자산: ${profit_info.get('total_equity', 0):.1f}
+- 금일 수익률: {profit_info.get('profit_rate', 0):+.2f}%
+- 지금까지 총 수익률: {profit_info.get('total_return_rate', 0):+.2f}%
+- 지금까지 총 수익금: ${profit_info.get('realized_pnl', 0):.1f} ({profit_info.get('realized_pnl', 0) * self.config.usd_to_krw:.0f}원)
 
 ━━━━━━━━━━━━━━━━━━━
+🧠 멘탈 케어
+{mental_comment}
+━━━━━━━━━━━━━━━━━━━"""
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"수익 리포트 생성 실패: {e}")
+            raise━━━━━━━━━━━━━━━━━━
 🧠 멘탈 케어
 {mental_comment}
 ━━━━━━━━━━━━━━━━━━━"""
@@ -488,18 +543,28 @@ class AnalysisEngine:
             
             # 포지션 정보
             unrealized_pnl = 0
+            realized_pnl = 0  # 실현 손익 초기화
             position_info = "포지션 없음"
-            position_details = "현재 포지션이 없습니다."
+            position_details = "보유 중인 포지션이 없습니다."
+            liquidation_info = ""
             
             if positions:
                 pos = positions[0]  # 첫 번째 포지션
                 # Bitget API에서는 'total' 필드가 실제 포지션 크기
-                size = float(pos.get('total', 0))  # 'size' -> 'total'로 변경
-                side = pos.get('holdSide', '')  # 'side' -> 'holdSide'로 변경
-                entry_price = float(pos.get('openPriceAvg', 0))  # 'averageOpenPrice' -> 'openPriceAvg'로 변경
-                current_price = float(pos.get('markPrice', 0))  # ticker 대신 포지션의 markPrice 사용
+                size = float(pos.get('total', 0))  
+                side = pos.get('holdSide', '')  
+                entry_price = float(pos.get('openPriceAvg', 0))  
+                current_price = float(pos.get('markPrice', 0))  
                 leverage = float(pos.get('leverage', 1))
                 unrealized_pnl = float(pos.get('unrealizedPL', 0))
+                realized_pnl = float(pos.get('achievedProfits', 0))  # 실현 손익 추가
+                liquidation_price = float(pos.get('liquidationPrice', 0))
+                
+                # 청산가까지 거리 계산
+                if liquidation_price > 0:
+                    liquidation_distance_pct = ((liquidation_price - current_price) / current_price * 100)
+                    liquidation_distance_usd = abs(liquidation_price - current_price)
+                    liquidation_info = f"\n- 청산가: ${liquidation_price:.0f}\n- 청산까지 남은 거리: 약 {liquidation_distance_pct:+.1f}% (약 ${liquidation_distance_usd:.0f} {'하락' if liquidation_distance_pct < 0 else '상승'} 시 청산)"
                 
                 position_info = f"BTCUSDT {side.upper()} (진입가 ${entry_price:.0f} / 현재가 ${current_price:.0f})"
                 position_details = f"""- 종목: BTCUSDT
@@ -507,18 +572,22 @@ class AnalysisEngine:
 - 진입가: ${entry_price:.0f} / 현재가: ${current_price:.0f}
 - 레버리지: {leverage:.0f}x
 - 포지션 크기: {size} BTC
-- 미실현 손익: ${unrealized_pnl:.1f}"""
+- 미실현 손익: ${unrealized_pnl:.1f}{liquidation_info}"""
             
             # 수익률 계산 - 실제 총 자산 기준으로 계산
-            initial_balance = total_equity if total_equity > 0 else 6366.4  # 실제 자산 사용
-            total_profit_usd = unrealized_pnl  # 실현손익은 별도 관리 필요
+            initial_balance = total_equity if total_equity > 0 else 6366.4  
+            total_profit_usd = unrealized_pnl + realized_pnl  # 실현 + 미실현 합계
             profit_rate = (total_profit_usd / initial_balance * 100) if initial_balance > 0 else 0
+            
+            # 지금까지의 총 수익률과 수익금 (실현 손익 기준)
+            total_return_rate = (realized_pnl / initial_balance * 100) if initial_balance > 0 else 0
             
             return {
                 'unrealized_pnl': unrealized_pnl,
-                'realized_pnl': 0,  # 실현손익은 별도 DB 관리 필요
+                'realized_pnl': realized_pnl,  # 실제 실현 손익 사용
                 'total_profit_usd': total_profit_usd,
                 'profit_rate': profit_rate,
+                'total_return_rate': total_return_rate,  # 총 수익률 추가
                 'initial_balance': initial_balance,
                 'position_info': position_info,
                 'position_details': position_details,
@@ -533,9 +602,10 @@ class AnalysisEngine:
                 'realized_pnl': 0,
                 'total_profit_usd': 0,
                 'profit_rate': 0,
-                'initial_balance': 6366.4,  # 실제 자산으로 설정
+                'total_return_rate': 0,
+                'initial_balance': 6366.4,  
                 'position_info': '포지션 없음',
-                'position_details': '현재 포지션이 없습니다.',
+                'position_details': '보유 중인 포지션이 없습니다.',
                 'total_equity': 0,
                 'available_balance': 0
             }
