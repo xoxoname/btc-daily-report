@@ -108,4 +108,93 @@ class ExceptionDetector:
                 return {
                     'type': '거래량 급증',
                     'description': f'시간당 거래량이 평균의 {recent_volume/avg_volume:.1f}배 증가',
-                    'impact': 'positive
+                    'impact': 'positive',
+                    'severity': 'medium',
+                    'volume_ratio': recent_volume/avg_volume
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"거래량 감지 실패: {e}")
+            return None
+    
+    async def _detect_funding_anomaly(self) -> Optional[Dict]:
+        """펀딩비 이상 감지"""
+        try:
+            funding = await self.bitget_client.get_funding_rate()
+            current_funding = float(funding.get('fundingRate', 0))
+            
+            # 펀딩비가 0.02% (연 73%) 이상일 때
+            if abs(current_funding) >= 0.0002:
+                direction = "롱 과열" if current_funding > 0 else "숏 과열"
+                
+                return {
+                    'type': '펀딩비 이상',
+                    'description': f'{direction} - 펀딩비 {current_funding*100:.3f}%',
+                    'impact': 'negative',
+                    'severity': 'high' if abs(current_funding) >= 0.0005 else 'medium',
+                    'funding_rate': current_funding
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"펀딩비 감지 실패: {e}")
+            return None
+    
+    async def _detect_news_events(self) -> Optional[Dict]:
+        """뉴스/이벤트 감지 (간단한 구현)"""
+        try:
+            # 실제로는 뉴스 API나 소셜 미디어 API를 사용해야 함
+            # 여기서는 시간 기반으로 가상의 이벤트 생성
+            now = datetime.now(pytz.timezone('Asia/Seoul'))
+            
+            # FOMC 등 주요 이벤트 시간대 체크
+            fomc_times = [
+                (21, 0),  # 21:00 FOMC 발표
+                (2, 0),   # 02:00 FOMC 발표 (서머타임)
+            ]
+            
+            current_time = (now.hour, now.minute)
+            
+            for event_time in fomc_times:
+                # 이벤트 시간 1시간 전부터 감지
+                event_hour, event_minute = event_time
+                time_diff = abs((now.hour * 60 + now.minute) - (event_hour * 60 + event_minute))
+                
+                if time_diff <= 60:  # 1시간 이내
+                    return {
+                        'type': '주요 경제 이벤트',
+                        'description': f'FOMC 발표 {time_diff}분 전',
+                        'impact': 'neutral',
+                        'severity': 'high',
+                        'event_type': 'FOMC'
+                    }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"뉴스 이벤트 감지 실패: {e}")
+            return None
+    
+    async def _detect_open_interest_anomaly(self) -> Optional[Dict]:
+        """미결제약정 이상 감지"""
+        try:
+            oi_data = await self.bitget_client.get_open_interest()
+            current_oi = float(oi_data.get('openInterest', 0))
+            
+            # 이전 데이터와 비교 (실제로는 DB에 저장해야 함)
+            # 여기서는 간단히 구현
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"미결제약정 감지 실패: {e}")
+            return None
+    
+    async def close(self):
+        """세션 종료"""
+        if self.session:
+            await self.session.close()
+            logger.info("예외 감지기 세션 종료")
