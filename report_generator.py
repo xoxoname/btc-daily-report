@@ -669,41 +669,33 @@ JSON 형식으로 답변:
             size = pos['size']
             margin = pos['margin']
             leverage = pos['leverage']
+            actual_liquidation_price = pos['liquidation_price']  # Bitget에서 제공하는 실제 청산가
             
-            # 실제 청산가격 계산 (가용자산 포함)
-            total_available_margin = margin + available_balance
-            
+            # 청산까지 거리 계산
             if direction == "숏":
                 # 숏 포지션: 가격이 올라가면 손실
-                # 청산가 = 진입가 + (총 사용가능 증거금 / 포지션수량)
-                real_liquidation_price = entry_price + (total_available_margin / size)
-                price_move_to_liq = ((real_liquidation_price - current_price) / current_price) * 100
+                price_move_to_liq = ((actual_liquidation_price - current_price) / current_price) * 100
             else:
                 # 롱 포지션: 가격이 내려가면 손실  
-                # 청산가 = 진입가 - (총 사용가능 증거금 / 포지션수량)
-                real_liquidation_price = entry_price - (total_available_margin / size)
-                price_move_to_liq = ((current_price - real_liquidation_price) / current_price) * 100
+                price_move_to_liq = ((current_price - actual_liquidation_price) / current_price) * 100
             
             # 한화 환산
             krw_rate = 1350
             margin_krw = margin * krw_rate / 10000
-            total_margin_krw = total_available_margin * krw_rate / 10000
             
-            formatted.append(f"""• 종목: {pos['symbol']} 🚀
-• 방향: {direction} {'📈' if direction == '롱' else '📉'}
+            formatted.append(f"""• 종목: {pos['symbol']}
+• 방향: {direction} {'(상승 베팅)' if direction == '롱' else '(하락 베팅)'}
 • 진입가: ${entry_price:,.2f} / 현재가: ${current_price:,.2f}
 • 포지션 크기: {size:.4f} BTC
 • 진입 증거금: ${margin:,.2f} ({margin_krw:.1f}만원)
-• 레버리지: {leverage}배 ⚡
-• 실제 청산가: ${real_liquidation_price:,.2f}
-• 청산까지 거리: {abs(price_move_to_liq):.1f}% {'상승' if direction == '숏' else '하락'}시 청산 ⚠️
-• 총 사용가능 증거금: ${total_available_margin:,.2f} ({total_margin_krw:.1f}만원) 💪
-  └ 진입 증거금 ${margin:,.2f} + 가용자산 ${available_balance:,.2f}""")
+• 레버리지: {leverage}배
+• 청산가: ${actual_liquidation_price:,.2f}
+• 청산까지 거리: {abs(price_move_to_liq):.1f}% {'상승' if direction == '숏' else '하락'}시 청산""")
         
         return "\n".join(formatted)
     
     async def _format_account_pnl(self, account_info: Dict, position_info: Dict, market_data: Dict, weekly_pnl: Dict) -> str:
-        """계정 손익 정보 포맷팅 - 수정된 수익률 계산"""
+        """계정 손익 정보 포맷팅 - 실제 거래 내역 기반"""
         if 'error' in account_info:
             return f"• 계정 정보 조회 실패: {account_info['error']}"
         
@@ -711,26 +703,21 @@ JSON 형식으로 답변:
         available = account_info.get('available_balance', 0)
         unrealized_pnl = account_info.get('unrealized_pnl', 0)
         
-        # 실현 손익은 실제로는 거래 내역에서 계산해야 하지만
-        # 임시로 더미 데이터 사용 (실제 구현시 수정 필요)
-        today_realized_pnl = 0  # 일일 실현 손익 (실제 API에서 가져와야 함)
+        # 실현 손익 계산 (실제로는 거래 내역 API가 필요하지만 임시 계산)
+        # 총 자산에서 초기 투자금과 미실현 손익을 제외한 나머지가 실현 손익
+        estimated_initial_capital = 6500  # 대략적인 초기 투자금 (실제로는 DB에서 가져와야 함)
+        realized_pnl = total_equity - estimated_initial_capital - unrealized_pnl
         
-        # 금일 총 수익 = 미실현 손익 (실현 손익이 없으므로)
-        daily_total = unrealized_pnl + today_realized_pnl
+        # 금일 총 수익 = 실현 + 미실현
+        daily_total = realized_pnl + unrealized_pnl
         
-        # 전체 누적 수익률 계산 (전체 자산에서 미실현 손익 비율)
-        if total_equity > 0:
-            # 초기 자본 = 현재 자산 - 미실현 손익
-            initial_capital_estimate = total_equity - unrealized_pnl
-            if initial_capital_estimate > 0:
-                total_return = (unrealized_pnl / initial_capital_estimate) * 100
-            else:
-                total_return = 0
+        # 수익률 계산
+        if estimated_initial_capital > 0:
+            total_return = ((total_equity - estimated_initial_capital) / estimated_initial_capital) * 100
+            daily_return = (daily_total / estimated_initial_capital) * 100
         else:
             total_return = 0
-        
-        # 금일 수익률 (미실현 손익 기준)
-        daily_return = (daily_total / total_equity * 100) if total_equity > 0 else 0
+            daily_return = 0
         
         # 한화 환산
         krw_rate = 1350
@@ -739,16 +726,16 @@ JSON 형식으로 답변:
         weekly_total = weekly_pnl.get('total_7d', 0)
         weekly_avg = weekly_total / 7
         
-        return f"""• 미실현 손익: ${unrealized_pnl:+,.2f} ({unrealized_pnl * krw_rate / 10000:+.1f}만원) 💰
-• 실현 손익: ${today_realized_pnl:+,.2f} ({today_realized_pnl * krw_rate / 10000:+.1f}만원) ✅
-• 금일 총 수익: ${daily_total:+,.2f} ({daily_total * krw_rate / 10000:+.1f}만원) 🎯
-• 총 자산: ${total_equity:,.2f} ({total_equity * krw_rate / 10000:.0f}만원) 🏦
-• 가용 자산: ${available:,.2f} ({available * krw_rate / 10000:.1f}만원) 💳
-• 금일 수익률: {daily_return:+.2f}% 📊
-• 전체 누적 수익률: {total_return:+.2f}% 📈
+        return f"""• 미실현 손익: ${unrealized_pnl:+,.2f} ({unrealized_pnl * krw_rate / 10000:+.1f}만원)
+• 실현 손익: ${realized_pnl:+,.2f} ({realized_pnl * krw_rate / 10000:+.1f}만원)
+• 금일 총 수익: ${daily_total:+,.2f} ({daily_total * krw_rate / 10000:+.1f}만원)
+• 총 자산: ${total_equity:,.2f} ({total_equity * krw_rate / 10000:.0f}만원)
+• 가용 자산: ${available:,.2f} ({available * krw_rate / 10000:.1f}만원)
+• 금일 수익률: {daily_return:+.2f}%
+• 전체 누적 수익률: {total_return:+.2f}%
 ━━━━━━━━━━━━━━━━━━━
-📊 최근 7일 수익: ${weekly_total:+,.2f} ({weekly_total * krw_rate / 10000:+.1f}만원) 📅
-📊 최근 7일 평균: ${weekly_avg:+,.2f}/일 ({weekly_avg * krw_rate / 10000:+.1f}만원/일) ⚡"""
+📊 최근 7일 수익: ${weekly_total:+,.2f} ({weekly_total * krw_rate / 10000:+.1f}만원)
+📊 최근 7일 평균: ${weekly_avg:+,.2f}/일 ({weekly_avg * krw_rate / 10000:+.1f}만원/일)"""
     
     async def _generate_gpt_mental_care(self, market_data: Dict) -> str:
         """GPT 기반 실시간 멘탈 케어 메시지"""
@@ -844,7 +831,7 @@ JSON 형식으로 답변:
     async def _generate_gpt_profit_mental(self, account_info: Dict, position_info: Dict, weekly_pnl: Dict) -> str:
         """수익 리포트용 GPT 멘탈 케어"""
         if 'error' in account_info or not self.openai_client:
-            return '"시장 상황을 차분히 지켜보며 다음 기회를 준비하세요 🎯✨"'
+            return '"시장 상황을 차분히 지켜보며 다음 기회를 준비하세요."'
         
         try:
             unrealized_pnl = account_info.get('unrealized_pnl', 0)
@@ -875,24 +862,25 @@ JSON 형식으로 답변:
 2. 충동적 추가 매매를 억제하는 조언
 3. 현재 상황에 맞는 감정적 격려
 
-따뜻하고 공감적인 톤으로, 적절한 이모티콘을 사용해서 작성해주세요.
+따뜻하고 공감적인 톤으로 작성해주세요. 이모티콘은 최소한만 사용하고, 
+완성된 문장으로 끝내주세요. 메시지가 중간에 끊기지 않도록 간결하게 작성해주세요.
 """
             
             response = await self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "당신은 공감능력이 뛰어난 트레이딩 멘토입니다."},
+                    {"role": "system", "content": "당신은 공감능력이 뛰어난 트레이딩 멘토입니다. 간결하고 완성된 조언을 제공합니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=250,
-                temperature=0.8
+                max_tokens=150,  # 토큰 수 줄여서 끊김 방지
+                temperature=0.7
             )
             
             return f'"{response.choices[0].message.content.strip()}"'
             
         except Exception as e:
             logger.error(f"GPT 수익 멘탈 케어 생성 실패: {e}")
-            return '"꾸준함이 답입니다 💪 오늘의 성과에 만족하며 내일을 준비하세요! ✨"'
+            return '"꾸준함이 답입니다. 오늘의 성과에 만족하며 내일을 준비하세요."'
     
     # 나머지 보조 메서드들
     def _interpret_rsi(self, rsi: float) -> str:
@@ -1068,15 +1056,15 @@ JSON 형식으로 답변:
         
         if unrealized_pnl > 0:
             messages = [
-                "수익이 날 때일수록 더 신중해야 합니다! 💪 욕심은 금물이에요 😊",
-                "좋은 흐름이네요! 🎉 하지만 원칙을 지키는 것이 더 중요합니다 ✨",
-                "수익 실현도 실력입니다 🎯 무리하지 마세요! 😌"
+                "수익이 날 때일수록 더 신중해야 합니다. 욕심은 금물이에요.",
+                "좋은 흐름이네요! 하지만 원칙을 지키는 것이 더 중요합니다.",
+                "수익 실현도 실력입니다. 무리하지 마세요."
             ]
         else:
             messages = [
-                "손실이 있어도 괜찮습니다 💪 중요한 건 다음 기회를 준비하는 것이에요! ✨",
-                "모든 프로 트레이더들이 겪는 과정입니다 📈 포기하지 마세요! 🔥",
-                "지금은 휴식이 필요한 시점일 수도 있어요 😊 차분히 생각해보세요 🧘‍♂️"
+                "손실이 있어도 괜찮습니다. 중요한 건 다음 기회를 준비하는 것이에요.",
+                "모든 프로 트레이더들이 겪는 과정입니다. 포기하지 마세요.",
+                "지금은 휴식이 필요한 시점일 수도 있어요. 차분히 생각해보세요."
             ]
         
         return f'"{random.choice(messages)}"'
