@@ -30,7 +30,7 @@ class RealisticNewsCollector:
             'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing'
         ]
         
-        # RSS 피드 (확실히 작동하는 URL들만 + 새로운 대체 소스)
+        # RSS 피드 (문제있는 2개 제거)
         self.rss_feeds = [
             # 암호화폐 전문 (최우선) - 확실히 작동하는 것들
             {'url': 'https://cointelegraph.com/rss', 'source': 'Cointelegraph', 'weight': 10, 'category': 'crypto'},
@@ -38,12 +38,11 @@ class RealisticNewsCollector:
             {'url': 'https://decrypt.co/feed', 'source': 'Decrypt', 'weight': 9, 'category': 'crypto'},
             {'url': 'https://bitcoinmagazine.com/.rss/full/', 'source': 'Bitcoin Magazine', 'weight': 9, 'category': 'crypto'},
             
-            # 새로운 암호화폐 소스 (접근 거부된 것들 대체)
-            {'url': 'https://www.cryptocoinsnews.com/feed/', 'source': 'CryptoCoinsNews', 'weight': 8, 'category': 'crypto'},
+            # 새로운 암호화폐 소스 (CryptoCoinsNews 제거됨)
             {'url': 'https://ambcrypto.com/feed/', 'source': 'AMBCrypto', 'weight': 8, 'category': 'crypto'},
             {'url': 'https://cryptopotato.com/feed/', 'source': 'CryptoPotato', 'weight': 8, 'category': 'crypto'},
             
-            # 일반 금융 (확실히 작동하는 것들만)
+            # 일반 금융 (Reuters Finance 제거됨)
             {'url': 'https://www.marketwatch.com/rss/topstories', 'source': 'MarketWatch', 'weight': 8, 'category': 'finance'},
             {'url': 'https://seekingalpha.com/feed.xml', 'source': 'Seeking Alpha', 'weight': 8, 'category': 'finance'},
             {'url': 'https://feeds.feedburner.com/InvestingcomAnalysis', 'source': 'Investing.com', 'weight': 8, 'category': 'finance'},
@@ -60,8 +59,7 @@ class RealisticNewsCollector:
             {'url': 'https://www.wired.com/feed/rss', 'source': 'Wired', 'weight': 6, 'category': 'tech'},
             {'url': 'https://feeds.feedburner.com/venturebeat/SZYF', 'source': 'VentureBeat', 'weight': 7, 'category': 'tech'},
             
-            # 추가 신뢰할만한 금융 소스
-            {'url': 'https://www.reuters.com/business/finance/rss', 'source': 'Reuters Finance', 'weight': 9, 'category': 'finance'},
+            # 추가 신뢰할만한 금융 소스 (Bloomberg만 유지)
             {'url': 'https://feeds.bloomberg.com/markets/news.rss', 'source': 'Bloomberg Markets', 'weight': 9, 'category': 'finance'},
         ]
         
@@ -302,6 +300,8 @@ class RealisticNewsCollector:
                     logger.warning(f"⚠️  {feed_info['source']}: 접근 거부 (403)")
                 elif response.status == 404:
                     logger.warning(f"⚠️  {feed_info['source']}: 피드 없음 (404)")
+                elif response.status == 401:
+                    logger.warning(f"⚠️  {feed_info['source']}: HTTP 401")
                 else:
                     logger.warning(f"⚠️  {feed_info['source']}: HTTP {response.status}")
         
@@ -460,7 +460,6 @@ class RealisticNewsCollector:
                 'alpha_vantage_today': 0,
                 'last_reset': today
             })
-            # f-string 오류 수정: 이 부분이 문제였을 것입니다
             logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']}→0, NewsData {old_usage['newsdata_today']}→0")
     
     def _is_critical_news(self, article: Dict) -> bool:
@@ -697,6 +696,3 @@ class RealisticNewsCollector:
                 logger.info("🔚 뉴스 수집기 세션 종료 완료")
         except Exception as e:
             logger.error(f"세션 종료 중 오류: {e}")
-
-# 추가 필요한 패키지 (requirements.txt에 추가)
-# python-dateutil==2.8.2
