@@ -22,8 +22,10 @@ class Config:
         self.bitget_passphrase = self.BITGET_PASSPHRASE
         self.symbol = "BTCUSDT"
         
-        # News API 설정
+        # 뉴스 API 설정들 (3개 모두)
         self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
+        self.NEWSDATA_KEY = os.getenv('NEWSDATA_KEY')
+        self.ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')
         
         # OpenAI 설정
         self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -49,9 +51,23 @@ class Config:
         if missing_configs:
             raise ValueError(f"다음 환경변수가 설정되지 않았습니다: {', '.join(missing_configs)}")
         
-        # OpenAI는 선택사항이므로 경고만 출력
-        if not self.OPENAI_API_KEY:
-            print("경고: OPENAI_API_KEY가 설정되지 않았습니다. AI 분석 기능이 제한됩니다.")
+        # 선택사항들 상태 로그
+        optional_configs = {
+            'OPENAI_API_KEY': self.OPENAI_API_KEY,
+            'NEWSAPI_KEY': self.NEWSAPI_KEY,
+            'NEWSDATA_KEY': self.NEWSDATA_KEY,
+            'ALPHA_VANTAGE_KEY': self.ALPHA_VANTAGE_KEY
+        }
         
-        if not self.NEWSAPI_KEY:
-            print("경고: NEWSAPI_KEY가 설정되지 않았습니다. 뉴스 모니터링이 제한됩니다.")
+        available_apis = []
+        missing_apis = []
+        
+        for config_name, config_value in optional_configs.items():
+            if config_value:
+                available_apis.append(config_name)
+            else:
+                missing_apis.append(config_name)
+        
+        print(f"✅ 사용 가능한 API: {', '.join(available_apis) if available_apis else '없음'}")
+        if missing_apis:
+            print(f"⚠️  설정되지 않은 API: {', '.join(missing_apis)} (관련 기능 제한)")
