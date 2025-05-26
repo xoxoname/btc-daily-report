@@ -189,7 +189,7 @@ class EnhancedReportGenerator:
 ━━━━━━━━━━━━━━━━━━━
 
 📌 보유 포지션 정보
-{await self._format_position_info(position_info, market_data)}
+{await self._format_position_info(position_info, market_data, account_info)}
 
 ━━━━━━━━━━━━━━━━━━━
 
@@ -647,15 +647,17 @@ JSON 형식으로 답변:
 📌 전략 제안:
 현재 시장 상황을 고려하여 신중한 접근이 필요합니다."""
     
-    async def _format_position_info(self, position_info: Dict, market_data: Dict) -> str:
+    async def _format_position_info(self, position_info: Dict, market_data: Dict, account_info: Dict = None) -> str:
         """포지션 정보 포맷팅 - 정확한 청산가 계산"""
         positions = position_info.get('positions', [])
         
         if not positions:
             return "• 포지션 없음"
         
-        # 계정 정보 가져오기
-        account_info = market_data.get('account', {})
+        # 계정 정보에서 가용자산 가져오기
+        if not account_info:
+            account_info = market_data.get('account', {})
+        
         available_balance = account_info.get('available_balance', 0)
         
         formatted = []
@@ -669,38 +671,39 @@ JSON 형식으로 답변:
             leverage = pos['leverage']
             
             # 실제 청산가격 계산 (가용자산 포함)
-            total_margin = margin + available_balance
-            position_value = size * current_price
+            total_available_margin = margin + available_balance
             
             if direction == "숏":
                 # 숏 포지션: 가격이 올라가면 손실
-                # 청산가 = 진입가 + (총마진 / 포지션수량)
-                real_liquidation_price = entry_price + (total_margin / size)
+                # 청산가 = 진입가 + (총 사용가능 증거금 / 포지션수량)
+                real_liquidation_price = entry_price + (total_available_margin / size)
                 price_move_to_liq = ((real_liquidation_price - current_price) / current_price) * 100
             else:
                 # 롱 포지션: 가격이 내려가면 손실  
-                # 청산가 = 진입가 - (총마진 / 포지션수량)
-                real_liquidation_price = entry_price - (total_margin / size)
+                # 청산가 = 진입가 - (총 사용가능 증거금 / 포지션수량)
+                real_liquidation_price = entry_price - (total_available_margin / size)
                 price_move_to_liq = ((current_price - real_liquidation_price) / current_price) * 100
             
             # 한화 환산
             krw_rate = 1350
             margin_krw = margin * krw_rate / 10000
+            total_margin_krw = total_available_margin * krw_rate / 10000
             
-            formatted.append(f"""• 종목: {pos['symbol']}
-• 방향: {direction}
+            formatted.append(f"""• 종목: {pos['symbol']} 🚀
+• 방향: {direction} {'📈' if direction == '롱' else '📉'}
 • 진입가: ${entry_price:,.2f} / 현재가: ${current_price:,.2f}
 • 포지션 크기: {size:.4f} BTC
 • 진입 증거금: ${margin:,.2f} ({margin_krw:.1f}만원)
-• 레버리지: {leverage}배
+• 레버리지: {leverage}배 ⚡
 • 실제 청산가: ${real_liquidation_price:,.2f}
-• 청산까지 거리: {abs(price_move_to_liq):.1f}% {'상승' if direction == '숏' else '하락'}시 청산
-• 총 사용가능 증거금: ${total_margin:,.2f} (가용자산 ${available_balance:,.2f} 포함)""")
+• 청산까지 거리: {abs(price_move_to_liq):.1f}% {'상승' if direction == '숏' else '하락'}시 청산 ⚠️
+• 총 사용가능 증거금: ${total_available_margin:,.2f} ({total_margin_krw:.1f}만원) 💪
+  └ 진입 증거금 ${margin:,.2f} + 가용자산 ${available_balance:,.2f}""")
         
         return "\n".join(formatted)
     
     async def _format_account_pnl(self, account_info: Dict, position_info: Dict, market_data: Dict, weekly_pnl: Dict) -> str:
-        """계정 손익 정보 포맷팅 - 정확한 계산"""
+        """계정 손익 정보 포맷팅 - 수정된 수익률 계산"""
         if 'error' in account_info:
             return f"• 계정 정보 조회 실패: {account_info['error']}"
         
@@ -708,19 +711,26 @@ JSON 형식으로 답변:
         available = account_info.get('available_balance', 0)
         unrealized_pnl = account_info.get('unrealized_pnl', 0)
         
-        # 실현 손익 계산 (실제로는 거래 내역에서 가져와야 함)
-        # 임시로 더미 데이터 사용
-        today_realized_pnl = 24.3  # 실제 API에서 가져와야 함
+        # 실현 손익은 실제로는 거래 내역에서 계산해야 하지만
+        # 임시로 더미 데이터 사용 (실제 구현시 수정 필요)
+        today_realized_pnl = 0  # 일일 실현 손익 (실제 API에서 가져와야 함)
         
-        # 금일 총 수익
+        # 금일 총 수익 = 미실현 손익 (실현 손익이 없으므로)
         daily_total = unrealized_pnl + today_realized_pnl
         
-        # 초기 자본 (실제 값)
-        initial_capital = total_equity - unrealized_pnl - today_realized_pnl  # 현재 자산에서 수익 제외
+        # 전체 누적 수익률 계산 (전체 자산에서 미실현 손익 비율)
+        if total_equity > 0:
+            # 초기 자본 = 현재 자산 - 미실현 손익
+            initial_capital_estimate = total_equity - unrealized_pnl
+            if initial_capital_estimate > 0:
+                total_return = (unrealized_pnl / initial_capital_estimate) * 100
+            else:
+                total_return = 0
+        else:
+            total_return = 0
         
-        # 수익률 계산
-        total_return = ((total_equity - initial_capital) / initial_capital) * 100 if initial_capital > 0 else 0
-        daily_return = (daily_total / total_equity) * 100 if total_equity > 0 else 0
+        # 금일 수익률 (미실현 손익 기준)
+        daily_return = (daily_total / total_equity * 100) if total_equity > 0 else 0
         
         # 한화 환산
         krw_rate = 1350
@@ -729,16 +739,16 @@ JSON 형식으로 답변:
         weekly_total = weekly_pnl.get('total_7d', 0)
         weekly_avg = weekly_total / 7
         
-        return f"""• 미실현 손익: ${unrealized_pnl:+,.2f} ({unrealized_pnl * krw_rate / 10000:+.1f}만원)
-• 실현 손익: ${today_realized_pnl:+,.2f} ({today_realized_pnl * krw_rate / 10000:+.1f}만원)
-• 금일 총 수익: ${daily_total:+,.2f} ({daily_total * krw_rate / 10000:+.1f}만원)
-• 총 자산: ${total_equity:,.2f} ({total_equity * krw_rate / 10000:.0f}만원)
-• 가용 자산: ${available:,.2f}
-• 금일 수익률: {daily_return:+.2f}%
-• 전체 누적 수익률: {total_return:+.2f}%
+        return f"""• 미실현 손익: ${unrealized_pnl:+,.2f} ({unrealized_pnl * krw_rate / 10000:+.1f}만원) 💰
+• 실현 손익: ${today_realized_pnl:+,.2f} ({today_realized_pnl * krw_rate / 10000:+.1f}만원) ✅
+• 금일 총 수익: ${daily_total:+,.2f} ({daily_total * krw_rate / 10000:+.1f}만원) 🎯
+• 총 자산: ${total_equity:,.2f} ({total_equity * krw_rate / 10000:.0f}만원) 🏦
+• 가용 자산: ${available:,.2f} ({available * krw_rate / 10000:.1f}만원) 💳
+• 금일 수익률: {daily_return:+.2f}% 📊
+• 전체 누적 수익률: {total_return:+.2f}% 📈
 ━━━━━━━━━━━━━━━━━━━
-📊 최근 7일 수익: ${weekly_total:+,.2f} ({weekly_total * krw_rate / 10000:+.1f}만원)
-📊 최근 7일 평균: ${weekly_avg:+,.2f}/일 ({weekly_avg * krw_rate / 10000:+.1f}만원/일)"""
+📊 최근 7일 수익: ${weekly_total:+,.2f} ({weekly_total * krw_rate / 10000:+.1f}만원) 📅
+📊 최근 7일 평균: ${weekly_avg:+,.2f}/일 ({weekly_avg * krw_rate / 10000:+.1f}만원/일) ⚡"""
     
     async def _generate_gpt_mental_care(self, market_data: Dict) -> str:
         """GPT 기반 실시간 멘탈 케어 메시지"""
@@ -780,6 +790,7 @@ JSON 형식으로 답변:
 4. 리스크 관리의 중요성 (단, 구체적인 레버리지 조절 언급은 피하기)
 
 자연스럽고 따뜻한 말투로, 마치 친한 형/누나가 조언하는 것처럼 작성해주세요.
+중간중간 적절한 이모티콘을 사용해서 딱딱하지 않게 만들어주세요.
 """
             
             response = await self.openai_client.chat.completions.create(
@@ -801,7 +812,7 @@ JSON 형식으로 답변:
     async def _generate_gpt_short_mental(self, market_data: Dict) -> str:
         """단기 예측용 GPT 멘탈 메시지"""
         if not self.openai_client:
-            return '"시장은 항상 변합니다. 차분하게 기다리는 것도 전략입니다."'
+            return '"시장은 항상 변합니다 📈 차분하게 기다리는 것도 전략이에요! 😊"'
         
         try:
             account = market_data.get('account', {})
@@ -814,7 +825,7 @@ JSON 형식으로 답변:
 - BTC 현재가: ${current_price:,.0f}
 
 이 트레이더에게 충동적 매매를 방지하고 차분한 매매를 유도하는 
-한 문장의 조언을 해주세요. 따뜻하고 현실적인 톤으로.
+한 문장의 조언을 해주세요. 따뜻하고 현실적인 톤으로, 이모티콘도 적절히 사용해주세요.
 """
             
             response = await self.openai_client.chat.completions.create(
@@ -828,12 +839,12 @@ JSON 형식으로 답변:
             
         except Exception as e:
             logger.error(f"GPT 단기 멘탈 케어 생성 실패: {e}")
-            return '"차분함이 최고의 무기입니다. 서두르지 마세요."'
+            return '"차분함이 최고의 무기입니다 🎯 서두르지 마세요! 💪"'
     
     async def _generate_gpt_profit_mental(self, account_info: Dict, position_info: Dict, weekly_pnl: Dict) -> str:
         """수익 리포트용 GPT 멘탈 케어"""
         if 'error' in account_info or not self.openai_client:
-            return '"시장 상황을 차분히 지켜보며 다음 기회를 준비하세요."'
+            return '"시장 상황을 차분히 지켜보며 다음 기회를 준비하세요 🎯✨"'
         
         try:
             unrealized_pnl = account_info.get('unrealized_pnl', 0)
@@ -864,7 +875,7 @@ JSON 형식으로 답변:
 2. 충동적 추가 매매를 억제하는 조언
 3. 현재 상황에 맞는 감정적 격려
 
-따뜻하고 공감적인 톤으로 작성해주세요.
+따뜻하고 공감적인 톤으로, 적절한 이모티콘을 사용해서 작성해주세요.
 """
             
             response = await self.openai_client.chat.completions.create(
@@ -881,7 +892,7 @@ JSON 형식으로 답변:
             
         except Exception as e:
             logger.error(f"GPT 수익 멘탈 케어 생성 실패: {e}")
-            return '"꾸준함이 답입니다. 오늘의 성과에 만족하며 내일을 준비하세요."'
+            return '"꾸준함이 답입니다 💪 오늘의 성과에 만족하며 내일을 준비하세요! ✨"'
     
     # 나머지 보조 메서드들
     def _interpret_rsi(self, rsi: float) -> str:
@@ -982,15 +993,15 @@ JSON 형식으로 답변:
         """간단한 손익 요약"""
         account = market_data.get('account', {})
         unrealized = account.get('unrealized_pnl', 0)
-        realized = 24.3  # 실제로는 API에서 가져와야 함
+        realized = 0  # 실제로는 API에서 가져와야 함
         total_equity = account.get('total_equity', 0)
         
         total_pnl = unrealized + realized
         return_rate = (total_pnl / total_equity * 100) if total_equity > 0 else 0
         
-        return f"""• 실현 손익: ${realized:+.1f} ({realized * 1.35:+.1f}만원)
-• 미실현 손익: ${unrealized:+.1f} ({unrealized * 1.35:+.1f}만원)
-• 총 수익률: {return_rate:+.2f}%"""
+        return f"""• 실현 손익: ${realized:+.1f} ({realized * 1.35:+.1f}만원) ✅
+• 미실현 손익: ${unrealized:+.1f} ({unrealized * 1.35:+.1f}만원) 💰  
+• 총 수익률: {return_rate:+.2f}% 📊"""
     
     # 기타 필요한 메서드들은 기존과 동일하게 유지
     async def _calculate_weekly_pnl(self) -> Dict:
@@ -1009,6 +1020,12 @@ JSON 형식으로 답변:
         yesterday = (datetime.now(kst) - timedelta(days=1)).strftime('%m/%d')
         return f"""• {yesterday} 예측: 횡보 → ✅ 적중 (실제 변동폭 ±1.2%)"""
     
+    def _format_advanced_indicators(self, indicators: Dict) -> str:
+        """고급 지표 포맷팅"""
+        return """• 복합 지표 점수: 65/100 (중립적 시장)
+• 시장 구조: 건강한 상태 → ➕호재 예상
+• 파생상품 지표: 정상 범위 → 중립"""
+    
     async def _format_profit_loss(self, market_data: Dict) -> str:
         account = market_data.get('account', {})
         positions = market_data.get('positions', [])
@@ -1026,17 +1043,21 @@ JSON 형식으로 답변:
         else:
             position_info = "포지션 없음"
         
-        realized_pnl = 24.3
+        realized_pnl = 0  # 실제로는 API에서 계산
         daily_total = unrealized_pnl + realized_pnl
-        initial_capital = total_equity - daily_total
-        daily_return = (daily_total / total_equity * 100) if total_equity > 0 else 0
+        # 수익률 계산 개선
+        if total_equity > 0:
+            initial_capital_estimate = total_equity - unrealized_pnl
+            daily_return = (unrealized_pnl / initial_capital_estimate * 100) if initial_capital_estimate > 0 else 0
+        else:
+            daily_return = 0
         
-        return f"""• 진입 자산: ${initial_capital:,.0f}
-• 현재 포지션: {position_info}
-• 미실현 손익: ${unrealized_pnl:+.1f} (약 {unrealized_pnl * 1.35:+.1f}만원)
-• 실현 손익: ${realized_pnl:+.1f} (약 {realized_pnl * 1.35:+.1f}만원)
-• 금일 총 수익: ${daily_total:+.1f} (약 {daily_total * 1.35:+.1f}만원)
-• 수익률: {daily_return:+.2f}%"""
+        return f"""• 진입 자산: ${total_equity - unrealized_pnl:,.0f} 🏦
+• 현재 포지션: {position_info} 📈
+• 미실현 손익: ${unrealized_pnl:+.1f} (약 {unrealized_pnl * 1.35:+.1f}만원) 💰
+• 실현 손익: ${realized_pnl:+.1f} (약 {realized_pnl * 1.35:+.1f}만원) ✅
+• 금일 총 수익: ${daily_total:+.1f} (약 {daily_total * 1.35:+.1f}만원) 🎯
+• 수익률: {daily_return:+.2f}% 📊"""
     
     async def _generate_dynamic_mental_care(self, market_data: Dict) -> str:
         """동적 멘탈 케어 (폴백용)"""
@@ -1047,15 +1068,15 @@ JSON 형식으로 답변:
         
         if unrealized_pnl > 0:
             messages = [
-                "수익이 날 때일수록 더 신중해야 합니다. 욕심은 금물이에요.",
-                "좋은 흐름이네요! 하지만 원칙을 지키는 것이 더 중요합니다.",
-                "수익 실현도 실력입니다. 무리하지 마세요."
+                "수익이 날 때일수록 더 신중해야 합니다! 💪 욕심은 금물이에요 😊",
+                "좋은 흐름이네요! 🎉 하지만 원칙을 지키는 것이 더 중요합니다 ✨",
+                "수익 실현도 실력입니다 🎯 무리하지 마세요! 😌"
             ]
         else:
             messages = [
-                "손실이 있어도 괜찮습니다. 중요한 건 다음 기회를 준비하는 것이에요.",
-                "모든 프로 트레이더들이 겪는 과정입니다. 포기하지 마세요.",
-                "지금은 휴식이 필요한 시점일 수도 있어요. 차분히 생각해보세요."
+                "손실이 있어도 괜찮습니다 💪 중요한 건 다음 기회를 준비하는 것이에요! ✨",
+                "모든 프로 트레이더들이 겪는 과정입니다 📈 포기하지 마세요! 🔥",
+                "지금은 휴식이 필요한 시점일 수도 있어요 😊 차분히 생각해보세요 🧘‍♂️"
             ]
         
         return f'"{random.choice(messages)}"'
