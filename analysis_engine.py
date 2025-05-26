@@ -451,4 +451,21 @@ class AnalysisEngine:
 
 ━━━━━━━━━━━━━━━━━━━
 💸 손익 정보
-- 미실현 손익: ${profit_info.get('unrealized_pnl', 0):.1f} ({profit_info.get('unrealized_pnl',
+- 미실현 손익: ${profit_info.get('unrealized_pnl', 0):.1f} ({profit_info.get('unrealized_pnl', 0) * self.config.usd_to_krw:.0f}원)
+- 실현 손익: ${profit_info.get('realized_pnl', 0):.1f} ({profit_info.get('realized_pnl', 0) * self.config.usd_to_krw:.0f}원)
+- 금일 총 수익: ${profit_info.get('total_profit_usd', 0):.1f} ({profit_info.get('total_profit_usd', 0) * self.config.usd_to_krw:.0f}원)
+- 총 자산: ${profit_info.get('total_equity', 0):.1f}
+- 금일 수익률: {profit_info.get('profit_rate', 0):+.2f}%
+- 지금까지 총 수익률: {profit_info.get('total_return_rate', 0):+.2f}%
+- 지금까지 총 수익금: ${profit_info.get('realized_pnl', 0):.1f} ({profit_info.get('realized_pnl', 0) * self.config.usd_to_krw:.0f}원)
+
+━━━━━━━━━━━━━━━━━━━
+🧠 멘탈 케어
+{mental_comment}
+━━━━━━━━━━━━━━━━━━━"""
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"수익 리포트 생성 실패: {e}")
+            raise
