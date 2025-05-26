@@ -2,7 +2,6 @@
 from data_collector import RealTimeDataCollector
 from trading_indicators import AdvancedTradingIndicators
 from report_generator import EnhancedReportGenerator
-from trading_bot import TradingBot
 
 # BitcoinPredictionSystem 클래스의 __init__ 메서드 수정
 class BitcoinPredictionSystem:
@@ -26,7 +25,6 @@ class BitcoinPredictionSystem:
             self.data_collector,
             self.indicator_system
         )
-        self.trading_bot = TradingBot(self.config)
         
         # 기존 엔진은 그대로 유지
         self.analysis_engine = AnalysisEngine(
