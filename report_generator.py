@@ -13,7 +13,40 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TradingReport:
+    """거래 리포트 데이터 구조"""
+    timestamp: datetime
+    report_type: str  # 'regular', 'forecast', 'profit', 'schedule', 'exception'
+    market_events: List[Dict]
+    technical_analysis: Dict
+    sentiment_analysis: Dict
+    advanced_indicators: Dict
+    predictions: Dict
+    positions: Dict
+    profit_loss: Dict
     
+class EnhancedReportGenerator:
+    def __init__(self, config, data_collector, indicator_system):
+        self.config = config
+        self.data_collector = data_collector
+        self.indicator_system = indicator_system
+        self.bitget_client = None
+        self.openai_client = None
+        
+        # OpenAI 클라이언트 초기화
+        if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY:
+            self.openai_client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+        
+        # 뉴스 API 키
+        self.newsapi_key = getattr(config, 'NEWSAPI_KEY', None)
+        
+    def set_bitget_client(self, bitget_client):
+        """Bitget 클라이언트 설정"""
+        self.bitget_client = bitget_client
+        
+    def set_openai_client(self, openai_client):
+        """OpenAI 클라이언트 설정"""
+        self.openai_client = openai_client
+        
     async def _get_daily_realized_pnl(self) -> float:
         """오늘 실현 손익 조회 - 실제 API 사용"""
         try:
@@ -104,39 +137,7 @@ class TradingReport:
             
         except Exception as e:
             logger.error(f"포지션 기반 손익 추정 실패: {e}")
-            return 0.0"""거래 리포트 데이터 구조"""
-    timestamp: datetime
-    report_type: str  # 'regular', 'forecast', 'profit', 'schedule', 'exception'
-    market_events: List[Dict]
-    technical_analysis: Dict
-    sentiment_analysis: Dict
-    advanced_indicators: Dict
-    predictions: Dict
-    positions: Dict
-    profit_loss: Dict
-    
-class EnhancedReportGenerator:
-    def __init__(self, config, data_collector, indicator_system):
-        self.config = config
-        self.data_collector = data_collector
-        self.indicator_system = indicator_system
-        self.bitget_client = None
-        self.openai_client = None
-        
-        # OpenAI 클라이언트 초기화
-        if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY:
-            self.openai_client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
-        
-        # 뉴스 API 키
-        self.newsapi_key = getattr(config, 'NEWSAPI_KEY', None)
-        
-    def set_bitget_client(self, bitget_client):
-        """Bitget 클라이언트 설정"""
-        self.bitget_client = bitget_client
-        
-    def set_openai_client(self, openai_client):
-        """OpenAI 클라이언트 설정"""
-        self.openai_client = openai_client
+            return 0.0
         
     async def generate_regular_report(self) -> str:
         """정기 리포트 생성 (4시간마다)"""
