@@ -15,6 +15,13 @@ class Config:
         self.BITGET_SECRET_KEY = os.getenv('BITGET_APISECRET')
         self.BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
         
+        # Bitget 추가 설정
+        self.bitget_base_url = "https://api.bitget.com"
+        self.bitget_api_key = self.BITGET_API_KEY
+        self.bitget_api_secret = self.BITGET_SECRET_KEY
+        self.bitget_passphrase = self.BITGET_PASSPHRASE
+        self.symbol = "BTCUSDT"
+        
         # News API 설정
         self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
         
