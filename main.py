@@ -165,11 +165,11 @@ class BitcoinPredictionSystem:
             # 새로운 리포트 생성기 사용
             report = await self.report_generator.generate_regular_report()
             
-            # 메시지 전송 (Markdown 형식)
+            # 메시지 전송 (parse_mode 제거 - 일반 텍스트로 전송)
             if update:
-                await update.message.reply_text(report, parse_mode='Markdown')
+                await update.message.reply_text(report)
             else:
-                await self.telegram_bot.send_message(report, parse_mode='Markdown')
+                await self.telegram_bot.send_message(report)
             
             self.logger.info("리포트 전송 완료")
             
@@ -194,7 +194,8 @@ class BitcoinPredictionSystem:
             # 예측 리포트 생성
             report = await self.report_generator.generate_forecast_report()
             
-            await update.message.reply_text(report, parse_mode='Markdown')
+            # parse_mode 제거
+            await update.message.reply_text(report)
             
         except Exception as e:
             self.logger.error(f"예측 명령 처리 실패: {str(e)}")
@@ -205,30 +206,31 @@ class BitcoinPredictionSystem:
         try:
             await update.message.reply_text("💰 수익 현황을 조회중입니다...")
             
-            # 수익 리포트 생성 (임시 데이터)
-            profit_report = f"""💰 **현재 보유 포지션 및 수익 요약**
+            # 수익 리포트 생성 (Markdown 형식 제거)
+            profit_report = f"""💰 현재 보유 포지션 및 수익 요약
 📅 작성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')} (KST)
 ━━━━━━━━━━━━━━━━━━━
 
-📌 **보유 포지션 정보**
-* 포지션 없음
+📌 보유 포지션 정보
+• 포지션 없음
 
 ━━━━━━━━━━━━━━━━━━━
 
-💸 **손익 정보**
-* 미실현 손익: $0.0 (0만원)
-* 실현 손익: $0.0 (0만원)
-* 금일 총 수익: $0.0 (0만원)
-* 총 자산: $2,000
-* 금일 수익률: +0.00%
-* 전체 누적 수익률: +0.00%
+💸 손익 정보
+• 미실현 손익: $0.0 (0만원)
+• 실현 손익: $0.0 (0만원)
+• 금일 총 수익: $0.0 (0만원)
+• 총 자산: $2,000
+• 금일 수익률: +0.00%
+• 전체 누적 수익률: +0.00%
 
 ━━━━━━━━━━━━━━━━━━━
 
-🧠 **멘탈 케어**
+🧠 멘탈 케어
 "시장이 조용한 날입니다. 좋은 기회를 기다리는 것도 전략입니다."
 """
-            await update.message.reply_text(profit_report, parse_mode='Markdown')
+            # parse_mode 제거하여 일반 텍스트로 전송
+            await update.message.reply_text(profit_report)
             
         except Exception as e:
             self.logger.error(f"수익 명령 처리 실패: {str(e)}")
@@ -237,29 +239,30 @@ class BitcoinPredictionSystem:
     async def handle_schedule_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일정 명령 처리"""
         try:
-            schedule_report = f"""📅 **자동 리포트 일정**
+            schedule_report = f"""📅 자동 리포트 일정
 📅 작성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')} (KST)
 ━━━━━━━━━━━━━━━━━━━
 
-📡 **정기 리포트 시간**
-- 오전 9시 - 아침 리포트
-- 오후 1시 - 점심 리포트
-- 오후 6시 - 저녁 리포트
-- 오후 10시 - 밤 리포트
+📡 정기 리포트 시간
+• 오전 9시 - 아침 리포트
+• 오후 1시 - 점심 리포트
+• 오후 6시 - 저녁 리포트
+• 오후 10시 - 밤 리포트
 
 ━━━━━━━━━━━━━━━━━━━
 
-⚡ **실시간 모니터링**
-- 가격 급변동: 15분 내 2% 이상 변동
-- 뉴스 이벤트: 5분마다 체크
-- 펀딩비 이상: 연 50% 이상
-- 거래량 급증: 평균 대비 3배
+⚡ 실시간 모니터링
+• 가격 급변동: 15분 내 2% 이상 변동
+• 뉴스 이벤트: 5분마다 체크
+• 펀딩비 이상: 연 50% 이상
+• 거래량 급증: 평균 대비 3배
 
 ━━━━━━━━━━━━━━━━━━━
 
 📌 예외 상황 발생시 즉시 알림
 """
-            await update.message.reply_text(schedule_report, parse_mode='Markdown')
+            # parse_mode 제거
+            await update.message.reply_text(schedule_report)
             
         except Exception as e:
             self.logger.error(f"일정 명령 처리 실패: {str(e)}")
@@ -279,7 +282,8 @@ class BitcoinPredictionSystem:
                 if event.severity.value in ['high', 'critical']:
                     # 예외 리포트 생성
                     report = await self.report_generator.generate_exception_report(event.__dict__)
-                    await self.telegram_bot.send_message(report, parse_mode='Markdown')
+                    # parse_mode 제거
+                    await self.telegram_bot.send_message(report)
             
             # 버퍼 클리어
             self.data_collector.events_buffer = []
@@ -289,31 +293,30 @@ class BitcoinPredictionSystem:
     
     async def handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시작 명령 처리"""
-        welcome_message = """
-🚀 **비트코인 예측 시스템에 오신 것을 환영합니다!**
+        welcome_message = """🚀 비트코인 예측 시스템에 오신 것을 환영합니다!
 
-📊 **슬래시 명령어:**
-- /report - 전체 분석 리포트
-- /forecast - 단기 예측 요약
-- /profit - 수익 현황
-- /schedule - 자동 일정 안내
+📊 슬래시 명령어:
+• /report - 전체 분석 리포트
+• /forecast - 단기 예측 요약
+• /profit - 수익 현황
+• /schedule - 자동 일정 안내
 
-💬 **자연어 질문 예시:**
-- "오늘 수익은?"
-- "지금 매수해도 돼?"
-- "시장 상황 어때?"
-- "얼마 벌었어?"
+💬 자연어 질문 예시:
+• "오늘 수익은?"
+• "지금 매수해도 돼?"
+• "시장 상황 어때?"
+• "얼마 벌었어?"
 
-🔔 **자동 리포트:**
+🔔 자동 리포트:
 매일 09:00, 13:00, 18:00, 22:00
 
-⚡ **실시간 알림:**
+⚡ 실시간 알림:
 가격 급변동, 뉴스 이벤트, 펀딩비 이상 등
 
-📈 GPT 기반 정확한 비트코인 분석을 제공합니다.
-"""
+📈 GPT 기반 정확한 비트코인 분석을 제공합니다."""
         
-        await update.message.reply_text(welcome_message, parse_mode='Markdown')
+        # parse_mode 제거
+        await update.message.reply_text(welcome_message)
     
     async def start(self):
         """시스템 시작"""
@@ -339,7 +342,7 @@ class BitcoinPredictionSystem:
             
             self.logger.info("비트코인 예측 시스템 시작됨")
             
-            # 시작 메시지 (수정됨)
+            # 시작 메시지
             await self.telegram_bot.send_message("🚀 비트코인 예측 시스템이 시작되었습니다!\n\n명령어를 입력하거나 자연어로 질문해보세요.\n예: '오늘 수익은?' 또는 /help")
             
             # 프로그램이 종료되지 않도록 유지
