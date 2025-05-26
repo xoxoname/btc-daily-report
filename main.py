@@ -246,12 +246,12 @@ ${current_price:,.2f}
     async def start(self):
         """시스템 시작"""
         try:
+            # 스케줄러 시작
+            self.scheduler.start()
+            
             # 텔레그램 봇 핸들러 등록
             self.telegram_bot.add_handler('start', self.handle_start_command)
             self.telegram_bot.add_handler('report', self.handle_report_command)
-            
-            # 스케줄러 시작
-            self.scheduler.start()
             
             # 텔레그램 봇 시작
             await self.telegram_bot.start()
