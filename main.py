@@ -44,6 +44,8 @@ class BitcoinPredictionSystem:
             self.data_collector,
             self.indicator_system
         )
+        # Bitget 클라이언트를 report_generator에 설정
+        self.report_generator.set_bitget_client(self.bitget_client)
         
         # 기존 엔진
         self.analysis_engine = AnalysisEngine(
@@ -162,10 +164,10 @@ class BitcoinPredictionSystem:
             
             self.logger.info("리포트 생성 시작")
             
-            # 새로운 리포트 생성기 사용
+            # 실시간 리포트 생성
             report = await self.report_generator.generate_regular_report()
             
-            # 메시지 전송 (parse_mode 제거 - 일반 텍스트로 전송)
+            # 메시지 전송
             if update:
                 await update.message.reply_text(report)
             else:
@@ -191,10 +193,9 @@ class BitcoinPredictionSystem:
         try:
             await update.message.reply_text("🔮 단기 예측 분석 중...")
             
-            # 예측 리포트 생성
+            # 실시간 예측 리포트 생성
             report = await self.report_generator.generate_forecast_report()
             
-            # parse_mode 제거
             await update.message.reply_text(report)
             
         except Exception as e:
@@ -204,64 +205,24 @@ class BitcoinPredictionSystem:
     async def handle_profit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """수익 명령 처리"""
         try:
-            await update.message.reply_text("💰 수익 현황을 조회중입니다...")
+            await update.message.reply_text("💰 실시간 수익 현황을 조회중입니다...")
             
-            # 수익 리포트 생성 (Markdown 형식 제거)
-            profit_report = f"""💰 현재 보유 포지션 및 수익 요약
-📅 작성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')} (KST)
-━━━━━━━━━━━━━━━━━━━
-
-📌 보유 포지션 정보
-• 포지션 없음
-
-━━━━━━━━━━━━━━━━━━━
-
-💸 손익 정보
-• 미실현 손익: $0.0 (0만원)
-• 실현 손익: $0.0 (0만원)
-• 금일 총 수익: $0.0 (0만원)
-• 총 자산: $2,000
-• 금일 수익률: +0.00%
-• 전체 누적 수익률: +0.00%
-
-━━━━━━━━━━━━━━━━━━━
-
-🧠 멘탈 케어
-"시장이 조용한 날입니다. 좋은 기회를 기다리는 것도 전략입니다."
-"""
-            # parse_mode 제거하여 일반 텍스트로 전송
+            # 실시간 수익 리포트 생성
+            profit_report = await self.report_generator.generate_profit_report()
+            
             await update.message.reply_text(profit_report)
             
         except Exception as e:
             self.logger.error(f"수익 명령 처리 실패: {str(e)}")
+            self.logger.debug(f"수익 조회 오류 상세: {traceback.format_exc()}")
             await update.message.reply_text("❌ 수익 조회 중 오류가 발생했습니다.")
     
     async def handle_schedule_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일정 명령 처리"""
         try:
-            schedule_report = f"""📅 자동 리포트 일정
-📅 작성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')} (KST)
-━━━━━━━━━━━━━━━━━━━
-
-📡 정기 리포트 시간
-• 오전 9시 - 아침 리포트
-• 오후 1시 - 점심 리포트
-• 오후 6시 - 저녁 리포트
-• 오후 10시 - 밤 리포트
-
-━━━━━━━━━━━━━━━━━━━
-
-⚡ 실시간 모니터링
-• 가격 급변동: 15분 내 2% 이상 변동
-• 뉴스 이벤트: 5분마다 체크
-• 펀딩비 이상: 연 50% 이상
-• 거래량 급증: 평균 대비 3배
-
-━━━━━━━━━━━━━━━━━━━
-
-📌 예외 상황 발생시 즉시 알림
-"""
-            # parse_mode 제거
+            # 실시간 일정 리포트 생성
+            schedule_report = await self.report_generator.generate_schedule_report()
+            
             await update.message.reply_text(schedule_report)
             
         except Exception as e:
@@ -282,7 +243,6 @@ class BitcoinPredictionSystem:
                 if event.severity.value in ['high', 'critical']:
                     # 예외 리포트 생성
                     report = await self.report_generator.generate_exception_report(event.__dict__)
-                    # parse_mode 제거
                     await self.telegram_bot.send_message(report)
             
             # 버퍼 클리어
@@ -298,7 +258,7 @@ class BitcoinPredictionSystem:
 📊 슬래시 명령어:
 • /report - 전체 분석 리포트
 • /forecast - 단기 예측 요약
-• /profit - 수익 현황
+• /profit - 실시간 수익 현황
 • /schedule - 자동 일정 안내
 
 💬 자연어 질문 예시:
@@ -315,12 +275,14 @@ class BitcoinPredictionSystem:
 
 📈 GPT 기반 정확한 비트코인 분석을 제공합니다."""
         
-        # parse_mode 제거
         await update.message.reply_text(welcome_message)
     
     async def start(self):
         """시스템 시작"""
         try:
+            # Bitget 클라이언트 초기화
+            await self.bitget_client.initialize()
+            
             # 데이터 수집기 시작
             asyncio.create_task(self.data_collector.start())
             
@@ -367,6 +329,10 @@ class BitcoinPredictionSystem:
             # 데이터 수집기 종료
             if self.data_collector.session:
                 await self.data_collector.close()
+            
+            # Bitget 클라이언트 종료
+            if self.bitget_client.session:
+                await self.bitget_client.close()
             
             self.logger.info("시스템이 안전하게 종료되었습니다")
         except Exception as e:
