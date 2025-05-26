@@ -366,6 +366,9 @@ class EnhancedReportGenerator:
             account_info = results[1] if not isinstance(results[1], Exception) else {}
             position_info = results[2] if not isinstance(results[2], Exception) else {}
             
+            # account 정보를 market_data에 포함
+            market_data['account'] = account_info
+            
             return {
                 **market_data,
                 'account': account_info,
@@ -433,27 +436,40 @@ class EnhancedReportGenerator:
         if not positions:
             return "• 포지션 없음"
         
+        # 계정 정보 가져오기 (가용 자산 확인용)
+        account_info = market_data.get('account', {})
+        available_balance = account_info.get('available_balance', 0)
+        
         formatted = []
         for pos in positions:
             direction = "롱" if pos['side'].lower() in ['long', 'buy'] else "숏"
             
-            # 청산가격까지 남은 거리 계산
             current_price = pos['mark_price']
-            liquidation_price = pos['liquidation_price']
             entry_price = pos['entry_price']
             size = pos['size']
-            margin = pos['margin']  # 증거금
+            margin = pos['margin']  # 현재 증거금
             leverage = pos['leverage']
             
-            # 레버리지를 고려한 청산까지 남은 거리
-            # 숏 포지션: (청산가 - 현재가) / 현재가 / 레버리지
-            # 롱 포지션: (현재가 - 청산가) / 현재가 / 레버리지
+            # 실제 청산가격 계산
+            # 총 사용 가능한 증거금 = 현재 증거금 + 가용 자산
+            total_available_margin = margin + available_balance
+            
+            # 포지션 가치 = 수량 * 진입가
+            position_value = size * entry_price
+            
             if direction == "숏":
-                price_distance_pct = ((liquidation_price - current_price) / current_price) * 100
-                margin_distance_pct = price_distance_pct / leverage
+                # 숏 포지션 청산가 = 진입가 * (1 + 총증거금/포지션가치)
+                liquidation_price = entry_price * (1 + total_available_margin / position_value)
+                # 현재가 기준 청산까지 남은 %
+                price_move_to_liq = ((liquidation_price - current_price) / current_price) * 100
             else:
-                price_distance_pct = ((current_price - liquidation_price) / current_price) * 100
-                margin_distance_pct = price_distance_pct / leverage
+                # 롱 포지션 청산가 = 진입가 * (1 - 총증거금/포지션가치)
+                liquidation_price = entry_price * (1 - total_available_margin / position_value)
+                # 현재가 기준 청산까지 남은 %
+                price_move_to_liq = ((current_price - liquidation_price) / current_price) * 100
+            
+            # 증거금 기준 손실 허용률
+            margin_loss_ratio = (total_available_margin / margin) * 100 - 100
             
             formatted.append(f"""• 종목: {pos['symbol']}
 • 방향: {direction}
@@ -461,7 +477,8 @@ class EnhancedReportGenerator:
 • 진입 증거금: ${margin:,.2f}
 • 레버리지: {leverage}배
 • 청산 가격: ${liquidation_price:,.2f}
-• 청산까지 남은 거리: 약 {abs(margin_distance_pct):.1f}% (가격 기준 {abs(price_distance_pct):.1f}%)""")
+• 청산까지 남은 거리: {abs(price_move_to_liq):.1f}% {'상승' if direction == '숏' else '하락'}시 청산
+• 증거금 손실 허용: {margin_loss_ratio:.1f}% (가용자산 ${available_balance:,.2f} 포함)""")
         
         return "\n".join(formatted)
     
