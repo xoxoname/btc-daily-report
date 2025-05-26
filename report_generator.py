@@ -745,7 +745,7 @@ class EnhancedReportGenerator:
             position_advice = "포지션이 없으니 차분히 기회를 기다리세요."
         
         # 충동 억제 메시지
-        control_messages = [
+        impulse_control = [
             f"{time_context} 수익으로 만족하세요. 욕심이 계정을 비웁니다.",
             "복리의 힘은 시간이 만듭니다. 서두르지 마세요.",
             "프로는 수익을 지키는 사람입니다. 오늘은 여기까지.",
@@ -753,12 +753,7 @@ class EnhancedReportGenerator:
             "한방을 노리다 한방에 갑니다. 꾸준함이 답입니다."
         ]
         
-        return f'"{weekly_msg} {position_advice} {random.choice(control_messages)}"'장의 먹잇감이 됩니다. 냉정을 유지하세요.",
-            " 한 번에 큰 돈을 벌려는 마음을 버리세요. 작은 수익이 쌓여 큰 부가 됩니다.",
-            " 오늘의 수익은 내일의 시드머니입니다. 지키는 것도 실력입니다."
-        ]
-        
-        return f'"{base_message}{position_advice}{random.choice(impulse_control)}"'
+        return f'"{weekly_msg} {position_advice} {random.choice(impulse_control)}"'
     
     async def _generate_gpt_exception_analysis(self, event: Dict, market_data: Dict) -> str:
         """예외 상황 GPT 분석"""
@@ -917,7 +912,7 @@ class EnhancedReportGenerator:
             return "• 계정 정보를 불러올 수 없습니다."
         
         # 진입 자산 (초기 자본)
-        initial_capital = float(self.config.INITIAL_CAPITAL) if hasattr(self.config, 'INITIAL_CAPITAL') else 2000
+        initial_capital = 4000  # 실제 초기 자본
         
         # 현재 정보
         total_equity = account.get('total_equity', 0)
@@ -1055,8 +1050,4 @@ class EnhancedReportGenerator:
         conditions = {
             'price_movement': f"• 📉 단기 변동 급등락: 최근 15분 간 {event.get('change_percent', 0):.1f}% 변동 → {event.get('impact', '중립')}",
             'whale_movement': f"• 🔄 온체인 이상 이동: {event.get('btc_amount', 0):,.0f} BTC 대량 이체 발생 → {event.get('impact', '중립')}",
-            'news': f"• 📰 주요 뉴스: {event.get('title', 'Unknown')} → {event.get('impact', '중립')}",
-            'sentiment': f"• 🧠 심리 지표 급변: {event.get('indicator', 'Unknown')} {event.get('change', '변화')} → {event.get('impact', '중립')}"
-        }
-        
-        return conditions.get(category, "• 복합적 조건 충족")
+            'news': f"• 📰 주요 뉴스: {event.get('title', 'Unknown'
