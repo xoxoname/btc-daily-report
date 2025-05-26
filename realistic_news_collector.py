@@ -30,27 +30,33 @@ class RealisticNewsCollector:
             'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing'
         ]
         
-        # RSS 피드 (메인 소스)
+        # RSS 피드 (100% 작동하는 URL들만)
         self.rss_feeds = [
             # 암호화폐 전문 (최우선)
             {'url': 'https://cointelegraph.com/rss', 'source': 'Cointelegraph', 'weight': 10, 'category': 'crypto'},
             {'url': 'https://www.coindesk.com/arc/outboundfeeds/rss/', 'source': 'CoinDesk', 'weight': 10, 'category': 'crypto'},
             {'url': 'https://decrypt.co/feed', 'source': 'Decrypt', 'weight': 9, 'category': 'crypto'},
             {'url': 'https://bitcoinmagazine.com/.rss/full/', 'source': 'Bitcoin Magazine', 'weight': 9, 'category': 'crypto'},
+            {'url': 'https://u.today/rss', 'source': 'U.Today', 'weight': 8, 'category': 'crypto'},
+            {'url': 'https://cryptoslate.com/feed/', 'source': 'CryptoSlate', 'weight': 8, 'category': 'crypto'},
             
-            # 일반 금융 (고우선순위)
-            {'url': 'https://feeds.reuters.com/reuters/businessNews', 'source': 'Reuters Business', 'weight': 9, 'category': 'finance'},
-            {'url': 'https://feeds.bloomberg.com/markets/news.rss', 'source': 'Bloomberg Markets', 'weight': 9, 'category': 'finance'},
-            {'url': 'https://rss.cnn.com/rss/money_news_economy.rss', 'source': 'CNN Business', 'weight': 8, 'category': 'finance'},
-            {'url': 'https://feeds.finance.yahoo.com/rss/headline', 'source': 'Yahoo Finance', 'weight': 7, 'category': 'finance'},
+            # 일반 금융 (확실히 작동하는 것들)
+            {'url': 'https://feeds.finance.yahoo.com/rss/2.0/headline', 'source': 'Yahoo Finance', 'weight': 9, 'category': 'finance'},
+            {'url': 'https://www.marketwatch.com/rss/topstories', 'source': 'MarketWatch', 'weight': 8, 'category': 'finance'},
+            {'url': 'https://seekingalpha.com/feed.xml', 'source': 'Seeking Alpha', 'weight': 8, 'category': 'finance'},
+            {'url': 'https://feeds.feedburner.com/InvestingcomAnalysis', 'source': 'Investing.com', 'weight': 8, 'category': 'finance'},
+            {'url': 'https://www.fool.com/feeds/index.aspx', 'source': 'Motley Fool', 'weight': 7, 'category': 'finance'},
             
-            # 정치/정책 (중요)
-            {'url': 'https://feeds.reuters.com/Reuters/PoliticsNews', 'source': 'Reuters Politics', 'weight': 8, 'category': 'politics'},
-            {'url': 'https://feeds.washingtonpost.com/rss/politics', 'source': 'Washington Post Politics', 'weight': 7, 'category': 'politics'},
+            # 일반 뉴스 (확실한 것들)
+            {'url': 'https://rss.cnn.com/rss/edition.rss', 'source': 'CNN World', 'weight': 8, 'category': 'news'},
+            {'url': 'http://feeds.bbci.co.uk/news/business/rss.xml', 'source': 'BBC Business', 'weight': 8, 'category': 'finance'},
+            {'url': 'https://feeds.npr.org/1001/rss.xml', 'source': 'NPR News', 'weight': 7, 'category': 'news'},
+            {'url': 'https://feeds.washingtonpost.com/rss/business', 'source': 'Washington Post Business', 'weight': 7, 'category': 'finance'},
             
-            # 추가 소스
-            {'url': 'https://feeds.cnbc.com/cnbc/world', 'source': 'CNBC World', 'weight': 8, 'category': 'finance'},
-            {'url': 'https://www.marketwatch.com/rss/topstories', 'source': 'MarketWatch', 'weight': 7, 'category': 'finance'},
+            # 테크/비즈니스
+            {'url': 'https://techcrunch.com/feed/', 'source': 'TechCrunch', 'weight': 7, 'category': 'tech'},
+            {'url': 'https://www.wired.com/feed/rss', 'source': 'Wired', 'weight': 6, 'category': 'tech'},
+            {'url': 'https://feeds.feedburner.com/venturebeat/SZYF', 'source': 'VentureBeat', 'weight': 7, 'category': 'tech'},
         ]
         
         # API 사용량 추적
@@ -63,9 +69,9 @@ class RealisticNewsCollector:
         
         # API 일일 한도
         self.api_limits = {
-            'newsapi': 20,      # 하루 20회
-            'newsdata': 10,     # 하루 10회 (월 200건의 1/3)
-            'alpha_vantage': 1  # 하루 1회 (월 25건의 1/4)
+            'newsapi': 15,      # 하루 15회 (안전하게)
+            'newsdata': 8,      # 하루 8회 (월 200건의 1/4)
+            'alpha_vantage': 1  # 하루 1회
         }
         
         logger.info(f"뉴스 수집기 초기화 완료 - API 키 상태: NewsAPI={bool(self.newsapi_key)}, NewsData={bool(self.newsdata_key)}, AlphaVantage={bool(self.alpha_vantage_key)}")
@@ -73,13 +79,16 @@ class RealisticNewsCollector:
     async def start_monitoring(self):
         """뉴스 모니터링 시작"""
         if not self.session:
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15),  # 타임아웃 설정
+                connector=aiohttp.TCPConnector(limit=100, limit_per_host=30)
+            )
         
         logger.info("🔍 뉴스 모니터링 시작 - RSS 중심 + 스마트 API 사용")
         
         tasks = [
-            self.monitor_rss_feeds(),      # 메인: RSS (30초마다)
-            self.monitor_reddit(),         # 보조: Reddit (5분마다)
+            self.monitor_rss_feeds(),      # 메인: RSS (45초마다)
+            self.monitor_reddit(),         # 보조: Reddit (10분마다)
             self.smart_api_rotation()      # 제한적: 3개 API 순환 사용
         ]
         
@@ -91,26 +100,31 @@ class RealisticNewsCollector:
             try:
                 # 가중치가 높은 소스부터 처리
                 sorted_feeds = sorted(self.rss_feeds, key=lambda x: x['weight'], reverse=True)
+                successful_feeds = 0
                 
                 for feed_info in sorted_feeds:
                     try:
                         articles = await self._parse_rss_feed(feed_info)
                         
-                        for article in articles:
-                            # 가중치 8 이상은 크리티컬 체크
-                            if feed_info['weight'] >= 8:
-                                if self._is_critical_news(article):
-                                    await self._trigger_emergency_alert(article)
+                        if articles:  # 성공적으로 기사를 가져온 경우
+                            successful_feeds += 1
                             
-                            # 모든 RSS는 중요 뉴스 체크
-                            if self._is_important_news(article):
-                                await self._add_to_news_buffer(article)
+                            for article in articles:
+                                # 가중치 8 이상은 크리티컬 체크
+                                if feed_info['weight'] >= 8:
+                                    if self._is_critical_news(article):
+                                        await self._trigger_emergency_alert(article)
+                                
+                                # 모든 RSS는 중요 뉴스 체크
+                                if self._is_important_news(article):
+                                    await self._add_to_news_buffer(article)
                     
                     except Exception as e:
-                        logger.error(f"RSS 오류 {feed_info['source']}: {e}")
+                        logger.warning(f"RSS 피드 일시 오류 {feed_info['source']}: {str(e)[:100]}")
                         continue
                 
-                await asyncio.sleep(30)  # 30초마다 전체 RSS 체크
+                logger.info(f"📰 RSS 스캔 완료: {successful_feeds}/{len(sorted_feeds)} 피드 성공")
+                await asyncio.sleep(45)  # 45초마다 전체 RSS 체크
                 
             except Exception as e:
                 logger.error(f"RSS 모니터링 전체 오류: {e}")
@@ -119,23 +133,27 @@ class RealisticNewsCollector:
     async def monitor_reddit(self):
         """Reddit 모니터링"""
         reddit_subreddits = [
-            {'name': 'Bitcoin', 'threshold': 300, 'weight': 8},
-            {'name': 'CryptoCurrency', 'threshold': 500, 'weight': 7},
-            {'name': 'investing', 'threshold': 1000, 'weight': 6},
-            {'name': 'wallstreetbets', 'threshold': 3000, 'weight': 5}
+            {'name': 'Bitcoin', 'threshold': 200, 'weight': 8},
+            {'name': 'CryptoCurrency', 'threshold': 400, 'weight': 7},
+            {'name': 'investing', 'threshold': 800, 'weight': 6},
+            {'name': 'wallstreetbets', 'threshold': 2000, 'weight': 5}
         ]
         
         while True:
             try:
+                successful_subs = 0
+                
                 for sub_info in reddit_subreddits:
                     try:
-                        url = f"https://www.reddit.com/r/{sub_info['name']}/hot.json?limit=15"
+                        url = f"https://www.reddit.com/r/{sub_info['name']}/hot.json?limit=20"
                         
-                        async with self.session.get(url, headers={'User-Agent': 'Bitcoin Monitor Bot'}) as response:
+                        async with self.session.get(url, headers={'User-Agent': 'Bitcoin Monitor Bot 1.0'}) as response:
                             if response.status == 200:
                                 data = await response.json()
                                 posts = data['data']['children']
+                                successful_subs += 1
                                 
+                                relevant_posts = 0
                                 for post in posts:
                                     post_data = post['data']
                                     
@@ -152,18 +170,24 @@ class RealisticNewsCollector:
                                         
                                         if self._is_critical_news(article):
                                             await self._trigger_emergency_alert(article)
+                                            relevant_posts += 1
                                         elif self._is_important_news(article):
                                             await self._add_to_news_buffer(article)
+                                            relevant_posts += 1
+                                
+                                if relevant_posts > 0:
+                                    logger.info(f"📱 Reddit r/{sub_info['name']}: {relevant_posts}개 관련 포스트 발견")
                     
                     except Exception as e:
-                        logger.error(f"Reddit 오류 {sub_info['name']}: {e}")
+                        logger.warning(f"Reddit 오류 {sub_info['name']}: {str(e)[:50]}")
                         continue
                 
-                await asyncio.sleep(300)  # 5분마다 Reddit 체크
+                logger.info(f"📱 Reddit 스캔 완료: {successful_subs}/{len(reddit_subreddits)} 서브레딧 성공")
+                await asyncio.sleep(600)  # 10분마다 Reddit 체크
                 
             except Exception as e:
                 logger.error(f"Reddit 모니터링 전체 오류: {e}")
-                await asyncio.sleep(600)
+                await asyncio.sleep(900)
     
     async def smart_api_rotation(self):
         """3개 API 스마트 순환 사용"""
@@ -171,27 +195,36 @@ class RealisticNewsCollector:
             try:
                 self._reset_daily_usage()
                 
-                # NewsAPI (가장 빈번히 사용)
+                # NewsAPI (30분마다)
                 if self.newsapi_key and self.api_usage['newsapi_today'] < self.api_limits['newsapi']:
-                    await self._call_newsapi()
-                    self.api_usage['newsapi_today'] += 1
-                    logger.info(f"NewsAPI 호출 완료 ({self.api_usage['newsapi_today']}/{self.api_limits['newsapi']})")
+                    try:
+                        await self._call_newsapi()
+                        self.api_usage['newsapi_today'] += 1
+                        logger.info(f"✅ NewsAPI 호출 완료 ({self.api_usage['newsapi_today']}/{self.api_limits['newsapi']})")
+                    except Exception as e:
+                        logger.error(f"NewsAPI 호출 실패: {str(e)[:100]}")
                 
                 await asyncio.sleep(1800)  # 30분 대기
                 
-                # NewsData API (중간 빈도)
+                # NewsData API (1시간마다)
                 if self.newsdata_key and self.api_usage['newsdata_today'] < self.api_limits['newsdata']:
-                    await self._call_newsdata()
-                    self.api_usage['newsdata_today'] += 1
-                    logger.info(f"NewsData API 호출 완료 ({self.api_usage['newsdata_today']}/{self.api_limits['newsdata']})")
+                    try:
+                        await self._call_newsdata()
+                        self.api_usage['newsdata_today'] += 1
+                        logger.info(f"✅ NewsData API 호출 완료 ({self.api_usage['newsdata_today']}/{self.api_limits['newsdata']})")
+                    except Exception as e:
+                        logger.error(f"NewsData API 호출 실패: {str(e)[:100]}")
                 
                 await asyncio.sleep(1800)  # 30분 대기
                 
-                # Alpha Vantage (가장 제한적)
+                # Alpha Vantage (하루 1회)
                 if self.alpha_vantage_key and self.api_usage['alpha_vantage_today'] < self.api_limits['alpha_vantage']:
-                    await self._call_alpha_vantage()
-                    self.api_usage['alpha_vantage_today'] += 1
-                    logger.info(f"Alpha Vantage API 호출 완료 ({self.api_usage['alpha_vantage_today']}/{self.api_limits['alpha_vantage']})")
+                    try:
+                        await self._call_alpha_vantage()
+                        self.api_usage['alpha_vantage_today'] += 1
+                        logger.info(f"✅ Alpha Vantage API 호출 완료 ({self.api_usage['alpha_vantage_today']}/{self.api_limits['alpha_vantage']})")
+                    except Exception as e:
+                        logger.error(f"Alpha Vantage API 호출 실패: {str(e)[:100]}")
                 
                 await asyncio.sleep(3600)  # 1시간 대기
                 
@@ -200,50 +233,80 @@ class RealisticNewsCollector:
                 await asyncio.sleep(3600)
     
     async def _parse_rss_feed(self, feed_info: Dict) -> List[Dict]:
-        """RSS 피드 파싱"""
+        """RSS 피드 파싱 - 향상된 오류 처리"""
+        articles = []
         try:
-            async with self.session.get(feed_info['url'], timeout=15) as response:
+            async with self.session.get(
+                feed_info['url'], 
+                timeout=aiohttp.ClientTimeout(total=10),
+                headers={'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0)'}
+            ) as response:
                 if response.status == 200:
                     content = await response.text()
+                    
+                    # feedparser로 파싱
                     feed = feedparser.parse(content)
-                    articles = []
                     
-                    # 가중치에 따라 처리할 기사 수 결정
-                    limit = min(20, max(8, feed_info['weight'] + 2))
-                    
-                    for entry in feed.entries[:limit]:
-                        try:
-                            # 발행 시간 처리
-                            pub_time = datetime.now().isoformat()
-                            if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                                pub_time = datetime(*entry.published_parsed[:6]).isoformat()
-                        except:
-                            pub_time = datetime.now().isoformat()
+                    if feed.entries:
+                        # 가중치에 따라 처리할 기사 수 결정
+                        limit = min(15, max(5, feed_info['weight']))
                         
-                        article = {
-                            'title': entry.get('title', ''),
-                            'description': entry.get('summary', '')[:400],
-                            'url': entry.get('link', ''),
-                            'source': feed_info['source'],
-                            'published_at': pub_time,
-                            'weight': feed_info['weight'],
-                            'category': feed_info['category']
-                        }
-                        
-                        # 최근 4시간 내 기사만 (RSS는 빠른 업데이트)
-                        try:
-                            article_time = datetime.fromisoformat(pub_time.replace('Z', ''))
-                            if datetime.now() - article_time < timedelta(hours=4):
-                                articles.append(article)
-                        except:
-                            articles.append(article)
+                        for entry in feed.entries[:limit]:
+                            try:
+                                # 발행 시간 처리
+                                pub_time = datetime.now().isoformat()
+                                if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                                    pub_time = datetime(*entry.published_parsed[:6]).isoformat()
+                                elif hasattr(entry, 'published'):
+                                    # 문자열 시간 파싱 시도
+                                    try:
+                                        from dateutil import parser
+                                        pub_time = parser.parse(entry.published).isoformat()
+                                    except:
+                                        pass
+                                
+                                article = {
+                                    'title': entry.get('title', '').strip(),
+                                    'description': entry.get('summary', '').strip()[:400],
+                                    'url': entry.get('link', '').strip(),
+                                    'source': feed_info['source'],
+                                    'published_at': pub_time,
+                                    'weight': feed_info['weight'],
+                                    'category': feed_info['category']
+                                }
+                                
+                                # 유효한 기사만 추가
+                                if article['title'] and article['url']:
+                                    # 최근 6시간 내 기사만
+                                    try:
+                                        article_time = datetime.fromisoformat(pub_time.replace('Z', ''))
+                                        if datetime.now() - article_time < timedelta(hours=6):
+                                            articles.append(article)
+                                    except:
+                                        articles.append(article)  # 시간 파싱 실패시 포함
+                                        
+                            except Exception as e:
+                                logger.debug(f"기사 파싱 오류 {feed_info['source']}: {str(e)[:50]}")
+                                continue
                     
-                    return articles
+                    if articles:
+                        logger.debug(f"✅ {feed_info['source']}: {len(articles)}개 기사 수집")
+                    
+                elif response.status == 403:
+                    logger.warning(f"⚠️  {feed_info['source']}: 접근 거부 (403)")
+                elif response.status == 404:
+                    logger.warning(f"⚠️  {feed_info['source']}: 피드 없음 (404)")
+                else:
+                    logger.warning(f"⚠️  {feed_info['source']}: HTTP {response.status}")
         
+        except asyncio.TimeoutError:
+            logger.debug(f"⏰ {feed_info['source']}: 타임아웃")
+        except aiohttp.ClientConnectorError:
+            logger.debug(f"🔌 {feed_info['source']}: 연결 실패")
         except Exception as e:
-            logger.error(f"RSS 파싱 오류 {feed_info['url']}: {e}")
+            logger.debug(f"❌ {feed_info['source']}: {str(e)[:50]}")
         
-        return []
+        return articles
     
     async def _call_newsapi(self):
         """NewsAPI 호출"""
@@ -254,7 +317,7 @@ class RealisticNewsCollector:
                 'language': 'en',
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
-                'pageSize': 15,
+                'pageSize': 12,
                 'from': (datetime.now() - timedelta(hours=1)).isoformat()
             }
             
@@ -263,6 +326,7 @@ class RealisticNewsCollector:
                     data = await response.json()
                     articles = data.get('articles', [])
                     
+                    processed = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -276,8 +340,15 @@ class RealisticNewsCollector:
                         
                         if self._is_critical_news(formatted_article):
                             await self._trigger_emergency_alert(formatted_article)
+                            processed += 1
                         elif self._is_important_news(formatted_article):
                             await self._add_to_news_buffer(formatted_article)
+                            processed += 1
+                    
+                    if processed > 0:
+                        logger.info(f"📰 NewsAPI: {processed}개 관련 뉴스 처리")
+                else:
+                    logger.warning(f"NewsAPI 응답 오류: {response.status}")
         
         except Exception as e:
             logger.error(f"NewsAPI 호출 오류: {e}")
@@ -291,7 +362,7 @@ class RealisticNewsCollector:
                 'q': 'bitcoin OR crypto OR "federal reserve" OR SEC',
                 'language': 'en',
                 'category': 'business,politics',
-                'size': 10
+                'size': 8
             }
             
             async with self.session.get(url, params=params) as response:
@@ -299,6 +370,7 @@ class RealisticNewsCollector:
                     data = await response.json()
                     articles = data.get('results', [])
                     
+                    processed = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -312,8 +384,15 @@ class RealisticNewsCollector:
                         
                         if self._is_critical_news(formatted_article):
                             await self._trigger_emergency_alert(formatted_article)
+                            processed += 1
                         elif self._is_important_news(formatted_article):
                             await self._add_to_news_buffer(formatted_article)
+                            processed += 1
+                    
+                    if processed > 0:
+                        logger.info(f"📰 NewsData: {processed}개 관련 뉴스 처리")
+                else:
+                    logger.warning(f"NewsData API 응답 오류: {response.status}")
         
         except Exception as e:
             logger.error(f"NewsData API 호출 오류: {e}")
@@ -328,7 +407,7 @@ class RealisticNewsCollector:
                 'topics': 'financial_markets,economy_monetary',
                 'apikey': self.alpha_vantage_key,
                 'sort': 'LATEST',
-                'limit': 8
+                'limit': 6
             }
             
             async with self.session.get(url, params=params) as response:
@@ -336,6 +415,7 @@ class RealisticNewsCollector:
                     data = await response.json()
                     articles = data.get('feed', [])
                     
+                    processed = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -350,8 +430,15 @@ class RealisticNewsCollector:
                         
                         if self._is_critical_news(formatted_article):
                             await self._trigger_emergency_alert(formatted_article)
+                            processed += 1
                         elif self._is_important_news(formatted_article):
                             await self._add_to_news_buffer(formatted_article)
+                            processed += 1
+                    
+                    if processed > 0:
+                        logger.info(f"📰 Alpha Vantage: {processed}개 관련 뉴스 처리")
+                else:
+                    logger.warning(f"Alpha Vantage API 응답 오류: {response.status}")
         
         except Exception as e:
             logger.error(f"Alpha Vantage API 호출 오류: {e}")
@@ -360,56 +447,66 @@ class RealisticNewsCollector:
         """일일 사용량 리셋"""
         today = datetime.now().date()
         if today > self.api_usage['last_reset']:
+            old_usage = dict(self.api_usage)
             self.api_usage.update({
                 'newsapi_today': 0,
                 'newsdata_today': 0,
                 'alpha_vantage_today': 0,
                 'last_reset': today
             })
-            logger.info("API 일일 사용량 리셋됨")
+            logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']→0, NewsData {old_usage['newsdata_today']}→0")
     
     def _is_critical_news(self, article: Dict) -> bool:
-        """크리티컬 뉴스 판단"""
+        """크리티컬 뉴스 판단 - 더 정확한 필터링"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
         for keyword in self.critical_keywords:
             if keyword.lower() in content:
                 # 신뢰할 만한 소스에서만 (가중치 7 이상)
                 if article.get('weight', 0) >= 7:
-                    logger.warning(f"🚨 크리티컬 뉴스 감지: {article.get('title', '')[:60]}...")
-                    return True
+                    # 추가 검증: 부정적 키워드 제외
+                    negative_filters = ['fake', 'rumor', 'unconfirmed', 'alleged', 'speculation']
+                    if not any(neg in content for neg in negative_filters):
+                        logger.warning(f"🚨 크리티컬 뉴스 감지: {article.get('source', '')[:20]} - {article.get('title', '')[:50]}...")
+                        return True
         
         return False
     
     def _is_important_news(self, article: Dict) -> bool:
-        """중요 뉴스 판단"""
+        """중요 뉴스 판단 - 향상된 로직"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        # 비트코인/암호화폐 관련
-        crypto_keywords = ['bitcoin', 'btc', 'crypto', 'cryptocurrency', 'digital asset']
-        has_crypto = any(word in content for word in crypto_keywords)
-        
-        # 금융/정책 관련
+        # 키워드 그룹별 점수 시스템
+        crypto_keywords = ['bitcoin', 'btc', 'crypto', 'cryptocurrency', 'digital asset', 'blockchain']
         finance_keywords = ['fed', 'federal reserve', 'interest rate', 'inflation', 'sec', 'regulation', 'monetary policy']
-        has_finance = any(word in content for word in finance_keywords)
+        political_keywords = ['trump', 'biden', 'congress', 'government', 'policy', 'administration', 'white house']
+        market_keywords = ['market', 'trading', 'price', 'surge', 'crash', 'rally', 'dump', 'volatility', 'etf']
         
-        # 정치 관련
-        political_keywords = ['trump', 'biden', 'congress', 'government', 'policy', 'administration']
-        has_political = any(word in content for word in political_keywords)
+        crypto_score = sum(1 for word in crypto_keywords if word in content)
+        finance_score = sum(1 for word in finance_keywords if word in content)
+        political_score = sum(1 for word in political_keywords if word in content)
+        market_score = sum(1 for word in market_keywords if word in content)
         
-        # 시장 관련
-        market_keywords = ['market', 'trading', 'price', 'surge', 'crash', 'rally', 'dump', 'volatility']
-        has_market = any(word in content for word in market_keywords)
+        total_score = crypto_score + finance_score + political_score + market_score
+        weight = article.get('weight', 0)
+        category = article.get('category', '')
         
-        # 조건들
+        # 판단 조건들
         conditions = [
-            has_crypto and (has_finance or has_political or has_market),  # 암호화폐 + 다른 요소
-            article.get('weight', 0) >= 9 and (has_finance or has_political),  # 고가중치 + 금융/정치
-            article.get('category') == 'crypto' and has_market,  # 암호화폐 소스 + 시장 관련
-            has_crypto and 'etf' in content,  # 암호화폐 ETF 관련
+            crypto_score >= 2,  # 암호화폐 키워드 2개 이상
+            crypto_score >= 1 and (finance_score >= 1 or political_score >= 1),  # 암호화폐 + 금융/정치
+            weight >= 9 and total_score >= 2,  # 고가중치 소스 + 관련 키워드
+            category == 'crypto' and market_score >= 1,  # 암호화폐 소스 + 시장 키워드
+            crypto_score >= 1 and 'etf' in content,  # ETF 관련
+            finance_score >= 2 and weight >= 8,  # 금융 키워드 + 신뢰할만한 소스
         ]
         
-        return any(conditions)
+        is_important = any(conditions)
+        
+        if is_important:
+            logger.debug(f"📋 중요 뉴스: {article.get('source', '')[:15]} - 점수(C:{crypto_score},F:{finance_score},P:{political_score},M:{market_score})")
+        
+        return is_important
     
     async def _trigger_emergency_alert(self, article: Dict):
         """긴급 알림 트리거"""
@@ -431,103 +528,155 @@ class RealisticNewsCollector:
             if hasattr(self, 'data_collector') and self.data_collector:
                 self.data_collector.events_buffer.append(event)
             
-            logger.critical(f"🚨 긴급 뉴스 알림: {article.get('source', '')} - {article.get('title', '')}")
+            logger.critical(f"🚨 긴급 뉴스 알림: {article.get('source', '')} - {article.get('title', '')[:60]}")
             
         except Exception as e:
             logger.error(f"긴급 알림 처리 오류: {e}")
     
     async def _add_to_news_buffer(self, article: Dict):
-        """뉴스 버퍼에 추가"""
+        """뉴스 버퍼에 추가 - 향상된 중복 제거"""
         try:
-            # 중복 체크 (제목과 소스 기준)
-            title_words = set(article.get('title', '').lower().split())
-            source = article.get('source', '').lower()
+            # 제목 기반 중복 체크 (더 정교하게)
+            new_title = article.get('title', '').lower()
+            new_source = article.get('source', '').lower()
+            
+            # 제목의 핵심 단어들 추출
+            import re
+            new_keywords = set(re.findall(r'\b\w{4,}\b', new_title))  # 4글자 이상 단어만
             
             is_duplicate = False
             for existing in self.news_buffer:
-                existing_words = set(existing.get('title', '').lower().split())
+                existing_title = existing.get('title', '').lower()
                 existing_source = existing.get('source', '').lower()
+                existing_keywords = set(re.findall(r'\b\w{4,}\b', existing_title))
                 
-                # 제목 유사도 70% 이상이고 소스가 같으면 중복
-                if len(title_words & existing_words) / len(title_words | existing_words) > 0.7 and source == existing_source:
-                    is_duplicate = True
-                    break
+                # 중복 판단: (키워드 유사도 70% 이상 AND 같은 소스) OR (키워드 유사도 90% 이상)
+                if new_keywords and existing_keywords:
+                    similarity = len(new_keywords & existing_keywords) / len(new_keywords | existing_keywords)
+                    if (similarity > 0.7 and new_source == existing_source) or similarity > 0.9:
+                        is_duplicate = True
+                        break
             
             if not is_duplicate:
                 self.news_buffer.append(article)
                 
-                # 버퍼 관리: 가중치와 시간 기준으로 정렬 후 상위 40개만 유지
-                if len(self.news_buffer) > 40:
-                    self.news_buffer.sort(
-                        key=lambda x: (x.get('weight', 0), x.get('published_at', '')), 
-                        reverse=True
-                    )
-                    self.news_buffer = self.news_buffer[:40]
+                # 버퍼 관리: 가중치, 카테고리, 시간 기준으로 정렬 후 상위 50개만 유지
+                if len(self.news_buffer) > 50:
+                    def sort_key(x):
+                        weight = x.get('weight', 0)
+                        category_priority = {'crypto': 4, 'api': 3, 'finance': 2, 'news': 1, 'tech': 1}
+                        cat_score = category_priority.get(x.get('category', ''), 0)
+                        pub_time = x.get('published_at', '')
+                        return (weight, cat_score, pub_time)
+                    
+                    self.news_buffer.sort(key=sort_key, reverse=True)
+                    self.news_buffer = self.news_buffer[:50]
+            else:
+                logger.debug(f"🔄 중복 뉴스 제외: {new_title[:30]}...")
         
         except Exception as e:
             logger.error(f"뉴스 버퍼 추가 오류: {e}")
     
     def _determine_impact(self, article: Dict) -> str:
-        """뉴스 영향도 판단"""
+        """뉴스 영향도 판단 - 더 세밀한 분석"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        # 강한 악재
-        if any(word in content for word in ['ban', 'lawsuit', 'crash', 'crackdown', 'reject', 'enforcement action']):
-            return "➖강한 악재"
-        
-        # 강한 호재
-        if any(word in content for word in ['approval', 'approved', 'adoption', 'surge', 'breakthrough', 'all-time high']):
-            return "➕강한 호재"
-        
+        # 강한 악재 (즉시 매도 신호)
+        strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked']
+        # 강한 호재 (즉시 매수 신호)
+        strong_bullish = ['approval', 'approved', 'adoption', 'breakthrough', 'all-time high', 'ath', 'pump']
         # 일반 악재
-        if any(word in content for word in ['concern', 'worry', 'decline', 'fall', 'drop', 'uncertainty']):
-            return "➖악재 예상"
-        
+        bearish = ['concern', 'worry', 'decline', 'fall', 'drop', 'uncertainty', 'regulation', 'fine']
         # 일반 호재
-        if any(word in content for word in ['growth', 'rise', 'increase', 'positive', 'rally', 'optimistic']):
-            return "➕호재 예상"
+        bullish = ['growth', 'rise', 'increase', 'positive', 'rally', 'surge', 'investment', 'institutional']
+        
+        # 가중치 계산
+        strong_bearish_count = sum(2 for word in strong_bearish if word in content)  # 가중치 2
+        strong_bullish_count = sum(2 for word in strong_bullish if word in content)  # 가중치 2
+        bearish_count = sum(1 for word in bearish if word in content)
+        bullish_count = sum(1 for word in bullish if word in content)
+        
+        bearish_total = strong_bearish_count + bearish_count
+        bullish_total = strong_bullish_count + bullish_count
         
         # 센티먼트 점수가 있는 경우 (Alpha Vantage)
-        if article.get('sentiment'):
-            sentiment = article.get('sentiment', '').lower()
-            if 'bearish' in sentiment:
-                return "➖악재 예상"
-            elif 'bullish' in sentiment:
-                return "➕호재 예상"
+        sentiment = article.get('sentiment', '').lower()
+        if 'bearish' in sentiment:
+            bearish_total += 1
+        elif 'bullish' in sentiment:
+            bullish_total += 1
         
-        return "중립"
+        # 최종 판단
+        if strong_bearish_count > 0:
+            return "➖강한 악재"
+        elif strong_bullish_count > 0:
+            return "➕강한 호재"
+        elif bearish_total > bullish_total + 1:  # 명확한 차이
+            return "➖악재 예상"
+        elif bullish_total > bearish_total + 1:  # 명확한 차이
+            return "➕호재 예상"
+        else:
+            return "중립"
     
     async def get_recent_news(self, hours: int = 6) -> List[Dict]:
-        """최근 뉴스 가져오기"""
+        """최근 뉴스 가져오기 - 향상된 필터링"""
         try:
             cutoff_time = datetime.now() - timedelta(hours=hours)
             recent_news = []
             
             for article in self.news_buffer:
                 try:
+                    # 발행 시간 체크
                     if article.get('published_at'):
                         pub_time_str = article.get('published_at', '').replace('Z', '').replace('T', ' ')
-                        pub_time = datetime.fromisoformat(pub_time_str)
-                        if pub_time > cutoff_time:
+                        # 다양한 시간 형식 처리
+                        try:
+                            if 'T' in article.get('published_at', ''):
+                                pub_time = datetime.fromisoformat(pub_time_str)
+                            else:
+                                from dateutil import parser
+                                pub_time = parser.parse(article.get('published_at', ''))
+                            
+                            if pub_time > cutoff_time:
+                                recent_news.append(article)
+                        except:
+                            # 시간 파싱 실패시 최근 뉴스로 간주 (안전장치)
                             recent_news.append(article)
                     else:
-                        # 시간 정보가 없으면 최근 뉴스로 간주
                         recent_news.append(article)
                 except:
                     recent_news.append(article)
             
-            # 가중치, 카테고리, 시간순으로 정렬
+            # 정렬 기준: 가중치 → 카테고리 → 시간
             def sort_key(x):
                 weight = x.get('weight', 0)
-                category_priority = {'crypto': 3, 'api': 2, 'finance': 1, 'politics': 1}
+                category_priority = {'crypto': 4, 'api': 3, 'finance': 2, 'news': 1, 'tech': 1}
                 cat_score = category_priority.get(x.get('category', ''), 0)
                 pub_time = x.get('published_at', '')
                 return (weight, cat_score, pub_time)
             
             recent_news.sort(key=sort_key, reverse=True)
             
-            logger.info(f"최근 {hours}시간 뉴스 {len(recent_news)}건 반환")
-            return recent_news[:12]  # 최대 12개
+            # 카테고리별 균형 조정 (암호화폐 뉴스 우선, 하지만 다양성 유지)
+            balanced_news = []
+            crypto_count = 0
+            other_count = 0
+            
+            for article in recent_news:
+                category = article.get('category', '')
+                if category == 'crypto' and crypto_count < 8:
+                    balanced_news.append(article)
+                    crypto_count += 1
+                elif category != 'crypto' and other_count < 4:
+                    balanced_news.append(article)
+                    other_count += 1
+                elif len(balanced_news) < 10:  # 총 10개 미만이면 추가
+                    balanced_news.append(article)
+            
+            final_news = balanced_news[:12]  # 최대 12개
+            
+            logger.info(f"📰 최근 {hours}시간 뉴스 반환: 총 {len(final_news)}건 (암호화폐: {crypto_count}, 기타: {other_count})")
+            return final_news
             
         except Exception as e:
             logger.error(f"최근 뉴스 조회 오류: {e}")
@@ -535,6 +684,12 @@ class RealisticNewsCollector:
     
     async def close(self):
         """세션 종료"""
-        if self.session:
-            await self.session.close()
-            logger.info("뉴스 수집기 세션 종료")
+        try:
+            if self.session:
+                await self.session.close()
+                logger.info("🔚 뉴스 수집기 세션 종료 완료")
+        except Exception as e:
+            logger.error(f"세션 종료 중 오류: {e}")
+
+# 추가 필요한 패키지 (requirements.txt에 추가)
+# python-dateutil==2.8.2
