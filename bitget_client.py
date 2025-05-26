@@ -1,11 +1,11 @@
-# bitget_client.py - Bitget API 클라이언트 (V2 API 대응)
+# bitget_client.py - Bitget API 클라이언트 (V2 API 대응 + 거래내역 조회)
 import hmac
 import hashlib
 import base64
 import json
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import aiohttp
 
@@ -208,6 +208,89 @@ class BitgetClient:
         except Exception as e:
             logger.error(f"미결제약정 조회 실패: {e}")
             raise
+    
+    async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
+        """거래 체결 내역 조회 (V2 API)"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/order/fills"
+        
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES',
+            'limit': str(limit)
+        }
+        
+        if start_time:
+            params['startTime'] = str(start_time)
+        if end_time:
+            params['endTime'] = str(end_time)
+        
+        try:
+            response = await self._request('GET', endpoint, params=params)
+            logger.info(f"거래 내역 조회: {len(response) if isinstance(response, list) else 0}건")
+            return response if isinstance(response, list) else []
+        except Exception as e:
+            logger.error(f"거래 내역 조회 실패: {e}")
+            return []
+    
+    async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
+        """손익 내역 조회"""
+        try:
+            # 기간 설정
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (days * 24 * 60 * 60 * 1000)
+            
+            # 거래 내역 조회
+            trades = await self.get_trade_fills(symbol, start_time, end_time, 500)
+            
+            total_pnl = 0.0
+            daily_pnl = {}
+            
+            for trade in trades:
+                try:
+                    # 거래 시간
+                    trade_time = int(trade.get('cTime', 0))
+                    trade_date = datetime.fromtimestamp(trade_time / 1000).strftime('%Y-%m-%d')
+                    
+                    # 손익 계산
+                    size = float(trade.get('size', 0))
+                    price = float(trade.get('price', 0))
+                    side = trade.get('side', '').lower()
+                    fee = float(trade.get('fee', 0))
+                    
+                    # 실현 손익 = 거래금액 - 수수료
+                    trade_pnl = 0
+                    if side == 'sell':
+                        trade_pnl = (size * price) - fee
+                    else:
+                        trade_pnl = -(size * price) - fee
+                    
+                    total_pnl += trade_pnl
+                    
+                    # 일별 손익 누적
+                    if trade_date not in daily_pnl:
+                        daily_pnl[trade_date] = 0
+                    daily_pnl[trade_date] += trade_pnl
+                    
+                except Exception as e:
+                    logger.warning(f"거래 내역 파싱 오류: {e}")
+                    continue
+            
+            return {
+                'total_pnl': total_pnl,
+                'daily_pnl': daily_pnl,
+                'days': days,
+                'average_daily': total_pnl / days if days > 0 else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"손익 내역 조회 실패: {e}")
+            return {
+                'total_pnl': 0,
+                'daily_pnl': {},
+                'days': days,
+                'average_daily': 0
+            }
     
     async def get_spot_account(self) -> Dict:
         """현물 계정 정보 조회 (대안)"""
