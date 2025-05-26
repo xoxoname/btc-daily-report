@@ -1,6 +1,6 @@
 import logging
 from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import asyncio
 from typing import Callable
 
@@ -39,6 +39,20 @@ class TelegramBot:
             
         except Exception as e:
             self.logger.error(f"핸들러 등록 실패: {str(e)}")
+            raise
+    
+    def add_message_handler(self, handler_func: Callable):
+        """자연어 메시지 핸들러 추가"""
+        try:
+            if self.application is None:
+                self._initialize_bot()
+            
+            message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handler_func)
+            self.application.add_handler(message_handler)
+            self.logger.info("자연어 메시지 핸들러 등록 완료")
+            
+        except Exception as e:
+            self.logger.error(f"메시지 핸들러 등록 실패: {str(e)}")
             raise
     
     async def start(self):
