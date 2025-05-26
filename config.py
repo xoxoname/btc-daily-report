@@ -1,16 +1,25 @@
-# config.py에 추가할 부분
+import os
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
 
 class Config:
     def __init__(self):
-        # 기존 설정들...
+        # Telegram 설정
+        self.TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
         
-        # News API 설정 (추가)
-        self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
-        
-        # Bitget 설정 (기존 코드와 통합)
+        # Bitget API 설정
         self.BITGET_API_KEY = os.getenv('BITGET_APIKEY')
         self.BITGET_SECRET_KEY = os.getenv('BITGET_APISECRET')
         self.BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+        
+        # News API 설정
+        self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
+        
+        # OpenAI 설정
+        self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
         
         # 설정 검증
         self._validate_config()
@@ -33,7 +42,7 @@ class Config:
         if missing_configs:
             raise ValueError(f"다음 환경변수가 설정되지 않았습니다: {', '.join(missing_configs)}")
         
-        # 선택적 API 경고
+        # OpenAI는 선택사항이므로 경고만 출력
         if not self.OPENAI_API_KEY:
             print("경고: OPENAI_API_KEY가 설정되지 않았습니다. AI 분석 기능이 제한됩니다.")
         
