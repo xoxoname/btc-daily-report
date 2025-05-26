@@ -30,18 +30,20 @@ class RealisticNewsCollector:
             'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing'
         ]
         
-        # RSS 피드 (100% 작동하는 URL들만)
+        # RSS 피드 (확실히 작동하는 URL들만 + 새로운 대체 소스)
         self.rss_feeds = [
-            # 암호화폐 전문 (최우선)
+            # 암호화폐 전문 (최우선) - 확실히 작동하는 것들
             {'url': 'https://cointelegraph.com/rss', 'source': 'Cointelegraph', 'weight': 10, 'category': 'crypto'},
             {'url': 'https://www.coindesk.com/arc/outboundfeeds/rss/', 'source': 'CoinDesk', 'weight': 10, 'category': 'crypto'},
             {'url': 'https://decrypt.co/feed', 'source': 'Decrypt', 'weight': 9, 'category': 'crypto'},
             {'url': 'https://bitcoinmagazine.com/.rss/full/', 'source': 'Bitcoin Magazine', 'weight': 9, 'category': 'crypto'},
-            {'url': 'https://u.today/rss', 'source': 'U.Today', 'weight': 8, 'category': 'crypto'},
-            {'url': 'https://cryptoslate.com/feed/', 'source': 'CryptoSlate', 'weight': 8, 'category': 'crypto'},
             
-            # 일반 금융 (확실히 작동하는 것들)
-            {'url': 'https://feeds.finance.yahoo.com/rss/2.0/headline', 'source': 'Yahoo Finance', 'weight': 9, 'category': 'finance'},
+            # 새로운 암호화폐 소스 (접근 거부된 것들 대체)
+            {'url': 'https://www.cryptocoinsnews.com/feed/', 'source': 'CryptoCoinsNews', 'weight': 8, 'category': 'crypto'},
+            {'url': 'https://ambcrypto.com/feed/', 'source': 'AMBCrypto', 'weight': 8, 'category': 'crypto'},
+            {'url': 'https://cryptopotato.com/feed/', 'source': 'CryptoPotato', 'weight': 8, 'category': 'crypto'},
+            
+            # 일반 금융 (확실히 작동하는 것들만)
             {'url': 'https://www.marketwatch.com/rss/topstories', 'source': 'MarketWatch', 'weight': 8, 'category': 'finance'},
             {'url': 'https://seekingalpha.com/feed.xml', 'source': 'Seeking Alpha', 'weight': 8, 'category': 'finance'},
             {'url': 'https://feeds.feedburner.com/InvestingcomAnalysis', 'source': 'Investing.com', 'weight': 8, 'category': 'finance'},
@@ -53,10 +55,14 @@ class RealisticNewsCollector:
             {'url': 'https://feeds.npr.org/1001/rss.xml', 'source': 'NPR News', 'weight': 7, 'category': 'news'},
             {'url': 'https://feeds.washingtonpost.com/rss/business', 'source': 'Washington Post Business', 'weight': 7, 'category': 'finance'},
             
-            # 테크/비즈니스
+            # 테크/비즈니스 (안정적인 것들)
             {'url': 'https://techcrunch.com/feed/', 'source': 'TechCrunch', 'weight': 7, 'category': 'tech'},
             {'url': 'https://www.wired.com/feed/rss', 'source': 'Wired', 'weight': 6, 'category': 'tech'},
             {'url': 'https://feeds.feedburner.com/venturebeat/SZYF', 'source': 'VentureBeat', 'weight': 7, 'category': 'tech'},
+            
+            # 추가 신뢰할만한 금융 소스
+            {'url': 'https://www.reuters.com/business/finance/rss', 'source': 'Reuters Finance', 'weight': 9, 'category': 'finance'},
+            {'url': 'https://feeds.bloomberg.com/markets/news.rss', 'source': 'Bloomberg Markets', 'weight': 9, 'category': 'finance'},
         ]
         
         # API 사용량 추적
