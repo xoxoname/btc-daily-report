@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 import traceback
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, MessageHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 
@@ -112,6 +112,46 @@ class BitcoinPredictionSystem:
             id="exception_check"
         )
     
+    async def handle_natural_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """자연어 메시지 처리"""
+        try:
+            message = update.message.text.lower()
+            
+            # 수익 관련 질문
+            if any(word in message for word in ['수익', '얼마', '벌었', '손익', '이익', '손실', 'profit']):
+                await self.handle_profit_command(update, context)
+            
+            # 매수/매도 관련 질문
+            elif any(word in message for word in ['매수', '매도', '사야', '팔아', '지금', '예측', 'buy', 'sell']):
+                await self.handle_forecast_command(update, context)
+            
+            # 시장 상황 질문
+            elif any(word in message for word in ['시장', '상황', '어때', '분석', 'market']):
+                await self.handle_report_command(update, context)
+            
+            # 일정 관련 질문
+            elif any(word in message for word in ['일정', '언제', '시간', 'schedule']):
+                await self.handle_schedule_command(update, context)
+            
+            # 도움말
+            elif any(word in message for word in ['도움', '명령', 'help']):
+                await self.handle_start_command(update, context)
+            
+            else:
+                await update.message.reply_text(
+                    "죄송합니다. 이해하지 못했습니다. 🤔\n"
+                    "다음과 같이 질문해보세요:\n"
+                    "• '오늘 수익은?'\n"
+                    "• '지금 매수해도 돼?'\n"
+                    "• '시장 상황 어때?'\n"
+                    "• '다음 리포트 언제?'\n\n"
+                    "또는 /help 명령어로 전체 기능을 확인하세요."
+                )
+                
+        except Exception as e:
+            self.logger.error(f"자연어 처리 실패: {str(e)}")
+            await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.")
+    
     async def handle_report_command(self, update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
         """리포트 명령 처리"""
         try:
@@ -160,6 +200,71 @@ class BitcoinPredictionSystem:
             self.logger.error(f"예측 명령 처리 실패: {str(e)}")
             await update.message.reply_text("❌ 예측 분석 중 오류가 발생했습니다.")
     
+    async def handle_profit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """수익 명령 처리"""
+        try:
+            await update.message.reply_text("💰 수익 현황을 조회중입니다...")
+            
+            # 수익 리포트 생성 (임시 데이터)
+            profit_report = f"""💰 **현재 보유 포지션 및 수익 요약**
+📅 작성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')} (KST)
+━━━━━━━━━━━━━━━━━━━
+
+📌 **보유 포지션 정보**
+* 포지션 없음
+
+━━━━━━━━━━━━━━━━━━━
+
+💸 **손익 정보**
+* 미실현 손익: $0.0 (0만원)
+* 실현 손익: $0.0 (0만원)
+* 금일 총 수익: $0.0 (0만원)
+* 총 자산: $2,000
+* 금일 수익률: +0.00%
+* 전체 누적 수익률: +0.00%
+
+━━━━━━━━━━━━━━━━━━━
+
+🧠 **멘탈 케어**
+"시장이 조용한 날입니다. 좋은 기회를 기다리는 것도 전략입니다."
+"""
+            await update.message.reply_text(profit_report, parse_mode='Markdown')
+            
+        except Exception as e:
+            self.logger.error(f"수익 명령 처리 실패: {str(e)}")
+            await update.message.reply_text("❌ 수익 조회 중 오류가 발생했습니다.")
+    
+    async def handle_schedule_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """일정 명령 처리"""
+        try:
+            schedule_report = f"""📅 **자동 리포트 일정**
+📅 작성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')} (KST)
+━━━━━━━━━━━━━━━━━━━
+
+📡 **정기 리포트 시간**
+- 오전 9시 - 아침 리포트
+- 오후 1시 - 점심 리포트
+- 오후 6시 - 저녁 리포트
+- 오후 10시 - 밤 리포트
+
+━━━━━━━━━━━━━━━━━━━
+
+⚡ **실시간 모니터링**
+- 가격 급변동: 15분 내 2% 이상 변동
+- 뉴스 이벤트: 5분마다 체크
+- 펀딩비 이상: 연 50% 이상
+- 거래량 급증: 평균 대비 3배
+
+━━━━━━━━━━━━━━━━━━━
+
+📌 예외 상황 발생시 즉시 알림
+"""
+            await update.message.reply_text(schedule_report, parse_mode='Markdown')
+            
+        except Exception as e:
+            self.logger.error(f"일정 명령 처리 실패: {str(e)}")
+            await update.message.reply_text("❌ 일정 조회 중 오류가 발생했습니다.")
+    
     async def check_exceptions(self):
         """예외 상황 감지"""
         try:
@@ -185,28 +290,30 @@ class BitcoinPredictionSystem:
     async def handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시작 명령 처리"""
         welcome_message = """
-🚀 <b>비트코인 예측 시스템에 오신 것을 환영합니다!</b>
+🚀 **비트코인 예측 시스템에 오신 것을 환영합니다!**
 
-📊 <b>이용 가능한 명령어:</b>
-/report - 전체 분석 리포트
-/forecast - 단기 예측 리포트
-/start - 도움말 표시
+📊 **슬래시 명령어:**
+- /report - 전체 분석 리포트
+- /forecast - 단기 예측 요약
+- /profit - 수익 현황
+- /schedule - 자동 일정 안내
 
-🔔 <b>자동 리포트 시간:</b>
-- 오전 9시
-- 오후 1시  
-- 오후 6시
-- 오후 10시
+💬 **자연어 질문 예시:**
+- "오늘 수익은?"
+- "지금 매수해도 돼?"
+- "시장 상황 어때?"
+- "얼마 벌었어?"
 
-⚡ <b>실시간 알림:</b>
-- 급격한 가격 변동
-- 펀딩비 이상
-- 거래량 급증
+🔔 **자동 리포트:**
+매일 09:00, 13:00, 18:00, 22:00
 
-📈 정확하고 신뢰할 수 있는 비트코인 분석을 제공합니다.
+⚡ **실시간 알림:**
+가격 급변동, 뉴스 이벤트, 펀딩비 이상 등
+
+📈 GPT 기반 정확한 비트코인 분석을 제공합니다.
 """
         
-        await update.message.reply_text(welcome_message, parse_mode='HTML')
+        await update.message.reply_text(welcome_message, parse_mode='Markdown')
     
     async def start(self):
         """시스템 시작"""
@@ -221,14 +328,19 @@ class BitcoinPredictionSystem:
             self.telegram_bot.add_handler('start', self.handle_start_command)
             self.telegram_bot.add_handler('report', self.handle_report_command)
             self.telegram_bot.add_handler('forecast', self.handle_forecast_command)
+            self.telegram_bot.add_handler('profit', self.handle_profit_command)
+            self.telegram_bot.add_handler('schedule', self.handle_schedule_command)
+            
+            # 자연어 메시지 핸들러 추가
+            self.telegram_bot.add_message_handler(self.handle_natural_language)
             
             # 텔레그램 봇 시작
             await self.telegram_bot.start()
             
             self.logger.info("비트코인 예측 시스템 시작됨")
             
-            # 시작 메시지
-            await self.telegram_bot.send_message("🚀 비트코인 자동 매매 봇이 시작되었습니다!")
+            # 시작 메시지 (수정됨)
+            await self.telegram_bot.send_message("🚀 비트코인 예측 시스템이 시작되었습니다!\n\n명령어를 입력하거나 자연어로 질문해보세요.\n예: '오늘 수익은?' 또는 /help")
             
             # 프로그램이 종료되지 않도록 유지
             try:
