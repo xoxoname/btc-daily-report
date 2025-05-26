@@ -3,12 +3,20 @@ from typing import Dict, Any, List, Optional
 import asyncio
 from datetime import datetime, timedelta
 import traceback
+import os
+import openai
 
 class AnalysisEngine:
-    def __init__(self, bitget_client, openai_client):
+    def __init__(self, bitget_client, openai_client=None):
         self.bitget_client = bitget_client
-        self.openai_client = openai_client
         self.logger = logging.getLogger('analysis_engine')
+        
+        # OpenAI 클라이언트 초기화
+        if openai_client is None:
+            openai.api_key = os.getenv('OPENAI_API_KEY')
+            self.openai_client = openai.AsyncOpenAI(api_key=openai.api_key)
+        else:
+            self.openai_client = openai_client
         
     async def generate_prediction(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """AI 기반 비트코인 예측 생성"""
@@ -19,7 +27,7 @@ class AnalysisEngine:
             # OpenAI를 사용한 예측 생성
             prediction_prompt = self._create_prediction_prompt(market_data, analysis_result)
             
-            response = await self.openai_client.chat.completions.acreate(
+            response = await self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
                     {"role": "system", "content": "당신은 전문적인 암호화폐 분석가입니다. 시장 데이터를 기반으로 정확하고 신중한 예측을 제공합니다."},
@@ -50,7 +58,7 @@ class AnalysisEngine:
             raise
 
     async def generate_profit_report(self, position_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """수익 리포트 생성 (누락된 메서드 추가)"""
+        """수익 리포트 생성"""
         try:
             self.logger.info("수익 리포트 생성 시작")
             
@@ -73,8 +81,14 @@ class AnalysisEngine:
             # 24시간 성과 요약
             performance_summary = await self._calculate_24h_performance()
             
-            # AI 분석 추가
-            ai_summary = await self._generate_ai_summary(market_info, profit_info)
+            # AI 분석 추가 (OpenAI API 키가 있는 경우에만)
+            ai_summary = "시장 데이터 기반 분석을 진행중입니다."
+            if os.getenv('OPENAI_API_KEY'):
+                try:
+                    ai_summary = await self._generate_ai_summary(market_info, profit_info)
+                except Exception as e:
+                    self.logger.warning(f"AI 분석 생성 실패: {str(e)}")
+                    ai_summary = "AI 분석을 일시적으로 사용할 수 없습니다."
             
             report = {
                 'timestamp': datetime.now().isoformat(),
@@ -141,7 +155,12 @@ class AnalysisEngine:
     async def _get_market_summary(self) -> Dict[str, Any]:
         """시장 요약 정보 조회"""
         try:
-            ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+            # BitgetClient 메서드 확인 및 호출
+            if hasattr(self.bitget_client, 'get_ticker'):
+                ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+            else:
+                self.logger.error("BitgetClient에 get_ticker 메서드가 없습니다")
+                return {'error': 'BitgetClient 설정 오류'}
             
             if isinstance(ticker_data, list):
                 if ticker_data:
@@ -233,7 +252,7 @@ class AnalysisEngine:
 간단하고 명확한 한국어로 현재 시장 상황을 요약해주세요. (3-4줄)
 """
             
-            response = await self.openai_client.chat.completions.acreate(
+            response = await self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
                     {"role": "system", "content": "당신은 간결하고 명확한 암호화폐 시장 분석가입니다."},
@@ -248,6 +267,35 @@ class AnalysisEngine:
         except Exception as e:
             self.logger.error(f"AI 요약 생성 실패: {str(e)}")
             return "AI 분석을 생성할 수 없습니다. 시장 데이터를 직접 확인해주세요."
+
+    async def _get_current_price(self) -> Optional[float]:
+        """현재 가격 조회"""
+        try:
+            # BitgetClient 메서드 확인
+            if not hasattr(self.bitget_client, 'get_ticker'):
+                self.logger.error("BitgetClient에 get_ticker 메서드가 없습니다")
+                return None
+            
+            ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+            
+            if isinstance(ticker_data, list):
+                if ticker_data:
+                    ticker_data = ticker_data[0]
+                else:
+                    return None
+            
+            price_fields = ['last', 'lastPr', 'price', 'close']
+            for field in price_fields:
+                if field in ticker_data:
+                    try:
+                        return float(ticker_data[field])
+                    except (ValueError, TypeError):
+                        continue
+                        
+        except Exception as e:
+            self.logger.error(f"현재 가격 조회 실패: {str(e)}")
+            
+        return None
 
     async def _analyze_market_data(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """시장 데이터 기술적 분석"""
@@ -363,30 +411,6 @@ class AnalysisEngine:
             self.logger.warning(f"지지/저항선 계산 실패: {str(e)}")
             
         return {}
-    
-    async def _get_current_price(self) -> Optional[float]:
-        """현재 가격 조회"""
-        try:
-            ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
-            
-            if isinstance(ticker_data, list):
-                if ticker_data:
-                    ticker_data = ticker_data[0]
-                else:
-                    return None
-            
-            price_fields = ['last', 'lastPr', 'price', 'close']
-            for field in price_fields:
-                if field in ticker_data:
-                    try:
-                        return float(ticker_data[field])
-                    except (ValueError, TypeError):
-                        continue
-                        
-        except Exception as e:
-            self.logger.error(f"현재 가격 조회 실패: {str(e)}")
-            
-        return None
     
     def _analyze_sentiment(self, market_data: Dict[str, Any]) -> str:
         """시장 심리 분석"""
