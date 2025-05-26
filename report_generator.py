@@ -450,7 +450,7 @@ class EnhancedReportGenerator:
             margin = pos['margin']  # 현재 증거금
             leverage = pos['leverage']
             
-            # 실제 청산가격 계산
+            # 실제 청산가격 계산 (가용자산 모두 포함)
             # 총 사용 가능한 증거금 = 현재 증거금 + 가용 자산
             total_available_margin = margin + available_balance
             
@@ -468,13 +468,17 @@ class EnhancedReportGenerator:
                 # 현재가 기준 청산까지 남은 %
                 price_move_to_liq = ((current_price - liquidation_price) / current_price) * 100
             
-            # 증거금 기준 손실 허용률
-            margin_loss_ratio = (total_available_margin / margin) * 100 - 100
+            # 증거금 손실 허용률은 항상 100%
+            margin_loss_ratio = 100.0
+            
+            # 한화 환산
+            krw_rate = 1350
+            margin_krw = margin * krw_rate / 10000
             
             formatted.append(f"""• 종목: {pos['symbol']}
 • 방향: {direction}
 • 진입가: ${entry_price:,.2f} / 현재가: ${current_price:,.2f}
-• 진입 증거금: ${margin:,.2f}
+• 진입 증거금: ${margin:,.2f} ({margin_krw:.1f}만원)
 • 레버리지: {leverage}배
 • 청산 가격: ${liquidation_price:,.2f}
 • 청산까지 남은 거리: {abs(price_move_to_liq):.1f}% {'상승' if direction == '숏' else '하락'}시 청산
@@ -646,10 +650,65 @@ class EnhancedReportGenerator:
             return '"손실 만회는 차분함에서 시작됩니다. 서두르지 마세요."'
     
     async def _generate_gpt_profit_mental(self, account_info: Dict, position_info: Dict, weekly_pnl: Dict) -> str:
-        """수익 리포트용 멘탈 케어"""
+        """수익 리포트용 멘탈 케어 - GPT 실시간 생성"""
         if 'error' in account_info:
             return '"시스템 점검 중입니다. 잠시 후 다시 확인해주세요."'
         
+        try:
+            # OpenAI 클라이언트 확인
+            if self.openai_client:
+                unrealized_pnl = account_info.get('unrealized_pnl', 0)
+                total_equity = account_info.get('total_equity', 0)
+                available = account_info.get('available_balance', 0)
+                weekly_total = weekly_pnl.get('total_7d', 0)
+                positions = position_info.get('positions', [])
+                
+                # 포지션 정보
+                position_desc = "포지션 없음"
+                if positions:
+                    pos = positions[0]
+                    position_desc = f"{pos['side']} 포지션, 증거금 ${pos['margin']:.0f}, 레버리지 {pos['leverage']}배"
+                
+                prompt = f"""
+당신은 충동적인 성향의 비트코인 선물 트레이더의 멘토입니다.
+현재 트레이더의 상황:
+- 총 자산: ${total_equity:,.0f}
+- 가용 자산: ${available:,.0f}
+- 미실현 손익: ${unrealized_pnl:.2f}
+- 7일간 총 수익: ${weekly_total:.2f} (한화 {weekly_total*1350:.0f}원)
+- 현재 포지션: {position_desc}
+
+이 트레이더는 수익이 나면 과도한 레버리지를 사용하고, 손실이 나면 복수매매를 하는 경향이 있습니다.
+
+다음 요소를 포함하여 2-3문장으로 조언해주세요:
+1. 7일 수익을 한국의 일상적인 것과 비교 (월세, 편의점 알바, 과외 등)
+2. 충동적 매매를 억제하는 구체적인 조언
+3. 현재 상황에 맞는 행동 지침
+
+감정적이지 않고 현실적이며 따뜻한 톤으로 작성해주세요.
+"""
+                
+                response = await self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "당신은 경험 많은 트레이딩 멘토입니다."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=200,
+                    temperature=0.8
+                )
+                
+                return f'"{response.choices[0].message.content.strip()}"'
+            
+            # OpenAI 클라이언트가 없으면 폴백
+            return await self._generate_dynamic_profit_mental(account_info, position_info, weekly_pnl)
+            
+        except Exception as e:
+            logger.error(f"GPT 멘탈 케어 생성 실패: {e}")
+            return await self._generate_dynamic_profit_mental(account_info, position_info, weekly_pnl)
+    
+    async def _generate_dynamic_profit_mental(self, account_info: Dict, position_info: Dict, weekly_pnl: Dict) -> str:
+        """동적 멘탈 케어 메시지 생성 (폴백)"""
         unrealized_pnl = account_info.get('unrealized_pnl', 0)
         total_equity = account_info.get('total_equity', 0)
         weekly_total = weekly_pnl.get('total_7d', 0)
@@ -659,29 +718,42 @@ class EnhancedReportGenerator:
         weekly_krw = weekly_total * 1350
         
         import random
+        import datetime
         
-        # 주간 수익 반영
-        if weekly_total > 500:
-            base_message = f"이번 주 수익이 {weekly_krw/10000:.0f}만원! 월세를 일주일만에 벌었네요."
+        # 시간대별 메시지 변경
+        hour = datetime.datetime.now().hour
+        time_context = "오늘" if hour < 18 else "오늘 하루"
+        
+        # 주간 수익 기반 메시지
+        if weekly_total > 1000:
+            weekly_msg = f"일주일만에 {weekly_krw/10000:.0f}만원이면 월급 수준이네요."
+        elif weekly_total > 500:
+            weekly_msg = f"7일간 {weekly_krw/10000:.0f}만원, 대학생 한달 용돈을 일주일에 벌었습니다."
         elif weekly_total > 100:
-            base_message = f"7일간 {weekly_krw/10000:.0f}만원 수익, 꾸준함이 빛을 발하고 있습니다."
-        elif weekly_total > 0:
-            base_message = f"이번 주는 플러스 마감, 작지만 의미있는 성과입니다."
+            weekly_msg = f"이번 주 {weekly_krw/10000:.0f}만원 수익, 매일 치킨 한마리씩 벌었네요."
         else:
-            base_message = f"이번 주는 힘들었지만, 다음 주는 회복할 수 있습니다."
+            weekly_msg = f"이번 주는 {weekly_krw/10000:.0f}만원, 작지만 플러스입니다."
         
-        # 포지션 관련 조언 (레버리지 언급 제외)
+        # 포지션 상태별 조언
         if positions:
-            position_advice = " 포지션 관리 잘하고 있네요. 이대로 원칙을 지켜나가세요."
+            pos = positions[0]
+            if pos['leverage'] > 20:
+                position_advice = f"레버리지 {pos['leverage']}배는 위험합니다. 이익 실현하고 레버리지를 낮추세요."
+            else:
+                position_advice = "포지션 관리 잘 하고 있습니다. 손절선만 꼭 지키세요."
         else:
-            position_advice = " 현재 관망 중이시군요. 좋은 타이밍을 기다리는 것도 실력입니다."
+            position_advice = "포지션이 없으니 차분히 기회를 기다리세요."
         
         # 충동 억제 메시지
-        impulse_control = [
-            " 수익에 들떠 무리한 베팅하지 마세요. 복리의 힘을 믿으세요.",
-            " '더 벌어야지'라는 욕심이 계정을 털어갑니다. 오늘은 여기까지.",
-            " 시장은 도망가지 않습니다. 내일의 기회를 위해 오늘은 쉬세요.",
-            " 감정이 앞서면 시장의 먹잇감이 됩니다. 냉정을 유지하세요.",
+        control_messages = [
+            f"{time_context} 수익으로 만족하세요. 욕심이 계정을 비웁니다.",
+            "복리의 힘은 시간이 만듭니다. 서두르지 마세요.",
+            "프로는 수익을 지키는 사람입니다. 오늘은 여기까지.",
+            f"{time_context} 잘했습니다. 내일도 시장은 열립니다.",
+            "한방을 노리다 한방에 갑니다. 꾸준함이 답입니다."
+        ]
+        
+        return f'"{weekly_msg} {position_advice} {random.choice(control_messages)}"'장의 먹잇감이 됩니다. 냉정을 유지하세요.",
             " 한 번에 큰 돈을 벌려는 마음을 버리세요. 작은 수익이 쌓여 큰 부가 됩니다.",
             " 오늘의 수익은 내일의 시드머니입니다. 지키는 것도 실력입니다."
         ]
