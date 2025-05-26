@@ -15,10 +15,17 @@ class BitgetClient:
     def __init__(self, config):
         self.config = config
         self.session = None
+        self._initialize_session()  # 추가
+        
+    def _initialize_session(self):
+        """세션 초기화"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+            logger.info("Bitget 클라이언트 세션 초기화 완료")
         
     async def initialize(self):
         """클라이언트 초기화"""
-        self.session = aiohttp.ClientSession()
+        self._initialize_session()
         logger.info("Bitget 클라이언트 초기화 완료")
     
     def _generate_signature(self, timestamp: str, method: str, request_path: str, body: str = '') -> str:
@@ -49,6 +56,10 @@ class BitgetClient:
     
     async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None) -> Dict:
         """API 요청"""
+        # 세션 확인
+        if not self.session:
+            self._initialize_session()
+            
         url = f"{self.config.bitget_base_url}{endpoint}"
         
         # 쿼리 파라미터 처리
