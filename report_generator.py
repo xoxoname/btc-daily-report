@@ -1049,7 +1049,4 @@ class EnhancedReportGenerator:
         
         conditions = {
             'price_movement': f"• 📉 단기 변동 급등락: 최근 15분 간 {event.get('change_percent', 0):.1f}% 변동 → {event.get('impact', '중립')}",
-            'whale_movement': f"• 🔄 온체인 이상 이동: {event.get('btc_amount', 0):,.0f} BTC 대량 이체 발생 → {event.get('impact', '중립')}",
-            'news': f"• 📰 주요 뉴스: {event.get('title', 'Unknown')} → {event.get('impact', '중립')}"
-
-        return conditions.get(category, f"• {category}: {event.get('description', '상세 정보 없음')}")
+            'whale_movement': f"• 🔄 온체인 이상 이동: {event.get('bt
