@@ -47,38 +47,180 @@ class EnhancedReportGenerator:
         """OpenAI 클라이언트 설정"""
         self.openai_client = openai_client
         
-    async def _get_daily_realized_pnl(self) -> float:
-        """오늘 실현 손익 조회 - 실제 API 사용"""
+    async def _get_accurate_trade_history(self, days: int = 7) -> Dict:
+        """정확한 거래 내역 조회 - 비트겟 V2 API 실제 응답 형식 기반"""
         try:
             if not self.bitget_client:
-                return 0.0
+                return {'total_pnl': 0.0, 'daily_pnl': {}, 'trade_count': 0}
             
-            # 오늘 손익 내역 조회 (1일)
-            today_pnl = await self.bitget_client.get_profit_loss_history('BTCUSDT', 1)
+            # 기간 설정
+            end_time = int(datetime.now().timestamp() * 1000)
+            start_time = end_time - (days * 24 * 60 * 60 * 1000)
             
-            # 오늘 실현 손익 반환
-            daily_pnl = today_pnl.get('total_pnl', 0.0)
-            logger.info(f"오늘 실현 손익: ${daily_pnl}")
+            # 거래 체결 내역 조회 (fills)
+            fills = await self.bitget_client.get_trade_fills('BTCUSDT', start_time, end_time, 500)
+            logger.info(f"원본 거래 내역 데이터: {fills}")
             
-            return daily_pnl
+            if not fills:
+                logger.warning("거래 내역이 없습니다")
+                return {'total_pnl': 0.0, 'daily_pnl': {}, 'trade_count': 0}
+            
+            # 비트겟 V2 API는 fillList 형태로 응답할 수 있음
+            if isinstance(fills, dict) and 'fillList' in fills:
+                fills = fills['fillList']
+            
+            total_realized_pnl = 0.0
+            daily_pnl = {}
+            total_fees = 0.0
+            trade_count = len(fills) if isinstance(fills, list) else 0
+            
+            logger.info(f"처리할 거래 내역 수: {trade_count}")
+            
+            for fill in fills:
+                try:
+                    # V2 API 정확한 필드명 사용
+                    fill_time = int(fill.get('cTime', 0))  # 체결 시간
+                    if fill_time == 0:
+                        continue
+                        
+                    fill_date = datetime.fromtimestamp(fill_time / 1000).strftime('%Y-%m-%d')
+                    
+                    # 거래 정보 - V2 API 실제 필드명
+                    base_volume = float(fill.get('baseVolume', 0))  # 거래량 (BTC)
+                    quote_volume = float(fill.get('quoteVolume', 0))  # 거래금액 (USDT)
+                    price = float(fill.get('price', 0))  # 체결가
+                    side = fill.get('side', '').lower()  # buy/sell
+                    profit = float(fill.get('profit', 0))  # 실현 손익 (이미 계산됨)
+                    
+                    # 수수료 처리 - V2 API feeDetail 구조
+                    fee = 0.0
+                    fee_detail = fill.get('feeDetail', [])
+                    if isinstance(fee_detail, list) and fee_detail:
+                        for fee_info in fee_detail:
+                            if isinstance(fee_info, dict):
+                                fee += abs(float(fee_info.get('totalFee', 0)))
+                    elif isinstance(fee_detail, dict):
+                        fee = abs(float(fee_detail.get('totalFee', 0)))
+                    
+                    # 실현 손익 계산
+                    # 비트겟에서 profit 필드가 이미 실현 손익을 제공하는 경우 사용
+                    if profit != 0:
+                        realized_pnl = profit  # 이미 계산된 실현 손익 사용
+                    else:
+                        # profit 필드가 없는 경우 직접 계산
+                        if side == 'sell':
+                            # 매도 = 포지션 청산 = 수익 실현
+                            realized_pnl = quote_volume - fee
+                        else:
+                            # 매수 = 포지션 진입 = 비용 지출
+                            realized_pnl = -(quote_volume + fee)
+                    
+                    total_realized_pnl += realized_pnl
+                    total_fees += fee
+                    
+                    # 일별 집계
+                    if fill_date not in daily_pnl:
+                        daily_pnl[fill_date] = {'pnl': 0, 'trades': 0, 'fees': 0}
+                    
+                    daily_pnl[fill_date]['pnl'] += realized_pnl
+                    daily_pnl[fill_date]['trades'] += 1
+                    daily_pnl[fill_date]['fees'] += fee
+                    
+                    logger.debug(f"거래 처리: {fill_date}, 측면: {side}, 손익: ${realized_pnl:.2f}, 수수료: ${fee:.4f}")
+                    
+                except Exception as e:
+                    logger.warning(f"거래 내역 파싱 오류: {e}, 데이터: {fill}")
+                    continue
+            
+            logger.info(f"거래 내역 분석 완료: {trade_count}건, 총 실현손익: ${total_realized_pnl:.2f}, 총 수수료: ${total_fees:.2f}")
+            
+            return {
+                'total_pnl': total_realized_pnl,
+                'daily_pnl': daily_pnl,
+                'trade_count': trade_count,
+                'total_fees': total_fees,
+                'average_daily': total_realized_pnl / days if days > 0 else 0,
+                'days': days
+            }
             
         except Exception as e:
-            logger.error(f"일일 실현 손익 조회 실패: {e}")
+            logger.error(f"거래 내역 조회 실패: {e}")
+            return {'total_pnl': 0.0, 'daily_pnl': {}, 'trade_count': 0, 'total_fees': 0.0}
+    
+    async def _get_today_realized_pnl(self) -> float:
+        """오늘 실현 손익 정확히 계산"""
+        try:
+            # 오늘 00:00부터 현재까지 (한국시간 기준)
+            kst = pytz.timezone('Asia/Seoul')
+            today_start = datetime.now(kst).replace(hour=0, minute=0, second=0, microsecond=0)
+            start_timestamp = int(today_start.timestamp() * 1000)
+            end_timestamp = int(datetime.now().timestamp() * 1000)
+            
+            fills = await self.bitget_client.get_trade_fills('BTCUSDT', start_timestamp, end_timestamp, 100)
+            logger.info(f"오늘 거래 내역 조회: {fills}")
+            
+            if not fills:
+                return 0.0
+            
+            # fillList 형태인 경우 처리
+            if isinstance(fills, dict) and 'fillList' in fills:
+                fills = fills['fillList']
+            
+            today_pnl = 0.0
+            trade_count = 0
+            
+            for fill in fills:
+                try:
+                    # profit 필드 직접 사용 (비트겟에서 계산해준 실현 손익)
+                    profit = float(fill.get('profit', 0))
+                    
+                    if profit != 0:
+                        today_pnl += profit
+                        trade_count += 1
+                    else:
+                        # profit이 0인 경우 직접 계산
+                        quote_volume = float(fill.get('quoteVolume', 0))
+                        side = fill.get('side', '').lower()
+                        
+                        # 수수료 계산
+                        fee = 0.0
+                        fee_detail = fill.get('feeDetail', [])
+                        if isinstance(fee_detail, list) and fee_detail:
+                            for fee_info in fee_detail:
+                                if isinstance(fee_info, dict):
+                                    fee += abs(float(fee_info.get('totalFee', 0)))
+                        
+                        if side == 'sell':
+                            today_pnl += (quote_volume - fee)
+                        else:
+                            today_pnl -= (quote_volume + fee)
+                            
+                        trade_count += 1
+                        
+                except Exception as e:
+                    logger.warning(f"오늘 거래 파싱 오류: {e}")
+                    continue
+            
+            logger.info(f"오늘 실현 손익: ${today_pnl:.2f} ({trade_count}건 거래)")
+            return today_pnl
+            
+        except Exception as e:
+            logger.error(f"오늘 실현 손익 계산 실패: {e}")
             return 0.0
+    
+    async def _get_daily_realized_pnl(self) -> float:
+        """오늘 실현 손익 조회 - 별칭 메서드"""
+        return await self._get_today_realized_pnl()
     
     async def _get_weekly_profit_data(self) -> Dict:
         """최근 7일 수익 데이터 조회 - 실제 API 사용"""
         try:
-            if not self.bitget_client:
-                return {'total': 0.0, 'average': 0.0}
+            weekly_data = await self._get_accurate_trade_history(7)
             
-            # 7일 손익 내역 조회
-            weekly_pnl = await self.bitget_client.get_profit_loss_history('BTCUSDT', 7)
+            total = weekly_data.get('total_pnl', 0.0)
+            average = weekly_data.get('average_daily', 0.0)
             
-            total = weekly_pnl.get('total_pnl', 0.0)
-            average = weekly_pnl.get('average_daily', 0.0)
-            
-            logger.info(f"7일 수익 조회 완료: ${total}, 평균: ${average}")
+            logger.info(f"7일 수익 조회 완료: ${total:.2f}, 평균: ${average:.2f}")
             return {'total': total, 'average': average}
             
         except Exception as e:
@@ -99,12 +241,15 @@ class EnhancedReportGenerator:
             else:
                 account = account_info
             
-            total_equity = float(account.get('accountEquity', 0))
-            initial_capital = 4000.0  # 초기 투자금
+            # V2 API 정확한 필드명 사용
+            total_equity = float(account.get('usdtEquity', 0))  # USDT 기준 총 자산
+            if total_equity == 0:
+                total_equity = float(account.get('accountEquity', 0))  # 대체 필드
             
+            initial_capital = 4000.0  # 초기 투자금
             total_profit = total_equity - initial_capital
             
-            logger.info(f"전체 누적 수익: ${total_profit}")
+            logger.info(f"전체 누적 수익: ${total_profit:.2f} (총자산: ${total_equity:.2f})")
             return {'total': total_profit}
             
         except Exception as e:
@@ -393,12 +538,197 @@ class EnhancedReportGenerator:
 • 거래량 급증: 평균 대비 3배
 """
     
+    async def calculate_profit_info(self, position_data: Dict[str, Any]) -> Dict[str, Any]:
+        """수익 정보 계산"""
+        try:
+            current_price = await self._get_current_price()
+            if not current_price:
+                return {'error': '현재 가격을 가져올 수 없습니다'}
+            
+            entry_price = position_data.get('entry_price', 0)
+            position_size = position_data.get('size', 0)
+            side = position_data.get('side', 'long')  # 'long' 또는 'short'
+            
+            if entry_price == 0:
+                return {'error': '진입 가격 정보가 없습니다'}
+            
+            if position_size == 0:
+                return {'error': '포지션 크기 정보가 없습니다'}
+            
+            # 수익률 계산
+            if side.lower() == 'long':
+                pnl_rate = (current_price - entry_price) / entry_price
+                pnl_usd = position_size * (current_price - entry_price)
+            else:  # short
+                pnl_rate = (entry_price - current_price) / entry_price
+                pnl_usd = position_size * (entry_price - current_price)
+            
+            return {
+                'current_price': current_price,
+                'entry_price': entry_price,
+                'position_size': position_size,
+                'side': side,
+                'pnl_rate': pnl_rate,
+                'pnl_usd': pnl_usd,
+                'pnl_percentage': pnl_rate * 100,
+                'status': 'profit' if pnl_usd > 0 else 'loss' if pnl_usd < 0 else 'breakeven'
+            }
+            
+        except Exception as e:
+            logger.error(f"수익 정보 계산 실패: {e}")
+            return {'error': f'수익 계산 중 오류 발생: {str(e)}'}
+
+    async def _get_market_summary(self) -> Dict[str, Any]:
+        """시장 요약 정보 조회"""
+        try:
+            # BitgetClient 메서드 확인 및 호출
+            if hasattr(self.bitget_client, 'get_ticker'):
+                ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+            else:
+                logger.error("BitgetClient에 get_ticker 메서드가 없습니다")
+                return {'error': 'BitgetClient 설정 오류'}
+            
+            if isinstance(ticker_data, list):
+                if ticker_data:
+                    ticker_data = ticker_data[0]
+                else:
+                    return {'error': '시장 데이터를 가져올 수 없습니다'}
+            
+            # 안전한 데이터 추출
+            def safe_get(data, keys, default=0):
+                for key in keys:
+                    if key in data:
+                        try:
+                            return float(data[key])
+                        except (ValueError, TypeError):
+                            continue
+                return default
+            
+            current_price = safe_get(ticker_data, ['last', 'lastPr', 'price', 'close'])
+            high_24h = safe_get(ticker_data, ['high', 'high24h', 'highPr'])
+            low_24h = safe_get(ticker_data, ['low', 'low24h', 'lowPr'])
+            volume_24h = safe_get(ticker_data, ['baseVolume', 'volume', 'vol24h', 'baseVol'])
+            change_24h = safe_get(ticker_data, ['changeUtc', 'change24h', 'priceChangePercent'])
+            
+            return {
+                'current_price': current_price,
+                'high_24h': high_24h,
+                'low_24h': low_24h,
+                'volume_24h': volume_24h,
+                'change_24h': change_24h,
+                'change_24h_percent': change_24h * 100,
+                'volatility': ((high_24h - low_24h) / current_price * 100) if current_price > 0 else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"시장 요약 조회 실패: {e}")
+            return {'error': f'시장 데이터 조회 실패: {str(e)}'}
+
+    async def _calculate_24h_performance(self) -> Dict[str, Any]:
+        """24시간 성과 계산"""
+        try:
+            market_info = await self._get_market_summary()
+            
+            if 'error' in market_info:
+                return market_info
+            
+            change_24h = market_info.get('change_24h', 0)
+            volatility = market_info.get('volatility', 0)
+            
+            # 성과 등급 계산
+            if change_24h > 0.05:  # 5% 이상 상승
+                performance_grade = "매우 좋음"
+            elif change_24h > 0.02:  # 2% 이상 상승
+                performance_grade = "좋음"
+            elif change_24h > -0.02:  # -2% ~ 2%
+                performance_grade = "보통"
+            elif change_24h > -0.05:  # -5% ~ -2%
+                performance_grade = "나쁨"
+            else:
+                performance_grade = "매우 나쁨"
+            
+            return {
+                'change_24h_percent': change_24h * 100,
+                'volatility_percent': volatility,
+                'performance_grade': performance_grade,
+                'trend': '상승' if change_24h > 0 else '하락' if change_24h < 0 else '횡보'
+            }
+            
+        except Exception as e:
+            logger.error(f"24시간 성과 계산 실패: {e}")
+            return {'error': f'성과 계산 실패: {str(e)}'}
+
+    async def _generate_ai_summary(self, market_info: Dict[str, Any], profit_info: Dict[str, Any]) -> str:
+        """AI 요약 생성"""
+        try:
+            if 'error' in market_info:
+                return "시장 데이터를 분석할 수 없어 AI 요약을 생성할 수 없습니다."
+            
+            prompt = f"""
+다음 비트코인 시장 데이터를 분석해주세요:
+
+현재 가격: ${market_info.get('current_price', 0):,.2f}
+24시간 변동: {market_info.get('change_24h_percent', 0):.2f}%
+24시간 고가: ${market_info.get('high_24h', 0):,.2f}
+24시간 저가: ${market_info.get('low_24h', 0):,.2f}
+변동성: {market_info.get('volatility', 0):.2f}%
+
+{"포지션 수익률: " + str(profit_info.get('pnl_percentage', 0)) + "%" if profit_info and 'pnl_percentage' in profit_info else ""}
+
+간단하고 명확한 한국어로 현재 시장 상황을 요약해주세요. (3-4줄)
+"""
+            
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "당신은 간결하고 명확한 암호화폐 시장 분석가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300,
+                temperature=0.5
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"AI 요약 생성 실패: {e}")
+            return "AI 분석을 생성할 수 없습니다. 시장 데이터를 직접 확인해주세요."
+
+    async def _get_current_price(self) -> Optional[float]:
+        """현재 가격 조회"""
+        try:
+            # BitgetClient 메서드 확인
+            if not hasattr(self.bitget_client, 'get_ticker'):
+                logger.error("BitgetClient에 get_ticker 메서드가 없습니다")
+                return None
+            
+            ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+            
+            if isinstance(ticker_data, list):
+                if ticker_data:
+                    ticker_data = ticker_data[0]
+                else:
+                    return None
+            
+            price_fields = ['last', 'lastPr', 'price', 'close']
+            for field in price_fields:
+                if field in ticker_data:
+                    try:
+                        return float(ticker_data[field])
+                    except (ValueError, TypeError):
+                        continue
+                        
+        except Exception as e:
+            logger.error(f"현재 가격 조회 실패: {e}")
+            
+        return None
+
     async def _format_position_info_detailed(self, position_info: Dict, market_data: Dict, account_info: Dict = None) -> str:
         """상세 포지션 정보 포맷팅"""
         positions = position_info.get('positions', [])
         
         if not positions:
-            return "• 포지션 없음"
+            return "• 현재 보유 포지션 없음"
         
         if not account_info:
             account_info = market_data.get('account', {})
@@ -468,7 +798,7 @@ class EnhancedReportGenerator:
         krw_rate = 1350
         
         return f"""• 미실현 손익: ${unrealized_pnl:+,.2f} ({unrealized_pnl * krw_rate / 10000:+.1f}만원)
-• 실현 손익: ${daily_realized_pnl:+,.2f} ({daily_realized_pnl * krw_rate / 10000:+.1f}만원)
+• 오늘 실현 손익: ${daily_realized_pnl:+,.2f} ({daily_realized_pnl * krw_rate / 10000:+.1f}만원)
 • 금일 총 수익: ${daily_total:+,.2f} ({daily_total * krw_rate / 10000:+.1f}만원)
 • 총 자산: ${total_equity:,.2f} ({total_equity * krw_rate / 10000:.0f}만원)
 • 가용 자산: ${available:,.2f} ({available * krw_rate / 10000:.1f}만원)
@@ -480,9 +810,9 @@ class EnhancedReportGenerator:
 📊 최근 7일 평균: ${weekly_profit_data['average']:+,.2f}/일 ({weekly_profit_data['average'] * krw_rate / 10000:+.1f}만원/일)"""
     
     async def _generate_realistic_gpt_mental(self, account_info: Dict, position_info: Dict, daily_realized_pnl: float) -> str:
-        """현실적인 GPT 멘탈 케어 - 실제 상황 반영"""
+        """현실적인 GPT 멘탈 케어 - 실제 상황 반영, 개선된 버전"""
         if not self.openai_client or 'error' in account_info:
-            return '"차분하게 전략에 따라 매매하세요. 감정적 거래는 금물입니다! 💪"'
+            return '"차분하게 전략에 따라 매매하시길 바랍니다. 감정적 거래보다는 전략적 접근이 중요합니다."'
         
         try:
             positions = position_info.get('positions', [])
@@ -517,40 +847,39 @@ class EnhancedReportGenerator:
             # 수익 상태 분석
             profit_status = "수익" if unrealized_pnl > 0 else "손실" if unrealized_pnl < 0 else "균형"
             
+            # 수익 규모 평가
+            profit_magnitude = "소폭" if abs(unrealized_pnl) < 50 else "중간" if abs(unrealized_pnl) < 200 else "큰"
+            
             prompt = f"""
-당신은 친근하고 현실적인 트레이딩 멘토입니다. 한국의 20-30대 트레이더에게 조언하는 상황입니다.
+당신은 경험 많은 트레이딩 멘토입니다. 다음 상황의 트레이더에게 조언해주세요:
 
 현재 상황:
-- 총 자산: ${total_equity:,.0f} (약 {total_equity*1.35/10000:.0f}만원)
-- 가용 자산: ${available_balance:,.0f}
-- 미실현 손익: ${unrealized_pnl:+,.0f} (약 {unrealized_pnl*1.35/10000:+.1f}만원) - {profit_status} 상태
+- 총 자산: ${total_equity:,.0f}
+- 미실현 손익: ${unrealized_pnl:+,.0f} ({profit_status} 상태, {profit_magnitude} 규모)
 - 오늘 실현 손익: ${daily_realized_pnl:+,.0f}
 - 현재 포지션: {position_desc}
 - 위험도: {risk_level}
 
-이 트레이더의 성격:
-- 수익이 나면 욕심부려서 레버리지를 더 올리려는 경향
-- 손실이 나면 복수매매로 더 큰 포지션 진입하려는 경향  
-- 감정적으로 매매하는 습관
+다음 가이드라인으로 조언해주세요:
+1. 존댓말로 정중하게
+2. 이모티콘은 최대 1개만 사용
+3. 현재 성과를 인정하고 격려하는 긍정적 톤
+4. 리스크 관리와 심리적 안정성 강조
+5. 구체적이고 실용적인 조언 1-2개
+6. 3-4문장으로 간결하게
 
-다음 조건으로 멘탈 케어 메시지를 작성해주세요:
-1. 현재 손익 상황에 맞는 현실적 조언 (치킨값, 월세, 알바비 등 일상 비교)
-2. 충동적 매매를 억제하는 구체적 방법
-3. 친근하고 따뜻한 말투 (형/누나가 조언하는 느낌)
-4. 이모티콘 적절히 사용
-5. 3-4문장으로 간결하게
-
-절대 형식적이거나 일반적인 조언 말고, 이 트레이더의 실제 상황과 성격에 맞춘 개인화된 조언을 해주세요.
+절대 부정적 표현이나 충동적 거래를 유도하는 말은 하지 마세요.
+대신 현재 성과를 인정하고 지속가능한 거래를 격려해주세요.
 """
             
             response = await self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "당신은 따뜻하고 현실적인 트레이딩 멘토입니다. 개인화된 조언을 제공합니다."},
+                    {"role": "system", "content": "당신은 차분하고 전문적인 트레이딩 멘토입니다. 긍정적이면서도 현실적인 조언을 제공합니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=250,
-                temperature=0.8
+                max_tokens=200,
+                temperature=0.6
             )
             
             message = response.choices[0].message.content.strip()
@@ -558,14 +887,16 @@ class EnhancedReportGenerator:
             
         except Exception as e:
             logger.error(f"GPT 멘탈 케어 생성 실패: {e}")
-            # 상황별 폴백 메시지
+            # 상황별 개선된 폴백 메시지
             unrealized_pnl = account_info.get('unrealized_pnl', 0)
-            if unrealized_pnl > 0:
-                return '"수익이 날 때가 가장 위험해요! 🎯 욕심보다는 안전하게 일부 실현하고 다음 기회를 기다리는 게 어떨까요? 치킨 몇 번 먹을 돈은 벌었으니 만족하셔도 될 것 같아요 😊"'
+            daily_realized_pnl = daily_realized_pnl or 0
+            
+            if unrealized_pnl > 0 or daily_realized_pnl > 0:
+                return '"현재 좋은 성과를 보이고 계시네요 📈 지금처럼 꾸준한 접근을 유지하시면서, 목표 수익에 도달했을 때 단계적으로 수익을 확정하시는 것을 권합니다. 일관된 전략이 장기적으로 더 안정적인 결과를 가져다줍니다."'
             elif unrealized_pnl < 0:
-                return '"손실이 있어도 괜찮아요 💪 지금 복수매매 하면 더 큰 손실로 이어질 수 있어요. 차분히 숨 고르고 다음 기회를 기다려보세요. 월세 낼 돈은 건드리지 마시고요! 😤"'
+                return '"일시적인 손실은 트레이딩에서 자연스러운 과정입니다. 지금은 감정적 판단보다는 차분히 시장을 관찰하며 다음 기회를 준비하시길 바랍니다. 안전한 자금 관리가 가장 중요한 시점입니다."'
             else:
-                return '"지금이 가장 좋은 타이밍이에요 ⚖️ 균형 잡힌 상태에서 냉정하게 다음 기회를 포착해보세요. 급할 것 없으니 천천히 가시죠! 🚀"'
+                return '"현재 안정적인 상태를 유지하고 계시네요. 이런 균형 잡힌 시점에서 다음 전략을 차분히 세우시기 바랍니다. 좋은 기회를 기다리는 것도 훌륭한 전략입니다."'
     
     async def _collect_real_news(self) -> List[Dict]:
         """실시간 뉴스 수집"""
@@ -1108,13 +1439,14 @@ JSON 형식으로 답변:
 3. 감정적으로 매매 결정을 내리는 경향
 
 다음 요소를 포함하여 3-4문장으로 따뜻하고 공감적인 조언을 해주세요:
-1. 현재 손익을 한국 일상생활과 비교 (치킨값, 알바비, 월세 등)
+1. 현재 손익을 긍정적으로 평가하며 격려
 2. 충동적 매매를 억제하는 구체적 조언
 3. 감정적 안정감을 주는 격려
 4. 리스크 관리의 중요성 (단, 구체적인 레버리지 조절 언급은 피하기)
 
 자연스럽고 따뜻한 말투로, 마치 친한 형/누나가 조언하는 것처럼 작성해주세요.
-중간중간 적절한 이모티콘을 사용해서 딱딱하지 않게 만들어주세요.
+이모티콘은 최대 1개만 사용해서 딱딱하지 않게 만들어주세요.
+존댓말로 정중하게 작성해주세요.
 """
             
             response = await self.openai_client.chat.completions.create(
@@ -1136,7 +1468,7 @@ JSON 형식으로 답변:
     async def _generate_gpt_short_mental(self, market_data: Dict) -> str:
         """단기 예측용 GPT 멘탈 메시지"""
         if not self.openai_client:
-            return '"시장은 항상 변합니다 📈 차분하게 기다리는 것도 전략이에요! 😊"'
+            return '"시장은 항상 변합니다. 차분하게 기다리는 것도 전략입니다."'
         
         try:
             account = market_data.get('account', {})
@@ -1149,7 +1481,8 @@ JSON 형식으로 답변:
 - BTC 현재가: ${current_price:,.0f}
 
 이 트레이더에게 충동적 매매를 방지하고 차분한 매매를 유도하는 
-한 문장의 조언을 해주세요. 따뜻하고 현실적인 톤으로, 이모티콘도 적절히 사용해주세요.
+한 문장의 조언을 해주세요. 따뜻하고 현실적인 톤으로, 이모티콘은 최대 1개만 사용해주세요.
+존댓말로 정중하게 작성해주세요.
 """
             
             response = await self.openai_client.chat.completions.create(
@@ -1163,7 +1496,7 @@ JSON 형식으로 답변:
             
         except Exception as e:
             logger.error(f"GPT 단기 멘탈 케어 생성 실패: {e}")
-            return '"차분함이 최고의 무기입니다 🎯 서두르지 마세요! 💪"'
+            return '"차분함이 최고의 무기입니다. 서두르지 마세요."'
     
     async def _generate_gpt_profit_mental(self, account_info: Dict, position_info: Dict, weekly_pnl: Dict) -> str:
         """수익 리포트용 GPT 멘탈 케어 - 메시지 끊김 방지"""
@@ -1182,6 +1515,7 @@ JSON 형식으로 답변:
 
 이 트레이더에게 감정적 매매를 방지하는 간단한 조언을 2문장으로 해주세요.
 따뜻하고 격려하는 톤으로, 완성된 문장으로 끝내주세요.
+존댓말로 정중하게 작성해주세요.
 """
             
             response = await self.openai_client.chat.completions.create(
@@ -1379,15 +1713,21 @@ JSON 형식으로 답변:
         
         if unrealized_pnl > 0:
             messages = [
-                "수익이 날 때일수록 더 신중해야 합니다. 욕심은 금물이에요.",
-                "좋은 흐름이네요! 하지만 원칙을 지키는 것이 더 중요합니다.",
-                "수익 실현도 실력입니다. 무리하지 마세요."
+                "현재 좋은 성과를 보이고 계시네요. 수익이 날 때일수록 더 신중한 접근이 필요합니다.",
+                "꾸준한 수익 창출을 보여주고 계십니다. 원칙을 지키며 지속적인 성장을 이어가시기 바랍니다.",
+                "성공적인 거래를 하고 계시는군요. 현재의 전략을 유지하시면서 안전한 수익 실현을 고려해보세요."
+            ]
+        elif unrealized_pnl < 0:
+            messages = [
+                "일시적인 손실은 트레이딩의 자연스러운 과정입니다. 차분히 다음 기회를 준비하시기 바랍니다.",
+                "현재 상황을 냉정하게 분석하고 계획적인 대응을 하시길 권합니다. 급한 결정보다는 신중한 접근이 중요합니다.",
+                "시장은 항상 변화합니다. 현재의 어려움을 극복하기 위해 체계적인 접근을 유지하시기 바랍니다."
             ]
         else:
             messages = [
-                "손실이 있어도 괜찮습니다. 중요한 건 다음 기회를 준비하는 것이에요.",
-                "모든 프로 트레이더들이 겪는 과정입니다. 포기하지 마세요.",
-                "지금은 휴식이 필요한 시점일 수도 있어요. 차분히 생각해보세요."
+                "현재 균형 잡힌 상태를 유지하고 계시네요. 좋은 기회를 차분히 기다리는 것도 훌륭한 전략입니다.",
+                "안정적인 포지션을 유지하고 계십니다. 다음 기회를 위한 준비를 차근차근 해나가시기 바랍니다.",
+                "현재 상태에서 무리하지 않는 것이 좋겠습니다. 시장의 흐름을 주의 깊게 관찰하시기 바랍니다."
             ]
         
         return f'"{random.choice(messages)}"'
