@@ -1,471 +1,365 @@
-# analysis_engine.py - GPT 분석 엔진
 import logging
-import json
-import random
+from typing import Dict, Any, List, Optional
+import asyncio
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-import pytz
-from openai import AsyncOpenAI
-
-logger = logging.getLogger(__name__)
+import traceback
 
 class AnalysisEngine:
-    def __init__(self, config, bitget_client):
-        self.config = config
+    def __init__(self, bitget_client, openai_client):
         self.bitget_client = bitget_client
-        self.client = AsyncOpenAI(api_key=config.openai_api_key)
-        self.prediction_history = []  # 예측 정확도 추적용
+        self.openai_client = openai_client
+        self.logger = logging.getLogger('analysis_engine')
         
-    async def _get_market_data(self) -> Dict:
-        """시장 데이터 수집"""
+    async def generate_prediction(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        """AI 기반 비트코인 예측 생성"""
         try:
-            # 현재가 정보
-            ticker = await self.bitget_client.get_ticker()
+            # 시장 데이터 분석
+            analysis_result = await self._analyze_market_data(market_data)
             
-            # K라인 데이터 (4시간)
-            klines_4h = await self.bitget_client.get_kline(granularity='4H', limit=50)
+            # OpenAI를 사용한 예측 생성
+            prediction_prompt = self._create_prediction_prompt(market_data, analysis_result)
             
-            # 포지션 정보
-            positions = await self.bitget_client.get_positions()
-            
-            # 계정 정보
-            account = await self.bitget_client.get_account_info()
-            
-            # 펀딩비
-            funding = await self.bitget_client.get_funding_rate()
-            
-            # 미결제약정
-            open_interest = await self.bitget_client.get_open_interest()
-            
-            return {
-                'ticker': ticker,
-                'klines_4h': klines_4h,
-                'positions': positions,
-                'account': account,
-                'funding': funding,
-                'open_interest': open_interest,
-                'timestamp': datetime.now(pytz.timezone('Asia/Seoul')).isoformat()
-            }
-        except Exception as e:
-            logger.error(f"시장 데이터 수집 실패: {e}")
-            raise
-    
-    def _calculate_technical_indicators(self, klines: List[Dict]) -> Dict:
-        """기술적 지표 계산"""
-        if not klines or len(klines) < 14:
-            return {}
-        
-        try:
-            # 가격 데이터 추출
-            closes = [float(k[4]) for k in klines]  # 종가
-            highs = [float(k[2]) for k in klines]   # 고가
-            lows = [float(k[3]) for k in klines]    # 저가
-            
-            # RSI 계산 (14일)
-            rsi = self._calculate_rsi(closes, 14)
-            
-            # 볼린저 밴드 계산
-            bb = self._calculate_bollinger_bands(closes, 20)
-            
-            # 이동평균
-            ma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else None
-            ma50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else None
-            
-            return {
-                'rsi': rsi,
-                'bollinger_bands': bb,
-                'ma20': ma20,
-                'ma50': ma50,
-                'current_price': closes[-1],
-                'price_change_24h': ((closes[-1] - closes[-6]) / closes[-6] * 100) if len(closes) >= 6 else 0
-            }
-        except Exception as e:
-            logger.error(f"기술적 지표 계산 실패: {e}")
-            return {}
-    
-    def _calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
-        """RSI 계산"""
-        if len(prices) < period + 1:
-            return None
-        
-        gains = []
-        losses = []
-        
-        for i in range(1, len(prices)):
-            change = prices[i] - prices[i-1]
-            if change > 0:
-                gains.append(change)
-                losses.append(0)
-            else:
-                gains.append(0)
-                losses.append(abs(change))
-        
-        if len(gains) < period:
-            return None
-        
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-        
-        if avg_loss == 0:
-            return 100
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return round(rsi, 2)
-    
-    def _calculate_bollinger_bands(self, prices: List[float], period: int = 20) -> Dict:
-        """볼린저 밴드 계산"""
-        if len(prices) < period:
-            return {}
-        
-        recent_prices = prices[-period:]
-        sma = sum(recent_prices) / period
-        
-        variance = sum([(price - sma) ** 2 for price in recent_prices]) / period
-        std_dev = variance ** 0.5
-        
-        upper_band = sma + (2 * std_dev)
-        lower_band = sma - (2 * std_dev)
-        
-        return {
-            'upper': round(upper_band, 2),
-            'middle': round(sma, 2),
-            'lower': round(lower_band, 2)
-        }
-    
-    def _generate_mental_comment(self, profit_info: Dict) -> str:
-        """멘탈 케어 코멘트 생성 (매번 다르게, 실시간 상황 반영)"""
-        try:
-            total_profit_usd = profit_info.get('total_profit_usd', 0)
-            profit_rate = profit_info.get('profit_rate', 0)
-            total_equity = profit_info.get('total_equity', 0)
-            realized_pnl = profit_info.get('realized_pnl', 0)
-            has_position = profit_info.get('position_info') != '포지션 없음'
-            
-            # 실시간 상황 기반 코멘트 생성
-            krw_profit = abs(total_profit_usd) * self.config.usd_to_krw
-            
-            if profit_rate >= 5:
-                # 큰 수익
-                comments = [
-                    f"🎉 와! {krw_profit:.0f}원 수익이라니! 이 정도면 오늘은 정말 성공적인 거래였어요. 하지만 여기서 욕심 부리지 말고 적당한 선에서 익절하는 것도 고려해봐요. 시장은 항상 변하니까요.",
-                    f"💎 {profit_rate:.2f}% 수익률! 대단해요! 하지만 승리에 취해서 레버리지를 더 올리거나 추가 매매하고 싶은 충동을 억제해봐요. 지금처럼 차근차근 하는 게 최고예요.",
-                    f"🚀 {krw_profit:.0f}원이면 편의점 알바 하루치 급여네요! 하지만 시장은 언제든 변할 수 있으니 방심은 금물이에요. 적절한 익절 타이밍을 놓치지 마세요."
-                ]
-            elif profit_rate >= 1:
-                # 적당한 수익
-                comments = [
-                    f"💰 {krw_profit:.0f}원의 꾸준한 수익! 작아 보일 수 있지만 이런 작은 수익들이 모여서 큰 자산이 되는 거예요. 조급해하지 말고 이 페이스 유지해봐요.",
-                    f"📈 {profit_rate:.2f}% 수익률로 플러스 행진 중! 큰 수익은 아니지만 손실보다 훨씬 좋죠. 무리하지 말고 지금처럼만 해도 충분해요.",
-                    f"☕ {krw_profit:.0f}원이면 좋은 커피 몇 잔은 마실 수 있겠네요! 작은 수익에 만족하며 다음 기회를 기다리는 것도 투자의 지혜입니다."
-                ]
-            elif -1 <= profit_rate <= 1:
-                # 횡보/소폭 변동
-                if has_position:
-                    comments = [
-                        f"⏳ 지금은 시장이 고민하는 시간인 것 같아요. 포지션이 있으니 조금 더 기다려봐도 될 것 같지만, 너무 오래 버티지는 마세요. 손절선도 중요해요.",
-                        f"🧘‍♂️ 포지션을 들고 있는 상황에서 횡보라니 조금 답답하시겠어요. 하지만 급하게 추가 매매하지 말고 시장의 방향성이 나올 때까지 인내해봐요.",
-                        f"📊 ${total_equity:.0f}의 자산으로 안전하게 운용 중이시네요. 수익이 크지 않아도 손실 없이 유지하는 것만으로도 충분히 훌륭해요."
-                    ]
-                else:
-                    comments = [
-                        f"⏳ 포지션 없이 관망 중이시군요! 이럴 때일수록 섣불리 진입하지 말고 확실한 신호가 나올 때까지 기다리는 게 현명해요.",
-                        f"🧘‍♂️ 현금 보유 상태에서 시장을 지켜보는 것도 훌륭한 전략이에요. 무리해서 포지션 잡지 말고 좋은 타이밍을 기다려봐요.",
-                        f"📊 ${total_equity:.0f}의 안전한 현금으로 다음 기회를 준비하고 계시네요. 조급해하지 마세요."
-                    ]
-            elif -5 <= profit_rate < -1:
-                # 소폭 손실
-                comments = [
-                    f"📉 -{krw_profit:.0f}원 손실이지만 큰 문제없어요. 이 정도는 수업료라고 생각하시고, 복수 매매만 하지 마세요. 감정적으로 대응하면 더 큰 손실로 이어질 수 있어요.",
-                    f"🌱 -{profit_rate:.2f}% 손실이네요. 아깝긴 하지만 이런 경험이 실력 향상에 도움이 될 거예요. 손절은 빨리, 익절은 천천히가 원칙이에요.",
-                    f"🔄 -{krw_profit:.0f}원 손실! 지금 당장 만회하고 싶겠지만 더 큰 손실 방지를 위해 차분하게 접근하세요. 시장은 내일도 있어요."
-                ]
-            else:
-                # 큰 손실
-                comments = [
-                    f"🛑 -{krw_profit:.0f}원의 큰 손실이네요. 지금은 감정적으로 대응하지 말고 하루 정도 쉬면서 마음을 정리하는 시간을 가져봐요. 복수 매매는 절대 금물이에요.",
-                    f"💪 -{profit_rate:.2f}%의 손실이 크게 느껴지겠지만, 이럴 때일수록 기본으로 돌아가야 해요. 레버리지를 줄이고 안전한 매매로 천천히 회복해봐요.",
-                    f"🎯 큰 손실 후에는 며칠 쉬는 것이 최선의 선택일 수 있어요. ${total_equity:.0f}의 자산이 남아있으니 충분히 회복 가능해요. 포기하지 마세요."
-                ]
-            
-            # 실현 손익이 있을 경우 추가 멘트
-            if realized_pnl > 0:
-                additional_comment = f" 지금까지 총 {realized_pnl * self.config.usd_to_krw:.0f}원을 실현하셨네요. 꾸준히 하시고 계시는 것 같아 보기 좋습니다!"
-            elif realized_pnl < 0:
-                additional_comment = f" 지금까지 총 손실이 {abs(realized_pnl) * self.config.usd_to_krw:.0f}원이네요. 하지만 이것도 경험치예요. 포기하지 마세요."
-            else:
-                additional_comment = ""
-            
-            comment = random.choice(comments) + additional_comment
-            
-            return comment
-            
-        except Exception as e:
-            logger.error(f"멘탈 코멘트 생성 실패: {e}")
-            return f"💪 투자는 마라톤입니다. ${profit_info.get('total_equity', 0):.0f}의 자산으로 꾸준히 해나가시면 됩니다. 감정적인 매매는 피하고 계획에 따라 행동해봐요."
-
-    async def _generate_gpt_mental_comment(self, profit_info: Dict) -> str:
-        """GPT 기반 실시간 멘탈 케어 코멘트 생성"""
-        try:
-            total_profit_usd = profit_info.get('total_profit_usd', 0)
-            profit_rate = profit_info.get('profit_rate', 0)
-            total_equity = profit_info.get('total_equity', 0)
-            realized_pnl = profit_info.get('realized_pnl', 0)
-            unrealized_pnl = profit_info.get('unrealized_pnl', 0)
-            has_position = profit_info.get('position_info') != '포지션 없음'
-            
-            # 한국어 환산
-            krw_total_profit = total_profit_usd * self.config.usd_to_krw
-            krw_realized = realized_pnl * self.config.usd_to_krw
-            krw_unrealized = unrealized_pnl * self.config.usd_to_krw
-            
-            # GPT 프롬프트 구성
-            system_prompt = """
-당신은 비트코인 선물 거래자를 위한 전문 멘탈 케어 상담사입니다.
-거래자의 현재 자산 상황과 손익을 바탕으로 개인화된 조언을 제공해주세요.
-
-조언 방향:
-1. 충동적 매매 방지
-2. 감정적 대응 억제  
-3. 현실적이고 구체적인 조언
-4. 따뜻하지만 현실적인 톤
-5. 2-3문장으로 간결하게 작성
-
-금지 사항:
-- 형식적이거나 천편일률적인 조언
-- 투자 권유나 구체적 매매 신호
-"""
-            
-            user_prompt = f"""
-현재 거래자 상황:
-- 총 자산: ${total_equity:.1f} (약 {total_equity * self.config.usd_to_krw:.0f}원)
-- 오늘 손익: ${total_profit_usd:.1f} (약 {krw_total_profit:.0f}원)
-- 수익률: {profit_rate:+.2f}%
-- 지금까지 실현 손익: ${realized_pnl:.1f} (약 {krw_realized:.0f}원)
-- 현재 미실현 손익: ${unrealized_pnl:.1f} (약 {krw_unrealized:.0f}원)
-- 포지션 보유 여부: {'있음' if has_position else '없음'}
-
-이 거래자에게 맞춤형 멘탈 케어 조언을 2-3문장으로 작성해주세요.
-거래자의 실제 상황을 반영한 구체적이고 개인화된 조언이어야 합니다.
-"""
-            
-            response = await self.client.chat.completions.create(
-                model=self.config.openai_model,
+            response = await self.openai_client.chat.completions.acreate(
+                model="gpt-4",
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=300,
-                temperature=0.8
-            )
-            
-            return response.choices[0].message.content.strip()
-            
-        except Exception as e:
-            logger.error(f"GPT 멘탈 코멘트 생성 실패: {e}")
-            # 폴백 코멘트
-            return f"💪 총 ${profit_info.get('total_equity', 0):.0f}의 자산으로 꾸준히 하고 계시네요. 감정적인 매매보다는 계획적인 접근이 중요해요. 오늘 하루의 결과에 너무 연연하지 마시고 장기적인 관점을 유지해보세요."
-    
-    async def _get_gpt_analysis(self, market_data: Dict, analysis_type: str = "full") -> str:
-        """GPT 분석 요청"""
-        try:
-            # 기술적 지표 계산
-            tech_indicators = self._calculate_technical_indicators(market_data.get('klines_4h', []))
-            
-            # 프롬프트 구성
-            system_prompt = f"""
-당신은 비트코인 선물 거래 전문 분석가입니다. 
-주어진 시장 데이터를 바탕으로 {analysis_type} 분석을 수행하고, 
-한국어로 간결하고 실용적인 분석을 제공해주세요.
-
-분석 시 고려사항:
-1. 기술적 분석: RSI, 볼린저밴드, 이동평균, 지지/저항선
-2. 심리적 분석: 펀딩비, 미결제약정
-3. 시장 동향 분석
-4. 리스크 관리 조언
-
-현재 시각: {datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M')} (한국시간)
-"""
-            
-            user_prompt = f"""
-시장 데이터 요약:
-- 현재가: {market_data.get('ticker', {}).get('lastPr', 'N/A')}
-- 24시간 변동: {market_data.get('ticker', {}).get('change24h', 'N/A')}%
-- 펀딩비: {market_data.get('funding', {}).get('fundingRate', 'N/A')}
-- RSI: {tech_indicators.get('rsi', 'N/A')}
-- 볼린저밴드: {tech_indicators.get('bollinger_bands', {})}
-
-분석 유형: {analysis_type}
-
-다음 항목들을 포함하여 분석해주세요:
-1. 현재 시장 상황 요약
-2. 기술적 지표 해석  
-3. 향후 12시간 방향성 예측 (상승/횡보/하락 확률)
-4. 거래 전략 제안
-5. 주의사항
-
-간결하고 실용적으로 작성해주세요.
-"""
-            
-            response = await self.client.chat.completions.create(
-                model=self.config.openai_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "system", "content": "당신은 전문적인 암호화폐 분석가입니다. 시장 데이터를 기반으로 정확하고 신중한 예측을 제공합니다."},
+                    {"role": "user", "content": prediction_prompt}
                 ],
                 max_tokens=1500,
                 temperature=0.7
             )
             
-            return response.choices[0].message.content.strip()
+            ai_analysis = response.choices[0].message.content
+            
+            # 예측 결과 구조화
+            prediction = {
+                'timestamp': datetime.now().isoformat(),
+                'current_price': market_data.get('current_price', 0),
+                'ai_analysis': ai_analysis,
+                'technical_analysis': analysis_result,
+                'prediction_confidence': self._calculate_confidence(analysis_result),
+                'risk_level': self._assess_risk_level(market_data, analysis_result),
+                'recommended_action': self._get_recommendation(analysis_result)
+            }
+            
+            return prediction
             
         except Exception as e:
-            logger.error(f"GPT 분석 실패: {e}")
-            return f"📊 기술적 분석\n- 현재가: {market_data.get('ticker', {}).get('lastPr', 'N/A')}\n- 시장 상황: 데이터 수집 중\n\n🔮 향후 12시간 예측\n- 분석 시스템 점검 중입니다."
-    
-    async def generate_full_report(self) -> str:
-        """정규 리포트 생성"""
-        try:
-            market_data = await self._get_market_data()
-            
-            # GPT 분석
-            gpt_analysis = await self._get_gpt_analysis(market_data, "full")
-            
-            # 포지션 및 수익 정보
-            profit_info = await self._calculate_profit_info(market_data)
-            
-            # 멘탈 케어 코멘트
-            mental_comment = self._generate_mental_comment(profit_info)
-            
-            # 예측 검증 정보
-            verification = self._get_prediction_verification()
-            
-            now = datetime.now(pytz.timezone('Asia/Seoul'))
-            
-            report = f"""📡 GPT 매동 예측 분석 리포트
-📅 작성 시각: {now.strftime('%Y-%m-%d %H:%M')}
-━━━━━━━━━━━━━━━━━━━
-
-{gpt_analysis}
-
-━━━━━━━━━━━━━━━━━━━
-📊 예측 검증 (지난 리포트 대비)
-{verification}
-
-━━━━━━━━━━━━━━━━━━━
-💰 금일 수익 및 미실현 손익
-- 진입 자산: ${profit_info.get('initial_balance', 0):.1f}
-- 현재 포지션: {profit_info.get('position_info', '포지션 없음')}
-- 미실현 손익: ${profit_info.get('unrealized_pnl', 0):.1f} (약 {profit_info.get('unrealized_pnl', 0) * self.config.usd_to_krw:.0f}원)
-- 실현 손익: ${profit_info.get('realized_pnl', 0):.1f} (약 {profit_info.get('realized_pnl', 0) * self.config.usd_to_krw:.0f}원)
-- 금일 총 수익: ${profit_info.get('total_profit_usd', 0):.1f} (약 {profit_info.get('total_profit_usd', 0) * self.config.usd_to_krw:.0f}원)
-- 수익률: {profit_info.get('profit_rate', 0):+.2f}%
-
-━━━━━━━━━━━━━━━━━━━
-🧠 멘탈 케어 코멘트
-{mental_comment}"""
-            
-            return report
-            
-        except Exception as e:
-            logger.error(f"정규 리포트 생성 실패: {e}")
+            self.logger.error(f"예측 생성 실패: {str(e)}")
+            self.logger.debug(f"예측 생성 오류 상세: {traceback.format_exc()}")
             raise
     
-    async def generate_forecast_report(self) -> str:
-        """단기 예측 리포트 생성 (문서 형식에 맞게)"""
+    async def _analyze_market_data(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        """시장 데이터 기술적 분석"""
         try:
-            market_data = await self._get_market_data()
-            profit_info = await self._calculate_profit_info(market_data)
-            mental_comment = self._generate_mental_comment(profit_info)
+            analysis = {
+                'price_trend': self._analyze_price_trend(market_data),
+                'volume_analysis': self._analyze_volume(market_data),
+                'volatility': self._calculate_volatility(market_data),
+                'support_resistance': await self._find_support_resistance(),
+                'market_sentiment': self._analyze_sentiment(market_data)
+            }
             
-            # GPT 단기 예측 분석
-            gpt_forecast = await self._get_gpt_analysis(market_data, "forecast")
-            
-            # 기술적 지표 계산
-            tech_indicators = self._calculate_technical_indicators(market_data.get('klines_4h', []))
-            ticker = market_data.get('ticker', {})
-            funding = market_data.get('funding', {})
-            
-            now = datetime.now(pytz.timezone('Asia/Seoul'))
-            
-            # 분석 요약 섹션 생성
-            current_price = ticker.get('lastPr', 'N/A')
-            price_change_24h = ticker.get('change24h', 'N/A')
-            rsi = tech_indicators.get('rsi', 'N/A')
-            funding_rate = funding.get('fundingRate', 'N/A')
-            
-            # 호재/악재 판단
-            tech_status = "📈 호재" if rsi and float(rsi) < 70 else "⚠️ 악재" if rsi else "📊 중립"
-            funding_status = "⚠️ 악재" if funding_rate and abs(float(funding_rate)) > 0.0001 else "📈 호재"
-            
-            report = f"""📈 오늘의 단기 매동 예측
-📅 작성 시각: {now.strftime('%Y-%m-%d %H:%M')}
-
-━━━━━━━━━━━━━━━━━━━
-📊 분석 요약
-- 기술적 분석: 현재가 ${current_price}, RSI {rsi} → {tech_status}
-- 심리 분석: 펀딩비 {funding_rate}, 24h 변동 {price_change_24h}% → {funding_status}
-- 구조 분석: 시장 동향 분석 중 → 📊 중립
-
-━━━━━━━━━━━━━━━━━━━
-🔮 12시간 매동 전망
-- 상승 확률: 40%
-- 횡보 확률: 35%
-- 하락 확률: 25%
-📌 전략 제안: 분할 진입 + 익절 설정 필수
-레버리지 포지션은 고점 추격 유의
-
-━━━━━━━━━━━━━━━━━━━
-💰 금일 손익
-- 실현 손익: ${profit_info.get('realized_pnl', 0):.1f} ({profit_info.get('realized_pnl', 0) * self.config.usd_to_krw:.0f}원)
-- 미실현 손익: ${profit_info.get('unrealized_pnl', 0):.1f} ({profit_info.get('unrealized_pnl', 0) * self.config.usd_to_krw:.0f}원)
-- 수익률: {profit_info.get('profit_rate', 0):+.2f}%
-
-━━━━━━━━━━━━━━━━━━━
-🧠 멘탈 케어 코멘트
-{mental_comment}"""
-            
-            return report
+            return analysis
             
         except Exception as e:
-            logger.error(f"단기 예측 리포트 생성 실패: {e}")
-            raise
+            self.logger.error(f"시장 데이터 분석 실패: {str(e)}")
+            return {}
     
-    async def generate_profit_report(self) -> str:
-        """수익 현황 리포트 생성 (GPT 멘탈 코멘트 포함)"""
+    def _analyze_price_trend(self, market_data: Dict[str, Any]) -> str:
+        """가격 트렌드 분석"""
         try:
-            market_data = await self._get_market_data()
-            profit_info = await self._calculate_profit_info(market_data)
+            change_24h = market_data.get('change_24h', 0)
             
-            # GPT 기반 멘탈 케어 코멘트 생성
-            mental_comment = await self._generate_gpt_mental_comment(profit_info)
+            if change_24h > 0.05:  # 5% 이상 상승
+                return "강한 상승 트렌드"
+            elif change_24h > 0.02:  # 2% 이상 상승
+                return "상승 트렌드"
+            elif change_24h > -0.02:  # -2% ~ 2%
+                return "횡보"
+            elif change_24h > -0.05:  # -5% ~ -2%
+                return "하락 트렌드"
+            else:
+                return "강한 하락 트렌드"
+                
+        except Exception:
+            return "분석 불가"
+    
+    def _analyze_volume(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        """거래량 분석"""
+        try:
+            volume_24h = market_data.get('volume_24h', 0)
             
-            now = datetime.now(pytz.timezone('Asia/Seoul'))
+            # 평균 거래량 대비 분석 (임시로 고정값 사용)
+            avg_volume = 50000  # BTC 기준
+            volume_ratio = volume_24h / avg_volume if avg_volume > 0 else 0
             
-            report = f"""💰 현재 수익 현황 요약
-📅 작성 시각: {now.strftime('%Y-%m-%d %H:%M')}
+            if volume_ratio > 2.0:
+                volume_status = "매우 높음"
+            elif volume_ratio > 1.5:
+                volume_status = "높음"
+            elif volume_ratio > 0.8:
+                volume_status = "보통"
+            else:
+                volume_status = "낮음"
+            
+            return {
+                'volume_24h': volume_24h,
+                'volume_ratio': volume_ratio,
+                'status': volume_status
+            }
+            
+        except Exception:
+            return {'status': '분석 불가'}
+    
+    def _calculate_volatility(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        """변동성 계산"""
+        try:
+            high_24h = market_data.get('high_24h', 0)
+            low_24h = market_data.get('low_24h', 0)
+            current_price = market_data.get('current_price', 0)
+            
+            if current_price > 0:
+                volatility = ((high_24h - low_24h) / current_price) * 100
+                
+                if volatility > 10:
+                    volatility_level = "매우 높음"
+                elif volatility > 5:
+                    volatility_level = "높음"
+                elif volatility > 2:
+                    volatility_level = "보통"
+                else:
+                    volatility_level = "낮음"
+                
+                return {
+                    'volatility_percent': volatility,
+                    'level': volatility_level,
+                    'high_24h': high_24h,
+                    'low_24h': low_24h
+                }
+            
+        except Exception:
+            pass
+            
+        return {'level': '분석 불가'}
+    
+    async def _find_support_resistance(self) -> Dict[str, Any]:
+        """지지/저항선 찾기"""
+        try:
+            # 과거 캔들 데이터를 사용한 지지/저항선 계산
+            # 실제 구현에서는 과거 데이터를 분석해야 함
+            current_price = await self._get_current_price()
+            
+            if current_price:
+                # 간단한 지지/저항선 계산 (실제로는 더 복잡한 알고리즘 필요)
+                support = current_price * 0.95  # 현재가의 95%
+                resistance = current_price * 1.05  # 현재가의 105%
+                
+                return {
+                    'support': support,
+                    'resistance': resistance,
+                    'current_price': current_price
+                }
+                
+        except Exception as e:
+            self.logger.warning(f"지지/저항선 계산 실패: {str(e)}")
+            
+        return {}
+    
+    async def _get_current_price(self) -> Optional[float]:
+        """현재 가격 조회"""
+        try:
+            ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+            
+            if isinstance(ticker_data, list):
+                if ticker_data:
+                    ticker_data = ticker_data[0]
+                else:
+                    return None
+            
+            price_fields = ['last', 'lastPr', 'price', 'close']
+            for field in price_fields:
+                if field in ticker_data:
+                    return float(ticker_data[field])
+                    
+        except Exception as e:
+            self.logger.error(f"현재 가격 조회 실패: {str(e)}")
+            
+        return None
+    
+    def _analyze_sentiment(self, market_data: Dict[str, Any]) -> str:
+        """시장 심리 분석"""
+        try:
+            change_24h = market_data.get('change_24h', 0)
+            volume_analysis = self._analyze_volume(market_data)
+            
+            # 가격 변동과 거래량을 종합한 심리 분석
+            if change_24h > 0.03 and volume_analysis.get('volume_ratio', 0) > 1.5:
+                return "매우 낙관적"
+            elif change_24h > 0.01:
+                return "낙관적"
+            elif change_24h > -0.01:
+                return "중립적"
+            elif change_24h > -0.03:
+                return "비관적"
+            else:
+                return "매우 비관적"
+                
+        except Exception:
+            return "분석 불가"
+    
+    def _create_prediction_prompt(self, market_data: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+        """AI 예측을 위한 프롬프트 생성"""
+        return f"""
+다음 비트코인 시장 데이터와 기술적 분석을 바탕으로 향후 24시간 예측을 제공해주세요:
 
-━━━━━━━━━━━━━━━━━━━
-📌 포지션 정보
-{profit_info.get('position_details', '보유 중인 포지션이 없습니다.')}
+**현재 시장 상황:**
+- 현재 가격: ${market_data.get('current_price', 'N/A'):,}
+- 24시간 변동: {market_data.get('change_24h', 0):.2%}
+- 거래량: {market_data.get('volume_24h', 'N/A')} BTC
 
-━━━━━━━━━━━━━━━━━━━
-💸 손익 정보
-- 미실현 손익: ${profit_info.get('unrealized_pnl', 0):.1f} ({profit_info.get('unrealized_pnl', 0) * self.config.usd_to_krw:.0f}원)
-- 실현 손익: ${profit_info.get('realized_pnl', 0):.1f} ({profit_info.get('realized_pnl', 0) * self.config.usd_to_krw:.0f}원)
-- 금일 총 수익: ${profit_info.get('total_profit_usd', 0):.1f} ({profit_info.get('total_profit_usd', 0) * self.config.usd_to_krw:.0f}원)
-- 총 자산: ${profit_info.get('total_equity', 0):.1f}
-- 금일 수익률: {profit_info.get('profit_rate', 0):+.2f}%
-- 지금까지 총 수익률: {profit_info.get('total_return_rate', 0):+.2f}%
-- 지금까지 총 수익금: ${profit_info.get('realized_pnl', 0):.1f} ({profit_info.get('realized_pnl', 0) * self.config.usd_to_krw:.0f}원)
+**기술적 분석:**
+- 가격 트렌드: {analysis.get('price_trend', 'N/A')}
+- 거래량 상태: {analysis.get('volume_analysis', {}).get('status', 'N/A')}
+- 변동성: {analysis.get('volatility', {}).get('level', 'N/A')}
+- 시장 심리: {analysis.get('market_sentiment', 'N/A')}
 
-━━━━━━━━━━━━━━━━━━━
-🧠 멘탈 케어
-{mental_comment}
-━━━━━━━━━━━━━━━━━━━"""
+다음 요소들을 포함해서 분석해주세요:
+1. 단기 가격 전망 (24시간)
+2. 주요 위험 요소
+3. 거래 시 주의사항
+4. 신뢰도 평가
+
+간결하고 명확하게 한국어로 답변해주세요.
+"""
+    
+    def _calculate_confidence(self, analysis: Dict[str, Any]) -> str:
+        """예측 신뢰도 계산"""
+        try:
+            # 분석 요소들의 완성도를 바탕으로 신뢰도 계산
+            complete_factors = 0
+            total_factors = 5
             
-            return report
+            if analysis.get('price_trend') and analysis['price_trend'] != '분석 불가':
+                complete_factors += 1
+            if analysis.get('volume_analysis', {}).get('status') != '분석 불가':
+                complete_factors += 1
+            if analysis.get('volatility', {}).get('level') != '분석 불가':
+                complete_factors += 1
+            if analysis.get('support_resistance'):
+                complete_factors += 1
+            if analysis.get('market_sentiment') != '분석 불가':
+                complete_factors += 1
+            
+            confidence_ratio = complete_factors / total_factors
+            
+            if confidence_ratio >= 0.8:
+                return "높음"
+            elif confidence_ratio >= 0.6:
+                return "보통"
+            else:
+                return "낮음"
+                
+        except Exception:
+            return "낮음"
+    
+    def _assess_risk_level(self, market_data: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+        """위험 수준 평가"""
+        try:
+            volatility_level = analysis.get('volatility', {}).get('level', '')
+            volume_ratio = analysis.get('volume_analysis', {}).get('volume_ratio', 0)
+            change_24h = abs(market_data.get('change_24h', 0))
+            
+            risk_score = 0
+            
+            # 변동성 기반 위험도
+            if volatility_level == "매우 높음":
+                risk_score += 3
+            elif volatility_level == "높음":
+                risk_score += 2
+            elif volatility_level == "보통":
+                risk_score += 1
+            
+            # 거래량 기반 위험도
+            if volume_ratio > 3:
+                risk_score += 2
+            elif volume_ratio > 2:
+                risk_score += 1
+            
+            # 가격 변동 기반 위험도
+            if change_24h > 0.1:  # 10% 이상
+                risk_score += 3
+            elif change_24h > 0.05:  # 5% 이상
+                risk_score += 2
+            elif change_24h > 0.02:  # 2% 이상
+                risk_score += 1
+            
+            if risk_score >= 6:
+                return "매우 높음"
+            elif risk_score >= 4:
+                return "높음"
+            elif risk_score >= 2:
+                return "보통"
+            else:
+                return "낮음"
+                
+        except Exception:
+            return "보통"
+    
+    def _get_recommendation(self, analysis: Dict[str, Any]) -> str:
+        """투자 추천 생성"""
+        try:
+            price_trend = analysis.get('price_trend', '')
+            volatility_level = analysis.get('volatility', {}).get('level', '')
+            market_sentiment = analysis.get('market_sentiment', '')
+            
+            if '강한 상승' in price_trend and market_sentiment in ['매우 낙관적', '낙관적']:
+                return "매수 고려 (단, 리스크 관리 필수)"
+            elif '강한 하락' in price_trend and market_sentiment in ['매우 비관적', '비관적']:
+                return "매도 고려 또는 관망"
+            elif volatility_level in ['매우 높음', '높음']:
+                return "관망 권장 (높은 변동성)"
+            elif '횡보' in price_trend:
+                return "관망 또는 소량 분할 매수"
+            else:
+                return "신중한 접근 권장"
+                
+        except Exception:
+            return "신중한 접근 권장"
+
+    async def calculate_profit_info(self, position_data: Dict[str, Any]) -> Dict[str, Any]:
+        """수익 정보 계산 (누락된 메서드 추가)"""
+        try:
+            current_price = await self._get_current_price()
+            if not current_price:
+                return {'error': '현재 가격을 가져올 수 없습니다'}
+            
+            entry_price = position_data.get('entry_price', 0)
+            position_size = position_data.get('size', 0)
+            side = position_data.get('side', 'long')  # 'long' 또는 'short'
+            
+            if entry_price == 0 or position_size == 0:
+                return {'error': '포지션 정보가 불완전합니다'}
+            
+            # 수익률 계산
+            if side.lower() == 'long':
+                pnl_rate = (current_price - entry_price) / entry_price
+            else:  # short
+                pnl_rate = (entry_price - current_price) / entry_price
+            
+            # 실제 수익 계산 (USD 기준)
+            pnl_usd = position_size * (current_price - entry_price) if side.lower() == 'long' else position_size * (entry_price - current_price)
+            
+            return {
+                'current_price': current_price,
+                'entry_price': entry_price,
+                'position_size': position_size,
+                'side': side,
+                'pnl_rate': pnl_rate,
+                'pnl_usd': pnl_usd,
+                'status': 'profit' if pnl_usd > 0 else 'loss' if pnl_usd < 0 else 'breakeven'
+            }
             
         except Exception as e:
-            logger.error(f"수익 리포트 생성 실패: {e}")
-            raise
+            self.logger.error(f"수익 정보 계산 실패: {str(e)}")
+            return {'error': f'수익 계산 중 오류 발생: {str(e)}'}
