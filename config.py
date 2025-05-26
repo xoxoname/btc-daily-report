@@ -1,52 +1,44 @@
-# config.py - 설정 관리 (V2 API 대응)
 import os
-from dataclasses import dataclass
+from dotenv import load_dotenv
 
-@dataclass
+# .env 파일 로드
+load_dotenv()
+
 class Config:
-    """애플리케이션 설정"""
-    
-    # Bitget API 설정
-    bitget_api_key: str = os.getenv('BITGET_APIKEY', '')
-    bitget_api_secret: str = os.getenv('BITGET_APISECRET', '')
-    bitget_passphrase: str = os.getenv('BITGET_PASSPHRASE', '')
-    bitget_base_url: str = 'https://api.bitget.com'
-    
-    # OpenAI API 설정
-    openai_api_key: str = os.getenv('OPENAI_API_KEY', '')
-    openai_model: str = 'gpt-4'
-    
-    # Telegram 설정
-    telegram_bot_token: str = os.getenv('TELEGRAM_BOT_TOKEN', '')
-    telegram_chat_id: str = os.getenv('TELEGRAM_CHAT_ID', '1038440081')
-    
-    # 거래 설정 (V2 API에 맞게 수정)
-    symbol: str = 'BTCUSDT'  # V2에서는 _UMCBL 없이 사용
-    product_type: str = 'USDT-FUTURES'  # V2에서는 USDT-FUTURES 형식 사용
-    
-    # 예외 감지 임계값
-    price_change_threshold: float = 2.0  # 2% 변동
-    volume_threshold: float = 1000  # 1000 BTC 이체
-    
-    # 환율 (대략적 환산용)
-    usd_to_krw: float = 1350
-    
-    def __post_init__(self):
-        """설정 검증"""
-        required_vars = [
-            'bitget_api_key', 'bitget_api_secret', 'bitget_passphrase',
-            'openai_api_key', 'telegram_bot_token'
-        ]
+    def __init__(self):
+        # Telegram 설정
+        self.TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+        self.TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
         
-        missing_vars = []
-        for var in required_vars:
-            if not getattr(self, var):
-                missing_vars.append(var.upper())
+        # Bitget API 설정
+        self.BITGET_API_KEY = os.getenv('BITGET_API_KEY')
+        self.BITGET_SECRET_KEY = os.getenv('BITGET_SECRET_KEY')
+        self.BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
         
-        if missing_vars:
-            raise ValueError(f"필수 환경변수가 설정되지 않았습니다: {', '.join(missing_vars)}")
+        # OpenAI 설정
+        self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+        
+        # 설정 검증
+        self._validate_config()
     
-    @property
-    def is_production(self) -> bool:
-        """프로덕션 환경 여부"""
-        return os.getenv('ENVIRONMENT', 'development') == 'production'
+    def _validate_config(self):
+        """필수 설정 검증"""
+        required_configs = {
+            'TELEGRAM_TOKEN': self.TELEGRAM_TOKEN,
+            'TELEGRAM_CHAT_ID': self.TELEGRAM_CHAT_ID,
+            'BITGET_API_KEY': self.BITGET_API_KEY,
+            'BITGET_SECRET_KEY': self.BITGET_SECRET_KEY,
+            'BITGET_PASSPHRASE': self.BITGET_PASSPHRASE
+        }
+        
+        missing_configs = []
+        for config_name, config_value in required_configs.items():
+            if not config_value:
+                missing_configs.append(config_name)
+        
+        if missing_configs:
+            raise ValueError(f"다음 환경변수가 설정되지 않았습니다: {', '.join(missing_configs)}")
+        
+        # OpenAI는 선택사항이므로 경고만 출력
+        if not self.OPENAI_API_KEY:
+            print("경고: OPENAI_API_KEY가 설정되지 않았습니다. AI 분석 기능이 제한됩니다.")
