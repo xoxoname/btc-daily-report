@@ -454,7 +454,8 @@ class RealisticNewsCollector:
                 'alpha_vantage_today': 0,
                 'last_reset': today
             })
-            logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']→0, NewsData {old_usage['newsdata_today']}→0")
+            # f-string 오류 수정: 이 부분이 문제였을 것입니다
+            logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']}→0, NewsData {old_usage['newsdata_today']}→0")
     
     def _is_critical_news(self, article: Dict) -> bool:
         """크리티컬 뉴스 판단 - 더 정확한 필터링"""
