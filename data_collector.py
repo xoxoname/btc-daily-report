@@ -32,17 +32,24 @@ class RealTimeDataCollector:
         self.events_buffer = []
         self.last_price = None
         self.price_history = []
+        self.bitget_client = None
         
     async def start(self):
         """데이터 수집 시작"""
-        self.session = aiohttp.ClientSession()
+        if not self.session:
+            self.session = aiohttp.ClientSession()
         
         # 병렬로 여러 데이터 소스 모니터링
-        await asyncio.gather(
-            self.monitor_news(),
-            self.monitor_price_changes(),
-            self.monitor_sentiment()
-        )
+        tasks = []
+        tasks.append(self.monitor_news())
+        
+        # Bitget 클라이언트가 설정된 경우에만 가격 모니터링 시작
+        if self.bitget_client:
+            tasks.append(self.monitor_price_changes())
+        
+        tasks.append(self.monitor_sentiment())
+        
+        await asyncio.gather(*tasks, return_exceptions=True)
     
     async def monitor_news(self):
         """뉴스 모니터링 (NewsAPI)"""
@@ -87,29 +94,34 @@ class RealTimeDataCollector:
         """가격 급변동 모니터링 (Bitget 데이터 활용)"""
         while True:
             try:
-                # Bitget 클라이언트에서 가격 가져오기
-                if hasattr(self, 'bitget_client'):
-                    ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+                # Bitget 클라이언트 확인
+                if not self.bitget_client:
+                    logger.warning("Bitget 클라이언트가 설정되지 않음")
+                    await asyncio.sleep(60)
+                    continue
+                
+                ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+                
+                if isinstance(ticker_data, dict):
+                    current_price = float(ticker_data.get('last', 0))
                     
-                    if isinstance(ticker_data, dict):
-                        current_price = float(ticker_data.get('last', 0))
+                    if self.last_price and current_price > 0:
+                        change_percent = ((current_price - self.last_price) / self.last_price) * 100
                         
-                        if self.last_price:
-                            change_percent = ((current_price - self.last_price) / self.last_price) * 100
-                            
-                            # 15분 내 2% 이상 변동 시 알림
-                            if abs(change_percent) >= 2:
-                                event = MarketEvent(
-                                    timestamp=datetime.now(),
-                                    severity=EventSeverity.HIGH if abs(change_percent) >= 3 else EventSeverity.MEDIUM,
-                                    category="price_movement",
-                                    title=f"BTC {'급등' if change_percent > 0 else '급락'} {abs(change_percent):.1f}%",
-                                    description=f"15분 내 ${self.last_price:,.0f} → ${current_price:,.0f}",
-                                    impact="➕호재" if change_percent > 0 else "➖악재",
-                                    source="Bitget"
-                                )
-                                self.events_buffer.append(event)
-                        
+                        # 15분 내 2% 이상 변동 시 알림
+                        if abs(change_percent) >= 2:
+                            event = MarketEvent(
+                                timestamp=datetime.now(),
+                                severity=EventSeverity.HIGH if abs(change_percent) >= 3 else EventSeverity.MEDIUM,
+                                category="price_movement",
+                                title=f"BTC {'급등' if change_percent > 0 else '급락'} {abs(change_percent):.1f}%",
+                                description=f"15분 내 ${self.last_price:,.0f} → ${current_price:,.0f}",
+                                impact="➕호재" if change_percent > 0 else "➖악재",
+                                source="Bitget"
+                            )
+                            self.events_buffer.append(event)
+                    
+                    if current_price > 0:
                         self.last_price = current_price
                         self.price_history.append({
                             'price': current_price,
@@ -134,24 +146,25 @@ class RealTimeDataCollector:
                 # Fear & Greed Index (무료 API)
                 url = "https://api.alternative.me/fng/"
                 
-                async with self.session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        fng_value = int(data['data'][0]['value'])
-                        fng_class = data['data'][0]['value_classification']
-                        
-                        # 극단적 심리 상태
-                        if fng_value <= 20 or fng_value >= 80:
-                            event = MarketEvent(
-                                timestamp=datetime.now(),
-                                severity=EventSeverity.MEDIUM,
-                                category="sentiment",
-                                title=f"극단적 시장 심리: {fng_class} ({fng_value})",
-                                description="시장 심리 전환점 가능성",
-                                impact="➕호재" if fng_value <= 20 else "➖악재",
-                                source="Fear & Greed Index"
-                            )
-                            self.events_buffer.append(event)
+                if self.session:
+                    async with self.session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            fng_value = int(data['data'][0]['value'])
+                            fng_class = data['data'][0]['value_classification']
+                            
+                            # 극단적 심리 상태
+                            if fng_value <= 20 or fng_value >= 80:
+                                event = MarketEvent(
+                                    timestamp=datetime.now(),
+                                    severity=EventSeverity.MEDIUM,
+                                    category="sentiment",
+                                    title=f"극단적 시장 심리: {fng_class} ({fng_value})",
+                                    description="시장 심리 전환점 가능성",
+                                    impact="➕호재" if fng_value <= 20 else "➖악재",
+                                    source="Fear & Greed Index"
+                                )
+                                self.events_buffer.append(event)
                 
             except Exception as e:
                 logger.error(f"심리 지표 모니터링 오류: {e}")
