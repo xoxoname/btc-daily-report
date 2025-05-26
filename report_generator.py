@@ -53,7 +53,7 @@ class EnhancedReportGenerator:
             if not self.bitget_client:
                 return 0.0
             
-            # 오늘 손익 내역 조회
+            # 오늘 손익 내역 조회 (1일)
             today_pnl = await self.bitget_client.get_profit_loss_history('BTCUSDT', 1)
             
             # 오늘 실현 손익 반환
@@ -70,21 +70,20 @@ class EnhancedReportGenerator:
         """최근 7일 수익 데이터 조회 - 실제 API 사용"""
         try:
             if not self.bitget_client:
-                return {'total': 1100.0, 'average': 157.14}
+                return {'total': 0.0, 'average': 0.0}
             
             # 7일 손익 내역 조회
             weekly_pnl = await self.bitget_client.get_profit_loss_history('BTCUSDT', 7)
             
-            total = weekly_pnl.get('total_pnl', 1100.0)
-            average = weekly_pnl.get('average_daily', 157.14)
+            total = weekly_pnl.get('total_pnl', 0.0)
+            average = weekly_pnl.get('average_daily', 0.0)
             
             logger.info(f"7일 수익 조회 완료: ${total}, 평균: ${average}")
             return {'total': total, 'average': average}
             
         except Exception as e:
             logger.error(f"주간 수익 조회 실패: {e}")
-            # 사용자가 제공한 정보 사용
-            return {'total': 1100.0, 'average': 157.14}
+            return {'total': 0.0, 'average': 0.0}
     
     async def _get_total_profit_data(self) -> Dict:
         """전체 누적 수익 데이터 조회 - 실제 계정 정보 기반"""
@@ -138,6 +137,72 @@ class EnhancedReportGenerator:
         except Exception as e:
             logger.error(f"포지션 기반 손익 추정 실패: {e}")
             return 0.0
+    
+    def _get_mmr_rate(self, position_size: float, leverage: int) -> float:
+        """유지 증거금 비율 계산 - 비트겟 기준"""
+        # 비트겟 BTCUSDT 유지 증거금 비율 (포지션 크기별)
+        if position_size <= 1:
+            return 0.005  # 0.5%
+        elif position_size <= 5:
+            return 0.01   # 1.0%
+        elif position_size <= 10:
+            return 0.015  # 1.5%
+        elif position_size <= 20:
+            return 0.025  # 2.5%
+        else:
+            return 0.05   # 5.0%
+    
+    async def _calculate_accurate_liquidation_price(self, position: Dict, account_info: Dict, market_data: Dict) -> float:
+        """정확한 청산가 계산 - 비트겟 공식 적용"""
+        try:
+            # 1. API에서 제공하는 청산가 먼저 확인
+            api_liquidation_price = float(position.get('liquidationPrice', 0))
+            if api_liquidation_price > 0:
+                logger.info(f"API 청산가 사용: ${api_liquidation_price:,.2f}")
+                return api_liquidation_price
+            
+            # 2. 수동 계산 (비트겟 공식)
+            entry_price = float(position.get('openPriceAvg', 0))
+            position_size = float(position.get('total', 0))
+            margin = float(position.get('marginSize', 0))
+            side = position.get('holdSide', 'long').lower()
+            leverage = int(position.get('leverage', 1))
+            
+            # 가용 잔고 (MMR 계산용)
+            available_balance = float(account_info.get('available_balance', 0))
+            total_equity = float(account_info.get('total_equity', 0))
+            
+            # 유지 증거금 비율 (MMR) - 비트겟 기준
+            mmr_rate = self._get_mmr_rate(position_size, leverage)
+            
+            # 청산가 계산
+            if side == 'short':
+                # 숏 포지션 청산가 공식
+                # 청산가 = 진입가 × (1 + (증거금 + 가용잔고) / (포지션크기 × 진입가) - MMR)
+                liquidation_price = entry_price * (
+                    1 + (margin + available_balance) / (position_size * entry_price) - mmr_rate
+                )
+            else:
+                # 롱 포지션 청산가 공식  
+                # 청산가 = 진입가 × (1 - (증거금 + 가용잔고) / (포지션크기 × 진입가) + MMR)
+                liquidation_price = entry_price * (
+                    1 - (margin + available_balance) / (position_size * entry_price) + mmr_rate
+                )
+            
+            logger.info(f"계산된 청산가: ${liquidation_price:,.2f} (진입가: ${entry_price:,.2f}, 증거금: ${margin:,.2f}, 가용잔고: ${available_balance:,.2f})")
+            return max(liquidation_price, 0.01)  # 최소값 보장
+                
+        except Exception as e:
+            logger.error(f"청산가 계산 오류: {e}")
+            # 안전한 폴백값
+            entry_price = float(position.get('openPriceAvg', 100000))
+            side = position.get('holdSide', 'long').lower()
+            leverage = int(position.get('leverage', 1))
+            
+            if side == 'short':
+                return entry_price * (1 + 0.8 / leverage)  # 보수적 추정
+            else:
+                return entry_price * (1 - 0.8 / leverage)  # 보수적 추정
         
     async def generate_regular_report(self) -> str:
         """정기 리포트 생성 (4시간마다)"""
@@ -270,23 +335,24 @@ class EnhancedReportGenerator:
             position_info = await self._get_real_position_info()
             market_data = await self._collect_market_data_only()
             
-            # 7일 수익 계산 (추가 구현 필요)
-            weekly_pnl = await self._calculate_weekly_pnl()
+            # 실제 손익 데이터 조회
+            daily_realized_pnl = await self._get_daily_realized_pnl()
+            weekly_profit_data = await self._get_weekly_profit_data()
             
-            # GPT 멘탈 케어 메시지
-            mental_care = await self._generate_gpt_profit_mental(account_info, position_info, weekly_pnl)
+            # GPT 멘탈 케어 메시지 (실제 데이터 기반)
+            mental_care = await self._generate_realistic_gpt_mental(account_info, position_info, daily_realized_pnl)
             
             return f"""💰 현재 보유 포지션 및 수익 요약
 📅 작성 시각: {current_time.strftime('%Y-%m-%d %H:%M')} (KST)
 ━━━━━━━━━━━━━━━━━━━
 
 📌 보유 포지션 정보
-{await self._format_position_info(position_info, market_data, account_info)}
+{await self._format_position_info_detailed(position_info, market_data, account_info)}
 
 ━━━━━━━━━━━━━━━━━━━
 
 💸 손익 정보
-{await self._format_account_pnl(account_info, position_info, market_data, weekly_pnl)}
+{await self._format_account_pnl_detailed(account_info, daily_realized_pnl, weekly_profit_data)}
 
 ━━━━━━━━━━━━━━━━━━━
 
@@ -326,6 +392,180 @@ class EnhancedReportGenerator:
 • 펀딩비 이상: 연 50% 이상
 • 거래량 급증: 평균 대비 3배
 """
+    
+    async def _format_position_info_detailed(self, position_info: Dict, market_data: Dict, account_info: Dict = None) -> str:
+        """상세 포지션 정보 포맷팅"""
+        positions = position_info.get('positions', [])
+        
+        if not positions:
+            return "• 포지션 없음"
+        
+        if not account_info:
+            account_info = market_data.get('account', {})
+        
+        formatted = []
+        for pos in positions:
+            direction = "롱" if pos['side'].lower() in ['long', 'buy'] else "숏"
+            
+            current_price = pos['mark_price']
+            entry_price = pos['entry_price']
+            size = pos['size']
+            margin = pos['margin']
+            leverage = pos['leverage']
+            
+            # 정확한 청산가 계산
+            liquidation_price = await self._calculate_accurate_liquidation_price(pos, account_info, market_data)
+            
+            # 청산까지 거리 계산 (올바른 공식)
+            if direction == "숏":
+                # 숏포지션: 가격이 청산가까지 상승하는 비율
+                price_move_to_liq = ((liquidation_price - current_price) / current_price) * 100
+                direction_text = "상승"
+            else:
+                # 롱포지션: 가격이 청산가까지 하락하는 비율  
+                price_move_to_liq = ((current_price - liquidation_price) / current_price) * 100
+                direction_text = "하락"
+            
+            # 한화 환산
+            krw_rate = 1350
+            margin_krw = margin * krw_rate / 10000
+            
+            formatted.append(f"""• 종목: {pos['symbol']}
+• 방향: {direction} {'(상승 베팅)' if direction == '롱' else '(하락 베팅)'}
+• 진입가: ${entry_price:,.2f} / 현재가: ${current_price:,.2f}
+• 포지션 크기: {size:.4f} BTC
+• 진입 증거금: ${margin:,.2f} ({margin_krw:.1f}만원)
+• 레버리지: {leverage}배
+• 청산가: ${liquidation_price:,.2f}
+• 청산까지 거리: {abs(price_move_to_liq):.1f}% {direction_text}시 청산""")
+        
+        return "\n".join(formatted)
+    
+    async def _format_account_pnl_detailed(self, account_info: Dict, daily_realized_pnl: float, weekly_profit_data: Dict) -> str:
+        """상세 계정 손익 정보 포맷팅"""
+        if 'error' in account_info:
+            return f"• 계정 정보 조회 실패: {account_info['error']}"
+        
+        total_equity = account_info.get('total_equity', 0)
+        available = account_info.get('available_balance', 0)
+        unrealized_pnl = account_info.get('unrealized_pnl', 0)
+        
+        # 금일 총 수익 = 일일 실현 + 미실현
+        daily_total = daily_realized_pnl + unrealized_pnl
+        
+        # 수익률 계산
+        initial_capital = 4000.0  # 초기 투자금
+        total_profit = total_equity - initial_capital
+        
+        if initial_capital > 0:
+            total_return = (total_profit / initial_capital) * 100
+            daily_return = (daily_total / initial_capital) * 100
+        else:
+            total_return = 0
+            daily_return = 0
+        
+        # 한화 환산
+        krw_rate = 1350
+        
+        return f"""• 미실현 손익: ${unrealized_pnl:+,.2f} ({unrealized_pnl * krw_rate / 10000:+.1f}만원)
+• 실현 손익: ${daily_realized_pnl:+,.2f} ({daily_realized_pnl * krw_rate / 10000:+.1f}만원)
+• 금일 총 수익: ${daily_total:+,.2f} ({daily_total * krw_rate / 10000:+.1f}만원)
+• 총 자산: ${total_equity:,.2f} ({total_equity * krw_rate / 10000:.0f}만원)
+• 가용 자산: ${available:,.2f} ({available * krw_rate / 10000:.1f}만원)
+• 금일 수익률: {daily_return:+.2f}%
+• 전체 누적 수익: ${total_profit:+,.2f} ({total_profit * krw_rate / 10000:+.1f}만원)
+• 전체 누적 수익률: {total_return:+.2f}%
+━━━━━━━━━━━━━━━━━━━
+📊 최근 7일 수익: ${weekly_profit_data['total']:+,.2f} ({weekly_profit_data['total'] * krw_rate / 10000:+.1f}만원)
+📊 최근 7일 평균: ${weekly_profit_data['average']:+,.2f}/일 ({weekly_profit_data['average'] * krw_rate / 10000:+.1f}만원/일)"""
+    
+    async def _generate_realistic_gpt_mental(self, account_info: Dict, position_info: Dict, daily_realized_pnl: float) -> str:
+        """현실적인 GPT 멘탈 케어 - 실제 상황 반영"""
+        if not self.openai_client or 'error' in account_info:
+            return '"차분하게 전략에 따라 매매하세요. 감정적 거래는 금물입니다! 💪"'
+        
+        try:
+            positions = position_info.get('positions', [])
+            unrealized_pnl = account_info.get('unrealized_pnl', 0)
+            total_equity = account_info.get('total_equity', 0)
+            available_balance = account_info.get('available_balance', 0)
+            
+            # 포지션 상세 정보
+            position_desc = "포지션 없음"
+            risk_level = "낮음"
+            
+            if positions:
+                pos = positions[0]
+                side = "숏" if pos['side'].lower() == 'short' else "롱"
+                entry_price = pos['entry_price']
+                current_price = pos['mark_price']
+                leverage = pos['leverage']
+                margin = pos['margin']
+                
+                position_desc = f"{side} 포지션 (진입가 ${entry_price:,.0f}, 현재가 ${current_price:,.0f}, {leverage}배 레버리지)"
+                
+                # 위험도 계산
+                if leverage >= 25:
+                    risk_level = "매우 높음"
+                elif leverage >= 15:
+                    risk_level = "높음"  
+                elif leverage >= 5:
+                    risk_level = "보통"
+                else:
+                    risk_level = "낮음"
+            
+            # 수익 상태 분석
+            profit_status = "수익" if unrealized_pnl > 0 else "손실" if unrealized_pnl < 0 else "균형"
+            
+            prompt = f"""
+당신은 친근하고 현실적인 트레이딩 멘토입니다. 한국의 20-30대 트레이더에게 조언하는 상황입니다.
+
+현재 상황:
+- 총 자산: ${total_equity:,.0f} (약 {total_equity*1.35/10000:.0f}만원)
+- 가용 자산: ${available_balance:,.0f}
+- 미실현 손익: ${unrealized_pnl:+,.0f} (약 {unrealized_pnl*1.35/10000:+.1f}만원) - {profit_status} 상태
+- 오늘 실현 손익: ${daily_realized_pnl:+,.0f}
+- 현재 포지션: {position_desc}
+- 위험도: {risk_level}
+
+이 트레이더의 성격:
+- 수익이 나면 욕심부려서 레버리지를 더 올리려는 경향
+- 손실이 나면 복수매매로 더 큰 포지션 진입하려는 경향  
+- 감정적으로 매매하는 습관
+
+다음 조건으로 멘탈 케어 메시지를 작성해주세요:
+1. 현재 손익 상황에 맞는 현실적 조언 (치킨값, 월세, 알바비 등 일상 비교)
+2. 충동적 매매를 억제하는 구체적 방법
+3. 친근하고 따뜻한 말투 (형/누나가 조언하는 느낌)
+4. 이모티콘 적절히 사용
+5. 3-4문장으로 간결하게
+
+절대 형식적이거나 일반적인 조언 말고, 이 트레이더의 실제 상황과 성격에 맞춘 개인화된 조언을 해주세요.
+"""
+            
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "당신은 따뜻하고 현실적인 트레이딩 멘토입니다. 개인화된 조언을 제공합니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=250,
+                temperature=0.8
+            )
+            
+            message = response.choices[0].message.content.strip()
+            return f'"{message}"'
+            
+        except Exception as e:
+            logger.error(f"GPT 멘탈 케어 생성 실패: {e}")
+            # 상황별 폴백 메시지
+            unrealized_pnl = account_info.get('unrealized_pnl', 0)
+            if unrealized_pnl > 0:
+                return '"수익이 날 때가 가장 위험해요! 🎯 욕심보다는 안전하게 일부 실현하고 다음 기회를 기다리는 게 어떨까요? 치킨 몇 번 먹을 돈은 벌었으니 만족하셔도 될 것 같아요 😊"'
+            elif unrealized_pnl < 0:
+                return '"손실이 있어도 괜찮아요 💪 지금 복수매매 하면 더 큰 손실로 이어질 수 있어요. 차분히 숨 고르고 다음 기회를 기다려보세요. 월세 낼 돈은 건드리지 마시고요! 😤"'
+            else:
+                return '"지금이 가장 좋은 타이밍이에요 ⚖️ 균형 잡힌 상태에서 냉정하게 다음 기회를 포착해보세요. 급할 것 없으니 천천히 가시죠! 🚀"'
     
     async def _collect_real_news(self) -> List[Dict]:
         """실시간 뉴스 수집"""
@@ -785,37 +1025,6 @@ JSON 형식으로 답변:
 • 청산까지 거리: {abs(price_move_to_liq):.1f}% {'상승' if direction == '숏' else '하락'}시 청산""")
         
         return "\n".join(formatted)
-    
-    async def _calculate_accurate_liquidation_price(self, position: Dict, account_info: Dict, market_data: Dict) -> float:
-        """정확한 청산가 계산 - 비트겟 실제 청산가 사용"""
-        try:
-            # 비트겟 API에서 제공하는 실제 청산가 사용
-            api_liquidation_price = float(position.get('liquidationPrice', 0))
-            
-            # API 청산가가 유효한 경우 사용
-            if api_liquidation_price > 0:
-                logger.debug(f"비트겟 API 청산가 사용: ${api_liquidation_price}")
-                return api_liquidation_price
-            
-            # 폴백: 간단한 계산
-            entry_price = float(position.get('openPriceAvg', 0))
-            side = position.get('holdSide', 'long').lower()
-            
-            if side == 'short':
-                return entry_price * 1.5  # 50% 상승시 청산 (보수적)
-            else:
-                return entry_price * 0.5  # 50% 하락시 청산 (보수적)
-                
-        except Exception as e:
-            logger.error(f"청산가 계산 오류: {e}")
-            # 안전한 폴백값
-            entry_price = float(position.get('openPriceAvg', 100000))
-            side = position.get('holdSide', 'long').lower()
-            
-            if side == 'short':
-                return entry_price * 1.5
-            else:
-                return entry_price * 0.5
     
     async def _format_account_pnl(self, account_info: Dict, position_info: Dict, market_data: Dict, weekly_pnl: Dict) -> str:
         """계정 손익 정보 포맷팅 - 실제 API 데이터 기반"""
