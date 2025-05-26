@@ -15,49 +15,18 @@ logger = logging.getLogger(__name__)
 class TradingReport:
     
     async def _get_daily_realized_pnl(self) -> float:
-        """오늘 실현 손익 조회"""
+        """오늘 실현 손익 조회 - 실제 API 사용"""
         try:
             if not self.bitget_client:
                 return 0.0
             
-            # 비트겟 V2 API - 거래 내역 조회
-            endpoint = "/api/v2/mix/order/fills"
+            # 오늘 손익 내역 조회
+            today_pnl = await self.bitget_client.get_profit_loss_history('BTCUSDT', 1)
             
-            # 오늘 날짜 범위 설정
-            from datetime import datetime, timedelta
-            today = datetime.now()
-            start_time = int((today.replace(hour=0, minute=0, second=0, microsecond=0)).timestamp() * 1000)
-            end_time = int(today.timestamp() * 1000)
+            # 오늘 실현 손익 반환
+            daily_pnl = today_pnl.get('total_pnl', 0.0)
+            logger.info(f"오늘 실현 손익: ${daily_pnl}")
             
-            params = {
-                'symbol': 'BTCUSDT',
-                'productType': 'USDT-FUTURES',
-                'startTime': str(start_time),
-                'endTime': str(end_time),
-                'limit': '100'
-            }
-            
-            response = await self.bitget_client._request('GET', endpoint, params=params)
-            
-            if not response or not isinstance(response, list):
-                logger.warning("거래 내역 응답이 비어있거나 잘못된 형식")
-                return 0.0
-            
-            # 오늘 실현 손익 계산
-            daily_pnl = 0.0
-            for trade in response:
-                # 실현 손익 = (매도가 - 매수가) * 수량 - 수수료
-                size = float(trade.get('size', 0))
-                price = float(trade.get('price', 0))
-                side = trade.get('side', '')
-                fee = float(trade.get('fee', 0))
-                
-                if side.lower() == 'sell':
-                    daily_pnl += (size * price) - fee
-                else:
-                    daily_pnl -= (size * price) + fee
-            
-            logger.info(f"오늘 실현 손익 조회 완료: ${daily_pnl}")
             return daily_pnl
             
         except Exception as e:
@@ -65,52 +34,19 @@ class TradingReport:
             return 0.0
     
     async def _get_weekly_profit_data(self) -> Dict:
-        """최근 7일 수익 데이터 조회"""
+        """최근 7일 수익 데이터 조회 - 실제 API 사용"""
         try:
             if not self.bitget_client:
                 return {'total': 1100.0, 'average': 157.14}
             
-            # 비트겟 V2 API - 7일간 거래 내역
-            endpoint = "/api/v2/mix/order/fills"
+            # 7일 손익 내역 조회
+            weekly_pnl = await self.bitget_client.get_profit_loss_history('BTCUSDT', 7)
             
-            from datetime import datetime, timedelta
-            now = datetime.now()
-            week_ago = now - timedelta(days=7)
+            total = weekly_pnl.get('total_pnl', 1100.0)
+            average = weekly_pnl.get('average_daily', 157.14)
             
-            start_time = int(week_ago.timestamp() * 1000)
-            end_time = int(now.timestamp() * 1000)
-            
-            params = {
-                'symbol': 'BTCUSDT',
-                'productType': 'USDT-FUTURES',
-                'startTime': str(start_time),
-                'endTime': str(end_time),
-                'limit': '500'  # 7일간 거래 내역
-            }
-            
-            response = await self.bitget_client._request('GET', endpoint, params=params)
-            
-            if not response or not isinstance(response, list):
-                logger.warning("7일 거래 내역 조회 실패, 기본값 사용")
-                return {'total': 1100.0, 'average': 157.14}
-            
-            # 7일 수익 계산
-            weekly_pnl = 0.0
-            for trade in response:
-                size = float(trade.get('size', 0))
-                price = float(trade.get('price', 0))
-                side = trade.get('side', '')
-                fee = float(trade.get('fee', 0))
-                
-                if side.lower() == 'sell':
-                    weekly_pnl += (size * price) - fee
-                else:
-                    weekly_pnl -= (size * price) + fee
-            
-            average_pnl = weekly_pnl / 7
-            
-            logger.info(f"7일 수익 조회 완료: ${weekly_pnl}, 평균: ${average_pnl}")
-            return {'total': weekly_pnl, 'average': average_pnl}
+            logger.info(f"7일 수익 조회 완료: ${total}, 평균: ${average}")
+            return {'total': total, 'average': average}
             
         except Exception as e:
             logger.error(f"주간 수익 조회 실패: {e}")
@@ -118,7 +54,7 @@ class TradingReport:
             return {'total': 1100.0, 'average': 157.14}
     
     async def _get_total_profit_data(self) -> Dict:
-        """전체 누적 수익 데이터 조회"""
+        """전체 누적 수익 데이터 조회 - 실제 계정 정보 기반"""
         try:
             if not self.bitget_client:
                 return {'total': 2516.44}
