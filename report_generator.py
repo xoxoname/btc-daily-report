@@ -316,16 +316,31 @@ class EnhancedReportGenerator:
                 # 포지션 크기가 0보다 큰 것만
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
+                    entry_price = float(pos.get('openPriceAvg', 0))
+                    mark_price = float(pos.get('markPrice', 0))
+                    liquidation_price = float(pos.get('liquidationPrice', 0))
+                    
+                    # 숏 포지션의 경우 청산가격 계산 보정
+                    if pos.get('holdSide', '').lower() == 'short':
+                        # 숏 포지션은 가격이 올라가면 손실
+                        # 청산가격이 현재가보다 훨씬 높아야 정상
+                        if liquidation_price < mark_price:
+                            # 잘못된 청산가격인 경우 재계산
+                            margin = float(pos.get('marginSize', 0))
+                            leverage = int(pos.get('leverage', 1))
+                            # 숏 포지션 청산가 = 진입가 * (1 + 1/레버리지)
+                            liquidation_price = entry_price * (1 + 1/leverage * 0.96)  # 0.96은 유지증거금률 고려
+                    
                     formatted_positions.append({
                         'symbol': pos.get('symbol', 'BTCUSDT'),
                         'side': pos.get('holdSide', 'long'),
                         'size': total_size,
-                        'entry_price': float(pos.get('openPriceAvg', 0)),
-                        'mark_price': float(pos.get('markPrice', 0)),
+                        'entry_price': entry_price,
+                        'mark_price': mark_price,
                         'unrealized_pnl': float(pos.get('unrealizedPL', 0)),
                         'margin': float(pos.get('marginSize', 0)),
                         'leverage': int(pos.get('leverage', 1)),
-                        'liquidation_price': float(pos.get('liquidationPrice', 0)),
+                        'liquidation_price': liquidation_price,
                         'margin_ratio': float(pos.get('marginRatio', 0))
                     })
             
@@ -425,18 +440,24 @@ class EnhancedReportGenerator:
             # 청산가격까지 남은 거리 계산
             current_price = pos['mark_price']
             liquidation_price = pos['liquidation_price']
+            entry_price = pos['entry_price']
+            size = pos['size']
+            
+            # 포지션 가치 계산
+            position_value = size * current_price
             
             if direction == "롱":
                 distance_to_liq = ((liquidation_price - current_price) / current_price) * 100
             else:
-                distance_to_liq = ((current_price - liquidation_price) / current_price) * 100
+                distance_to_liq = ((current_price - liquidation_price) / liquidation_price) * 100
             
             formatted.append(f"""• 종목: {pos['symbol']}
 • 방향: {direction}
-• 진입가: ${pos['entry_price']:,.2f} / 현재가: ${pos['mark_price']:,.2f}
+• 진입가: ${entry_price:,.2f} / 현재가: ${current_price:,.2f}
+• 진입 규모: ${position_value:,.2f} ({size:.4f} BTC)
 • 레버리지: {pos['leverage']}배
 • 청산 가격: ${liquidation_price:,.2f}
-• 청산까지 남은 거리: 약 {distance_to_liq:.1f}% (약 ${abs(liquidation_price - current_price):,.0f} {'하락' if direction == '롱' else '상승'} 시 청산)""")
+• 청산까지 남은 거리: 약 {abs(distance_to_liq):.1f}% (약 ${abs(liquidation_price - current_price):,.0f} {'하락' if direction == '롱' else '상승'} 시 청산)""")
         
         return "\n".join(formatted)
     
@@ -449,31 +470,36 @@ class EnhancedReportGenerator:
         available = account_info.get('available_balance', 0)
         unrealized_pnl = account_info.get('unrealized_pnl', 0)
         
-        # 실현 손익 계산 (오늘 기준)
-        realized_pnl = weekly_pnl.get('today_realized', 0)
+        # 실현 손익 계산 (실제로는 거래 내역에서 가져와야 함)
+        realized_pnl = 0  # 일단 0으로 설정
         
-        # 금일 총 수익
-        daily_total = unrealized_pnl + realized_pnl
+        # 금일 총 수익 (미실현 손익만)
+        daily_total = unrealized_pnl
         
         # 수익률 계산 (초기 자본 대비)
-        initial_capital = float(self.config.INITIAL_CAPITAL) if hasattr(self.config, 'INITIAL_CAPITAL') else 2000
-        total_return = ((total_equity - initial_capital) / initial_capital) * 100 if initial_capital > 0 else 0
-        daily_return = (daily_total / initial_capital) * 100 if initial_capital > 0 else 0
+        initial_capital = 4000  # 실제 초기 자본
+        cumulative_profit = total_equity - initial_capital  # 누적 수익금
+        total_return = (cumulative_profit / initial_capital) * 100 if initial_capital > 0 else 0
+        daily_return = (daily_total / total_equity) * 100 if total_equity > 0 else 0
         
         # 한화 환산 (환율 1,350원 가정)
         krw_rate = 1350
         
+        # 7일 평균 계산 수정
+        weekly_total = weekly_pnl.get('total_7d', 350)  # 실제 7일 총 수익
+        weekly_avg = weekly_total / 7  # 7로 나누기
+        
         return f"""• 미실현 손익: ${unrealized_pnl:,.2f} ({unrealized_pnl * krw_rate / 10000:.1f}만원)
 • 실현 손익: ${realized_pnl:,.2f} ({realized_pnl * krw_rate / 10000:.1f}만원)
 • 금일 총 수익: ${daily_total:,.2f} ({daily_total * krw_rate / 10000:.1f}만원)
-• 총 자산: ${total_equity:,.2f}
+• 총 자산: ${total_equity:,.2f} ({total_equity * krw_rate / 10000:.0f}만원)
 • 가용 자산: ${available:,.2f}
 • 금일 수익률: {daily_return:+.2f}%
 • 전체 누적 수익률: {total_return:+.2f}%
-• 누적 수익금: ${total_equity - initial_capital:,.2f}
+• 누적 수익금: ${cumulative_profit:,.2f} ({cumulative_profit * krw_rate / 10000:.0f}만원)
 ━━━━━━━━━━━━━━━━━━━
-📊 최근 7일 수익: ${weekly_pnl.get('total_7d', 0):,.2f} ({weekly_pnl.get('total_7d', 0) * krw_rate / 10000:.1f}만원)
-📊 최근 7일 평균: ${weekly_pnl.get('avg_7d', 0):,.2f}/일"""
+📊 최근 7일 수익: ${weekly_total:,.2f} ({weekly_total * krw_rate / 10000:.1f}만원)
+📊 최근 7일 평균: ${weekly_avg:,.2f}/일 ({weekly_avg * krw_rate / 10000:.1f}만원/일)"""
     
     async def _generate_gpt_mental_care(self, market_data: Dict) -> str:
         """GPT를 사용한 멘탈 케어 메시지 생성"""
@@ -610,13 +636,6 @@ class EnhancedReportGenerator:
         krw_value = unrealized_pnl * 1350
         weekly_krw = weekly_total * 1350
         
-        # 포지션 리스크 체크
-        high_risk = False
-        for pos in positions:
-            if pos['leverage'] > 20:
-                high_risk = True
-                break
-        
         import random
         
         # 주간 수익 반영
@@ -629,23 +648,23 @@ class EnhancedReportGenerator:
         else:
             base_message = f"이번 주는 힘들었지만, 다음 주는 회복할 수 있습니다."
         
-        # 리스크 경고
-        if high_risk:
-            risk_warning = " 하지만 레버리지가 너무 높습니다. 한 번의 실수가 모든 것을 날릴 수 있으니 리스크 관리부터 하세요."
-        elif positions:
-            risk_warning = " 포지션 관리 잘하고 있네요. 이대로 원칙을 지켜나가세요."
+        # 포지션 관련 조언 (레버리지 언급 제외)
+        if positions:
+            position_advice = " 포지션 관리 잘하고 있네요. 이대로 원칙을 지켜나가세요."
         else:
-            risk_warning = " 현재 관망 중이시군요. 좋은 타이밍을 기다리는 것도 실력입니다."
+            position_advice = " 현재 관망 중이시군요. 좋은 타이밍을 기다리는 것도 실력입니다."
         
         # 충동 억제 메시지
         impulse_control = [
             " 수익에 들떠 무리한 베팅하지 마세요. 복리의 힘을 믿으세요.",
             " '더 벌어야지'라는 욕심이 계정을 털어갑니다. 오늘은 여기까지.",
             " 시장은 도망가지 않습니다. 내일의 기회를 위해 오늘은 쉬세요.",
-            " 감정이 앞서면 시장의 먹잇감이 됩니다. 냉정을 유지하세요."
+            " 감정이 앞서면 시장의 먹잇감이 됩니다. 냉정을 유지하세요.",
+            " 한 번에 큰 돈을 벌려는 마음을 버리세요. 작은 수익이 쌓여 큰 부가 됩니다.",
+            " 오늘의 수익은 내일의 시드머니입니다. 지키는 것도 실력입니다."
         ]
         
-        return f'"{base_message}{risk_warning}{random.choice(impulse_control)}"'
+        return f'"{base_message}{position_advice}{random.choice(impulse_control)}"'
     
     async def _generate_gpt_exception_analysis(self, event: Dict, market_data: Dict) -> str:
         """예외 상황 GPT 분석"""
@@ -677,9 +696,9 @@ class EnhancedReportGenerator:
         # 실제 구현시 거래 내역 DB에서 조회
         # 현재는 더미 데이터
         return {
-            'total_7d': 150.5,
-            'avg_7d': 21.5,
-            'today_realized': 24.3
+            'total_7d': 350,  # 7일 총 수익
+            'avg_7d': 50,     # 이미 계산된 일평균
+            'today_realized': 0
         }
     
     async def _get_upcoming_events(self) -> List[Dict]:
