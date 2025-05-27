@@ -608,29 +608,42 @@ class EnhancedReportGenerator:
                 # 포지션 크기가 0보다 큰 것만
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
+                    # 빈 문자열 처리를 위한 안전한 float 변환 함수
+                    def safe_float(value, default=0.0):
+                        if value == '' or value is None:
+                            return default
+                        try:
+                            return float(value)
+                        except (ValueError, TypeError):
+                            return default
+                    
                     formatted_position = {
                         'symbol': pos.get('symbol', 'BTCUSDT'),
                         'side': pos.get('holdSide', 'long'),
                         'size': total_size,
-                        'entry_price': float(pos.get('openPriceAvg', 0)),
-                        'mark_price': float(pos.get('markPrice', 0)),
-                        'liquidation_price': float(pos.get('liquidationPrice', 0)),
-                        'unrealized_pnl': float(pos.get('unrealizedPL', 0)),
-                        'margin': float(pos.get('marginSize', 0)),
+                        'entry_price': safe_float(pos.get('openPriceAvg', 0)),
+                        'mark_price': safe_float(pos.get('markPrice', 0)),
+                        'liquidation_price': safe_float(pos.get('liquidationPrice', 0)),
+                        'unrealized_pnl': safe_float(pos.get('unrealizedPL', 0)),
+                        'margin': safe_float(pos.get('marginSize', 0)),
                         'leverage': int(pos.get('leverage', 1)),
-                        'margin_ratio': float(pos.get('marginRatio', 0)),
-                        'achieved_profits': float(pos.get('achievedProfits', 0)),
-                        'available': float(pos.get('available', 0)),
-                        'locked': float(pos.get('locked', 0)),
-                        'total_fee': float(pos.get('totalFee', 0))
+                        'margin_ratio': safe_float(pos.get('marginRatio', 0)),
+                        'achieved_profits': safe_float(pos.get('achievedProfits', 0)),
+                        'available': safe_float(pos.get('available', 0)),
+                        'locked': safe_float(pos.get('locked', 0)),
+                        'total_fee': safe_float(pos.get('totalFee', 0)),
+                        'deducted_fee': safe_float(pos.get('deductedFee', 0))
                     }
                     
+                    logger.info(f"포지션 처리 완료: {formatted_position['symbol']} {formatted_position['side']} 크기={formatted_position['size']}")
                     formatted_positions.append(formatted_position)
             
             return {'positions': formatted_positions}
             
         except Exception as e:
             logger.error(f"포지션 조회 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {'positions': [], 'error': str(e)}
     
     async def _format_account_pnl_detailed(self, account_info: Dict, daily_realized_pnl: float, weekly_profit_data: Dict) -> str:
