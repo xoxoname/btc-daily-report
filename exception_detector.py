@@ -1,385 +1,196 @@
 import asyncio
-import aiohttp
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import logging
-from config import Config
-from bitget_client import BitgetClient
-from telegram_bot import send_telegram_message
-from technical_analysis import TechnicalAnalyzer
-from data_fetcher import DataFetcher
-from openai_analyzer import OpenAIAnalyzer
 
 logger = logging.getLogger(__name__)
 
-class ExceptionReporter:
-    """긴급 이벤트 자동 감지 및 예외 리포트 생성"""
+class ExceptionDetector:
+    """예외 상황 감지 및 알림"""
     
-    def __init__(self, config: Config, bitget_client: BitgetClient, 
-                 analyzer: TechnicalAnalyzer, data_fetcher: DataFetcher,
-                 openai_analyzer: OpenAIAnalyzer):
-        self.config = config
-        self.bitget = bitget_client
-        self.analyzer = analyzer
-        self.data_fetcher = data_fetcher
-        self.openai = openai_analyzer
+    def __init__(self, bitget_client=None, telegram_bot=None):
+        self.bitget_client = bitget_client
+        self.telegram_bot = telegram_bot
+        self.logger = logging.getLogger('exception_detector')
         
-        # 탐지 기준값
-        self.WHALE_THRESHOLD = 1000  # BTC
-        self.VOLATILITY_THRESHOLD = 2.0  # %
-        self.VOLUME_SPIKE_THRESHOLD = 3.0  # 배수
-        self.PRICE_CHANGE_THRESHOLD = 3.0  # %
-        self.FUNDING_RATE_THRESHOLD = 0.05  # %
+        # 임계값 설정
+        self.PRICE_CHANGE_THRESHOLD = 1.0  # 1% 이상 변동
+        self.VOLUME_SPIKE_THRESHOLD = 3.0  # 평균 대비 3배
+        self.FUNDING_RATE_THRESHOLD = 0.01  # 1% 이상
+        self.LIQUIDATION_THRESHOLD = 10_000_000  # 1천만 달러
         
         # 마지막 알림 시간 추적
         self.last_alerts = {}
-        self.alert_cooldown = 300  # 5분
+        self.alert_cooldown = timedelta(minutes=5)
         
-    async def monitor_exceptions(self):
-        """예외 상황 모니터링 (무한 루프)"""
-        logger.info("예외 상황 모니터링 시작")
+    async def detect_all_anomalies(self) -> List[Dict]:
+        """모든 이상 징후 감지"""
+        anomalies = []
         
-        while True:
-            try:
-                # 여러 예외 상황 동시 체크
-                tasks = [
-                    self.check_whale_movements(),
-                    self.check_price_volatility(),
-                    self.check_volume_anomaly(),
-                    self.check_funding_rate_anomaly(),
-                    self.check_liquidations(),
-                    self.check_news_events()
-                ]
-                
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # 탐지된 예외 상황 처리
-                exceptions_detected = []
-                for i, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        logger.error(f"예외 체크 중 오류: {result}")
-                    elif result:
-                        exceptions_detected.append(result)
-                
-                # 중요 예외 상황 발생 시 리포트 생성
-                if exceptions_detected:
-                    await self.generate_exception_report(exceptions_detected)
-                
-                # 30초마다 체크
-                await asyncio.sleep(30)
-                
-            except Exception as e:
-                logger.error(f"예외 모니터링 오류: {e}")
-                await asyncio.sleep(60)
-    
-    async def check_whale_movements(self) -> Optional[Dict]:
-        """고래 이동 감지"""
         try:
-            # Whale Alert API 또는 온체인 데이터 체크
-            whale_data = await self.data_fetcher.get_whale_movements()
+            # 가격 변동 체크
+            price_anomaly = await self.check_price_volatility()
+            if price_anomaly:
+                anomalies.append(price_anomaly)
             
-            if not whale_data:
-                return None
-                
-            for movement in whale_data:
-                amount = movement.get('amount', 0)
-                from_type = movement.get('from_type', '')
-                to_type = movement.get('to_type', '')
-                
-                # 거래소로의 대량 이동 감지
-                if amount >= self.WHALE_THRESHOLD and to_type == 'exchange':
-                    if not self._is_alert_on_cooldown('whale', movement['hash']):
-                        return {
-                            'type': 'whale_movement',
-                            'severity': 'high',
-                            'amount': amount,
-                            'direction': 'to_exchange',
-                            'message': f"🐋 {amount:,.0f} BTC 대량 거래소 입금 감지",
-                            'impact': 'bearish',
-                            'timestamp': datetime.now()
-                        }
-                        
-                # 거래소에서의 대량 출금 감지
-                elif amount >= self.WHALE_THRESHOLD and from_type == 'exchange':
-                    if not self._is_alert_on_cooldown('whale', movement['hash']):
-                        return {
-                            'type': 'whale_movement',
-                            'severity': 'medium',
-                            'amount': amount,
-                            'direction': 'from_exchange',
-                            'message': f"🐋 {amount:,.0f} BTC 대량 거래소 출금 감지",
-                            'impact': 'bullish',
-                            'timestamp': datetime.now()
-                        }
-                        
+            # 거래량 이상 체크
+            volume_anomaly = await self.check_volume_anomaly()
+            if volume_anomaly:
+                anomalies.append(volume_anomaly)
+            
+            # 펀딩비 이상 체크
+            funding_anomaly = await self.check_funding_rate()
+            if funding_anomaly:
+                anomalies.append(funding_anomaly)
+            
         except Exception as e:
-            logger.error(f"고래 이동 체크 오류: {e}")
-            
-        return None
+            self.logger.error(f"이상 징후 감지 중 오류: {e}")
+        
+        return anomalies
     
     async def check_price_volatility(self) -> Optional[Dict]:
-        """급격한 가격 변동 감지"""
+        """가격 급변동 감지"""
         try:
-            current_data = await self.bitget.get_current_price()
-            current_price = current_data['current_price']
+            if not self.bitget_client:
+                return None
             
-            # 5분, 15분 가격 변화율 체크
-            klines_5m = await self.bitget.get_klines('5m', 3)
-            klines_15m = await self.bitget.get_klines('15m', 2)
+            # 현재 가격 조회
+            ticker = await self.bitget_client.get_ticker('BTCUSDT')
+            if not ticker:
+                return None
             
-            if klines_5m and len(klines_5m) >= 3:
-                price_5m_ago = float(klines_5m[-3][1])  # 5분 전 시가
-                change_5m = ((current_price - price_5m_ago) / price_5m_ago) * 100
-                
-                if abs(change_5m) >= self.VOLATILITY_THRESHOLD:
-                    if not self._is_alert_on_cooldown('volatility_5m', str(current_price)):
-                        direction = "급등" if change_5m > 0 else "급락"
-                        return {
-                            'type': 'price_volatility',
-                            'severity': 'high',
-                            'timeframe': '5분',
-                            'change_percent': change_5m,
-                            'current_price': current_price,
-                            'message': f"⚡ BTC 5분간 {abs(change_5m):.1f}% {direction}",
-                            'impact': 'high_volatility',
-                            'timestamp': datetime.now()
-                        }
+            current_price = float(ticker.get('last', 0))
+            change_24h = float(ticker.get('changeUtc', 0))
             
-            if klines_15m and len(klines_15m) >= 2:
-                price_15m_ago = float(klines_15m[-2][1])
-                change_15m = ((current_price - price_15m_ago) / price_15m_ago) * 100
-                
-                if abs(change_15m) >= self.PRICE_CHANGE_THRESHOLD:
-                    if not self._is_alert_on_cooldown('volatility_15m', str(current_price)):
-                        direction = "상승" if change_15m > 0 else "하락"
-                        return {
-                            'type': 'price_volatility',
-                            'severity': 'medium',
-                            'timeframe': '15분',
-                            'change_percent': change_15m,
-                            'current_price': current_price,
-                            'message': f"📊 BTC 15분간 {abs(change_15m):.1f}% {direction}",
-                            'impact': 'volatility',
-                            'timestamp': datetime.now()
-                        }
-                        
+            # 24시간 변동률이 임계값 초과
+            if abs(change_24h) >= self.PRICE_CHANGE_THRESHOLD:
+                key = f"price_{current_price}"
+                if not self._is_on_cooldown('price_volatility', key):
+                    self._update_alert_time('price_volatility', key)
+                    
+                    return {
+                        'type': 'price_anomaly',
+                        'severity': 'critical' if abs(change_24h) >= 3 else 'high',
+                        'current_price': current_price,
+                        'change_24h': change_24h,
+                        'description': f"BTC {'급등' if change_24h > 0 else '급락'} {abs(change_24h):.1f}%",
+                        'timestamp': datetime.now()
+                    }
+            
         except Exception as e:
-            logger.error(f"가격 변동성 체크 오류: {e}")
-            
+            self.logger.error(f"가격 변동 체크 오류: {e}")
+        
         return None
     
     async def check_volume_anomaly(self) -> Optional[Dict]:
         """거래량 이상 감지"""
         try:
-            # 현재 거래량과 평균 거래량 비교
-            current_volume = await self.bitget.get_24h_volume()
-            avg_volume_data = await self.bitget.get_average_volume(7)  # 7일 평균
+            if not self.bitget_client:
+                return None
             
-            if current_volume and avg_volume_data:
-                avg_volume = avg_volume_data['average']
-                volume_ratio = current_volume / avg_volume
-                
-                if volume_ratio >= self.VOLUME_SPIKE_THRESHOLD:
-                    if not self._is_alert_on_cooldown('volume', str(current_volume)):
-                        return {
-                            'type': 'volume_anomaly',
-                            'severity': 'medium',
-                            'current_volume': current_volume,
-                            'average_volume': avg_volume,
-                            'ratio': volume_ratio,
-                            'message': f"📈 거래량 급증: 평균 대비 {volume_ratio:.1f}배",
-                            'impact': 'high_activity',
-                            'timestamp': datetime.now()
-                        }
-                        
+            ticker = await self.bitget_client.get_ticker('BTCUSDT')
+            if not ticker:
+                return None
+            
+            volume_24h = float(ticker.get('baseVolume', 0))
+            
+            # 거래량이 특정 임계값 초과 (임시로 50000 BTC 기준)
+            if volume_24h > 50000 * self.VOLUME_SPIKE_THRESHOLD:
+                key = f"volume_{volume_24h}"
+                if not self._is_on_cooldown('volume_anomaly', key):
+                    self._update_alert_time('volume_anomaly', key)
+                    
+                    return {
+                        'type': 'volume_anomaly',
+                        'severity': 'high',
+                        'volume_24h': volume_24h,
+                        'ratio': volume_24h / 50000,
+                        'description': f"거래량 급증: {volume_24h:,.0f} BTC",
+                        'timestamp': datetime.now()
+                    }
+            
         except Exception as e:
-            logger.error(f"거래량 이상 체크 오류: {e}")
-            
+            self.logger.error(f"거래량 체크 오류: {e}")
+        
         return None
     
-    async def check_funding_rate_anomaly(self) -> Optional[Dict]:
+    async def check_funding_rate(self) -> Optional[Dict]:
         """펀딩비 이상 감지"""
         try:
-            funding_data = await self.bitget.get_funding_rate()
+            if not self.bitget_client:
+                return None
             
-            if funding_data:
-                current_rate = funding_data['funding_rate']
-                
-                if abs(current_rate) >= self.FUNDING_RATE_THRESHOLD:
-                    if not self._is_alert_on_cooldown('funding', str(current_rate)):
-                        position = "롱" if current_rate > 0 else "숏"
-                        return {
-                            'type': 'funding_anomaly',
-                            'severity': 'medium',
-                            'funding_rate': current_rate,
-                            'message': f"💰 펀딩비 이상: {current_rate:.3f}% ({position} 과열)",
-                            'impact': 'position_imbalance',
-                            'timestamp': datetime.now()
-                        }
-                        
-        except Exception as e:
-            logger.error(f"펀딩비 체크 오류: {e}")
+            funding_data = await self.bitget_client.get_funding_rate('BTCUSDT')
+            if not funding_data:
+                return None
             
-        return None
-    
-    async def check_liquidations(self) -> Optional[Dict]:
-        """대규모 청산 감지"""
-        try:
-            liquidation_data = await self.data_fetcher.get_liquidations()
+            funding_rate = float(funding_data.get('fundingRate', 0))
             
-            if liquidation_data:
-                total_liquidations = liquidation_data.get('total_24h', 0)
-                recent_liquidations = liquidation_data.get('last_hour', 0)
-                
-                # 1시간 내 1000만 달러 이상 청산
-                if recent_liquidations >= 10_000_000:
-                    if not self._is_alert_on_cooldown('liquidation', str(recent_liquidations)):
-                        return {
-                            'type': 'mass_liquidation',
-                            'severity': 'high',
-                            'amount': recent_liquidations,
-                            'message': f"🔥 대규모 청산 발생: ${recent_liquidations/1_000_000:.1f}M",
-                            'impact': 'high_volatility',
-                            'timestamp': datetime.now()
-                        }
-                        
-        except Exception as e:
-            logger.error(f"청산 데이터 체크 오류: {e}")
-            
-        return None
-    
-    async def check_news_events(self) -> Optional[Dict]:
-        """중요 뉴스/이벤트 감지"""
-        try:
-            # 최근 뉴스 체크
-            news_data = await self.data_fetcher.get_crypto_news()
-            
-            if news_data:
-                for news in news_data[:5]:  # 최근 5개만
-                    sentiment = news.get('sentiment', 'neutral')
-                    importance = news.get('importance', 'low')
+            # 펀딩비가 임계값 초과
+            if abs(funding_rate) >= self.FUNDING_RATE_THRESHOLD:
+                key = f"funding_{funding_rate}"
+                if not self._is_on_cooldown('funding_rate', key):
+                    self._update_alert_time('funding_rate', key)
                     
-                    if importance == 'high' and sentiment in ['very_negative', 'very_positive']:
-                        news_id = news.get('id', news.get('title', ''))
-                        if not self._is_alert_on_cooldown('news', news_id):
-                            impact = 'bearish' if 'negative' in sentiment else 'bullish'
-                            return {
-                                'type': 'news_event',
-                                'severity': 'high',
-                                'title': news.get('title'),
-                                'sentiment': sentiment,
-                                'message': f"📰 중요 뉴스: {news.get('title', '뉴스 제목 없음')}",
-                                'impact': impact,
-                                'timestamp': datetime.now()
-                            }
-                            
-        except Exception as e:
-            logger.error(f"뉴스 체크 오류: {e}")
+                    return {
+                        'type': 'funding_rate_anomaly',
+                        'severity': 'high' if abs(funding_rate) >= 0.05 else 'medium',
+                        'funding_rate': funding_rate,
+                        'annual_rate': funding_rate * 365 * 3,
+                        'description': f"펀딩비 이상: {funding_rate:.4f}%",
+                        'timestamp': datetime.now()
+                    }
             
+        except Exception as e:
+            self.logger.error(f"펀딩비 체크 오류: {e}")
+        
         return None
     
-    async def generate_exception_report(self, exceptions: List[Dict]):
-        """예외 리포트 생성 및 전송"""
+    async def send_alert(self, anomaly: Dict):
+        """이상 징후 알림 전송"""
         try:
-            # 중요도 순으로 정렬
-            severity_order = {'high': 0, 'medium': 1, 'low': 2}
-            exceptions.sort(key=lambda x: severity_order.get(x.get('severity', 'low'), 3))
+            if not self.telegram_bot:
+                return
             
-            # 현재 시장 상황 파악
-            market_data = await self._get_market_snapshot()
-            
-            # GPT 분석 요청
-            analysis = await self.openai.analyze_exceptions(exceptions, market_data)
-            
-            # 리포트 생성
-            report = self._format_exception_report(exceptions, market_data, analysis)
-            
-            # 텔레그램 전송
-            await send_telegram_message(self.config, report)
-            
-            # 알림 기록 업데이트
-            for exc in exceptions:
-                alert_type = exc.get('type')
-                alert_key = str(exc.get('amount', exc.get('current_price', '')))
-                self._record_alert(alert_type, alert_key)
-                
-        except Exception as e:
-            logger.error(f"예외 리포트 생성 오류: {e}")
-    
-    def _format_exception_report(self, exceptions: List[Dict], 
-                                market_data: Dict, analysis: Dict) -> str:
-        """예외 리포트 포맷팅"""
-        kst_time = datetime.now() + timedelta(hours=9)
-        
-        report = f"""🚨 예외 리포트 – 긴급 이벤트 자동 감지
-📅 발생 시각: {kst_time.strftime('%m-%d %H:%M')} (KST)
-━━━━━━━━━━━━━━━━━━━
-❗ 원인 요약
-"""
-        
-        # 예외 상황 나열
-        for exc in exceptions[:3]:  # 최대 3개만
-            report += f"{exc['message']}\n"
-        
-        report += f"""
-━━━━━━━━━━━━━━━━━━━
-📌 GPT 판단
-{analysis.get('summary', '분석 중...')}
-
-━━━━━━━━━━━━━━━━━━━
-🛡️ 전략 제안
-{analysis.get('strategy', '전략 수립 중...')}
-
-━━━━━━━━━━━━━━━━━━━
-📊 현재 시장 상황
-• 현재가: ${market_data['current_price']:,.0f}
-• 24H 변동: {market_data['change_24h']:+.2f}%
-• RSI(1H): {market_data['rsi_1h']:.1f}
-• 펀딩비: {market_data['funding_rate']:+.3f}%
-
-━━━━━━━━━━━━━━━━━━━
-🧠 GPT 멘탈 케어
-{analysis.get('mental_care', '침착하게 대응하세요.')}"""
-        
-        return report
-    
-    async def _get_market_snapshot(self) -> Dict:
-        """현재 시장 상황 스냅샷"""
-        try:
-            price_data = await self.bitget.get_current_price()
-            indicators = await self.analyzer.get_key_indicators('1h')
-            funding_data = await self.bitget.get_funding_rate()
-            
-            return {
-                'current_price': price_data['current_price'],
-                'change_24h': price_data['change_24h_percent'],
-                'rsi_1h': indicators.get('rsi', 50),
-                'funding_rate': funding_data.get('funding_rate', 0),
-                'volume_24h': price_data.get('volume_24h', 0)
+            # 알림 메시지 생성
+            severity_emoji = {
+                'critical': '🚨',
+                'high': '⚠️',
+                'medium': '📊'
             }
+            
+            emoji = severity_emoji.get(anomaly.get('severity', 'medium'), '📊')
+            
+            message = f"{emoji} 예외 상황 감지\n\n"
+            message += f"유형: {anomaly.get('type', 'unknown')}\n"
+            message += f"설명: {anomaly.get('description', '설명 없음')}\n"
+            message += f"심각도: {anomaly.get('severity', 'medium')}\n"
+            message += f"시간: {anomaly.get('timestamp', datetime.now()).strftime('%Y-%m-%d %H:%M:%S')}"
+            
+            await self.telegram_bot.send_message(message)
+            
         except Exception as e:
-            logger.error(f"시장 스냅샷 오류: {e}")
-            return {}
+            self.logger.error(f"알림 전송 실패: {e}")
     
-    def _is_alert_on_cooldown(self, alert_type: str, alert_key: str) -> bool:
+    def _is_on_cooldown(self, alert_type: str, key: str) -> bool:
         """알림 쿨다운 체크"""
-        key = f"{alert_type}:{alert_key}"
-        last_alert = self.last_alerts.get(key)
+        last_alert_key = f"{alert_type}_{key}"
+        last_time = self.last_alerts.get(last_alert_key)
         
-        if last_alert:
-            if datetime.now() - last_alert < timedelta(seconds=self.alert_cooldown):
+        if last_time:
+            if datetime.now() - last_time < self.alert_cooldown:
                 return True
-                
+        
         return False
     
-    def _record_alert(self, alert_type: str, alert_key: str):
-        """알림 기록"""
-        key = f"{alert_type}:{alert_key}"
-        self.last_alerts[key] = datetime.now()
+    def _update_alert_time(self, alert_type: str, key: str):
+        """알림 시간 업데이트"""
+        last_alert_key = f"{alert_type}_{key}"
+        self.last_alerts[last_alert_key] = datetime.now()
         
-        # 오래된 알림 정리
-        cutoff = datetime.now() - timedelta(hours=1)
+        # 오래된 알림 기록 정리
+        cutoff_time = datetime.now() - timedelta(hours=1)
         self.last_alerts = {
-            k: v for k, v in self.last_alerts.items() 
-            if v > cutoff
+            k: v for k, v in self.last_alerts.items()
+            if v > cutoff_time
         }
