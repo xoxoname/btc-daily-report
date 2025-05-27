@@ -1,191 +1,201 @@
-# 📊 비트코인 자동 선물 예측 시스템 v2.0
+# 📊 비트코인 선물 롱/숏 예측 시스템 v2.0
 
-## 🆕 주요 개선사항
+선물 거래에 특화된 고급 비트코인 분석 및 예측 시스템입니다. 실시간 데이터 분석을 통해 정확한 롱/숏 진입 시점을 제공합니다.
 
-### 1. **모듈화된 리포트 시스템**
+## 🎯 주요 특징
+
+### 선물 거래 특화 지표
+- **펀딩비 분석**: 실시간 펀딩비 추적 및 추세 분석
+- **미결제약정(OI)**: 포지션 변화와 가격 다이버전스 감지
+- **CVD(누적거래량델타)**: 매수/매도 압력 실시간 측정
+- **청산 레벨 추적**: 주요 청산 가격대 모니터링
+- **롱/숏 비율**: 시장 포지셔닝 분석
+- **스마트머니 플로우**: 대형 거래 감지
+
+### 고급 데이터 소스
+- **Bitget API**: 선물 가격, 펀딩비, 포지션 데이터
+- **CoinGecko**: 시장 전반 데이터, BTC 도미넌스
+- **CryptoCompare**: 소셜 메트릭, 거래소 데이터
+- **Alternative.me**: Fear & Greed Index
+- **RSS 피드**: 15+ 주요 뉴스 소스 실시간 모니터링
+- **3개 뉴스 API**: NewsAPI, NewsData, Alpha Vantage
+
+### 인공지능 분석
+- **GPT-4 기반**: 시장 상황 종합 분석
+- **실시간 뉴스 영향도**: 선물 시장 관점 분석
+- **개인화 전략**: 포지션별 맞춤 조언
+- **멘탈 케어**: 심리적 지원 및 리스크 관리
+
+## 📁 프로젝트 구조
+
 ```
-report_generators/
-├── __init__.py           # 통합 매니저
-├── base_generator.py     # 공통 기능
-├── regular_report.py     # /report 명령어
-├── profit_report.py      # /profit 명령어
-├── forecast_report.py    # /forecast 명령어
-├── schedule_report.py    # /schedule 명령어
-├── exception_report.py   # 긴급 알림
-└── mental_care.py        # 멘탈 케어 전담
-```
-
-### 2. **향상된 멘탈 케어 시스템**
-- 🎯 **상황별 맞춤 메시지**: 수익/손실 규모에 따른 다양한 패턴
-- 💰 **구체적 수익 언급**: "오늘 $150을 벌었군요!" 형태의 개인화
-- 🤝 **GPT 연동**: OpenAI API로 더욱 자연스러운 멘트 생성
-- 📊 **자산 상황 반영**: 총 자산, 7일 수익, 미실현손익 종합 고려
-
-### 3. **정확한 데이터 처리**
-- ✅ **하드코딩 제거**: 모든 수치를 실제 API에서 조회
-- ✅ **포지션 파싱 개선**: 숏/롱, 청산가, 레버리지 정확한 표시
-- ✅ **미실현손익 정확**: API 직접 연동으로 실시간 반영
-
-## 📁 새로운 프로젝트 구조
-
-```
-bitcoin-prediction-system/
-├── main.py                    # 🆕 업데이트된 메인
-├── config.py                  # 설정 관리
-├── telegram_bot.py           # 텔레그램 봇
-├── bitget_client.py          # Bitget API 클라이언트
-├── analysis_engine.py        # GPT 분석 엔진
-├── exception_detector.py     # 예외 상황 감지
-├── data_collector.py         # 실시간 데이터 수집
-├── realistic_news_collector.py # 뉴스 수집
-├── trading_indicators.py     # 고급 지표
-├── report_generators/        # 🆕 리포트 생성기 모듈
-│   ├── __init__.py          # 통합 매니저
-│   ├── base_generator.py    # 공통 기능
-│   ├── regular_report.py    # 정기 리포트
-│   ├── profit_report.py     # 수익 리포트
-│   ├── forecast_report.py   # 예측 리포트
-│   ├── schedule_report.py   # 일정 리포트
-│   ├── exception_report.py  # 예외 리포트
-│   └── mental_care.py       # 멘탈 케어
-├── requirements.txt         # 의존성
-├── Dockerfile              # 컨테이너 설정
-├── render.yaml             # 배포 설정
-└── README.md               # 프로젝트 설명
-```
-
-## 🚀 사용법
-
-### 기본 사용법 (기존과 동일)
-```python
-# main.py에서 자동으로 모든 리포트 생성기 초기화
-system = BitcoinPredictionSystem()
-await system.start()
+bitcoin-futures-system/
+├── main.py                        # 메인 실행 파일
+├── config.py                      # 설정 관리
+├── telegram_bot.py               # 텔레그램 봇
+├── bitget_client.py              # Bitget API 클라이언트
+├── analysis_engine.py            # GPT 분석 엔진
+├── exception_detector.py         # 이상 징후 감지
+├── data_collector.py             # 실시간 데이터 수집 (1% 민감도)
+├── realistic_news_collector.py   # 뉴스 수집 시스템
+├── trading_indicators.py         # 선물 특화 지표 시스템
+├── report_generators/            # 리포트 생성 모듈
+│   ├── __init__.py              
+│   ├── base_generator.py        
+│   ├── regular_report.py         # 종합 분석 리포트
+│   ├── profit_report.py          # 손익 현황
+│   ├── forecast_report.py        # 12시간 예측
+│   ├── schedule_report.py        # 일정 안내
+│   ├── exception_report.py       # 긴급 알림
+│   └── mental_care.py            # 멘탈 케어
+├── requirements.txt             
+├── .env.example                  # 환경변수 예시
+├── Dockerfile                   
+└── README.md                    
 ```
 
-### 개별 리포트 생성기 사용법
-```python
-from report_generators import ReportGeneratorManager
+## 🚀 빠른 시작
 
-# 리포트 매니저 초기화
-manager = ReportGeneratorManager(config, data_collector, indicator_system)
-manager.set_bitget_client(bitget_client)
-
-# 각종 리포트 생성
-regular_report = await manager.generate_regular_report()      # /report
-profit_report = await manager.generate_profit_report()       # /profit
-forecast_report = await manager.generate_forecast_report()   # /forecast
-schedule_report = await manager.generate_schedule_report()   # /schedule
-
-# 예외 상황 리포트
-event_data = {'type': 'price_anomaly', 'severity': 'high', ...}
-exception_report = await manager.generate_exception_report(event_data)
-
-# 독립적인 멘탈 케어
-mental_message = await manager.generate_custom_mental_care(
-    account_info, position_info, today_pnl, weekly_profit
-)
+### 1. 저장소 클론
+```bash
+git clone https://github.com/your-repo/bitcoin-futures-system.git
+cd bitcoin-futures-system
 ```
 
-## 🧠 새로운 멘탈 케어 기능
-
-### 다양한 상황별 메시지 패턴
-
-**큰 수익 시:**
-```
-"오늘 $150을 벌어들였군요! 현재 자산 $6,623은 당신의 실력을 보여줍니다. 
-하지만 시장은 변덕스러우니 겸손함을 잊지 마세요. 🎯"
+### 2. 가상환경 설정
+```bash
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-**꾸준한 수익 시:**
-```
-"$50 벌었군요! 큰 돈은 아니어도 꾸준함이 복리의 힘을 만듭니다. 
-현재 자산 $6,623을 바탕으로 차근차근 늘려가세요. 🌱"
-```
-
-**손실 시:**
-```
-"현재 $30 마이너스 상태네요. 하지만 최근 7일간 $1,380을 벌었으니 
-일시적인 조정일 수 있어요. 손절 기준을 명확히 하고 차분하게 대응하세요. 🧘‍♂️"
+### 3. 환경변수 설정
+```bash
+cp .env.example .env
+# .env 파일을 편집하여 API 키 입력
 ```
 
-### GPT 기반 개인화 메시지
-- OpenAI API 연동으로 상황에 맞는 자연스러운 조언
-- 구체적 수익/손실 금액 언급
-- 총 자산, 7일 수익 등 종합적 고려
-
-## 🎯 각 리포트의 특징
-
-### 💰 수익 리포트 (/profit)
-- **실시간 포지션**: 숏/롱, 진입가, 청산가, 레버리지
-- **정확한 손익**: API 직접 연동, 하드코딩 제거
-- **개인화 멘탈케어**: 수익 상황별 맞춤 메시지
-
-### 📈 예측 리포트 (/forecast)
-- **단기 집중**: 12시간 내 가격 흐름 예측
-- **간결한 정보**: 핵심 분석과 전략 제안
-- **빠른 판단**: 매매 결정에 필요한 정보만 압축
-
-### 🧾 정기 리포트 (/report)
-- **종합 분석**: 시장 이벤트부터 예측까지 전체
-- **자동 발송**: 09:00, 13:00, 17:00, 23:00 (KST)
-- **검증 결과**: 이전 예측 정확도 추적
-
-### 📅 일정 리포트 (/schedule)
-- **경제 이벤트**: FOMC, ETF 승인 등 주요 일정
-- **영향도 평가**: 각 이벤트의 호재/악재 판단
-
-### 🚨 예외 리포트 (자동)
-- **즉시 알림**: 급변동, 대량 거래 등 감지 시 자동 발송
-- **GPT 분석**: 상황별 전문적 분석과 대응 전략
-- **리스크 관리**: 구체적인 포지션 관리 방안 제시
-
-## 🔧 개발자를 위한 확장 가이드
-
-### 새로운 리포트 유형 추가
-1. `report_generators/`에 새 파일 생성
-2. `BaseReportGenerator` 상속
-3. `generate_report()` 메서드 구현
-4. `ReportGeneratorManager`에 등록
-
-### 멘탈 케어 패턴 추가
-```python
-# mental_care.py의 패턴 메서드에 새로운 조건 추가
-def _analyze_trading_situation(self, today_pnl, unrealized_pnl, weekly_total):
-    # 새로운 상황 분류 로직
-    if new_condition:
-        return "new_situation_type"
-        
-def _new_situation_messages(self, ...):
-    # 새로운 상황별 메시지 패턴
-    patterns = [...]
-    return random.choice(patterns)
+### 4. 실행
+```bash
+python main.py
 ```
 
-## 🎉 마이그레이션 가이드
+## 🔧 환경 설정
 
-기존 `report_generator.py`에서 새로운 모듈식 구조로 전환:
+### 필수 API
+- **Telegram Bot Token**: [@BotFather](https://t.me/botfather)에서 생성
+- **Bitget API**: [Bitget](https://www.bitget.com) 계정에서 생성 (읽기 권한만 필요)
 
-```python
-# 기존
-from report_generator import EnhancedReportGenerator
-generator = EnhancedReportGenerator(config, data_collector, indicators)
+### 권장 API
+- **OpenAI API**: GPT 분석 기능 활성화
+- **NewsAPI**: 실시간 뉴스 수집
+- **CoinGecko API**: 시장 전반 데이터 (무료)
 
-# 새로운 방식
-from report_generators import ReportGeneratorManager
-manager = ReportGeneratorManager(config, data_collector, indicators)
+### 선택 API
+- **CryptoCompare**: 소셜 메트릭
+- **Glassnode**: 온체인 데이터
+- **NewsData, Alpha Vantage**: 추가 뉴스 소스
 
-# 메서드명 변경
-# generator.generate_profit_report() → manager.generate_profit_report()
+## 📊 리포트 종류
+
+### 1. 종합 분석 리포트 (/report)
+- **발송 시간**: 09:00, 13:00, 17:00, 22:00 (자동)
+- **내용**: 
+  - 선물 시장 핵심 지표
+  - 롱/숏 신호 분석 (점수화)
+  - 구체적 전략 제안
+  - 리스크 평가
+
+### 2. 단기 예측 리포트 (/forecast)
+- **주요 기능**: 12시간 집중 예측
+- **내용**:
+  - 진입 구간 및 방향
+  - 손절/목표가 설정
+  - 주요 이벤트 영향
+
+### 3. 손익 현황 (/profit)
+- **실시간 조회**
+- **내용**:
+  - 현재 포지션 상세
+  - 실현/미실현 손익
+  - 개인화 멘탈 케어
+
+### 4. 예외 상황 알림 (자동)
+- **조건**: 
+  - 가격 1% 이상 급변동
+  - 극단적 펀딩비
+  - 대량 청산 감지
+  - 중요 뉴스 발생
+
+## 💬 사용 방법
+
+### 슬래시 명령어
+```
+/start    - 시스템 소개 및 도움말
+/report   - 종합 분석 리포트
+/forecast - 단기 예측 (12시간)
+/profit   - 실시간 손익 현황
+/schedule - 자동 알림 일정
 ```
 
-하위 호환성을 위해 기존 클래스명도 유지됩니다.
+### 자연어 질문
+- "지금 롱 들어가도 돼?"
+- "숏 포지션 잡을까?"
+- "오늘 수익은?"
+- "시장 상황 어때?"
 
-## 📊 성능 최적화
+## 🎯 선물 특화 기능
 
-- **병렬 데이터 수집**: asyncio.gather로 API 호출 최적화
-- **캐싱 시스템**: 중복 API 호출 방지
+### 롱/숏 점수 시스템
+각 지표별 -10 ~ +10점 부여:
+- **펀딩비**: 과열도에 따른 역방향 기회
+- **OI 변화**: 포지션 증감과 가격 관계
+- **CVD**: 실제 매수/매도 압력
+- **청산 리스크**: 대량 청산 임박 여부
+- **기술적 지표**: RSI, MACD 등
+- **스마트머니**: 고래 움직임
+
+### 리스크 관리
+- 변동성 기반 포지션 크기 조절
+- 자동 손절가 제안
+- 펀딩비 비용 계산
+- 청산 가격 모니터링
+
+## 📈 성능 최적화
+
+- **병렬 데이터 수집**: asyncio 활용
+- **캐싱 시스템**: API 호출 최소화
 - **메모리 관리**: 이벤트 버퍼 자동 정리
-- **오류 처리**: 견고한 예외 처리와 폴백 시스템
+- **오류 복구**: 자동 재연결 및 폴백
 
-이제 각 리포트가 독립적으로 관리되어 유지보수가 쉽고, 멘탈 케어가 더욱 개인화되었습니다! 🚀
+## 🔐 보안
+
+- API 키는 환경변수로 관리
+- 거래 기능 없음 (읽기 전용)
+- 로컬 실행 권장
+
+## 🤝 기여하기
+
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## ⚠️ 주의사항
+
+- 이 시스템은 정보 제공 목적으로만 사용됩니다
+- 투자 결정은 본인의 판단과 책임하에 이루어져야 합니다
+- 선물 거래는 높은 리스크를 동반합니다
+
+## 📞 문의
+
+문제 발생시 Issue를 생성하거나 텔레그램으로 문의하세요.
+
+---
+
+**v2.0** - 선물 거래 특화 업데이트
+- 펀딩비, OI, CVD 등 선물 핵심 지표 추가
+- 롱/숏 신호 점수 시스템
+- 가격 변동 민감도 1%로 향상
+- 추가 데이터 소스 통합
