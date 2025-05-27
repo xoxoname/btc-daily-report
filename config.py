@@ -22,10 +22,15 @@ class Config:
         self.bitget_passphrase = self.BITGET_PASSPHRASE
         self.symbol = "BTCUSDT"
         
-        # 뉴스 API 설정들 (3개 모두)
+        # 기존 뉴스 API (3개)
         self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
         self.NEWSDATA_KEY = os.getenv('NEWSDATA_KEY')
         self.ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')
+        
+        # 추가 데이터 소스 API
+        self.COINGECKO_API_KEY = os.getenv('COINGECKO_API_KEY')  # 선택사항
+        self.CRYPTOCOMPARE_API_KEY = os.getenv('CRYPTOCOMPARE_API_KEY')
+        self.GLASSNODE_API_KEY = os.getenv('GLASSNODE_API_KEY')
         
         # OpenAI 설정
         self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -51,23 +56,48 @@ class Config:
         if missing_configs:
             raise ValueError(f"다음 환경변수가 설정되지 않았습니다: {', '.join(missing_configs)}")
         
-        # 선택사항들 상태 로그
-        optional_configs = {
-            'OPENAI_API_KEY': self.OPENAI_API_KEY,
-            'NEWSAPI_KEY': self.NEWSAPI_KEY,
-            'NEWSDATA_KEY': self.NEWSDATA_KEY,
-            'ALPHA_VANTAGE_KEY': self.ALPHA_VANTAGE_KEY
+        # API 상태 출력
+        print("\n🔧 API 설정 상태:")
+        print("━" * 50)
+        
+        # 필수 API
+        print("✅ 필수 API:")
+        print(f"  • Telegram Bot: 설정됨")
+        print(f"  • Bitget API: 설정됨")
+        
+        # 선택 API들
+        optional_apis = {
+            'OpenAI GPT': self.OPENAI_API_KEY,
+            'NewsAPI': self.NEWSAPI_KEY,
+            'NewsData': self.NEWSDATA_KEY,
+            'Alpha Vantage': self.ALPHA_VANTAGE_KEY,
+            'CoinGecko': self.COINGECKO_API_KEY,
+            'CryptoCompare': self.CRYPTOCOMPARE_API_KEY,
+            'Glassnode': self.GLASSNODE_API_KEY
         }
         
-        available_apis = []
-        missing_apis = []
+        available = []
+        missing = []
         
-        for config_name, config_value in optional_configs.items():
-            if config_value:
-                available_apis.append(config_name)
+        for api_name, api_key in optional_apis.items():
+            if api_key:
+                available.append(api_name)
             else:
-                missing_apis.append(config_name)
+                missing.append(api_name)
         
-        print(f"✅ 사용 가능한 API: {', '.join(available_apis) if available_apis else '없음'}")
-        if missing_apis:
-            print(f"⚠️  설정되지 않은 API: {', '.join(missing_apis)} (관련 기능 제한)")
+        if available:
+            print(f"\n✅ 사용 가능한 추가 API ({len(available)}개):")
+            for api in available:
+                print(f"  • {api}")
+        
+        if missing:
+            print(f"\n⚠️  미설정 API ({len(missing)}개):")
+            for api in missing:
+                print(f"  • {api}")
+        
+        print("\n💡 추가 API 설정 방법:")
+        print("  .env 파일에 다음 형식으로 추가:")
+        print("  COINGECKO_API_KEY=your_key_here")
+        print("  CRYPTOCOMPARE_API_KEY=your_key_here")
+        print("  GLASSNODE_API_KEY=your_key_here")
+        print("━" * 50 + "\n")
