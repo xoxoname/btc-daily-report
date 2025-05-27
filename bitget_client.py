@@ -1,4 +1,4 @@
-# bitget_client.py - Bitget API 클라이언트 (V2 API 대응 + 거래내역 조회)
+import asyncio# bitget_client.py - Bitget API 클라이언트 (V2 API 대응 + 거래내역 조회)
 import hmac
 import hashlib
 import base64
@@ -165,9 +165,39 @@ class BitgetClient:
             raise
     
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """거래 체결 내역 조회 (V2 API) - 개선된 버전"""
+        """거래 체결 내역 조회 (V2 API) - 7일 제한 처리"""
         symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/order/fill-history"  # fill-history 엔드포인트 사용
+        
+        # 7일 제한 확인 및 조정
+        if start_time and end_time:
+            max_days = 7
+            time_diff = end_time - start_time
+            max_time_diff = max_days * 24 * 60 * 60 * 1000  # 7일 in milliseconds
+            
+            if time_diff > max_time_diff:
+                # 7일씩 나누어 조회
+                all_fills = []
+                current_end = end_time
+                
+                while current_end > start_time:
+                    current_start = max(start_time, current_end - max_time_diff)
+                    
+                    fills = await self._get_fills_batch(symbol, current_start, current_end, limit)
+                    all_fills.extend(fills)
+                    
+                    current_end = current_start - 1
+                    
+                    # API 호출 제한을 위한 짧은 대기
+                    await asyncio.sleep(0.1)
+                
+                return all_fills
+        
+        # 단일 조회
+        return await self._get_fills_batch(symbol, start_time, end_time, limit)
+    
+    async def _get_fills_batch(self, symbol: str, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
+        """거래 체결 내역 배치 조회"""
+        endpoint = "/api/v2/mix/order/fill-history"
         
         params = {
             'symbol': symbol,
@@ -186,23 +216,19 @@ class BitgetClient:
             
             # 응답 형식 확인
             if isinstance(response, dict):
-                # fillList가 있는 경우
                 if 'fillList' in response:
                     fills = response['fillList']
                     logger.info(f"거래 내역 조회 성공: {len(fills)}건")
                     return fills
-                # fills가 직접 있는 경우
                 elif 'fills' in response:
                     fills = response['fills']
                     logger.info(f"거래 내역 조회 성공: {len(fills)}건")
                     return fills
-                # list가 있는 경우
                 elif 'list' in response:
                     fills = response['list']
                     logger.info(f"거래 내역 조회 성공: {len(fills)}건")
                     return fills
             
-            # 리스트로 바로 반환되는 경우
             if isinstance(response, list):
                 logger.info(f"거래 내역 조회 성공: {len(response)}건")
                 return response
