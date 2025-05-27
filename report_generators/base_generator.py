@@ -132,19 +132,12 @@ class BaseReportGenerator:
             margin = float(active_position.get('marginSize', active_position.get('margin', 0)))
             leverage = int(float(active_position.get('leverage', 1)))
             
-            # 청산가 - API에서 제공하는 값 사용
-            liquidation_price = 0
-            liq_fields = ['liquidationPrice', 'liqPrice', 'estLiqPrice', 'liqPx', 'forceReducePrice']
-            for field in liq_fields:
-                if field in active_position and active_position[field]:
-                    try:
-                        liquidation_price = float(active_position[field])
-                        break
-                    except:
-                        continue
+            # 청산가 - API에서 직접 가져오기 (로그에서 확인된 필드명 사용)
+            liquidation_price = float(active_position.get('liquidationPrice', 0))
             
-            # 손익률 - API 값 사용
-            pnl_rate = float(active_position.get('achievedProfits', 0)) / margin if margin > 0 else 0
+            # 손익률 계산
+            achieved_profits = float(active_position.get('achievedProfits', 0))
+            pnl_rate = achieved_profits / margin if margin > 0 else 0
             
             return {
                 'has_position': True,
@@ -194,12 +187,12 @@ class BaseReportGenerator:
             return {}
     
     async def _get_today_realized_pnl(self) -> float:
-        """오늘 실현 손익 조회 - API 값만 사용"""
+        """금일 실현 손익 조회 - API 값만 사용"""
         try:
             if not self.bitget_client:
                 return 0.0
             
-            # KST 기준 오늘 0시부터 현재까지
+            # KST 기준 금일 0시부터 현재까지
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -237,7 +230,7 @@ class BaseReportGenerator:
             return total_realized_pnl
             
         except Exception as e:
-            self.logger.error(f"오늘 실현 손익 조회 실패: {e}")
+            self.logger.error(f"금일 실현 손익 조회 실패: {e}")
             return 0.0
     
     async def _get_weekly_profit(self) -> Dict:
