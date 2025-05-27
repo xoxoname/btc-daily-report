@@ -1,4 +1,3 @@
-# bitget_client.py - 수정된 전체 코드
 import asyncio
 import hmac
 import hashlib
@@ -119,7 +118,7 @@ class BitgetClient:
             raise
     
     async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """포지션 조회 - 개선된 버전"""
+        """포지션 조회 (V2 API) - 청산가 필드 확인"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/position/all-position"
         params = {
@@ -129,82 +128,29 @@ class BitgetClient:
         
         try:
             response = await self._request('GET', endpoint, params=params)
-            
-            # 전체 응답 로깅
-            logger.info(f"=== 포지션 API 응답 ===")
-            logger.info(f"{json.dumps(response, indent=2, ensure_ascii=False)[:1000]}")
-            
+            logger.info(f"포지션 정보 원본 응답: {response}")
             positions = response if isinstance(response, list) else []
             
             # 특정 심볼 필터링
             if symbol and positions:
                 positions = [pos for pos in positions if pos.get('symbol') == symbol]
             
-            # 활성 포지션만 필터링
+            # 포지션이 있는 것만 필터링
             active_positions = []
             for pos in positions:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
-                    # 모든 필드 키 출력
-                    logger.info(f"포지션 필드: {sorted(list(pos.keys()))}")
-                    
-                    # 청산가 찾기
-                    liquidation_price = 0
-                    liq_fields = ['liquidationPrice', 'liqPrice', 'liquidationPx', 'estLiqPrice']
-                    
-                    for field in liq_fields:
-                        if field in pos and pos[field]:
-                            try:
-                                value = float(pos[field])
-                                if value > 0:
-                                    liquidation_price = value
-                                    logger.info(f"청산가 필드 발견: {field} = ${value:,.2f}")
-                                    break
-                            except:
-                                continue
-                    
-                    # 청산가가 없으면 계산
-                    if liquidation_price == 0:
-                        position_data = {
-                            'side': pos.get('holdSide', 'long'),
-                            'entry_price': float(pos.get('openPriceAvg', 0)),
-                            'leverage': int(pos.get('leverage', 1)),
-                            'maint_margin_ratio': float(pos.get('maintMarginRatio', 0.005))
-                        }
-                        liquidation_price = self._calculate_liquidation_price(position_data)
-                        logger.info(f"계산된 청산가: ${liquidation_price:,.2f}")
-                    
-                    # liquidation_price 필드 추가
-                    pos['liquidationPrice'] = liquidation_price
+                    # 청산가 관련 필드 로깅
+                    logger.info(f"청산가 필드 확인 - liquidationPrice: {pos.get('liquidationPrice')}, "
+                              f"liqPrice: {pos.get('liqPrice')}, "
+                              f"liquidation_price: {pos.get('liquidation_price')}, "
+                              f"estLiqPrice: {pos.get('estLiqPrice')}")
                     active_positions.append(pos)
             
             return active_positions
-            
         except Exception as e:
             logger.error(f"포지션 조회 실패: {e}")
             raise
-    
-    def _calculate_liquidation_price(self, position_data: Dict) -> float:
-        """청산가 계산"""
-        try:
-            side = position_data.get('side', 'long').lower()
-            entry_price = position_data.get('entry_price', 0)
-            leverage = position_data.get('leverage', 1)
-            maint_margin_ratio = position_data.get('maint_margin_ratio', 0.005)
-            
-            if entry_price == 0 or leverage == 0:
-                return 0
-            
-            if side in ['long', 'buy']:
-                liq_price = entry_price * (1 - 1/leverage + maint_margin_ratio)
-            else:  # short, sell
-                liq_price = entry_price * (1 + 1/leverage - maint_margin_ratio)
-            
-            return liq_price
-            
-        except Exception as e:
-            logger.error(f"청산가 계산 실패: {e}")
-            return 0
     
     async def get_account_info(self) -> Dict:
         """계정 정보 조회 (V2 API)"""
@@ -225,26 +171,27 @@ class BitgetClient:
             raise
     
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """거래 체결 내역 조회 - 개선된 버전"""
+        """거래 체결 내역 조회 (V2 API) - 단순화된 버전"""
         symbol = symbol or self.config.symbol
-        all_fills = []
         
-        # 7일 제한 처리
+        # 7일 제한 확인
         if start_time and end_time:
             max_days = 7
             time_diff = end_time - start_time
-            max_time_diff = max_days * 24 * 60 * 60 * 1000
+            max_time_diff = max_days * 24 * 60 * 60 * 1000  # 7일 in milliseconds
             
             if time_diff > max_time_diff:
+                # 최근 7일만 조회
                 start_time = end_time - max_time_diff
-                logger.info(f"7일 제한으로 조정")
+                logger.info(f"7일 제한으로 조정: {datetime.fromtimestamp(start_time/1000)} ~ {datetime.fromtimestamp(end_time/1000)}")
         
-        # 여러 엔드포인트 시도
-        endpoints = [
-            "/api/v2/mix/order/fill-history",
-            "/api/v2/mix/order/fills",
-            "/api/v2/mix/order/history"
-        ]
+        # 단일 조회 (limit 증가)
+        return await self._get_fills_batch(symbol, start_time, end_time, min(limit, 500))
+    
+    async def _get_fills_batch(self, symbol: str, start_time: int = None, end_time: int = None, limit: int = 100, last_id: str = None) -> List[Dict]:
+        """거래 체결 내역 배치 조회"""
+        # fill-history와 fills 두 엔드포인트 모두 시도
+        endpoints = ["/api/v2/mix/order/fill-history", "/api/v2/mix/order/fills"]
         
         for endpoint in endpoints:
             params = {
@@ -258,6 +205,8 @@ class BitgetClient:
                 params['endTime'] = str(end_time)
             if limit:
                 params['limit'] = str(limit)
+            if last_id:
+                params['lastEndId'] = str(last_id)
             
             try:
                 response = await self._request('GET', endpoint, params=params)
@@ -265,10 +214,14 @@ class BitgetClient:
                 # 응답 형식 확인
                 fills = []
                 if isinstance(response, dict):
-                    for key in ['fillList', 'fills', 'list', 'orderList', 'data']:
-                        if key in response and isinstance(response[key], list):
-                            fills = response[key]
-                            break
+                    if 'fillList' in response:
+                        fills = response['fillList']
+                    elif 'fills' in response:
+                        fills = response['fills']
+                    elif 'list' in response:
+                        fills = response['list']
+                    elif 'data' in response and isinstance(response['data'], list):
+                        fills = response['data']
                 elif isinstance(response, list):
                     fills = response
                 
@@ -280,54 +233,120 @@ class BitgetClient:
                 logger.debug(f"{endpoint} 조회 실패: {e}")
                 continue
         
+        return []
+    
+    async def get_all_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None) -> List[Dict]:
+        """모든 거래 내역 조회 (페이징 처리)"""
+        symbol = symbol or self.config.symbol
+        all_fills = []
+        
+        # 여러 엔드포인트 시도
+        endpoints = [
+            "/api/v2/mix/order/fill-history",
+            "/api/v2/mix/order/history"
+        ]
+        
+        for endpoint in endpoints:
+            last_id = None
+            page = 0
+            
+            while page < 20:  # 최대 20페이지 (2000건)
+                params = {
+                    'symbol': symbol,
+                    'productType': 'USDT-FUTURES',
+                    'limit': '100'
+                }
+                
+                if start_time:
+                    params['startTime'] = str(start_time)
+                if end_time:
+                    params['endTime'] = str(end_time)
+                if last_id:
+                    params['lastEndId'] = str(last_id)
+                
+                try:
+                    response = await self._request('GET', endpoint, params=params)
+                    
+                    # 응답 파싱
+                    fills = []
+                    if isinstance(response, dict):
+                        for key in ['fillList', 'orderList', 'list', 'data']:
+                            if key in response and isinstance(response[key], list):
+                                fills = response[key]
+                                break
+                    elif isinstance(response, list):
+                        fills = response
+                    
+                    if not fills:
+                        break
+                    
+                    all_fills.extend(fills)
+                    logger.info(f"{endpoint} 페이지 {page + 1}: {len(fills)}건 (누적 {len(all_fills)}건)")
+                    
+                    # 100개 미만이면 마지막 페이지
+                    if len(fills) < 100:
+                        break
+                    
+                    # 다음 페이지 ID
+                    last_fill = fills[-1]
+                    new_last_id = last_fill.get('fillId', last_fill.get('orderId', last_fill.get('id')))
+                    
+                    # 같은 ID면 중단
+                    if new_last_id == last_id:
+                        break
+                    
+                    last_id = new_last_id
+                    page += 1
+                    
+                    # API 제한 대응
+                    await asyncio.sleep(0.1)
+                    
+                except Exception as e:
+                    logger.error(f"{endpoint} 페이지 {page + 1} 오류: {e}")
+                    break
+            
+            if all_fills:
+                return all_fills
+        
         return all_fills
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - 개선된 버전"""
+        """손익 내역 조회 - 페이징 처리 버전"""
         try:
-            symbol = symbol or self.config.symbol
-            
-            # 1. 계정 정보에서 총 손익 확인
-            account_info = await self.get_account_info()
-            
-            # 가능한 손익 필드들
-            pnl_fields = [
-                'totalRealizedPL',
-                'realizedPL',
-                'achievedProfits',
-                'totalProfitLoss',
-                'cumulativeRealizedPL'
-            ]
-            
-            account_total_pnl = 0
-            for field in pnl_fields:
-                if field in account_info:
-                    value = float(account_info.get(field, 0))
-                    if value != 0:
-                        account_total_pnl = value
-                        logger.info(f"계정 {field}: ${value:,.2f}")
-                        break
-            
-            # 2. 최근 거래 내역 조회
-            kst = pytz.timezone('Asia/Seoul')
+            # 기간 설정
             end_time = int(datetime.now().timestamp() * 1000)
             start_time = end_time - (days * 24 * 60 * 60 * 1000)
             
-            trades = await self.get_trade_fills(symbol, start_time, end_time, 500)
+            # 모든 거래 내역 조회 (페이징)
+            trades = await self.get_all_trade_fills(symbol, start_time, end_time)
             
             if not trades:
-                logger.warning("거래 내역이 없음")
+                logger.warning("거래 내역이 없습니다")
+                # 계정 정보에서 추정
+                account_info = await self.get_account_info()
+                
+                # 여러 가능한 손익 필드 확인
+                pnl_fields = ['achievedProfits', 'realizedPL', 'totalRealizedPL', 'cumulativeRealizedPL']
+                total_pnl = 0
+                for field in pnl_fields:
+                    if field in account_info:
+                        value = float(account_info.get(field, 0))
+                        if value != 0:
+                            total_pnl = value
+                            logger.info(f"계정 {field}: ${value:.2f}")
+                            break
+                
                 return {
-                    'total_pnl': account_total_pnl,
+                    'total_pnl': total_pnl,
                     'daily_pnl': {},
                     'days': days,
-                    'average_daily': account_total_pnl / days if days > 0 else 0
+                    'average_daily': total_pnl / days if days > 0 else 0
                 }
             
-            # 3. 거래 내역 분석
             total_pnl = 0.0
             daily_pnl = {}
-            total_fees = 0.0
+            
+            logger.info(f"총 {len(trades)}건 거래 내역 분석 시작")
             
             for trade in trades:
                 try:
@@ -335,17 +354,11 @@ class BitgetClient:
                     trade_time = int(trade.get('cTime', 0))
                     if trade_time == 0:
                         continue
+                        
+                    trade_date = datetime.fromtimestamp(trade_time / 1000).strftime('%Y-%m-%d')
                     
-                    trade_date = datetime.fromtimestamp(trade_time / 1000, tz=kst).strftime('%Y-%m-%d')
-                    
-                    # 손익 계산
-                    profit = 0
-                    profit_fields = ['profit', 'realizedPnl', 'pnl', 'pl']
-                    for field in profit_fields:
-                        if field in trade:
-                            profit = float(trade.get(field, 0))
-                            if profit != 0:
-                                break
+                    # 손익 계산 - profit 필드 직접 사용
+                    profit = float(trade.get('profit', 0))
                     
                     # 수수료
                     fee = 0.0
@@ -355,28 +368,40 @@ class BitgetClient:
                             if isinstance(fee_info, dict):
                                 fee += abs(float(fee_info.get('totalFee', 0)))
                     
-                    # 실현 손익
+                    # 실현 손익 = profit - 수수료
                     realized_pnl = profit - fee
-                    total_pnl += realized_pnl
-                    total_fees += fee
                     
-                    # 일별 누적
+                    total_pnl += realized_pnl
+                    
+                    # 일별 손익 누적
                     if trade_date not in daily_pnl:
                         daily_pnl[trade_date] = 0
                     daily_pnl[trade_date] += realized_pnl
                     
                 except Exception as e:
-                    logger.warning(f"거래 파싱 오류: {e}")
+                    logger.warning(f"거래 내역 파싱 오류: {e}")
                     continue
             
-            # 최종 결과 (계정 총액이 더 정확하면 사용)
-            final_total = account_total_pnl if account_total_pnl != 0 else total_pnl
+            # 계정 정보 확인 (실제 수익이 더 클 수 있음)
+            account_info = await self.get_account_info()
+            achieved_profits = float(account_info.get('achievedProfits', 0))
+            
+            if achieved_profits > total_pnl and achieved_profits > 0:
+                logger.info(f"계정 achievedProfits가 더 큼: ${achieved_profits:.2f} vs ${total_pnl:.2f}")
+                # 차이를 비율적으로 일별 손익에 반영
+                if total_pnl > 0:
+                    ratio = achieved_profits / total_pnl
+                    for date in daily_pnl:
+                        daily_pnl[date] *= ratio
+                total_pnl = achieved_profits
+            
+            logger.info(f"최종 7일 손익: ${total_pnl:.2f}")
             
             return {
-                'total_pnl': final_total,
+                'total_pnl': total_pnl,
                 'daily_pnl': daily_pnl,
                 'days': days,
-                'average_daily': final_total / days if days > 0 else 0
+                'average_daily': total_pnl / days if days > 0 else 0
             }
             
         except Exception as e:
