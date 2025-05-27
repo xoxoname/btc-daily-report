@@ -1,469 +1,426 @@
-import numpy as np
-from typing import Dict, List, Tuple
-import pandas as pd
+import aiohttp
+import asyncio
 from datetime import datetime, timedelta
+import logging
+from typing import Dict, List, Optional
+from dataclasses import dataclass
+from enum import Enum
+import json
 
-class AdvancedTradingIndicators:
-    """비트코인 선물 매매 정확도 향상을 위한 고급 지표"""
-    
-    def __init__(self):
-        self.indicators = {}
+logger = logging.getLogger(__name__)
+
+class EventSeverity(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+@dataclass
+class MarketEvent:
+    timestamp: datetime
+    severity: EventSeverity
+    category: str
+    title: str
+    description: str
+    impact: str
+    source: str
+    url: Optional[str] = None
+    metadata: Optional[Dict] = None
+
+class RealTimeDataCollector:
+    def __init__(self, config):
+        self.config = config
+        self.session = None
+        self.events_buffer = []
+        self.news_buffer = []
+        self.last_price = None
+        self.price_history = []
+        self.bitget_client = None
         
-    async def calculate_all_indicators(self, market_data: Dict) -> Dict:
-        """모든 지표 계산 및 매매 신호 생성"""
+        # 추가 API 키들
+        self.coingecko_key = getattr(config, 'COINGECKO_API_KEY', None)
+        self.cryptocompare_key = getattr(config, 'CRYPTOCOMPARE_API_KEY', None)
+        self.glassnode_key = getattr(config, 'GLASSNODE_API_KEY', None)
         
-        indicators = {
-            # 1. 시장 구조 분석
-            'market_structure': await self.analyze_market_structure(market_data),
-            
-            # 2. 파생상품 지표
-            'derivatives': await self.analyze_derivatives(market_data),
-            
-            # 3. 온체인 지표
-            'onchain': await self.analyze_onchain_metrics(market_data),
-            
-            # 4. 거래소 플로우
-            'exchange_flow': await self.analyze_exchange_flows(market_data),
-            
-            # 5. 시장 미시구조
-            'microstructure': await self.analyze_microstructure(market_data),
-            
-            # 6. 멀티 타임프레임 분석
-            'multi_timeframe': await self.analyze_multi_timeframe(market_data),
-            
-            # 7. AI 예측 모델
-            'ai_prediction': await self.run_ai_prediction(market_data)
+        # 캐시 (API 제한 관리)
+        self.cache = {
+            'fear_greed': {'data': None, 'timestamp': None},
+            'market_cap': {'data': None, 'timestamp': None},
+            'social_metrics': {'data': None, 'timestamp': None}
         }
         
-        # 종합 점수 계산
-        indicators['composite_score'] = self.calculate_composite_score(indicators)
+        # RealisticNewsCollector 임포트
+        try:
+            from realistic_news_collector import RealisticNewsCollector
+            self.news_collector = RealisticNewsCollector(config)
+            self.news_collector.data_collector = self
+            logger.info("✅ RealisticNewsCollector 초기화 완료")
+        except ImportError as e:
+            logger.error(f"RealisticNewsCollector 임포트 실패: {e}")
+            self.news_collector = None
         
-        return indicators
+    async def start(self):
+        """데이터 수집 시작"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+        
+        logger.info("🚀 실시간 데이터 수집 시작")
+        
+        # 병렬 태스크 실행
+        tasks = []
+        
+        # Bitget 클라이언트가 설정된 경우에만 가격 모니터링 시작
+        if self.bitget_client:
+            tasks.append(self.monitor_price_changes())
+            logger.info("📈 가격 모니터링 활성화 (1% 민감도)")
+        
+        # 기본 모니터링
+        tasks.append(self.monitor_sentiment())
+        tasks.append(self.monitor_market_metrics())  # 새로운 메트릭 모니터링
+        
+        # 뉴스 모니터링
+        if self.news_collector:
+            tasks.append(self.news_collector.start_monitoring())
+            logger.info("📰 고급 뉴스 모니터링 활성화")
+        
+        await asyncio.gather(*tasks, return_exceptions=True)
     
-    async def analyze_market_structure(self, data: Dict) -> Dict:
-        """시장 구조 분석"""
-        return {
-            # 1. 선물-현물 베이시스
-            'basis': {
-                'value': data.get('futures_price', 0) - data.get('spot_price', 0),
-                'signal': self._interpret_basis(data.get('futures_price', 0) - data.get('spot_price', 0)),
-                'description': "선물 프리미엄/디스카운트 상태"
-            },
+    async def monitor_price_changes(self):
+        """가격 급변동 모니터링 - 1% 민감도"""
+        while True:
+            try:
+                if not self.bitget_client:
+                    await asyncio.sleep(30)
+                    continue
+                
+                ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
+                
+                if isinstance(ticker_data, dict):
+                    current_price = float(ticker_data.get('last', 0))
+                    
+                    if self.last_price and current_price > 0:
+                        change_percent = ((current_price - self.last_price) / self.last_price) * 100
+                        
+                        # 1% 이상 급변동 감지
+                        if abs(change_percent) >= 1.0:
+                            severity = EventSeverity.CRITICAL if abs(change_percent) >= 3 else EventSeverity.HIGH
+                            
+                            event = MarketEvent(
+                                timestamp=datetime.now(),
+                                severity=severity,
+                                category="price_movement",
+                                title=f"BTC {'급등' if change_percent > 0 else '급락'} {abs(change_percent):.2f}%",
+                                description=f"1분 내 ${self.last_price:,.0f} → ${current_price:,.0f}",
+                                impact="➕호재" if change_percent > 0 else "➖악재",
+                                source="Bitget Real-time",
+                                metadata={
+                                    'change_percent': change_percent,
+                                    'from_price': self.last_price,
+                                    'to_price': current_price
+                                }
+                            )
+                            self.events_buffer.append(event)
+                            
+                            logger.warning(f"🚨 가격 급변동: {change_percent:+.2f}% (${self.last_price:,.0f} → ${current_price:,.0f})")
+                    
+                    if current_price > 0:
+                        self.last_price = current_price
+                        self.price_history.append({
+                            'price': current_price,
+                            'timestamp': datetime.now()
+                        })
+                        
+                        # 오래된 데이터 정리 (1시간)
+                        cutoff_time = datetime.now() - timedelta(hours=1)
+                        self.price_history = [
+                            p for p in self.price_history 
+                            if p['timestamp'] > cutoff_time
+                        ]
+                
+            except Exception as e:
+                logger.error(f"가격 모니터링 오류: {e}")
             
-            # 2. 기간 구조 (Term Structure)
-            'term_structure': {
-                'contango': data.get('next_month_futures', 0) > data.get('current_month_futures', 0),
-                'signal': "➕호재" if data.get('next_month_futures', 0) > data.get('current_month_futures', 0) else "➖악재",
-                'description': "선물 만기별 가격 구조"
-            },
+            await asyncio.sleep(30)  # 30초마다 체크
+    
+    async def monitor_sentiment(self):
+        """시장 심리 지표 모니터링 - 확장"""
+        while True:
+            try:
+                # Fear & Greed Index
+                fng_data = await self.get_fear_greed_index()
+                if fng_data:
+                    fng_value = fng_data.get('value', 50)
+                    fng_class = fng_data.get('value_classification', 'Neutral')
+                    
+                    # 극단적 심리 상태 감지
+                    if fng_value <= 20 or fng_value >= 80:
+                        event = MarketEvent(
+                            timestamp=datetime.now(),
+                            severity=EventSeverity.HIGH,
+                            category="sentiment",
+                            title=f"극단적 시장 심리: {fng_class} ({fng_value})",
+                            description=f"공포탐욕지수가 극단적 수준에 도달",
+                            impact="➕호재" if fng_value <= 20 else "➖악재",
+                            source="Fear & Greed Index",
+                            metadata={'fng_value': fng_value, 'classification': fng_class}
+                        )
+                        self.events_buffer.append(event)
+                        logger.info(f"😨 극단적 심리: {fng_class} ({fng_value})")
+                
+                # CryptoCompare Social Data (있는 경우)
+                if self.cryptocompare_key:
+                    social_data = await self.get_social_metrics()
+                    if social_data:
+                        # 소셜 미디어 급증 감지
+                        social_volume = social_data.get('social_volume', 0)
+                        if social_volume > 10000:  # 임계값
+                            logger.info(f"📱 소셜 미디어 활동 급증: {social_volume}")
+                
+            except Exception as e:
+                logger.error(f"심리 지표 모니터링 오류: {e}")
             
-            # 3. 변동성 스큐
-            'volatility_skew': {
-                'put_call_skew': data.get('put_iv', 0) - data.get('call_iv', 0),
-                'signal': self._interpret_skew(data.get('put_iv', 0) - data.get('call_iv', 0)),
-                'description': "옵션 변동성 비대칭"
+            await asyncio.sleep(1800)  # 30분마다 체크
+    
+    async def monitor_market_metrics(self):
+        """시장 메트릭 모니터링"""
+        while True:
+            try:
+                # CoinGecko 시장 데이터
+                if self.coingecko_key or True:  # CoinGecko는 키 없이도 사용 가능
+                    market_data = await self.get_market_overview()
+                    if market_data:
+                        btc_dominance = market_data.get('btc_dominance', 0)
+                        total_market_cap = market_data.get('total_market_cap', 0)
+                        
+                        # 도미넌스 급변동 감지
+                        if abs(btc_dominance - 50) > 10:  # 50%에서 크게 벗어남
+                            logger.info(f"📊 BTC 도미넌스 이상: {btc_dominance:.1f}%")
+                
+                # Glassnode 온체인 데이터 (있는 경우)
+                if self.glassnode_key:
+                    onchain_data = await self.get_onchain_metrics()
+                    if onchain_data:
+                        # 온체인 이상 징후 감지
+                        exchange_inflow = onchain_data.get('exchange_inflow', 0)
+                        if exchange_inflow > 10000:  # BTC
+                            event = MarketEvent(
+                                timestamp=datetime.now(),
+                                severity=EventSeverity.HIGH,
+                                category="onchain",
+                                title=f"대량 거래소 유입: {exchange_inflow:,.0f} BTC",
+                                description="매도 압력 증가 가능성",
+                                impact="➖악재",
+                                source="Glassnode",
+                                metadata={'inflow': exchange_inflow}
+                            )
+                            self.events_buffer.append(event)
+                
+            except Exception as e:
+                logger.error(f"시장 메트릭 모니터링 오류: {e}")
+            
+            await asyncio.sleep(3600)  # 1시간마다 체크
+    
+    async def get_fear_greed_index(self) -> Optional[Dict]:
+        """Fear & Greed Index 조회"""
+        try:
+            # 캐시 확인 (10분)
+            if self.cache['fear_greed']['timestamp']:
+                if datetime.now() - self.cache['fear_greed']['timestamp'] < timedelta(minutes=10):
+                    return self.cache['fear_greed']['data']
+            
+            url = "https://api.alternative.me/fng/?limit=1"
+            
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data and 'data' in data:
+                        result = {
+                            'value': int(data['data'][0]['value']),
+                            'value_classification': data['data'][0]['value_classification'],
+                            'timestamp': data['data'][0]['timestamp']
+                        }
+                        
+                        # 캐시 저장
+                        self.cache['fear_greed'] = {
+                            'data': result,
+                            'timestamp': datetime.now()
+                        }
+                        
+                        return result
+                        
+        except Exception as e:
+            logger.error(f"Fear & Greed Index 조회 실패: {e}")
+        
+        return None
+    
+    async def get_market_overview(self) -> Optional[Dict]:
+        """CoinGecko 시장 개요"""
+        try:
+            # 캐시 확인 (5분)
+            if self.cache['market_cap']['timestamp']:
+                if datetime.now() - self.cache['market_cap']['timestamp'] < timedelta(minutes=5):
+                    return self.cache['market_cap']['data']
+            
+            # Global 데이터
+            url = "https://api.coingecko.com/api/v3/global"
+            headers = {}
+            if self.coingecko_key:
+                headers['x-cg-pro-api-key'] = self.coingecko_key
+            
+            async with self.session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    global_data = data.get('data', {})
+                    
+                    result = {
+                        'total_market_cap': global_data.get('total_market_cap', {}).get('usd', 0),
+                        'total_volume': global_data.get('total_volume', {}).get('usd', 0),
+                        'btc_dominance': global_data.get('market_cap_percentage', {}).get('btc', 0),
+                        'eth_dominance': global_data.get('market_cap_percentage', {}).get('eth', 0),
+                        'market_cap_change_24h': global_data.get('market_cap_change_percentage_24h_usd', 0)
+                    }
+                    
+                    # 캐시 저장
+                    self.cache['market_cap'] = {
+                        'data': result,
+                        'timestamp': datetime.now()
+                    }
+                    
+                    return result
+                    
+        except Exception as e:
+            logger.error(f"CoinGecko 시장 데이터 조회 실패: {e}")
+        
+        return None
+    
+    async def get_social_metrics(self) -> Optional[Dict]:
+        """CryptoCompare 소셜 메트릭"""
+        if not self.cryptocompare_key:
+            return None
+            
+        try:
+            url = "https://min-api.cryptocompare.com/data/social/coin/latest"
+            params = {
+                'coinId': 1182,  # Bitcoin ID
+                'api_key': self.cryptocompare_key
             }
-        }
+            
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('Response') == 'Success':
+                        social_data = data.get('Data', {})
+                        
+                        return {
+                            'social_volume': social_data.get('General', {}).get('Points', 0),
+                            'twitter_followers': social_data.get('Twitter', {}).get('followers', 0),
+                            'reddit_subscribers': social_data.get('Reddit', {}).get('subscribers', 0)
+                        }
+                        
+        except Exception as e:
+            logger.error(f"CryptoCompare 소셜 데이터 조회 실패: {e}")
+        
+        return None
     
-    async def analyze_derivatives(self, data: Dict) -> Dict:
-        """파생상품 지표 분석"""
-        return {
-            # 1. 미결제약정 분석
-            'open_interest': {
-                'total_oi': data.get('total_oi', 0),
-                'oi_change_24h': data.get('oi_change_24h', 0),
-                'oi_weighted_funding': data.get('oi_weighted_funding', 0),
-                'signal': self._interpret_oi_change(data.get('oi_change_24h', 0)),
-                'description': "미결제약정 변화와 펀딩 가중치"
-            },
+    async def get_onchain_metrics(self) -> Optional[Dict]:
+        """Glassnode 온체인 메트릭"""
+        if not self.glassnode_key:
+            return None
             
-            # 2. 청산 데이터
-            'liquidations': {
-                'long_liquidations_24h': data.get('long_liq_24h', 0),
-                'short_liquidations_24h': data.get('short_liq_24h', 0),
-                'liquidation_ratio': self._calculate_liq_ratio(data),
-                'signal': self._interpret_liquidations(data),
-                'description': "롱/숏 청산 비율"
-            },
-            
-            # 3. 옵션 플로우
-            'options_flow': {
-                'put_call_ratio': data.get('put_call_ratio', 0),
-                'gamma_exposure': data.get('gamma_exposure', 0),
-                'max_pain': data.get('max_pain_price', 0),
-                'signal': self._interpret_options_flow(data),
-                'description': "옵션 시장 포지셔닝"
+        try:
+            # Exchange Inflow
+            url = "https://api.glassnode.com/v1/metrics/transactions/transfers_to_exchanges"
+            params = {
+                'a': 'BTC',
+                'api_key': self.glassnode_key,
+                'i': '24h',
+                'f': 'JSON'
             }
-        }
-    
-    async def analyze_onchain_metrics(self, data: Dict) -> Dict:
-        """온체인 지표 분석"""
-        return {
-            # 1. SOPR (Spent Output Profit Ratio)
-            'sopr': {
-                'value': data.get('sopr', 1),
-                'adjusted_sopr': data.get('adjusted_sopr', 1),
-                'signal': "➕호재" if data.get('sopr', 1) > 1 else "➖악재",
-                'description': "실현 손익 비율"
-            },
             
-            # 2. NUPL (Net Unrealized Profit/Loss)
-            'nupl': {
-                'value': data.get('nupl', 0),
-                'market_phase': self._determine_market_phase(data.get('nupl', 0)),
-                'signal': self._interpret_nupl(data.get('nupl', 0)),
-                'description': "미실현 손익 상태"
-            },
-            
-            # 3. 거래소 보유량
-            'exchange_reserves': {
-                'total_reserves': data.get('exchange_reserves', 0),
-                'net_flow_7d': data.get('exchange_netflow_7d', 0),
-                'signal': "➕호재" if data.get('exchange_netflow_7d', 0) < 0 else "➖악재",
-                'description': "거래소 BTC 순유출입"
-            },
-            
-            # 4. 고래 활동
-            'whale_activity': {
-                'whale_transactions': data.get('whale_tx_count', 0),
-                'whale_accumulation': data.get('whale_accumulation_trend', 0),
-                'signal': self._interpret_whale_activity(data),
-                'description': "대형 홀더 활동"
-            }
-        }
-    
-    async def analyze_exchange_flows(self, data: Dict) -> Dict:
-        """거래소별 자금 흐름 분석"""
-        return {
-            # 1. 스테이블코인 흐름
-            'stablecoin_flow': {
-                'exchange_stablecoin_ratio': data.get('stablecoin_ratio', 0),
-                'usdt_premium': data.get('usdt_premium', 0),
-                'signal': "➕호재" if data.get('stablecoin_ratio', 0) > 1.5 else "중립",
-                'description': "거래소 스테이블코인 비율"
-            },
-            
-            # 2. 거래소간 차익거래
-            'arbitrage': {
-                'korea_premium': data.get('korea_premium', 0),
-                'exchange_spread': data.get('max_exchange_spread', 0),
-                'signal': self._interpret_arbitrage(data),
-                'description': "거래소간 가격 차이"
-            },
-            
-            # 3. 거래량 분석
-            'volume_analysis': {
-                'spot_volume': data.get('spot_volume_24h', 0),
-                'futures_volume': data.get('futures_volume_24h', 0),
-                'volume_ratio': data.get('futures_volume_24h', 1) / max(data.get('spot_volume_24h', 1), 1),
-                'signal': self._interpret_volume_ratio(data),
-                'description': "현물/선물 거래량 비율"
-            }
-        }
-    
-    async def analyze_microstructure(self, data: Dict) -> Dict:
-        """시장 미시구조 분석"""
-        return {
-            # 1. 주문장 분석
-            'orderbook': {
-                'bid_ask_spread': data.get('spread', 0),
-                'orderbook_imbalance': data.get('orderbook_imbalance', 0),
-                'depth_ratio': data.get('bid_depth', 0) / max(data.get('ask_depth', 1), 1),
-                'signal': self._interpret_orderbook(data),
-                'description': "매수/매도 주문장 균형"
-            },
-            
-            # 2. 거래 플로우
-            'trade_flow': {
-                'buy_sell_ratio': data.get('buy_volume', 0) / max(data.get('sell_volume', 1), 1),
-                'large_trades': data.get('large_trade_count', 0),
-                'aggressive_buyers': data.get('aggressive_buy_ratio', 0),
-                'signal': self._interpret_trade_flow(data),
-                'description': "실거래 매수/매도 압력"
-            },
-            
-            # 3. 시장 효율성
-            'market_efficiency': {
-                'price_discovery': data.get('futures_lead_spot', True),
-                'correlation_breakdown': data.get('correlation_breakdown', False),
-                'signal': "주의" if data.get('correlation_breakdown', False) else "정상",
-                'description': "시장 효율성 지표"
-            }
-        }
-    
-    async def analyze_multi_timeframe(self, data: Dict) -> Dict:
-        """멀티 타임프레임 분석"""
-        timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
-        signals = {}
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data:
+                        latest = data[-1] if isinstance(data, list) else data
+                        
+                        return {
+                            'exchange_inflow': latest.get('v', 0),
+                            'timestamp': latest.get('t', 0)
+                        }
+                        
+        except Exception as e:
+            logger.error(f"Glassnode 온체인 데이터 조회 실패: {e}")
         
-        for tf in timeframes:
-            tf_data = data.get(f'tf_{tf}', {})
-            signals[tf] = {
-                'trend': self._determine_trend(tf_data),
-                'momentum': self._calculate_momentum(tf_data),
-                'support_resistance': self._find_sr_levels(tf_data)
-            }
-        
-        return {
-            'signals': signals,
-            'alignment': self._check_timeframe_alignment(signals),
-            'strength': self._calculate_signal_strength(signals),
-            'description': "다중 시간대 신호 정렬도"
-        }
+        return None
     
-    async def run_ai_prediction(self, data: Dict) -> Dict:
-        """AI 기반 예측 모델"""
-        # 실제 구현시에는 훈련된 모델 사용
-        features = self._prepare_features(data)
+    async def get_comprehensive_market_data(self) -> Dict:
+        """종합 시장 데이터 수집"""
+        tasks = [
+            self.get_fear_greed_index(),
+            self.get_market_overview(),
+            self.get_social_metrics(),
+            self.get_onchain_metrics()
+        ]
         
-        return {
-            'price_prediction': {
-                '1h': data.get('current_price', 0) * 1.001,  # 예시
-                '4h': data.get('current_price', 0) * 1.002,
-                '24h': data.get('current_price', 0) * 1.005,
-                'confidence': 0.75
-            },
-            'direction_probability': {
-                'up': 0.62,
-                'down': 0.38
-            },
-            'volatility_forecast': {
-                'expected_volatility': 2.5,
-                'volatility_regime': "medium"
-            },
-            'signal': "➕호재",
-            'description': "머신러닝 기반 예측"
-        }
-    
-    def calculate_composite_score(self, indicators: Dict) -> Dict:
-        """종합 점수 계산"""
-        weights = {
-            'market_structure': 0.15,
-            'derivatives': 0.20,
-            'onchain': 0.15,
-            'exchange_flow': 0.15,
-            'microstructure': 0.20,
-            'multi_timeframe': 0.10,
-            'ai_prediction': 0.05
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        comprehensive_data = {
+            'fear_greed': results[0] if not isinstance(results[0], Exception) else None,
+            'market_overview': results[1] if not isinstance(results[1], Exception) else None,
+            'social_metrics': results[2] if not isinstance(results[2], Exception) else None,
+            'onchain_metrics': results[3] if not isinstance(results[3], Exception) else None,
+            'timestamp': datetime.now().isoformat()
         }
         
-        bullish_score = 0
-        bearish_score = 0
+        return comprehensive_data
+    
+    async def get_recent_news(self, hours: int = 6) -> List[Dict]:
+        """최근 뉴스 가져오기"""
+        try:
+            if self.news_collector:
+                news = await self.news_collector.get_recent_news(hours)
+                logger.info(f"📰 최근 {hours}시간 뉴스 {len(news)}건 조회")
+                return news
+            else:
+                return self._get_fallback_news(hours)
+        except Exception as e:
+            logger.error(f"최근 뉴스 조회 오류: {e}")
+            return []
+    
+    def _get_fallback_news(self, hours: int) -> List[Dict]:
+        """폴백 뉴스 조회"""
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        news_events = []
         
-        # 각 지표별 점수 계산 (실제 구현시 상세 로직 필요)
-        for category, weight in weights.items():
-            if category in indicators:
-                # 호재/악재 신호에 따라 점수 부여
-                category_score = self._calculate_category_score(indicators[category])
-                if category_score > 0:
-                    bullish_score += category_score * weight
-                else:
-                    bearish_score += abs(category_score) * weight
+        for event in self.events_buffer:
+            if (hasattr(event, 'timestamp') and event.timestamp > cutoff_time and 
+                hasattr(event, 'category') and event.category in ['news', 'critical_news']):
+                news_events.append({
+                    'title': event.title,
+                    'description': event.description,
+                    'source': event.source,
+                    'published_at': event.timestamp.isoformat(),
+                    'impact': event.impact,
+                    'weight': 5
+                })
         
-        total_score = bullish_score - bearish_score
-        
-        return {
-            'bullish_score': round(bullish_score * 100, 1),
-            'bearish_score': round(bearish_score * 100, 1),
-            'composite_score': round(total_score * 100, 1),
-            'signal': self._determine_signal(total_score),
-            'confidence': self._calculate_confidence(indicators),
-            'recommended_action': self._recommend_action(total_score, indicators)
-        }
+        return news_events[:8]
     
-    # 보조 함수들
-    def _interpret_basis(self, basis: float) -> str:
-        if basis > 100:
-            return "➕강한 호재"
-        elif basis > 0:
-            return "➕호재"
-        elif basis < -100:
-            return "➖강한 악재"
-        else:
-            return "➖악재"
+    def set_bitget_client(self, bitget_client):
+        """Bitget 클라이언트 설정"""
+        self.bitget_client = bitget_client
+        logger.info("✅ Bitget 클라이언트 설정 완료")
     
-    def _interpret_skew(self, skew: float) -> str:
-        if skew > 5:
-            return "➖악재 (하방 헤지 증가)"
-        elif skew < -5:
-            return "➕호재 (상방 기대 증가)"
-        else:
-            return "중립"
-    
-    def _interpret_oi_change(self, change: float) -> str:
-        if change > 10:
-            return "➕호재 (관심 증가)"
-        elif change < -10:
-            return "➖악재 (포지션 정리)"
-        else:
-            return "중립"
-    
-    def _calculate_liq_ratio(self, data: Dict) -> float:
-        long_liq = data.get('long_liq_24h', 0)
-        short_liq = data.get('short_liq_24h', 0)
-        total = long_liq + short_liq
-        return long_liq / total if total > 0 else 0.5
-    
-    def _interpret_liquidations(self, data: Dict) -> str:
-        ratio = self._calculate_liq_ratio(data)
-        if ratio > 0.7:
-            return "➕호재 (롱 청산 우세)"
-        elif ratio < 0.3:
-            return "➖악재 (숏 청산 우세)"
-        else:
-            return "중립"
-    
-    def _interpret_options_flow(self, data: Dict) -> str:
-        pcr = data.get('put_call_ratio', 1)
-        if pcr > 1.5:
-            return "➖악재 (풋 우세)"
-        elif pcr < 0.7:
-            return "➕호재 (콜 우세)"
-        else:
-            return "중립"
-    
-    def _determine_market_phase(self, nupl: float) -> str:
-        if nupl < 0:
-            return "Capitulation"
-        elif nupl < 0.25:
-            return "Hope/Fear"
-        elif nupl < 0.5:
-            return "Optimism/Anxiety"
-        elif nupl < 0.75:
-            return "Belief/Denial"
-        else:
-            return "Euphoria/Greed"
-    
-    def _interpret_nupl(self, nupl: float) -> str:
-        if nupl < 0:
-            return "➕강한 호재 (바닥 신호)"
-        elif nupl > 0.75:
-            return "➖강한 악재 (과열 신호)"
-        else:
-            return "중립"
-    
-    def _interpret_whale_activity(self, data: Dict) -> str:
-        accumulation = data.get('whale_accumulation_trend', 0)
-        if accumulation > 0.1:
-            return "➕호재 (고래 매집)"
-        elif accumulation < -0.1:
-            return "➖악재 (고래 매도)"
-        else:
-            return "중립"
-    
-    def _interpret_arbitrage(self, data: Dict) -> str:
-        premium = data.get('korea_premium', 0)
-        if abs(premium) > 2:
-            return "거래 기회"
-        else:
-            return "정상"
-    
-    def _interpret_volume_ratio(self, data: Dict) -> str:
-        ratio = data.get('futures_volume_24h', 1) / max(data.get('spot_volume_24h', 1), 1)
-        if ratio > 3:
-            return "➖악재 (투기 과열)"
-        elif ratio < 0.5:
-            return "➕호재 (현물 주도)"
-        else:
-            return "중립"
-    
-    def _interpret_orderbook(self, data: Dict) -> str:
-        imbalance = data.get('orderbook_imbalance', 0)
-        if imbalance > 0.2:
-            return "➕호재 (매수 우세)"
-        elif imbalance < -0.2:
-            return "➖악재 (매도 우세)"
-        else:
-            return "균형"
-    
-    def _interpret_trade_flow(self, data: Dict) -> str:
-        ratio = data.get('buy_volume', 0) / max(data.get('sell_volume', 1), 1)
-        if ratio > 1.2:
-            return "➕호재 (매수 압력)"
-        elif ratio < 0.8:
-            return "➖악재 (매도 압력)"
-        else:
-            return "균형"
-    
-    def _determine_trend(self, data: Dict) -> str:
-        # 추세 판단 로직
-        return "상승" if data.get('trend_score', 0) > 0 else "하락"
-    
-    def _calculate_momentum(self, data: Dict) -> float:
-        # 모멘텀 계산 로직
-        return data.get('momentum', 0)
-    
-    def _find_sr_levels(self, data: Dict) -> Dict:
-        # 지지/저항 레벨 찾기
-        return {
-            'support': data.get('support_levels', []),
-            'resistance': data.get('resistance_levels', [])
-        }
-    
-    def _check_timeframe_alignment(self, signals: Dict) -> float:
-        # 타임프레임 정렬도 체크
-        aligned = sum(1 for tf, signal in signals.items() if signal.get('trend') == '상승')
-        return aligned / len(signals)
-    
-    def _calculate_signal_strength(self, signals: Dict) -> str:
-        alignment = self._check_timeframe_alignment(signals)
-        if alignment > 0.8:
-            return "매우 강함"
-        elif alignment > 0.6:
-            return "강함"
-        elif alignment > 0.4:
-            return "보통"
-        else:
-            return "약함"
-    
-    def _prepare_features(self, data: Dict) -> np.ndarray:
-        # ML 모델용 특징 준비
-        features = []
-        # 실제 구현시 필요한 특징들 추출
-        return np.array(features)
-    
-    def _calculate_category_score(self, category_data: Dict) -> float:
-        # 카테고리별 점수 계산
-        score = 0
-        for key, value in category_data.items():
-            if isinstance(value, dict) and 'signal' in value:
-                signal = value['signal']
-                if '강한 호재' in signal:
-                    score += 2
-                elif '호재' in signal:
-                    score += 1
-                elif '강한 악재' in signal:
-                    score -= 2
-                elif '악재' in signal:
-                    score -= 1
-        return score
-    
-    def _determine_signal(self, score: float) -> str:
-        if score > 0.3:
-            return "➕강한 매수"
-        elif score > 0.1:
-            return "➕매수"
-        elif score < -0.3:
-            return "➖강한 매도"
-        elif score < -0.1:
-            return "➖매도"
-        else:
-            return "중립/관망"
-    
-    def _calculate_confidence(self, indicators: Dict) -> float:
-        # 신호 신뢰도 계산
-        # 여러 지표가 일치할수록 높은 신뢰도
-        return 0.75  # 예시
-    
-    def _recommend_action(self, score: float, indicators: Dict) -> str:
-        """구체적인 매매 전략 추천"""
-        if score > 0.3:
-            return "즉시 롱 진입, 레버리지 3-5배, 손절 -2%"
-        elif score > 0.1:
-            return "분할 롱 진입, 레버리지 2-3배, 손절 -3%"
-        elif score < -0.3:
-            return "즉시 숏 진입, 레버리지 3-5배, 손절 -2%"
-        elif score < -0.1:
-            return "분할 숏 진입, 레버리지 2-3배, 손절 -3%"
-        else:
-            return "포지션 유지 또는 관망, 변동성 돌파 대기"
+    async def close(self):
+        """세션 종료"""
+        try:
+            if self.session:
+                await self.session.close()
+            
+            if self.news_collector:
+                await self.news_collector.close()
+            
+            logger.info("🔚 데이터 수집기 종료 완료")
+            
+        except Exception as e:
+            logger.error(f"데이터 수집기 종료 중 오류: {e}")
