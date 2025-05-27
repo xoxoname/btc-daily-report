@@ -149,8 +149,8 @@ class EnhancedReportGenerator:
             start_date_kst = datetime.now(kst).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
             start_time = int(start_date_kst.timestamp() * 1000)
             
-            # 거래 내역 조회
-            fills = await self.bitget_client.get_trade_fills('BTCUSDT', start_time, end_time, 1000)
+            # 거래 내역 조회 (최대 500개)
+            fills = await self.bitget_client.get_trade_fills('BTCUSDT', start_time, end_time, 500)
             logger.info(f"거래 내역 조회: {days}일간 {len(fills) if isinstance(fills, list) else 0}건")
             
             # 거래 내역이 없으면 계정 정보에서 직접 조회
