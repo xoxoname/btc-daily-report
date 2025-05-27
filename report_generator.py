@@ -617,13 +617,23 @@ class EnhancedReportGenerator:
                         except (ValueError, TypeError):
                             return default
                     
+                    # 청산가 - 여러 가능한 필드명 확인
+                    liq_price = 0.0
+                    liq_fields = ['liquidationPrice', 'liqPrice', 'liquidation_price', 'estLiqPrice']
+                    for field in liq_fields:
+                        if field in pos and pos[field]:
+                            liq_price = safe_float(pos[field])
+                            if liq_price > 0:
+                                logger.info(f"청산가 필드 '{field}' 사용: ${liq_price}")
+                                break
+                    
                     formatted_position = {
                         'symbol': pos.get('symbol', 'BTCUSDT'),
                         'side': pos.get('holdSide', 'long'),
                         'size': total_size,
                         'entry_price': safe_float(pos.get('openPriceAvg', 0)),
                         'mark_price': safe_float(pos.get('markPrice', 0)),
-                        'liquidation_price': safe_float(pos.get('liquidationPrice', 0)),
+                        'liquidation_price': liq_price,
                         'unrealized_pnl': safe_float(pos.get('unrealizedPL', 0)),
                         'margin': safe_float(pos.get('marginSize', 0)),
                         'leverage': int(pos.get('leverage', 1)),
