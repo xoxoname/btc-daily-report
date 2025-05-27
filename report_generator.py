@@ -55,7 +55,7 @@ class EnhancedReportGenerator:
         return int(today_start_kst.timestamp() * 1000)
     
     async def _get_today_realized_pnl(self) -> float:
-        """오늘 실현 손익 조회 - KST 0시 기준"""
+        """오늘 실현 손익 조회 - KST 0시 기준, 실제 API 데이터"""
         try:
             if not self.bitget_client:
                 logger.error("Bitget 클라이언트가 설정되지 않음")
@@ -72,18 +72,33 @@ class EnhancedReportGenerator:
             
             if not fills or len(fills) == 0:
                 logger.info("오늘 거래 내역이 없음")
-                # 포지션 데이터에서 achievedProfits 확인
+                
+                # 계정 정보에서 오늘의 실현 손익 확인
+                account_info = await self.bitget_client.get_account_info()
+                
+                # realizedPL 필드 확인
+                realized_pl = float(account_info.get('realizedPL', 0))
+                if realized_pl != 0:
+                    logger.info(f"계정 realizedPL: ${realized_pl}")
+                    return realized_pl
+                
+                # 포지션에서 achievedProfits 확인
                 positions = await self.bitget_client.get_positions('BTCUSDT')
                 if positions and len(positions) > 0:
                     pos = positions[0]
                     achieved_profits = float(pos.get('achievedProfits', 0))
-                    logger.info(f"포지션 achievedProfits: ${achieved_profits}")
-                    return achieved_profits
+                    if achieved_profits != 0:
+                        logger.info(f"포지션 achievedProfits: ${achieved_profits}")
+                        return achieved_profits
+                
                 return 0.0
             
             # fillList 처리
-            if isinstance(fills, dict) and 'fillList' in fills:
-                fills = fills['fillList']
+            if isinstance(fills, dict):
+                if 'fillList' in fills:
+                    fills = fills['fillList']
+                elif 'list' in fills:
+                    fills = fills['list']
             
             total_realized_pnl = 0.0
             total_fee = 0.0
@@ -91,24 +106,26 @@ class EnhancedReportGenerator:
             
             for fill in fills:
                 try:
-                    # 실현 손익 계산
+                    # 실현 손익 계산 - profit 필드 직접 사용
                     profit = float(fill.get('profit', 0))
                     
                     # 수수료 계산
+                    fee = 0.0
                     fee_detail = fill.get('feeDetail', [])
                     if isinstance(fee_detail, list):
                         for fee_info in fee_detail:
                             if isinstance(fee_info, dict):
-                                total_fee += abs(float(fee_info.get('totalFee', 0)))
+                                fee += abs(float(fee_info.get('totalFee', 0)))
                     
                     total_realized_pnl += profit
+                    total_fee += fee
                     trade_count += 1
                     
                 except Exception as e:
                     logger.warning(f"거래 내역 파싱 오류: {e}")
                     continue
             
-            # 수수료 차감
+            # 수수료 차감한 순 실현 손익
             net_pnl = total_realized_pnl - total_fee
             
             logger.info(f"오늘 실현 손익: ${net_pnl:.2f} (거래 {trade_count}건, 수수료 ${total_fee:.2f})")
@@ -119,7 +136,7 @@ class EnhancedReportGenerator:
             return 0.0
     
     async def _get_accurate_trade_history(self, days: int = 7) -> Dict:
-        """정확한 거래 내역 조회 - KST 기준"""
+        """정확한 거래 내역 조회 - KST 기준, 실제 API 호출"""
         try:
             if not self.bitget_client:
                 return {'total_pnl': 0.0, 'daily_pnl': {}, 'trade_count': 0}
@@ -132,15 +149,50 @@ class EnhancedReportGenerator:
             start_date_kst = datetime.now(kst).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
             start_time = int(start_date_kst.timestamp() * 1000)
             
+            # 거래 내역 조회
             fills = await self.bitget_client.get_trade_fills('BTCUSDT', start_time, end_time, 1000)
             logger.info(f"거래 내역 조회: {days}일간 {len(fills) if isinstance(fills, list) else 0}건")
             
+            # 거래 내역이 없으면 계정 정보에서 직접 조회
             if not fills or len(fills) == 0:
-                logger.info("거래 내역이 없어 포지션 데이터에서 추정")
-                return await self._estimate_pnl_from_position_data(days)
+                logger.info("거래 내역이 없어 계정 정보에서 조회")
+                
+                # 계정 정보 조회
+                account_info = await self.bitget_client.get_account_info()
+                
+                # 주문 내역 조회 시도
+                order_history = await self.bitget_client.get_order_history('BTCUSDT', start_time, end_time)
+                
+                # 실제 데이터 사용
+                total_realized = 0.0
+                daily_pnl = {}
+                
+                # 오늘의 실현 손익 조회
+                today_pnl = await self._get_today_realized_pnl()
+                if today_pnl != 0:
+                    today = datetime.now(kst).strftime('%Y-%m-%d')
+                    daily_pnl[today] = {
+                        'pnl': today_pnl,
+                        'trades': len(order_history) if order_history else 0,
+                        'fees': 0
+                    }
+                    total_realized = today_pnl
+                
+                return {
+                    'total_pnl': total_realized,
+                    'daily_pnl': daily_pnl,
+                    'trade_count': len(order_history) if order_history else 0,
+                    'total_fees': 0,
+                    'average_daily': total_realized / days if days > 0 else 0,
+                    'days': days,
+                    'from_account': True
+                }
             
+            # 거래 내역이 있는 경우 처리
             if isinstance(fills, dict) and 'fillList' in fills:
                 fills = fills['fillList']
+            elif isinstance(fills, dict) and 'list' in fills:
+                fills = fills['list']
             
             total_realized_pnl = 0.0
             daily_pnl = {}
@@ -157,7 +209,7 @@ class EnhancedReportGenerator:
                     fill_datetime_kst = datetime.fromtimestamp(fill_time / 1000, tz=kst)
                     fill_date = fill_datetime_kst.strftime('%Y-%m-%d')
                     
-                    # 실현 손익
+                    # 실현 손익 - profit 필드 직접 사용
                     profit = float(fill.get('profit', 0))
                     
                     # 수수료
@@ -200,63 +252,58 @@ class EnhancedReportGenerator:
             return await self._estimate_pnl_from_position_data(days)
     
     async def _estimate_pnl_from_position_data(self, days: int = 7) -> Dict:
-        """포지션 데이터에서 수익 추정"""
+        """포지션 데이터에서 수익 추정 - 하드코딩 제거"""
         try:
+            # 계정 정보에서 실제 데이터 가져오기
+            account_info = await self.bitget_client.get_account_info()
+            
+            # 실제 손익 데이터
+            unrealized_pl = float(account_info.get('unrealizedPL', 0))
+            realized_pl = float(account_info.get('realizedPL', 0))
+            total_fee = float(account_info.get('totalFee', 0))
+            
+            logger.info(f"계정 기반 추정: unrealizedPL=${unrealized_pl}, realizedPL=${realized_pl}, totalFee=${total_fee}")
+            
+            # 포지션 확인
             positions = await self.bitget_client.get_positions('BTCUSDT')
             
-            if not positions or len(positions) == 0:
-                # 실제 거래가 있었을 가능성을 고려한 추정값
-                return {
-                    'total_pnl': 350.0,  # 7일간 추정값
-                    'daily_pnl': {
-                        datetime.now().strftime('%Y-%m-%d'): {'pnl': 50.0, 'trades': 3, 'fees': 1.5}
-                    },
-                    'trade_count': 21,
-                    'total_fees': 10.5,
-                    'average_daily': 50.0,
-                    'days': days,
-                    'estimated': True
-                }
-            
-            pos = positions[0]
-            achieved_profits = float(pos.get('achievedProfits', 0))
-            total_fee = float(pos.get('totalFee', 0))
-            
-            logger.info(f"포지션 기반 추정: achievedProfits=${achieved_profits}, totalFee=${total_fee}")
-            
-            # 일별 손익 추정
+            # 일별 손익 - 실제 데이터가 없으면 0
             daily_pnl = {}
             kst = pytz.timezone('Asia/Seoul')
+            today = datetime.now(kst).strftime('%Y-%m-%d')
             
-            for i in range(days):
-                date = (datetime.now(kst) - timedelta(days=i)).strftime('%Y-%m-%d')
-                if i == 0:  # 오늘
-                    daily_pnl[date] = {'pnl': achieved_profits - total_fee, 'trades': 3, 'fees': total_fee}
-                else:
-                    daily_pnl[date] = {'pnl': 45.0, 'trades': 3, 'fees': 1.5}
+            # 오늘의 실현 손익
+            today_realized = realized_pl if realized_pl != 0 else 0
             
-            estimated_total = achieved_profits + (45.0 * (days - 1))
+            daily_pnl[today] = {
+                'pnl': today_realized,
+                'trades': len(positions) if positions else 0,
+                'fees': total_fee
+            }
             
             return {
-                'total_pnl': estimated_total,
+                'total_pnl': realized_pl,
                 'daily_pnl': daily_pnl,
-                'trade_count': days * 3,
-                'total_fees': total_fee + (1.5 * (days - 1)),
-                'average_daily': estimated_total / days,
+                'trade_count': len(positions) if positions else 0,
+                'total_fees': total_fee,
+                'average_daily': realized_pl / days if days > 0 else 0,
                 'days': days,
-                'estimated': True
+                'estimated': True,
+                'from_api': True
             }
             
         except Exception as e:
-            logger.error(f"포지션 기반 추정 실패: {e}")
+            logger.error(f"계정 데이터 조회 실패: {e}")
+            # API 실패시에만 0 반환
             return {
-                'total_pnl': 280.0,
+                'total_pnl': 0.0,
                 'daily_pnl': {},
-                'trade_count': 21,
-                'total_fees': 10.5,
-                'average_daily': 40.0,
+                'trade_count': 0,
+                'total_fees': 0.0,
+                'average_daily': 0.0,
                 'days': days,
-                'estimated': True
+                'estimated': True,
+                'error': str(e)
             }
     
     async def generate_profit_report(self) -> str:
