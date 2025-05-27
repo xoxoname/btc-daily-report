@@ -1,147 +1,191 @@
-# 📘 비트코인 자동 선물 예측 시스템
+# 📊 비트코인 자동 선물 예측 시스템 v2.0
 
-GPT 기반 비트코인 선물 자동 분석 및 예측 시스템입니다.
+## 🆕 주요 개선사항
 
-## 🎯 주요 기능
-
-- **자동 분석 리포트**: 매일 4회 (09:00, 13:00, 17:00, 23:00 KST) 자동 분석 리포트 생성
-- **실시간 예외 감지**: 5분마다 가격 급변동, 대량 거래 등 예외 상황 감지
-- **텔레그램 봇**: 명령어 및 자연어 질의응답 지원
-- **GPT 분석**: OpenAI GPT를 활용한 시장 분석 및 예측
-- **Bitget API 연동**: 실시간 시장 데이터 및 포지션 정보 수집
-
-## 📋 지원 명령어
-
-### 슬래시 명령어
-- `/report` - 전체 분석 리포트
-- `/forecast` - 단기 예측 요약  
-- `/profit` - 수익 현황
-- `/schedule` - 자동 일정 안내
-
-### 자연어 명령어
-- "지금 매수해야 돼?"
-- "얼마 벌었어?"
-- "오늘 수익은?"
-- "시장 상황 어때?"
-
-## 🚀 배포 방법
-
-### 1. 환경변수 설정
-
-Render 대시보드에서 다음 환경변수를 설정하세요:
-
+### 1. **모듈화된 리포트 시스템**
 ```
-BITGET_APIKEY=your_bitget_api_key
-BITGET_APISECRET=your_bitget_api_secret  
-BITGET_PASSPHRASE=your_bitget_passphrase
-OPENAI_API_KEY=your_openai_api_key
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=1038440081
+report_generators/
+├── __init__.py           # 통합 매니저
+├── base_generator.py     # 공통 기능
+├── regular_report.py     # /report 명령어
+├── profit_report.py      # /profit 명령어
+├── forecast_report.py    # /forecast 명령어
+├── schedule_report.py    # /schedule 명령어
+├── exception_report.py   # 긴급 알림
+└── mental_care.py        # 멘탈 케어 전담
 ```
 
-### 2. GitHub 레포지토리 생성
+### 2. **향상된 멘탈 케어 시스템**
+- 🎯 **상황별 맞춤 메시지**: 수익/손실 규모에 따른 다양한 패턴
+- 💰 **구체적 수익 언급**: "오늘 $150을 벌었군요!" 형태의 개인화
+- 🤝 **GPT 연동**: OpenAI API로 더욱 자연스러운 멘트 생성
+- 📊 **자산 상황 반영**: 총 자산, 7일 수익, 미실현손익 종합 고려
 
-1. 이 코드를 GitHub 레포지토리에 업로드
-2. Render에서 레포지토리 연결
-3. Worker 서비스로 배포
+### 3. **정확한 데이터 처리**
+- ✅ **하드코딩 제거**: 모든 수치를 실제 API에서 조회
+- ✅ **포지션 파싱 개선**: 숏/롱, 청산가, 레버리지 정확한 표시
+- ✅ **미실현손익 정확**: API 직접 연동으로 실시간 반영
 
-### 3. Render 설정
-
-- **Service Type**: Background Worker
-- **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `python main.py`
-- **Plan**: Starter (무료) 또는 상위 플랜
-
-## 📁 프로젝트 구조
+## 📁 새로운 프로젝트 구조
 
 ```
 bitcoin-prediction-system/
-├── main.py                 # 메인 애플리케이션
-├── config.py              # 설정 관리
-├── telegram_bot.py        # 텔레그램 봇
-├── bitget_client.py       # Bitget API 클라이언트
-├── analysis_engine.py     # GPT 분석 엔진
-├── exception_detector.py  # 예외 상황 감지
-├── requirements.txt       # Python 의존성
-├── Dockerfile            # 컨테이너 설정
-├── render.yaml           # Render 배포 설정
-└── README.md             # 프로젝트 설명서
+├── main.py                    # 🆕 업데이트된 메인
+├── config.py                  # 설정 관리
+├── telegram_bot.py           # 텔레그램 봇
+├── bitget_client.py          # Bitget API 클라이언트
+├── analysis_engine.py        # GPT 분석 엔진
+├── exception_detector.py     # 예외 상황 감지
+├── data_collector.py         # 실시간 데이터 수집
+├── realistic_news_collector.py # 뉴스 수집
+├── trading_indicators.py     # 고급 지표
+├── report_generators/        # 🆕 리포트 생성기 모듈
+│   ├── __init__.py          # 통합 매니저
+│   ├── base_generator.py    # 공통 기능
+│   ├── regular_report.py    # 정기 리포트
+│   ├── profit_report.py     # 수익 리포트
+│   ├── forecast_report.py   # 예측 리포트
+│   ├── schedule_report.py   # 일정 리포트
+│   ├── exception_report.py  # 예외 리포트
+│   └── mental_care.py       # 멘탈 케어
+├── requirements.txt         # 의존성
+├── Dockerfile              # 컨테이너 설정
+├── render.yaml             # 배포 설정
+└── README.md               # 프로젝트 설명
 ```
 
-## 🔧 설정 방법
+## 🚀 사용법
 
-### Bitget API 설정
-1. Bitget 계정 생성 및 API 키 발급
-2. 선물 거래 권한 활성화
-3. API 키, 시크릿, 패스프레이즈 환경변수 설정
+### 기본 사용법 (기존과 동일)
+```python
+# main.py에서 자동으로 모든 리포트 생성기 초기화
+system = BitcoinPredictionSystem()
+await system.start()
+```
 
-### OpenAI API 설정  
-1. OpenAI 계정 생성 및 API 키 발급
-2. GPT-4 접근 권한 확인
-3. API 키 환경변수 설정
+### 개별 리포트 생성기 사용법
+```python
+from report_generators import ReportGeneratorManager
 
-### 텔레그램 봇 설정
-1. @BotFather에서 새 봇 생성
-2. 봇 토큰 발급
-3. 채팅 ID 확인 및 설정
+# 리포트 매니저 초기화
+manager = ReportGeneratorManager(config, data_collector, indicator_system)
+manager.set_bitget_client(bitget_client)
 
-## 📊 분석 항목
+# 각종 리포트 생성
+regular_report = await manager.generate_regular_report()      # /report
+profit_report = await manager.generate_profit_report()       # /profit
+forecast_report = await manager.generate_forecast_report()   # /forecast
+schedule_report = await manager.generate_schedule_report()   # /schedule
 
-### 기술적 분석
-- RSI, 볼린저밴드, 이동평균
-- 지지/저항선 분석
-- 가격 패턴 인식
+# 예외 상황 리포트
+event_data = {'type': 'price_anomaly', 'severity': 'high', ...}
+exception_report = await manager.generate_exception_report(event_data)
 
-### 심리적 분석
-- 펀딩비 분석
-- 미결제약정 변화
-- 공포탐욕지수
+# 독립적인 멘탈 케어
+mental_message = await manager.generate_custom_mental_care(
+    account_info, position_info, today_pnl, weekly_profit
+)
+```
 
-### 구조적 분석
-- 거래량 분석
-- 온체인 데이터
-- 시장 지배력
+## 🧠 새로운 멘탈 케어 기능
 
-## 🚨 예외 상황 감지
+### 다양한 상황별 메시지 패턴
 
-- **가격 급변동**: 2% 이상 변동 시 알림
-- **거래량 급증**: 평균 대비 3배 이상 시 알림  
-- **펀딩비 이상**: 0.02% 이상 시 알림
-- **주요 이벤트**: FOMC 등 경제 이벤트 전 알림
+**큰 수익 시:**
+```
+"오늘 $150을 벌어들였군요! 현재 자산 $6,623은 당신의 실력을 보여줍니다. 
+하지만 시장은 변덕스러우니 겸손함을 잊지 마세요. 🎯"
+```
 
-## 📈 리포트 형식
+**꾸준한 수익 시:**
+```
+"$50 벌었군요! 큰 돈은 아니어도 꾸준함이 복리의 힘을 만듭니다. 
+현재 자산 $6,623을 바탕으로 차근차근 늘려가세요. 🌱"
+```
 
-모든 리포트는 한국어로 제공되며, 다음 정보를 포함합니다:
+**손실 시:**
+```
+"현재 $30 마이너스 상태네요. 하지만 최근 7일간 $1,380을 벌었으니 
+일시적인 조정일 수 있어요. 손절 기준을 명확히 하고 차분하게 대응하세요. 🧘‍♂️"
+```
 
-- 시장 이벤트 및 속보
-- 기술적 분석 결과
-- 심리·구조적 분석
-- 향후 12시간 예측
-- 수익 현황
-- 멘탈 케어 코멘트
+### GPT 기반 개인화 메시지
+- OpenAI API 연동으로 상황에 맞는 자연스러운 조언
+- 구체적 수익/손실 금액 언급
+- 총 자산, 7일 수익 등 종합적 고려
 
-## 🔄 자동 스케줄
+## 🎯 각 리포트의 특징
 
-- **정규 리포트**: 09:00, 13:00, 17:00, 23:00 (한국시간)
-- **예외 감지**: 5분마다 자동 스캔
-- **긴급 알림**: 조건 만족 시 즉시 발송
+### 💰 수익 리포트 (/profit)
+- **실시간 포지션**: 숏/롱, 진입가, 청산가, 레버리지
+- **정확한 손익**: API 직접 연동, 하드코딩 제거
+- **개인화 멘탈케어**: 수익 상황별 맞춤 메시지
 
-## ⚠️ 주의사항
+### 📈 예측 리포트 (/forecast)
+- **단기 집중**: 12시간 내 가격 흐름 예측
+- **간결한 정보**: 핵심 분석과 전략 제안
+- **빠른 판단**: 매매 결정에 필요한 정보만 압축
 
-- 이 시스템은 참고용이며, 투자 결정에 대한 책임은 사용자에게 있습니다
-- API 키는 반드시 안전하게 관리하세요
-- 레버리지 거래는 높은 위험을 수반합니다
+### 🧾 정기 리포트 (/report)
+- **종합 분석**: 시장 이벤트부터 예측까지 전체
+- **자동 발송**: 09:00, 13:00, 17:00, 23:00 (KST)
+- **검증 결과**: 이전 예측 정확도 추적
 
-## 🛠️ 기술 스택
+### 📅 일정 리포트 (/schedule)
+- **경제 이벤트**: FOMC, ETF 승인 등 주요 일정
+- **영향도 평가**: 각 이벤트의 호재/악재 판단
 
-- **Python 3.11**
-- **AsyncIO**: 비동기 처리
-- **APScheduler**: 스케줄링
-- **python-telegram-bot**: 텔레그램 봇
-- **OpenAI**: GPT 분석
-- **aiohttp**: HTTP 클라이언트
-- **Render**: 배포 플랫폼
+### 🚨 예외 리포트 (자동)
+- **즉시 알림**: 급변동, 대량 거래 등 감지 시 자동 발송
+- **GPT 분석**: 상황별 전문적 분석과 대응 전략
+- **리스크 관리**: 구체적인 포지션 관리 방안 제시
 
-## 📞 지원
+## 🔧 개발자를 위한 확장 가이드
 
-시스템 관련 문의나 오류 신고는 텔레그램을 통해 연락주세요.
+### 새로운 리포트 유형 추가
+1. `report_generators/`에 새 파일 생성
+2. `BaseReportGenerator` 상속
+3. `generate_report()` 메서드 구현
+4. `ReportGeneratorManager`에 등록
+
+### 멘탈 케어 패턴 추가
+```python
+# mental_care.py의 패턴 메서드에 새로운 조건 추가
+def _analyze_trading_situation(self, today_pnl, unrealized_pnl, weekly_total):
+    # 새로운 상황 분류 로직
+    if new_condition:
+        return "new_situation_type"
+        
+def _new_situation_messages(self, ...):
+    # 새로운 상황별 메시지 패턴
+    patterns = [...]
+    return random.choice(patterns)
+```
+
+## 🎉 마이그레이션 가이드
+
+기존 `report_generator.py`에서 새로운 모듈식 구조로 전환:
+
+```python
+# 기존
+from report_generator import EnhancedReportGenerator
+generator = EnhancedReportGenerator(config, data_collector, indicators)
+
+# 새로운 방식
+from report_generators import ReportGeneratorManager
+manager = ReportGeneratorManager(config, data_collector, indicators)
+
+# 메서드명 변경
+# generator.generate_profit_report() → manager.generate_profit_report()
+```
+
+하위 호환성을 위해 기존 클래스명도 유지됩니다.
+
+## 📊 성능 최적화
+
+- **병렬 데이터 수집**: asyncio.gather로 API 호출 최적화
+- **캐싱 시스템**: 중복 API 호출 방지
+- **메모리 관리**: 이벤트 버퍼 자동 정리
+- **오류 처리**: 견고한 예외 처리와 폴백 시스템
+
+이제 각 리포트가 독립적으로 관리되어 유지보수가 쉽고, 멘탈 케어가 더욱 개인화되었습니다! 🚀
