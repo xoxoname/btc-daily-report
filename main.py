@@ -15,7 +15,7 @@ from analysis_engine import AnalysisEngine
 from exception_detector import ExceptionDetector
 from data_collector import RealTimeDataCollector
 from trading_indicators import AdvancedTradingIndicators
-from report_generator import EnhancedReportGenerator
+from report_generators import ReportGeneratorManager  # 🆕 통합 리포트 생성기
 
 # 로깅 설정
 logging.basicConfig(
@@ -39,15 +39,17 @@ class BitcoinPredictionSystem:
         self.data_collector.set_bitget_client(self.bitget_client)
         
         self.indicator_system = AdvancedTradingIndicators()
-        self.report_generator = EnhancedReportGenerator(
+        
+        # 🆕 새로운 통합 리포트 생성기
+        self.report_manager = ReportGeneratorManager(
             self.config,
             self.data_collector,
             self.indicator_system
         )
-        # Bitget 클라이언트를 report_generator에 설정
-        self.report_generator.set_bitget_client(self.bitget_client)
+        # Bitget 클라이언트를 리포트 매니저에 설정
+        self.report_manager.set_bitget_client(self.bitget_client)
         
-        # 기존 엔진
+        # 기존 엔진 (분석용)
         self.analysis_engine = AnalysisEngine(
             bitget_client=self.bitget_client,
             openai_client=None
@@ -109,7 +111,7 @@ class BitcoinPredictionSystem:
         self.scheduler.add_job(
             func=self.check_exceptions,
             trigger="interval",
-            minutes=5,
+            minutes=5,  
             timezone=timezone,
             id="exception_check"
         )
@@ -154,6 +156,7 @@ class BitcoinPredictionSystem:
             self.logger.error(f"자연어 처리 실패: {str(e)}")
             await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.")
     
+    # 🆕 각 리포트 핸들러들이 이제 전담 생성기를 사용
     async def handle_report_command(self, update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
         """리포트 명령 처리"""
         try:
@@ -162,10 +165,10 @@ class BitcoinPredictionSystem:
             else:
                 await self.telegram_bot.send_message("📊 정기 비트코인 분석 리포트를 생성중입니다...")
             
-            self.logger.info("리포트 생성 시작")
+            self.logger.info("정기 리포트 생성 시작")
             
-            # 실시간 리포트 생성
-            report = await self.report_generator.generate_regular_report()
+            # 🆕 새로운 정기 리포트 생성기 사용
+            report = await self.report_manager.generate_regular_report()
             
             # 메시지 전송
             if update:
@@ -193,8 +196,8 @@ class BitcoinPredictionSystem:
         try:
             await update.message.reply_text("🔮 단기 예측 분석 중...")
             
-            # 실시간 예측 리포트 생성
-            report = await self.report_generator.generate_forecast_report()
+            # 🆕 새로운 예측 리포트 생성기 사용
+            report = await self.report_manager.generate_forecast_report()
             
             await update.message.reply_text(report)
             
@@ -207,8 +210,8 @@ class BitcoinPredictionSystem:
         try:
             await update.message.reply_text("💰 실시간 수익 현황을 조회중입니다...")
             
-            # 실시간 수익 리포트 생성
-            profit_report = await self.report_generator.generate_profit_report()
+            # 🆕 새로운 수익 리포트 생성기 사용
+            profit_report = await self.report_manager.generate_profit_report()
             
             await update.message.reply_text(profit_report)
             
@@ -220,8 +223,8 @@ class BitcoinPredictionSystem:
     async def handle_schedule_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일정 명령 처리"""
         try:
-            # 실시간 일정 리포트 생성
-            schedule_report = await self.report_generator.generate_schedule_report()
+            # 🆕 새로운 일정 리포트 생성기 사용
+            schedule_report = await self.report_manager.generate_schedule_report()
             
             await update.message.reply_text(schedule_report)
             
@@ -240,9 +243,13 @@ class BitcoinPredictionSystem:
             
             # 데이터 수집기의 이벤트 확인
             for event in self.data_collector.events_buffer:
-                if event.severity.value in ['high', 'critical']:
-                    # 예외 리포트 생성
-                    report = await self.report_generator.generate_exception_report(event.__dict__)
+                if hasattr(event, 'severity') and event.severity.value in ['high', 'critical']:
+                    # 🆕 새로운 예외 리포트 생성기 사용
+                    report = await self.report_manager.generate_exception_report(event.__dict__)
+                    await self.telegram_bot.send_message(report)
+                elif isinstance(event, dict) and event.get('severity') in ['high', 'critical']:
+                    # dict 형태의 이벤트 처리
+                    report = await self.report_manager.generate_exception_report(event)
                     await self.telegram_bot.send_message(report)
             
             # 버퍼 클리어
