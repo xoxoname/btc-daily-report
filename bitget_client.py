@@ -117,7 +117,7 @@ class BitgetClient:
             raise
     
     async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """포지션 조회 (V2 API)"""
+        """포지션 조회 (V2 API) - 청산가 필드 확인"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/position/all-position"
         params = {
@@ -139,6 +139,11 @@ class BitgetClient:
             for pos in positions:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
+                    # 청산가 관련 필드 로깅
+                    logger.info(f"청산가 필드 확인 - liquidationPrice: {pos.get('liquidationPrice')}, "
+                              f"liqPrice: {pos.get('liqPrice')}, "
+                              f"liquidation_price: {pos.get('liquidation_price')}, "
+                              f"estLiqPrice: {pos.get('estLiqPrice')}")
                     active_positions.append(pos)
             
             return active_positions
@@ -165,7 +170,7 @@ class BitgetClient:
             raise
     
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """거래 체결 내역 조회 (V2 API) - 7일 제한 처리"""
+        """거래 체결 내역 조회 (V2 API) - 7일 제한 처리, 페이징 지원"""
         symbol = symbol or self.config.symbol
         
         # 7일 제한 확인 및 조정
@@ -182,73 +187,93 @@ class BitgetClient:
                 while current_end > start_time:
                     current_start = max(start_time, current_end - max_time_diff)
                     
-                    fills = await self._get_fills_batch(symbol, current_start, current_end, limit)
-                    all_fills.extend(fills)
+                    # 각 기간에 대해 모든 페이지 조회
+                    batch_fills = await self._get_all_fills_pages(symbol, current_start, current_end)
+                    all_fills.extend(batch_fills)
                     
                     current_end = current_start - 1
                     
                     # API 호출 제한을 위한 짧은 대기
                     await asyncio.sleep(0.1)
                 
+                logger.info(f"전체 거래 내역 조회 완료: 총 {len(all_fills)}건")
                 return all_fills
         
-        # 단일 조회
-        return await self._get_fills_batch(symbol, start_time, end_time, limit)
+        # 단일 기간 조회 (모든 페이지)
+        return await self._get_all_fills_pages(symbol, start_time, end_time)
     
-    async def _get_fills_batch(self, symbol: str, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
+    async def _get_all_fills_pages(self, symbol: str, start_time: int = None, end_time: int = None) -> List[Dict]:
+        """모든 페이지의 거래 내역 조회"""
+        all_fills = []
+        page_size = 100
+        last_trade_id = None
+        
+        while True:
+            fills = await self._get_fills_batch(symbol, start_time, end_time, page_size, last_trade_id)
+            
+            if not fills:
+                break
+                
+            all_fills.extend(fills)
+            
+            # 100개 미만이면 마지막 페이지
+            if len(fills) < page_size:
+                break
+            
+            # 다음 페이지를 위한 마지막 거래 ID 저장
+            last_trade_id = fills[-1].get('tradeId', fills[-1].get('orderId'))
+            
+            # API 호출 제한을 위한 짧은 대기
+            await asyncio.sleep(0.05)
+        
+        return all_fills
+    
+    async def _get_fills_batch(self, symbol: str, start_time: int = None, end_time: int = None, limit: int = 100, last_id: str = None) -> List[Dict]:
         """거래 체결 내역 배치 조회"""
-        endpoint = "/api/v2/mix/order/fill-history"
+        # fill-history와 fills 두 엔드포인트 모두 시도
+        endpoints = ["/api/v2/mix/order/fill-history", "/api/v2/mix/order/fills"]
         
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES'
-        }
-        
-        if start_time:
-            params['startTime'] = str(start_time)
-        if end_time:
-            params['endTime'] = str(end_time)
-        if limit:
-            params['limit'] = str(limit)
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
+        for endpoint in endpoints:
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES'
+            }
             
-            # 응답 형식 확인
-            if isinstance(response, dict):
-                if 'fillList' in response:
-                    fills = response['fillList']
-                    logger.info(f"거래 내역 조회 성공: {len(fills)}건")
-                    return fills
-                elif 'fills' in response:
-                    fills = response['fills']
-                    logger.info(f"거래 내역 조회 성공: {len(fills)}건")
-                    return fills
-                elif 'list' in response:
-                    fills = response['list']
-                    logger.info(f"거래 내역 조회 성공: {len(fills)}건")
-                    return fills
+            if start_time:
+                params['startTime'] = str(start_time)
+            if end_time:
+                params['endTime'] = str(end_time)
+            if limit:
+                params['limit'] = str(limit)
+            if last_id:
+                params['lastEndId'] = str(last_id)
             
-            if isinstance(response, list):
-                logger.info(f"거래 내역 조회 성공: {len(response)}건")
-                return response
-            
-            logger.warning(f"예상치 못한 응답 형식: {type(response)}")
-            return []
-            
-        except Exception as e:
-            logger.error(f"거래 내역 조회 실패: {e}")
-            # 대체 엔드포인트 시도
             try:
-                endpoint = "/api/v2/mix/order/fills"
                 response = await self._request('GET', endpoint, params=params)
-                if isinstance(response, list):
-                    return response
-                elif isinstance(response, dict) and 'fillList' in response:
-                    return response['fillList']
-            except:
-                pass
-            return []
+                
+                # 응답 형식 확인
+                fills = []
+                if isinstance(response, dict):
+                    if 'fillList' in response:
+                        fills = response['fillList']
+                    elif 'fills' in response:
+                        fills = response['fills']
+                    elif 'list' in response:
+                        fills = response['list']
+                    elif 'data' in response and isinstance(response['data'], list):
+                        fills = response['data']
+                elif isinstance(response, list):
+                    fills = response
+                
+                if fills:
+                    logger.info(f"{endpoint} 거래 내역 조회 성공: {len(fills)}건")
+                    return fills
+                    
+            except Exception as e:
+                logger.debug(f"{endpoint} 조회 실패: {e}")
+                continue
+        
+        return []
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
         """손익 내역 조회 - 실제 API 호출"""
