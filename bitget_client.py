@@ -170,62 +170,58 @@ class BitgetClient:
             raise
     
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """거래 체결 내역 조회 (V2 API) - 7일 제한 처리, 페이징 지원"""
+        """거래 체결 내역 조회 (V2 API) - 단순화된 버전"""
         symbol = symbol or self.config.symbol
         
-        # 7일 제한 확인 및 조정
+        # 7일 제한 확인
         if start_time and end_time:
             max_days = 7
             time_diff = end_time - start_time
             max_time_diff = max_days * 24 * 60 * 60 * 1000  # 7일 in milliseconds
             
             if time_diff > max_time_diff:
-                # 7일씩 나누어 조회
-                all_fills = []
-                current_end = end_time
-                
-                while current_end > start_time:
-                    current_start = max(start_time, current_end - max_time_diff)
-                    
-                    # 각 기간에 대해 모든 페이지 조회
-                    batch_fills = await self._get_all_fills_pages(symbol, current_start, current_end)
-                    all_fills.extend(batch_fills)
-                    
-                    current_end = current_start - 1
-                    
-                    # API 호출 제한을 위한 짧은 대기
-                    await asyncio.sleep(0.1)
-                
-                logger.info(f"전체 거래 내역 조회 완료: 총 {len(all_fills)}건")
-                return all_fills
+                # 최근 7일만 조회
+                start_time = end_time - max_time_diff
+                logger.info(f"7일 제한으로 조정: {datetime.fromtimestamp(start_time/1000)} ~ {datetime.fromtimestamp(end_time/1000)}")
         
-        # 단일 기간 조회 (모든 페이지)
-        return await self._get_all_fills_pages(symbol, start_time, end_time)
+        # 단일 조회 (limit 증가)
+        return await self._get_fills_batch(symbol, start_time, end_time, min(limit, 500))
     
     async def _get_all_fills_pages(self, symbol: str, start_time: int = None, end_time: int = None) -> List[Dict]:
         """모든 페이지의 거래 내역 조회"""
         all_fills = []
         page_size = 100
         last_trade_id = None
+        max_pages = 10  # 최대 페이지 수 제한
+        page_count = 0
         
-        while True:
+        while page_count < max_pages:
             fills = await self._get_fills_batch(symbol, start_time, end_time, page_size, last_trade_id)
             
             if not fills:
                 break
                 
             all_fills.extend(fills)
+            page_count += 1
             
             # 100개 미만이면 마지막 페이지
             if len(fills) < page_size:
                 break
             
             # 다음 페이지를 위한 마지막 거래 ID 저장
-            last_trade_id = fills[-1].get('tradeId', fills[-1].get('orderId'))
+            new_last_id = fills[-1].get('tradeId', fills[-1].get('fillId', fills[-1].get('orderId')))
+            
+            # 같은 ID가 반복되면 중단
+            if new_last_id == last_trade_id:
+                logger.warning(f"페이징 중단: 같은 ID 반복 {last_trade_id}")
+                break
+                
+            last_trade_id = new_last_id
             
             # API 호출 제한을 위한 짧은 대기
             await asyncio.sleep(0.05)
         
+        logger.info(f"페이지 조회 완료: {page_count}페이지, 총 {len(all_fills)}건")
         return all_fills
     
     async def _get_fills_batch(self, symbol: str, start_time: int = None, end_time: int = None, limit: int = 100, last_id: str = None) -> List[Dict]:
