@@ -15,7 +15,7 @@ class BitgetClient:
     def __init__(self, config):
         self.config = config
         self.session = None
-        self._initialize_session()  # 추가
+        self._initialize_session()
         
     def _initialize_session(self):
         """세션 초기화"""
@@ -76,8 +76,13 @@ class BitgetClient:
         headers = self._get_headers(method, request_path, body)
         
         try:
+            logger.info(f"API 요청: {method} {url}")
             async with self.session.request(method, url, headers=headers, data=body) as response:
-                response_data = await response.json()
+                response_text = await response.text()
+                logger.info(f"API 응답 상태: {response.status}")
+                logger.debug(f"API 응답 내용: {response_text[:500]}")
+                
+                response_data = json.loads(response_text)
                 
                 if response.status != 200:
                     logger.error(f"API 요청 실패: {response.status} - {response_data}")
@@ -99,7 +104,7 @@ class BitgetClient:
         endpoint = "/api/v2/mix/market/ticker"
         params = {
             'symbol': symbol,
-            'productType': 'USDT-FUTURES'  # V2에서는 USDT-FUTURES 형식 사용
+            'productType': 'USDT-FUTURES'
         }
         
         try:
@@ -111,46 +116,28 @@ class BitgetClient:
             logger.error(f"현재가 조회 실패: {e}")
             raise
     
-    async def get_kline(self, symbol: str = None, granularity: str = '1H', limit: int = 100) -> List[Dict]:
-        """K라인 데이터 조회 (V2 API)"""
-        symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/market/candles"
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES',
-            'granularity': granularity,
-            'limit': str(limit)
-        }
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            return response if isinstance(response, list) else []
-        except Exception as e:
-            logger.error(f"K라인 조회 실패: {e}")
-            raise
-    
     async def get_positions(self, symbol: str = None) -> List[Dict]:
         """포지션 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/position/all-position"
         params = {
-            'productType': 'USDT-FUTURES',  # V2에서는 USDT-FUTURES 사용
+            'productType': 'USDT-FUTURES',
             'marginCoin': 'USDT'
         }
         
         try:
             response = await self._request('GET', endpoint, params=params)
-            logger.info(f"포지션 정보 원본 응답: {response}")  # 디버그 로그 추가
+            logger.info(f"포지션 정보 원본 응답: {response}")
             positions = response if isinstance(response, list) else []
             
             # 특정 심볼 필터링
-            if symbol:
+            if symbol and positions:
                 positions = [pos for pos in positions if pos.get('symbol') == symbol]
             
-            # 포지션이 있는 것만 필터링 (Bitget V2에서는 'total' 필드 사용)
+            # 포지션이 있는 것만 필터링
             active_positions = []
             for pos in positions:
-                total_size = float(pos.get('total', 0))  # 'size' -> 'total'로 변경
+                total_size = float(pos.get('total', 0))
                 if total_size > 0:
                     active_positions.append(pos)
             
@@ -163,13 +150,13 @@ class BitgetClient:
         """계정 정보 조회 (V2 API)"""
         endpoint = "/api/v2/mix/account/accounts"
         params = {
-            'productType': 'USDT-FUTURES',  # V2에서는 USDT-FUTURES 사용
+            'productType': 'USDT-FUTURES',
             'marginCoin': 'USDT'
         }
         
         try:
             response = await self._request('GET', endpoint, params=params)
-            logger.info(f"계정 정보 원본 응답: {response}")  # 디버그 로그 추가
+            logger.info(f"계정 정보 원본 응답: {response}")
             if isinstance(response, list) and len(response) > 0:
                 return response[0]
             return response
@@ -177,64 +164,68 @@ class BitgetClient:
             logger.error(f"계정 정보 조회 실패: {e}")
             raise
     
-    async def get_funding_rate(self, symbol: str = None) -> Dict:
-        """펀딩비 조회 (V2 API)"""
-        symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/market/current-fund-rate"
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES'  # V2에서는 USDT-FUTURES 사용
-        }
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            return response
-        except Exception as e:
-            logger.error(f"펀딩비 조회 실패: {e}")
-            raise
-    
-    async def get_open_interest(self, symbol: str = None) -> Dict:
-        """미결제약정 조회 (V2 API)"""
-        symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/market/open-interest"
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES'  # V2에서는 USDT-FUTURES 사용
-        }
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            return response
-        except Exception as e:
-            logger.error(f"미결제약정 조회 실패: {e}")
-            raise
-    
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """거래 체결 내역 조회 (V2 API)"""
+        """거래 체결 내역 조회 (V2 API) - 개선된 버전"""
         symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/order/fills"
+        endpoint = "/api/v2/mix/order/fill-history"  # fill-history 엔드포인트 사용
         
         params = {
             'symbol': symbol,
-            'productType': 'USDT-FUTURES',
-            'limit': str(limit)
+            'productType': 'USDT-FUTURES'
         }
         
         if start_time:
             params['startTime'] = str(start_time)
         if end_time:
             params['endTime'] = str(end_time)
+        if limit:
+            params['limit'] = str(limit)
         
         try:
             response = await self._request('GET', endpoint, params=params)
-            logger.info(f"거래 내역 조회: {len(response) if isinstance(response, list) else 0}건")
-            return response if isinstance(response, list) else []
+            
+            # 응답 형식 확인
+            if isinstance(response, dict):
+                # fillList가 있는 경우
+                if 'fillList' in response:
+                    fills = response['fillList']
+                    logger.info(f"거래 내역 조회 성공: {len(fills)}건")
+                    return fills
+                # fills가 직접 있는 경우
+                elif 'fills' in response:
+                    fills = response['fills']
+                    logger.info(f"거래 내역 조회 성공: {len(fills)}건")
+                    return fills
+                # list가 있는 경우
+                elif 'list' in response:
+                    fills = response['list']
+                    logger.info(f"거래 내역 조회 성공: {len(fills)}건")
+                    return fills
+            
+            # 리스트로 바로 반환되는 경우
+            if isinstance(response, list):
+                logger.info(f"거래 내역 조회 성공: {len(response)}건")
+                return response
+            
+            logger.warning(f"예상치 못한 응답 형식: {type(response)}")
+            return []
+            
         except Exception as e:
             logger.error(f"거래 내역 조회 실패: {e}")
+            # 대체 엔드포인트 시도
+            try:
+                endpoint = "/api/v2/mix/order/fills"
+                response = await self._request('GET', endpoint, params=params)
+                if isinstance(response, list):
+                    return response
+                elif isinstance(response, dict) and 'fillList' in response:
+                    return response['fillList']
+            except:
+                pass
             return []
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회"""
+        """손익 내역 조회 - 실제 API 호출"""
         try:
             # 기간 설정
             end_time = int(time.time() * 1000)
@@ -243,6 +234,18 @@ class BitgetClient:
             # 거래 내역 조회
             trades = await self.get_trade_fills(symbol, start_time, end_time, 500)
             
+            if not trades:
+                logger.warning("거래 내역이 없습니다")
+                # 계정 정보에서 추정
+                account_info = await self.get_account_info()
+                unrealized_pl = float(account_info.get('unrealizedPL', 0))
+                return {
+                    'total_pnl': unrealized_pl,
+                    'daily_pnl': {},
+                    'days': days,
+                    'average_daily': unrealized_pl / days if days > 0 else 0
+                }
+            
             total_pnl = 0.0
             daily_pnl = {}
             
@@ -250,27 +253,31 @@ class BitgetClient:
                 try:
                     # 거래 시간
                     trade_time = int(trade.get('cTime', 0))
+                    if trade_time == 0:
+                        continue
+                        
                     trade_date = datetime.fromtimestamp(trade_time / 1000).strftime('%Y-%m-%d')
                     
-                    # 손익 계산
-                    size = float(trade.get('size', 0))
-                    price = float(trade.get('price', 0))
-                    side = trade.get('side', '').lower()
-                    fee = float(trade.get('fee', 0))
+                    # 손익 계산 - profit 필드 직접 사용
+                    profit = float(trade.get('profit', 0))
                     
-                    # 실현 손익 = 거래금액 - 수수료
-                    trade_pnl = 0
-                    if side == 'sell':
-                        trade_pnl = (size * price) - fee
-                    else:
-                        trade_pnl = -(size * price) - fee
+                    # 수수료
+                    fee = 0.0
+                    fee_detail = trade.get('feeDetail', [])
+                    if isinstance(fee_detail, list):
+                        for fee_info in fee_detail:
+                            if isinstance(fee_info, dict):
+                                fee += abs(float(fee_info.get('totalFee', 0)))
                     
-                    total_pnl += trade_pnl
+                    # 실현 손익 = profit - 수수료
+                    realized_pnl = profit - fee
+                    
+                    total_pnl += realized_pnl
                     
                     # 일별 손익 누적
                     if trade_date not in daily_pnl:
                         daily_pnl[trade_date] = 0
-                    daily_pnl[trade_date] += trade_pnl
+                    daily_pnl[trade_date] += realized_pnl
                     
                 except Exception as e:
                     logger.warning(f"거래 내역 파싱 오류: {e}")
@@ -292,33 +299,81 @@ class BitgetClient:
                 'average_daily': 0
             }
     
-    async def get_spot_account(self) -> Dict:
-        """현물 계정 정보 조회 (대안)"""
-        endpoint = "/api/v2/spot/account/assets"
+    async def get_order_history(self, symbol: str = None, start_time: int = None, end_time: int = None) -> List[Dict]:
+        """주문 내역 조회 (V2 API)"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/order/history"
+        
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES'
+        }
+        
+        if start_time:
+            params['startTime'] = str(start_time)
+        if end_time:
+            params['endTime'] = str(end_time)
         
         try:
-            response = await self._request('GET', endpoint)
-            logger.info(f"현물 계정 정보: {response}")
+            response = await self._request('GET', endpoint, params=params)
+            if isinstance(response, dict) and 'orderList' in response:
+                return response['orderList']
+            elif isinstance(response, list):
+                return response
+            return []
+        except Exception as e:
+            logger.error(f"주문 내역 조회 실패: {e}")
+            return []
+    
+    async def get_funding_rate(self, symbol: str = None) -> Dict:
+        """펀딩비 조회 (V2 API)"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/market/current-fund-rate"
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES'
+        }
+        
+        try:
+            response = await self._request('GET', endpoint, params=params)
             return response
         except Exception as e:
-            logger.error(f"현물 계정 조회 실패: {e}")
-            return {}
+            logger.error(f"펀딩비 조회 실패: {e}")
+            raise
     
-    async def get_all_accounts(self) -> Dict:
-        """모든 계정 정보 조회 (종합)"""
+    async def get_open_interest(self, symbol: str = None) -> Dict:
+        """미결제약정 조회 (V2 API)"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/market/open-interest"
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES'
+        }
+        
         try:
-            # 선물 계정
-            futures_account = await self.get_account_info()
-            # 현물 계정  
-            spot_account = await self.get_spot_account()
-            
-            return {
-                'futures': futures_account,
-                'spot': spot_account
-            }
+            response = await self._request('GET', endpoint, params=params)
+            return response
         except Exception as e:
-            logger.error(f"전체 계정 조회 실패: {e}")
-            return {'futures': {}, 'spot': {}}
+            logger.error(f"미결제약정 조회 실패: {e}")
+            raise
+    
+    async def get_kline(self, symbol: str = None, granularity: str = '1H', limit: int = 100) -> List[Dict]:
+        """K라인 데이터 조회 (V2 API)"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/market/candles"
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES',
+            'granularity': granularity,
+            'limit': str(limit)
+        }
+        
+        try:
+            response = await self._request('GET', endpoint, params=params)
+            return response if isinstance(response, list) else []
+        except Exception as e:
+            logger.error(f"K라인 조회 실패: {e}")
+            raise
     
     async def close(self):
         """세션 종료"""
