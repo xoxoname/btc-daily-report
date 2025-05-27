@@ -1,426 +1,518 @@
-import aiohttp
-import asyncio
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Tuple, Optional
 from datetime import datetime, timedelta
 import logging
-from typing import Dict, List, Optional
-from dataclasses import dataclass
-from enum import Enum
-import json
+import asyncio
 
 logger = logging.getLogger(__name__)
 
-class EventSeverity(Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-@dataclass
-class MarketEvent:
-    timestamp: datetime
-    severity: EventSeverity
-    category: str
-    title: str
-    description: str
-    impact: str
-    source: str
-    url: Optional[str] = None
-    metadata: Optional[Dict] = None
-
-class RealTimeDataCollector:
-    def __init__(self, config):
-        self.config = config
-        self.session = None
-        self.events_buffer = []
-        self.news_buffer = []
-        self.last_price = None
-        self.price_history = []
+class AdvancedTradingIndicators:
+    """선물 거래 특화 고급 지표 시스템"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger('trading_indicators')
         self.bitget_client = None
         
-        # 추가 API 키들
-        self.coingecko_key = getattr(config, 'COINGECKO_API_KEY', None)
-        self.cryptocompare_key = getattr(config, 'CRYPTOCOMPARE_API_KEY', None)
-        self.glassnode_key = getattr(config, 'GLASSNODE_API_KEY', None)
-        
-        # 캐시 (API 제한 관리)
-        self.cache = {
-            'fear_greed': {'data': None, 'timestamp': None},
-            'market_cap': {'data': None, 'timestamp': None},
-            'social_metrics': {'data': None, 'timestamp': None}
-        }
-        
-        # RealisticNewsCollector 임포트
-        try:
-            from realistic_news_collector import RealisticNewsCollector
-            self.news_collector = RealisticNewsCollector(config)
-            self.news_collector.data_collector = self
-            logger.info("✅ RealisticNewsCollector 초기화 완료")
-        except ImportError as e:
-            logger.error(f"RealisticNewsCollector 임포트 실패: {e}")
-            self.news_collector = None
-        
-    async def start(self):
-        """데이터 수집 시작"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-        
-        logger.info("🚀 실시간 데이터 수집 시작")
-        
-        # 병렬 태스크 실행
-        tasks = []
-        
-        # Bitget 클라이언트가 설정된 경우에만 가격 모니터링 시작
-        if self.bitget_client:
-            tasks.append(self.monitor_price_changes())
-            logger.info("📈 가격 모니터링 활성화 (1% 민감도)")
-        
-        # 기본 모니터링
-        tasks.append(self.monitor_sentiment())
-        tasks.append(self.monitor_market_metrics())  # 새로운 메트릭 모니터링
-        
-        # 뉴스 모니터링
-        if self.news_collector:
-            tasks.append(self.news_collector.start_monitoring())
-            logger.info("📰 고급 뉴스 모니터링 활성화")
-        
-        await asyncio.gather(*tasks, return_exceptions=True)
-    
-    async def monitor_price_changes(self):
-        """가격 급변동 모니터링 - 1% 민감도"""
-        while True:
-            try:
-                if not self.bitget_client:
-                    await asyncio.sleep(30)
-                    continue
-                
-                ticker_data = await self.bitget_client.get_ticker('BTCUSDT')
-                
-                if isinstance(ticker_data, dict):
-                    current_price = float(ticker_data.get('last', 0))
-                    
-                    if self.last_price and current_price > 0:
-                        change_percent = ((current_price - self.last_price) / self.last_price) * 100
-                        
-                        # 1% 이상 급변동 감지
-                        if abs(change_percent) >= 1.0:
-                            severity = EventSeverity.CRITICAL if abs(change_percent) >= 3 else EventSeverity.HIGH
-                            
-                            event = MarketEvent(
-                                timestamp=datetime.now(),
-                                severity=severity,
-                                category="price_movement",
-                                title=f"BTC {'급등' if change_percent > 0 else '급락'} {abs(change_percent):.2f}%",
-                                description=f"1분 내 ${self.last_price:,.0f} → ${current_price:,.0f}",
-                                impact="➕호재" if change_percent > 0 else "➖악재",
-                                source="Bitget Real-time",
-                                metadata={
-                                    'change_percent': change_percent,
-                                    'from_price': self.last_price,
-                                    'to_price': current_price
-                                }
-                            )
-                            self.events_buffer.append(event)
-                            
-                            logger.warning(f"🚨 가격 급변동: {change_percent:+.2f}% (${self.last_price:,.0f} → ${current_price:,.0f})")
-                    
-                    if current_price > 0:
-                        self.last_price = current_price
-                        self.price_history.append({
-                            'price': current_price,
-                            'timestamp': datetime.now()
-                        })
-                        
-                        # 오래된 데이터 정리 (1시간)
-                        cutoff_time = datetime.now() - timedelta(hours=1)
-                        self.price_history = [
-                            p for p in self.price_history 
-                            if p['timestamp'] > cutoff_time
-                        ]
-                
-            except Exception as e:
-                logger.error(f"가격 모니터링 오류: {e}")
-            
-            await asyncio.sleep(30)  # 30초마다 체크
-    
-    async def monitor_sentiment(self):
-        """시장 심리 지표 모니터링 - 확장"""
-        while True:
-            try:
-                # Fear & Greed Index
-                fng_data = await self.get_fear_greed_index()
-                if fng_data:
-                    fng_value = fng_data.get('value', 50)
-                    fng_class = fng_data.get('value_classification', 'Neutral')
-                    
-                    # 극단적 심리 상태 감지
-                    if fng_value <= 20 or fng_value >= 80:
-                        event = MarketEvent(
-                            timestamp=datetime.now(),
-                            severity=EventSeverity.HIGH,
-                            category="sentiment",
-                            title=f"극단적 시장 심리: {fng_class} ({fng_value})",
-                            description=f"공포탐욕지수가 극단적 수준에 도달",
-                            impact="➕호재" if fng_value <= 20 else "➖악재",
-                            source="Fear & Greed Index",
-                            metadata={'fng_value': fng_value, 'classification': fng_class}
-                        )
-                        self.events_buffer.append(event)
-                        logger.info(f"😨 극단적 심리: {fng_class} ({fng_value})")
-                
-                # CryptoCompare Social Data (있는 경우)
-                if self.cryptocompare_key:
-                    social_data = await self.get_social_metrics()
-                    if social_data:
-                        # 소셜 미디어 급증 감지
-                        social_volume = social_data.get('social_volume', 0)
-                        if social_volume > 10000:  # 임계값
-                            logger.info(f"📱 소셜 미디어 활동 급증: {social_volume}")
-                
-            except Exception as e:
-                logger.error(f"심리 지표 모니터링 오류: {e}")
-            
-            await asyncio.sleep(1800)  # 30분마다 체크
-    
-    async def monitor_market_metrics(self):
-        """시장 메트릭 모니터링"""
-        while True:
-            try:
-                # CoinGecko 시장 데이터
-                if self.coingecko_key or True:  # CoinGecko는 키 없이도 사용 가능
-                    market_data = await self.get_market_overview()
-                    if market_data:
-                        btc_dominance = market_data.get('btc_dominance', 0)
-                        total_market_cap = market_data.get('total_market_cap', 0)
-                        
-                        # 도미넌스 급변동 감지
-                        if abs(btc_dominance - 50) > 10:  # 50%에서 크게 벗어남
-                            logger.info(f"📊 BTC 도미넌스 이상: {btc_dominance:.1f}%")
-                
-                # Glassnode 온체인 데이터 (있는 경우)
-                if self.glassnode_key:
-                    onchain_data = await self.get_onchain_metrics()
-                    if onchain_data:
-                        # 온체인 이상 징후 감지
-                        exchange_inflow = onchain_data.get('exchange_inflow', 0)
-                        if exchange_inflow > 10000:  # BTC
-                            event = MarketEvent(
-                                timestamp=datetime.now(),
-                                severity=EventSeverity.HIGH,
-                                category="onchain",
-                                title=f"대량 거래소 유입: {exchange_inflow:,.0f} BTC",
-                                description="매도 압력 증가 가능성",
-                                impact="➖악재",
-                                source="Glassnode",
-                                metadata={'inflow': exchange_inflow}
-                            )
-                            self.events_buffer.append(event)
-                
-            except Exception as e:
-                logger.error(f"시장 메트릭 모니터링 오류: {e}")
-            
-            await asyncio.sleep(3600)  # 1시간마다 체크
-    
-    async def get_fear_greed_index(self) -> Optional[Dict]:
-        """Fear & Greed Index 조회"""
-        try:
-            # 캐시 확인 (10분)
-            if self.cache['fear_greed']['timestamp']:
-                if datetime.now() - self.cache['fear_greed']['timestamp'] < timedelta(minutes=10):
-                    return self.cache['fear_greed']['data']
-            
-            url = "https://api.alternative.me/fng/?limit=1"
-            
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data and 'data' in data:
-                        result = {
-                            'value': int(data['data'][0]['value']),
-                            'value_classification': data['data'][0]['value_classification'],
-                            'timestamp': data['data'][0]['timestamp']
-                        }
-                        
-                        # 캐시 저장
-                        self.cache['fear_greed'] = {
-                            'data': result,
-                            'timestamp': datetime.now()
-                        }
-                        
-                        return result
-                        
-        except Exception as e:
-            logger.error(f"Fear & Greed Index 조회 실패: {e}")
-        
-        return None
-    
-    async def get_market_overview(self) -> Optional[Dict]:
-        """CoinGecko 시장 개요"""
-        try:
-            # 캐시 확인 (5분)
-            if self.cache['market_cap']['timestamp']:
-                if datetime.now() - self.cache['market_cap']['timestamp'] < timedelta(minutes=5):
-                    return self.cache['market_cap']['data']
-            
-            # Global 데이터
-            url = "https://api.coingecko.com/api/v3/global"
-            headers = {}
-            if self.coingecko_key:
-                headers['x-cg-pro-api-key'] = self.coingecko_key
-            
-            async with self.session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    global_data = data.get('data', {})
-                    
-                    result = {
-                        'total_market_cap': global_data.get('total_market_cap', {}).get('usd', 0),
-                        'total_volume': global_data.get('total_volume', {}).get('usd', 0),
-                        'btc_dominance': global_data.get('market_cap_percentage', {}).get('btc', 0),
-                        'eth_dominance': global_data.get('market_cap_percentage', {}).get('eth', 0),
-                        'market_cap_change_24h': global_data.get('market_cap_change_percentage_24h_usd', 0)
-                    }
-                    
-                    # 캐시 저장
-                    self.cache['market_cap'] = {
-                        'data': result,
-                        'timestamp': datetime.now()
-                    }
-                    
-                    return result
-                    
-        except Exception as e:
-            logger.error(f"CoinGecko 시장 데이터 조회 실패: {e}")
-        
-        return None
-    
-    async def get_social_metrics(self) -> Optional[Dict]:
-        """CryptoCompare 소셜 메트릭"""
-        if not self.cryptocompare_key:
-            return None
-            
-        try:
-            url = "https://min-api.cryptocompare.com/data/social/coin/latest"
-            params = {
-                'coinId': 1182,  # Bitcoin ID
-                'api_key': self.cryptocompare_key
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('Response') == 'Success':
-                        social_data = data.get('Data', {})
-                        
-                        return {
-                            'social_volume': social_data.get('General', {}).get('Points', 0),
-                            'twitter_followers': social_data.get('Twitter', {}).get('followers', 0),
-                            'reddit_subscribers': social_data.get('Reddit', {}).get('subscribers', 0)
-                        }
-                        
-        except Exception as e:
-            logger.error(f"CryptoCompare 소셜 데이터 조회 실패: {e}")
-        
-        return None
-    
-    async def get_onchain_metrics(self) -> Optional[Dict]:
-        """Glassnode 온체인 메트릭"""
-        if not self.glassnode_key:
-            return None
-            
-        try:
-            # Exchange Inflow
-            url = "https://api.glassnode.com/v1/metrics/transactions/transfers_to_exchanges"
-            params = {
-                'a': 'BTC',
-                'api_key': self.glassnode_key,
-                'i': '24h',
-                'f': 'JSON'
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data:
-                        latest = data[-1] if isinstance(data, list) else data
-                        
-                        return {
-                            'exchange_inflow': latest.get('v', 0),
-                            'timestamp': latest.get('t', 0)
-                        }
-                        
-        except Exception as e:
-            logger.error(f"Glassnode 온체인 데이터 조회 실패: {e}")
-        
-        return None
-    
-    async def get_comprehensive_market_data(self) -> Dict:
-        """종합 시장 데이터 수집"""
-        tasks = [
-            self.get_fear_greed_index(),
-            self.get_market_overview(),
-            self.get_social_metrics(),
-            self.get_onchain_metrics()
-        ]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        comprehensive_data = {
-            'fear_greed': results[0] if not isinstance(results[0], Exception) else None,
-            'market_overview': results[1] if not isinstance(results[1], Exception) else None,
-            'social_metrics': results[2] if not isinstance(results[2], Exception) else None,
-            'onchain_metrics': results[3] if not isinstance(results[3], Exception) else None,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        return comprehensive_data
-    
-    async def get_recent_news(self, hours: int = 6) -> List[Dict]:
-        """최근 뉴스 가져오기"""
-        try:
-            if self.news_collector:
-                news = await self.news_collector.get_recent_news(hours)
-                logger.info(f"📰 최근 {hours}시간 뉴스 {len(news)}건 조회")
-                return news
-            else:
-                return self._get_fallback_news(hours)
-        except Exception as e:
-            logger.error(f"최근 뉴스 조회 오류: {e}")
-            return []
-    
-    def _get_fallback_news(self, hours: int) -> List[Dict]:
-        """폴백 뉴스 조회"""
-        cutoff_time = datetime.now() - timedelta(hours=hours)
-        news_events = []
-        
-        for event in self.events_buffer:
-            if (hasattr(event, 'timestamp') and event.timestamp > cutoff_time and 
-                hasattr(event, 'category') and event.category in ['news', 'critical_news']):
-                news_events.append({
-                    'title': event.title,
-                    'description': event.description,
-                    'source': event.source,
-                    'published_at': event.timestamp.isoformat(),
-                    'impact': event.impact,
-                    'weight': 5
-                })
-        
-        return news_events[:8]
-    
     def set_bitget_client(self, bitget_client):
         """Bitget 클라이언트 설정"""
         self.bitget_client = bitget_client
-        logger.info("✅ Bitget 클라이언트 설정 완료")
-    
-    async def close(self):
-        """세션 종료"""
+        
+    async def calculate_all_indicators(self, market_data: Dict) -> Dict:
+        """모든 지표 계산 및 종합 분석"""
         try:
-            if self.session:
-                await self.session.close()
+            # 병렬로 지표 계산
+            tasks = [
+                self.analyze_funding_rate(market_data),
+                self.analyze_open_interest(market_data),
+                self.calculate_volume_delta(market_data),
+                self.analyze_liquidations(market_data),
+                self.calculate_futures_basis(market_data),
+                self.analyze_long_short_ratio(market_data),
+                self.calculate_market_profile(market_data),
+                self.analyze_smart_money(market_data),
+                self.calculate_technical_indicators(market_data),
+                self.assess_risk_metrics(market_data)
+            ]
             
-            if self.news_collector:
-                await self.news_collector.close()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            logger.info("🔚 데이터 수집기 종료 완료")
+            # 결과 통합
+            indicators = {}
+            names = ['funding_analysis', 'oi_analysis', 'volume_delta', 'liquidation_analysis',
+                    'futures_metrics', 'long_short_ratio', 'market_profile', 'smart_money',
+                    'technical', 'risk_metrics']
+            
+            for name, result in zip(names, results):
+                if not isinstance(result, Exception):
+                    indicators[name] = result
+                else:
+                    self.logger.error(f"{name} 계산 오류: {result}")
+                    indicators[name] = {}
+            
+            # 종합 신호 생성
+            indicators['composite_signal'] = self.generate_composite_signal(indicators)
+            
+            return indicators
             
         except Exception as e:
-            logger.error(f"데이터 수집기 종료 중 오류: {e}")
+            self.logger.error(f"지표 계산 오류: {e}")
+            return {}
+    
+    async def analyze_funding_rate(self, market_data: Dict) -> Dict:
+        """펀딩비 분석"""
+        try:
+            funding_rate = market_data.get('funding_rate', 0)
+            
+            # 연환산 펀딩비
+            annual_rate = funding_rate * 365 * 3  # 8시간마다 3번
+            
+            # 펀딩비 추세 판단
+            if funding_rate > 0.001:  # 0.1% 이상
+                signal = "롱 과열 (숏 유리)"
+                trade_bias = "숏 진입 고려"
+            elif funding_rate < -0.001:  # -0.1% 이하
+                signal = "숏 과열 (롱 유리)"
+                trade_bias = "롱 진입 고려"
+            else:
+                signal = "중립"
+                trade_bias = "양방향 가능"
+            
+            return {
+                'current_rate': funding_rate,
+                'annual_rate': annual_rate,
+                'signal': signal,
+                'trade_bias': trade_bias,
+                'is_extreme': abs(funding_rate) > 0.01
+            }
+            
+        except Exception as e:
+            self.logger.error(f"펀딩비 분석 오류: {e}")
+            return {}
+    
+    async def analyze_open_interest(self, market_data: Dict) -> Dict:
+        """미결제약정(OI) 분석"""
+        try:
+            # 실제로는 Bitget API에서 OI 데이터를 가져와야 함
+            # 여기서는 시뮬레이션
+            oi_change = np.random.uniform(-5, 5)  # 실제로는 API 데이터
+            price_change = market_data.get('change_24h', 0) * 100
+            
+            # OI와 가격 관계 분석
+            if oi_change > 2 and price_change > 1:
+                signal = "강세 (롱 축적)"
+                divergence = "일치"
+            elif oi_change > 2 and price_change < -1:
+                signal = "약세 경고 (숏 축적)"
+                divergence = "다이버전스"
+            elif oi_change < -2:
+                signal = "포지션 청산 진행"
+                divergence = "청산"
+            else:
+                signal = "안정적"
+                divergence = "중립"
+            
+            return {
+                'oi_change_percent': oi_change,
+                'price_change_percent': price_change,
+                'signal': signal,
+                'price_divergence': divergence,
+                'strength': abs(oi_change)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"OI 분석 오류: {e}")
+            return {}
+    
+    async def calculate_volume_delta(self, market_data: Dict) -> Dict:
+        """누적 거래량 델타(CVD) 계산"""
+        try:
+            # 실제로는 틱 데이터에서 계산
+            # 여기서는 간단한 추정
+            volume = market_data.get('volume_24h', 0)
+            price_change = market_data.get('change_24h', 0)
+            
+            # 매수/매도 거래량 추정
+            if price_change > 0:
+                buy_ratio = 0.5 + min(0.3, abs(price_change))
+            else:
+                buy_ratio = 0.5 - min(0.3, abs(price_change))
+            
+            buy_volume = volume * buy_ratio
+            sell_volume = volume * (1 - buy_ratio)
+            cvd = buy_volume - sell_volume
+            cvd_ratio = (cvd / volume * 100) if volume > 0 else 0
+            
+            # CVD 신호
+            if cvd_ratio > 20:
+                signal = "강한 매수 압력"
+            elif cvd_ratio > 10:
+                signal = "매수 우세"
+            elif cvd_ratio < -20:
+                signal = "강한 매도 압력"
+            elif cvd_ratio < -10:
+                signal = "매도 우세"
+            else:
+                signal = "균형"
+            
+            return {
+                'buy_volume': buy_volume,
+                'sell_volume': sell_volume,
+                'cvd': cvd,
+                'cvd_ratio': cvd_ratio,
+                'signal': signal
+            }
+            
+        except Exception as e:
+            self.logger.error(f"CVD 계산 오류: {e}")
+            return {}
+    
+    async def analyze_liquidations(self, market_data: Dict) -> Dict:
+        """청산 데이터 분석"""
+        try:
+            current_price = market_data.get('current_price', 0)
+            
+            # 주요 청산 레벨 계산 (레버리지별)
+            liquidation_levels = {
+                'long': [],
+                'short': []
+            }
+            
+            # 롱 청산 레벨 (가격 하락 시)
+            for leverage in [3, 5, 10, 20]:
+                liq_price = current_price * (1 - 0.8/leverage)
+                liquidation_levels['long'].append(liq_price)
+            
+            # 숏 청산 레벨 (가격 상승 시)
+            for leverage in [3, 5, 10, 20]:
+                liq_price = current_price * (1 + 0.8/leverage)
+                liquidation_levels['short'].append(liq_price)
+            
+            # 가장 가까운 청산 레벨
+            nearest_long_liq = max(liquidation_levels['long'])
+            nearest_short_liq = min(liquidation_levels['short'])
+            
+            # 청산 압력 평가
+            long_distance = (current_price - nearest_long_liq) / current_price
+            short_distance = (nearest_short_liq - current_price) / current_price
+            
+            if long_distance < 0.03:  # 3% 이내
+                liquidation_pressure = "롱 청산 임박"
+            elif short_distance < 0.03:  # 3% 이내
+                liquidation_pressure = "숏 청산 임박"
+            else:
+                liquidation_pressure = "안전 구간"
+            
+            return {
+                'long_liquidation_levels': liquidation_levels['long'],
+                'short_liquidation_levels': liquidation_levels['short'],
+                'nearest_long_liq': nearest_long_liq,
+                'nearest_short_liq': nearest_short_liq,
+                'long_distance_percent': long_distance * 100,
+                'short_distance_percent': short_distance * 100,
+                'liquidation_pressure': liquidation_pressure
+            }
+            
+        except Exception as e:
+            self.logger.error(f"청산 분석 오류: {e}")
+            return {}
+    
+    async def calculate_futures_basis(self, market_data: Dict) -> Dict:
+        """선물 베이시스 계산"""
+        try:
+            # 실제로는 현물과 선물 가격 차이 계산
+            # 여기서는 펀딩비 기반 추정
+            funding_rate = market_data.get('funding_rate', 0)
+            
+            # 베이시스 추정 (연환산)
+            basis_annual = funding_rate * 365 * 3
+            
+            if basis_annual > 15:
+                signal = "콘탱고 과열 (숏 유리)"
+            elif basis_annual > 5:
+                signal = "정상 콘탱고"
+            elif basis_annual < -5:
+                signal = "백워데이션 (롱 유리)"
+            else:
+                signal = "중립"
+            
+            return {
+                'basis': {
+                    'rate': funding_rate * 100,
+                    'annual': basis_annual,
+                    'signal': signal
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"베이시스 계산 오류: {e}")
+            return {}
+    
+    async def analyze_long_short_ratio(self, market_data: Dict) -> Dict:
+        """롱/숏 비율 분석"""
+        try:
+            # 실제로는 거래소 API에서 데이터 조회
+            # 여기서는 시뮬레이션
+            long_ratio = np.random.uniform(45, 55)
+            short_ratio = 100 - long_ratio
+            
+            if long_ratio > 60:
+                signal = "롱 과밀 (조정 주의)"
+            elif long_ratio < 40:
+                signal = "숏 과밀 (반등 주의)"
+            else:
+                signal = "균형 상태"
+            
+            return {
+                'long_ratio': long_ratio,
+                'short_ratio': short_ratio,
+                'ratio': long_ratio / short_ratio,
+                'signal': signal
+            }
+            
+        except Exception as e:
+            self.logger.error(f"롱숏 비율 분석 오류: {e}")
+            return {}
+    
+    async def calculate_market_profile(self, market_data: Dict) -> Dict:
+        """마켓 프로파일 분석"""
+        try:
+            current_price = market_data.get('current_price', 0)
+            high_24h = market_data.get('high_24h', 0)
+            low_24h = market_data.get('low_24h', 0)
+            
+            # POC (Point of Control) - 가장 많이 거래된 가격
+            # 실제로는 거래량 프로파일 데이터 필요
+            poc = (high_24h + low_24h) / 2
+            
+            # Value Area (거래량의 70%가 발생한 구간)
+            range_24h = high_24h - low_24h
+            value_area_high = poc + range_24h * 0.35
+            value_area_low = poc - range_24h * 0.35
+            
+            # 현재 가격 위치
+            if current_price > value_area_high:
+                price_position = "Value Area 상단 (과매수 구간)"
+            elif current_price < value_area_low:
+                price_position = "Value Area 하단 (과매도 구간)"
+            else:
+                price_position = "Value Area 내 (정상 구간)"
+            
+            return {
+                'poc': poc,
+                'value_area_high': value_area_high,
+                'value_area_low': value_area_low,
+                'price_position': price_position,
+                'range_24h': range_24h
+            }
+            
+        except Exception as e:
+            self.logger.error(f"마켓 프로파일 계산 오류: {e}")
+            return {}
+    
+    async def analyze_smart_money(self, market_data: Dict) -> Dict:
+        """스마트머니 플로우 분석"""
+        try:
+            # 대형 거래 감지 (실제로는 거래 데이터 분석)
+            volume = market_data.get('volume_24h', 0)
+            
+            # 대형 거래 시뮬레이션
+            large_buy_count = np.random.randint(5, 15)
+            large_sell_count = np.random.randint(5, 15)
+            
+            net_flow = large_buy_count - large_sell_count
+            
+            if net_flow > 5:
+                signal = "스마트머니 매수 진입"
+            elif net_flow < -5:
+                signal = "스마트머니 매도 진행"
+            else:
+                signal = "중립"
+            
+            return {
+                'large_buy_count': large_buy_count,
+                'large_sell_count': large_sell_count,
+                'net_flow': net_flow,
+                'signal': signal
+            }
+            
+        except Exception as e:
+            self.logger.error(f"스마트머니 분석 오류: {e}")
+            return {}
+    
+    async def calculate_technical_indicators(self, market_data: Dict) -> Dict:
+        """기술적 지표 계산"""
+        try:
+            # RSI 계산 (간단한 버전)
+            change_24h = market_data.get('change_24h', 0)
+            
+            # RSI 추정 (실제로는 14일 데이터 필요)
+            if change_24h > 0.02:
+                rsi = 60 + change_24h * 500
+            elif change_24h < -0.02:
+                rsi = 40 + change_24h * 500
+            else:
+                rsi = 50 + change_24h * 250
+            
+            rsi = max(0, min(100, rsi))
+            
+            # RSI 신호
+            if rsi > 70:
+                rsi_signal = "과매수"
+            elif rsi < 30:
+                rsi_signal = "과매도"
+            else:
+                rsi_signal = "중립"
+            
+            return {
+                'rsi': {
+                    'value': rsi,
+                    'signal': rsi_signal
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"기술 지표 계산 오류: {e}")
+            return {}
+    
+    async def assess_risk_metrics(self, market_data: Dict) -> Dict:
+        """리스크 메트릭 평가"""
+        try:
+            volatility = market_data.get('volatility', 0)
+            funding_rate = abs(market_data.get('funding_rate', 0))
+            
+            # 리스크 점수 계산
+            risk_score = 0
+            
+            # 변동성 리스크
+            if volatility > 5:
+                risk_score += 3
+                volatility_risk = "높음"
+            elif volatility > 3:
+                risk_score += 2
+                volatility_risk = "보통"
+            else:
+                risk_score += 1
+                volatility_risk = "낮음"
+            
+            # 펀딩비 리스크
+            if funding_rate > 0.01:
+                risk_score += 3
+                funding_risk = "높음"
+            elif funding_rate > 0.005:
+                risk_score += 2
+                funding_risk = "보통"
+            else:
+                risk_score += 1
+                funding_risk = "낮음"
+            
+            # 종합 리스크 레벨
+            if risk_score >= 5:
+                risk_level = "높음"
+                position_sizing = "포지션 축소 권장"
+            elif risk_score >= 3:
+                risk_level = "보통"
+                position_sizing = "표준 포지션"
+            else:
+                risk_level = "낮음"
+                position_sizing = "포지션 확대 가능"
+            
+            return {
+                'risk_score': risk_score,
+                'risk_level': risk_level,
+                'volatility_risk': volatility_risk,
+                'funding_risk': funding_risk,
+                'position_sizing': position_sizing
+            }
+            
+        except Exception as e:
+            self.logger.error(f"리스크 평가 오류: {e}")
+            return {}
+    
+    def generate_composite_signal(self, indicators: Dict) -> Dict:
+        """종합 신호 생성"""
+        try:
+            scores = {}
+            total_score = 0
+            
+            # 펀딩비 점수
+            funding = indicators.get('funding_analysis', {})
+            if '숏 유리' in funding.get('signal', ''):
+                scores['funding'] = -3
+            elif '롱 유리' in funding.get('signal', ''):
+                scores['funding'] = 3
+            else:
+                scores['funding'] = 0
+            
+            # OI 점수
+            oi = indicators.get('oi_analysis', {})
+            if '강세' in oi.get('signal', ''):
+                scores['oi'] = 2
+            elif '약세' in oi.get('signal', ''):
+                scores['oi'] = -2
+            else:
+                scores['oi'] = 0
+            
+            # CVD 점수
+            cvd = indicators.get('volume_delta', {})
+            cvd_ratio = cvd.get('cvd_ratio', 0)
+            scores['cvd'] = max(-3, min(3, cvd_ratio / 10))
+            
+            # 기술적 지표 점수
+            tech = indicators.get('technical', {})
+            rsi = tech.get('rsi', {})
+            if rsi.get('signal') == '과매수':
+                scores['technical'] = -2
+            elif rsi.get('signal') == '과매도':
+                scores['technical'] = 2
+            else:
+                scores['technical'] = 0
+            
+            # 총점 계산
+            total_score = sum(scores.values())
+            
+            # 신호 결정
+            if total_score >= 5:
+                signal = "강한 롱 신호"
+                confidence = min(90, 50 + total_score * 5)
+                action = "롱 진입"
+            elif total_score >= 2:
+                signal = "약한 롱 신호"
+                confidence = 60
+                action = "소량 롱"
+            elif total_score <= -5:
+                signal = "강한 숏 신호"
+                confidence = min(90, 50 + abs(total_score) * 5)
+                action = "숏 진입"
+            elif total_score <= -2:
+                signal = "약한 숏 신호"
+                confidence = 60
+                action = "소량 숏"
+            else:
+                signal = "중립"
+                confidence = 40
+                action = "관망"
+            
+            # 리스크 조정
+            risk = indicators.get('risk_metrics', {})
+            if risk.get('risk_level') == '높음':
+                confidence *= 0.8
+                if '소량' not in action and action != '관망':
+                    action = f"소량 {action}"
+            
+            return {
+                'scores': scores,
+                'total_score': total_score,
+                'signal': signal,
+                'confidence': confidence,
+                'action': action,
+                'position_size': risk.get('position_sizing', '표준')
+            }
+            
+        except Exception as e:
+            self.logger.error(f"종합 신호 생성 오류: {e}")
+            return {
+                'signal': '오류',
+                'confidence': 0,
+                'action': '관망'
+            }
