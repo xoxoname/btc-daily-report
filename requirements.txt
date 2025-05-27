@@ -1,14 +1,30 @@
+# Core dependencies
 aiohttp==3.9.1
 python-telegram-bot==20.7
 openai==1.6.1
 APScheduler==3.10.4
 pytz==2023.3
 python-dotenv==1.0.0
-requests==2.31.0
+
+# Data processing
 pandas==2.1.4
 numpy==1.26.2
-websockets==12.0
+requests==2.31.0
+
+# Web scraping & feeds
 beautifulsoup4==4.12.2
 lxml==4.9.3
 feedparser==6.0.10
 python-dateutil==2.8.2
+
+# Async & websockets
+websockets==12.0
+asyncio-throttle==1.0.2
+
+# Additional analysis
+scipy==1.11.4
+ta==0.10.2  # Technical Analysis library
+
+# Logging & monitoring
+coloredlogs==15.0.1
+python-json-logger==2.0.7
