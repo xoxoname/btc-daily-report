@@ -84,41 +84,16 @@ class ForecastReportGenerator(BaseReportGenerator):
             return "❌ 예측 분석 중 오류가 발생했습니다."
     
     async def _format_events_and_news(self) -> str:
-        """주요 예정 이벤트와 뉴스 포맷"""
+        """주요 예정 이벤트와 뉴스 포맷 - 중복 제거 강화"""
         try:
             formatted = []
             
-            # 1. 최근 뉴스 (3시간 이내)
-            recent_news = await self.data_collector.get_recent_news(hours=3) if self.data_collector else []
+            # 1. 최근 뉴스 (3시간 이내) - 중복 제거 강화
+            recent_news = await self._get_recent_news(hours=3)  # 중복 제거된 뉴스
             
             # 뉴스 포맷팅 (최대 3개)
-            for news in recent_news[:3]:
-                try:
-                    # 시간 처리
-                    if news.get('published_at'):
-                        pub_time_str = news.get('published_at', '').replace('Z', '+00:00')
-                        if 'T' in pub_time_str:
-                            pub_time = datetime.fromisoformat(pub_time_str)
-                        else:
-                            from dateutil import parser
-                            pub_time = parser.parse(pub_time_str)
-                        
-                        pub_time_kst = pub_time.astimezone(self.kst)
-                        time_str = pub_time_kst.strftime('%m-%d %H:%M')
-                    else:
-                        time_str = datetime.now(self.kst).strftime('%m-%d %H:%M')
-                    
-                    # 한글 제목 우선
-                    title = news.get('title_ko', news.get('title', '')).strip()[:60]
-                    
-                    # 영향 분석
-                    impact = await self._analyze_news_impact_for_forecast(title)
-                    
-                    formatted.append(f"{time_str} {title} → {impact}")
-                    
-                except Exception as e:
-                    self.logger.warning(f"뉴스 포맷팅 오류: {e}")
-                    continue
+            news_formatted = await self.format_news_with_time(recent_news, max_items=3)
+            formatted.extend(news_formatted)
             
             # 2. 예정 이벤트 추가
             scheduled_events = await self._get_upcoming_events_12h()
@@ -143,11 +118,11 @@ class ForecastReportGenerator(BaseReportGenerator):
         title_lower = title.lower()
         
         # 긍정적 키워드
-        if any(word in title_lower for word in ['승인', 'approval', 'etf', '채택', 'adoption', '상승', 'rise', 'surge']):
+        if any(word in title_lower for word in ['승인', 'approval', 'etf', '채택', 'adoption', '상승', 'rise', 'surge', 'rally', '급등']):
             return "롱 우세 예상"
         
         # 부정적 키워드
-        elif any(word in title_lower for word in ['규제', 'regulation', '하락', 'fall', 'crash', '조사', 'investigation']):
+        elif any(word in title_lower for word in ['규제', 'regulation', '하락', 'fall', 'crash', '조사', 'investigation', '급락']):
             return "숏 우세 예상"
         
         # 중립적 키워드
@@ -250,11 +225,11 @@ class ForecastReportGenerator(BaseReportGenerator):
         taker_ratio = cvd.get('buy_volume', 1) / max(cvd.get('sell_volume', 1), 1)
         
         lines = [
-            f"지지선: ${support:,.0f} / 저항선: ${resistance:,.0f}",
+            f"**지지선**: ${support:,.0f} / **저항선**: ${resistance:,.0f}",
             f"RSI(1H, 4H): {rsi_1h:.1f} / {rsi_4h:.1f} → {'과열' if rsi_1h > 70 else '과매도' if rsi_1h < 30 else '정상'}",
             f"MACD(1H): {macd_status}",
             f"Funding Rate: {funding.get('current_rate', 0):+.3%} ({funding.get('trade_bias', '중립')})",
-            f"OI (미결제약정): {oi.get('oi_change_percent', 0):+.1f}% 변화 → {self._interpret_oi_change(oi)}",
+            f"OI **(미결제약정)**: {oi.get('oi_change_percent', 0):+.1f}% 변화 → {self._interpret_oi_change(oi)}",
             f"Taker Buy/Sell Ratio: {taker_ratio:.2f} → {'매수 우위' if taker_ratio > 1.1 else '매도 우위' if taker_ratio < 0.9 else '균형'}",
             f"Long/Short Ratio: {ls_ratio.get('long_ratio', 50):.0f}:{ls_ratio.get('short_ratio', 50):.0f} → {ls_ratio.get('signal', '균형')}"
         ]
@@ -483,7 +458,7 @@ ${current_price * 0.98:,.0f} ~ ${current_price * 1.02:,.0f} 박스권 거래 전
                 total_equity = account_info.get('total_equity', 1)
                 roi = (total_today / total_equity) * 100
             
-            return f"실현 손익: {self._format_currency(today_pnl, False)} / 미실현: {self._format_currency(unrealized, False)} → 수익률: {roi:+.2f}%"
+            return f"**실현 손익**: {self._format_currency(today_pnl, False)} / **미실현**: {self._format_currency(unrealized, False)} → 수익률: {roi:+.2f}%"
             
         except Exception as e:
             self.logger.error(f"수익 요약 실패: {e}")
@@ -527,7 +502,7 @@ ${current_price * 0.98:,.0f} ~ ${current_price * 1.02:,.0f} 박스권 거래 전
                     temperature=0.7
                 )
                 
-                return response.choices[0].message.content.strip()
+                return f'"{response.choices[0].message.content.strip()}"'
                 
         except Exception as e:
             self.logger.error(f"멘탈 케어 생성 실패: {e}")
