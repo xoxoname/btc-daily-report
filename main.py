@@ -68,6 +68,8 @@ class BitcoinPredictionSystem:
         
         # 처리된 예외 이벤트 해시 저장 (중복 방지)
         self.processed_exception_hashes = set()
+        self.sent_exception_reports = {}  # 전송된 예외 리포트 추적
+        self.exception_report_cooldown = 300  # 5분 쿨다운 (초)
         
         self.logger.info("시스템 초기화 완료")
     
@@ -177,9 +179,9 @@ class BitcoinPredictionSystem:
             
             # 메시지 전송
             if update:
-                await update.message.reply_text(report)
+                await update.message.reply_text(report, parse_mode='Markdown')
             else:
-                await self.telegram_bot.send_message(report)
+                await self.telegram_bot.send_message(report, parse_mode='Markdown')
             
             self.logger.info("리포트 전송 완료")
             
@@ -204,7 +206,7 @@ class BitcoinPredictionSystem:
             # 🆕 새로운 예측 리포트 생성기 사용
             report = await self.report_manager.generate_forecast_report()
             
-            await update.message.reply_text(report)
+            await update.message.reply_text(report, parse_mode='Markdown')
             
         except Exception as e:
             self.logger.error(f"예측 명령 처리 실패: {str(e)}")
@@ -218,7 +220,7 @@ class BitcoinPredictionSystem:
             # 🆕 새로운 수익 리포트 생성기 사용
             profit_report = await self.report_manager.generate_profit_report()
             
-            await update.message.reply_text(profit_report)
+            await update.message.reply_text(profit_report, parse_mode='Markdown')
             
         except Exception as e:
             self.logger.error(f"수익 명령 처리 실패: {str(e)}")
@@ -231,14 +233,14 @@ class BitcoinPredictionSystem:
             # 🆕 새로운 일정 리포트 생성기 사용
             schedule_report = await self.report_manager.generate_schedule_report()
             
-            await update.message.reply_text(schedule_report)
+            await update.message.reply_text(schedule_report, parse_mode='Markdown')
             
         except Exception as e:
             self.logger.error(f"일정 명령 처리 실패: {str(e)}")
             await update.message.reply_text("❌ 일정 조회 중 오류가 발생했습니다.")
     
     def _generate_event_hash(self, event: dict) -> str:
-        """이벤트의 고유 해시 생성"""
+        """이벤트의 고유 해시 생성 - 더 강력한 중복 체크"""
         event_type = event.get('type', '')
         
         if event_type == 'critical_news':
@@ -253,7 +255,7 @@ class BitcoinPredictionSystem:
             found_companies = [c for c in companies if c in clean_title]
             
             # 키워드 추출
-            keywords = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', '구매', '매입']
+            keywords = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', '구매', '매입', 'first', '첫']
             found_keywords = [k for k in keywords if k in clean_title]
             
             # 회사명과 키워드로 해시 생성
@@ -269,8 +271,26 @@ class BitcoinPredictionSystem:
             content = f"{event_type}_{event.get('description', '')}_{event.get('severity', '')}"
             return hashlib.md5(content.encode()).hexdigest()
     
+    def _is_duplicate_exception_report(self, event_hash: str) -> bool:
+        """예외 리포트가 중복인지 확인 (시간 기반 쿨다운)"""
+        current_time = datetime.now()
+        
+        # 오래된 리포트 정리
+        for hash_key in list(self.sent_exception_reports.keys()):
+            if (current_time - self.sent_exception_reports[hash_key]).total_seconds() > self.exception_report_cooldown:
+                del self.sent_exception_reports[hash_key]
+        
+        # 중복 체크
+        if event_hash in self.sent_exception_reports:
+            time_diff = (current_time - self.sent_exception_reports[event_hash]).total_seconds()
+            if time_diff < self.exception_report_cooldown:
+                self.logger.info(f"🔄 예외 리포트 쿨다운 중: {event_hash} ({int(self.exception_report_cooldown - time_diff)}초 남음)")
+                return True
+        
+        return False
+    
     async def check_exceptions(self):
-        """예외 상황 감지"""
+        """예외 상황 감지 - 강화된 중복 방지"""
         try:
             # 기존 예외 감지
             anomalies = await self.exception_detector.detect_all_anomalies()
@@ -284,7 +304,9 @@ class BitcoinPredictionSystem:
                 # 이벤트 버퍼 복사본 생성 (동시성 문제 방지)
                 events_to_process = list(self.data_collector.events_buffer)
                 
-                # 처리할 이벤트 필터링
+                # 이벤트별로 그룹화 (유사한 이벤트 한번만 처리)
+                event_groups = {}
+                
                 for event in events_to_process:
                     try:
                         # 이벤트 해시 생성
@@ -292,7 +314,10 @@ class BitcoinPredictionSystem:
                         
                         # 이미 처리된 이벤트인지 확인
                         if event_hash in self.processed_exception_hashes:
-                            self.logger.debug(f"이미 처리된 이벤트 스킵: {event_hash}")
+                            continue
+                        
+                        # 예외 리포트 쿨다운 체크
+                        if self._is_duplicate_exception_report(event_hash):
                             continue
                         
                         # 이벤트 심각도 확인
@@ -304,34 +329,59 @@ class BitcoinPredictionSystem:
                         
                         # 높은 심각도 이벤트만 처리
                         if severity in ['high', 'critical']:
-                            # 🆕 새로운 예외 리포트 생성기 사용
-                            event_dict = event.__dict__ if hasattr(event, '__dict__') else event
-                            
-                            # 예외 리포트 생성 및 전송
-                            report = await self.report_manager.generate_exception_report(event_dict)
-                            
-                            # 텔레그램 전송
-                            success = await self._send_exception_report(report)
-                            
-                            if success:
-                                # 성공적으로 전송된 경우만 처리된 것으로 기록
-                                self.processed_exception_hashes.add(event_hash)
-                                self.logger.info(f"예외 리포트 전송 완료: {event_hash}")
-                            
-                        # 해시 세트가 너무 커지면 정리
-                        if len(self.processed_exception_hashes) > 1000:
-                            # 가장 오래된 500개 제거
-                            self.processed_exception_hashes = set(list(self.processed_exception_hashes)[-500:])
-                            
+                            # 이벤트 그룹에 추가
+                            event_groups[event_hash] = event
+                    
                     except Exception as e:
-                        self.logger.error(f"이벤트 처리 중 오류: {e}")
+                        self.logger.error(f"이벤트 전처리 중 오류: {e}")
                         continue
                 
+                # 그룹화된 이벤트 처리 (한 번에 하나씩만)
+                processed_count = 0
+                max_reports_per_check = 2  # 한 번에 최대 2개까지만 처리
+                
+                for event_hash, event in event_groups.items():
+                    if processed_count >= max_reports_per_check:
+                        break
+                    
+                    try:
+                        # 🆕 새로운 예외 리포트 생성기 사용
+                        event_dict = event.__dict__ if hasattr(event, '__dict__') else event
+                        
+                        # 예외 리포트 생성 및 전송
+                        report = await self.report_manager.generate_exception_report(event_dict)
+                        
+                        # 텔레그램 전송
+                        success = await self._send_exception_report(report)
+                        
+                        if success:
+                            # 성공적으로 전송된 경우만 처리된 것으로 기록
+                            self.processed_exception_hashes.add(event_hash)
+                            self.sent_exception_reports[event_hash] = datetime.now()
+                            self.logger.info(f"✅ 예외 리포트 전송 완료: {event_hash}")
+                            processed_count += 1
+                        
+                    except Exception as e:
+                        self.logger.error(f"예외 리포트 처리 중 오류: {e}")
+                        continue
+                
+                # 해시 세트가 너무 커지면 정리
+                if len(self.processed_exception_hashes) > 1000:
+                    # 가장 오래된 500개 제거
+                    self.processed_exception_hashes = set(list(self.processed_exception_hashes)[-500:])
+                
                 # 처리된 이벤트 버퍼에서 제거
+                processed_hashes = set()
+                for event in self.data_collector.events_buffer:
+                    event_hash = self._generate_event_hash(event if isinstance(event, dict) else event.__dict__)
+                    if event_hash in self.processed_exception_hashes:
+                        processed_hashes.add(event_hash)
+                
+                # 처리된 이벤트만 제거
                 self.data_collector.events_buffer = [
                     event for event in self.data_collector.events_buffer
                     if self._generate_event_hash(event if isinstance(event, dict) else event.__dict__) 
-                    not in self.processed_exception_hashes
+                    not in processed_hashes
                 ]
                 
         except Exception as e:
@@ -344,7 +394,6 @@ class BitcoinPredictionSystem:
             report_lines = report.split('\n')
             
             # 제목과 원인에서 해시 생성
-            title_line = None
             cause_lines = []
             
             for i, line in enumerate(report_lines):
@@ -366,20 +415,20 @@ class BitcoinPredictionSystem:
                 
                 report_hash = hashlib.md5(clean_text.encode()).hexdigest()
                 
-                # 이미 전송된 리포트인지 확인
-                if report_hash in self.processed_exception_hashes:
-                    self.logger.info(f"중복 예외 리포트 전송 방지: {clean_text[:50]}...")
+                # 쿨다운 체크
+                if self._is_duplicate_exception_report(report_hash):
                     return False
                 
                 # 전송
-                await self.telegram_bot.send_message(report)
+                await self.telegram_bot.send_message(report, parse_mode='Markdown')
                 
                 # 성공 시 해시 저장
                 self.processed_exception_hashes.add(report_hash)
+                self.sent_exception_reports[report_hash] = datetime.now()
                 return True
             else:
                 # 해시 생성 실패 시 그냥 전송
-                await self.telegram_bot.send_message(report)
+                await self.telegram_bot.send_message(report, parse_mode='Markdown')
                 return True
                 
         except Exception as e:
