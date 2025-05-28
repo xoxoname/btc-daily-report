@@ -19,6 +19,7 @@ class BaseReportGenerator:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.kst = pytz.timezone('Asia/Seoul')
         self.processed_news_hashes: Set[str] = set()  # 처리된 뉴스 해시
+        self.processed_news_titles: Set[str] = set()  # 처리된 뉴스 제목
         
         # OpenAI 클라이언트 초기화
         self.openai_client = None
@@ -32,7 +33,7 @@ class BaseReportGenerator:
         self.logger.info("✅ Bitget 클라이언트 설정 완료")
     
     def _generate_news_hash(self, title: str, source: str = "") -> str:
-        """뉴스 제목과 소스로 해시 생성"""
+        """뉴스 제목과 소스로 해시 생성 - 더 강력한 중복 체크"""
         # 제목에서 숫자와 특수문자 제거
         clean_title = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title.lower())
         clean_title = re.sub(r'\s+', ' ', clean_title).strip()
@@ -41,20 +42,21 @@ class BaseReportGenerator:
         companies = ['gamestop', 'tesla', 'microstrategy', 'metaplanet', '게임스탑', '테슬라', '메타플래닛']
         found_companies = [c for c in companies if c in clean_title]
         
-        # 키워드 추출
-        keywords = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', '구매', '매입', 'etf', '승인']
+        # 핵심 키워드 추출
+        keywords = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', '구매', '매입', 'etf', '승인', 'first', '첫']
         found_keywords = [k for k in keywords if k in clean_title]
         
-        # 회사명과 키워드로 해시 생성
+        # 회사명과 핵심 키워드로 해시 생성
         if found_companies and found_keywords:
+            # 회사명과 핵심 동작만으로 해시 생성 (숫자 제외)
             hash_content = f"{','.join(sorted(found_companies))}_{','.join(sorted(found_keywords))}"
         else:
             hash_content = clean_title
         
-        return hashlib.md5(f"{hash_content}_{source}".encode()).hexdigest()
+        return hashlib.md5(hash_content.encode()).hexdigest()
     
     def _is_similar_news(self, title1: str, title2: str) -> bool:
-        """두 뉴스 제목이 유사한지 확인"""
+        """두 뉴스 제목이 유사한지 확인 - 더 엄격한 기준"""
         # 숫자와 특수문자 제거
         clean1 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title1.lower())
         clean2 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title2.lower())
@@ -75,8 +77,29 @@ class BaseReportGenerator:
         
         similarity = intersection / union if union > 0 else 0
         
-        # 70% 이상 유사하면 중복으로 간주
-        return similarity > 0.7
+        # 65% 이상 유사하면 중복으로 간주 (기준 낮춤)
+        return similarity > 0.65
+    
+    def _is_duplicate_news_content(self, news1: Dict, news2: Dict) -> bool:
+        """뉴스 내용이 중복인지 더 정교하게 확인"""
+        title1 = news1.get('title_ko', news1.get('title', '')).lower()
+        title2 = news2.get('title_ko', news2.get('title', '')).lower()
+        
+        # 게임스탑 + 비트코인 구매 관련 뉴스인지 확인
+        gamestop_keywords = ['gamestop', '게임스탑', 'gme']
+        bitcoin_keywords = ['bitcoin', 'btc', '비트코인', '구매', '매입', 'bought', 'purchase']
+        
+        is_gamestop1 = any(k in title1 for k in gamestop_keywords)
+        is_gamestop2 = any(k in title2 for k in gamestop_keywords)
+        has_bitcoin1 = any(k in title1 for k in bitcoin_keywords)
+        has_bitcoin2 = any(k in title2 for k in bitcoin_keywords)
+        
+        # 둘 다 게임스탑 비트코인 구매 뉴스면 중복으로 처리
+        if is_gamestop1 and is_gamestop2 and has_bitcoin1 and has_bitcoin2:
+            return True
+        
+        # 일반적인 유사도 체크
+        return self._is_similar_news(title1, title2)
     
     async def analyze_news_impact(self, title: str, description: str = "") -> str:
         """통합 뉴스 영향 분석 - 개선된 로직"""
@@ -94,6 +117,7 @@ class BaseReportGenerator:
             'etf approved': (5, 'ETF 승인'),
             'etf 승인': (5, 'ETF 승인'),
             'etf approval': (5, 'ETF 승인 가능성'),
+            'etf 실현': (4, 'ETF 실현 가능성'),
             
             # 기관 채택
             'institutional adoption': (4, '기관 채택'),
@@ -108,6 +132,7 @@ class BaseReportGenerator:
             'bought bitcoin': (5, 'BTC 매입 완료'),
             '비트코인 매입': (5, 'BTC 직접 매입'),
             'btc로 첫': (5, '첫 BTC 매입'),
+            '첫 비트코인': (5, '첫 BTC 매입'),
             
             # 금액 관련
             '억 달러': (4, '대규모 자금 유입'),
@@ -133,6 +158,8 @@ class BaseReportGenerator:
             '신고가': (3, '신고가'),
             'breakthrough': (3, '돌파'),
             '돌파': (3, '돌파'),
+            '상승 예상': (3, '상승 예상'),
+            '상승 기조': (3, '상승 기조'),
             
             # 기업 관련
             'gamestop': (4, '게임스탑 참여'),
@@ -325,12 +352,16 @@ class BaseReportGenerator:
         return result
     
     async def format_news_with_time(self, news_list: List[Dict], max_items: int = 4) -> List[str]:
-        """뉴스를 시간 포함 형식으로 포맷팅 - 중복 제거 강화"""
+        """뉴스를 시간 포함 형식으로 포맷팅 - 중복 제거 극대화"""
         formatted = []
         seen_hashes = set()
         seen_titles = []
+        seen_content_patterns = set()
         
-        for news in news_list[:max_items * 2]:  # 중복 제거를 위해 더 많이 처리
+        # 게임스탑 관련 뉴스 카운트 (하나만 허용)
+        gamestop_count = 0
+        
+        for news in news_list[:max_items * 3]:  # 중복 제거를 위해 더 많이 처리
             try:
                 # 시간 처리
                 if news.get('published_at'):
@@ -351,12 +382,17 @@ class BaseReportGenerator:
                 description = news.get('description', '')
                 source = news.get('source', '')
                 
-                # 중복 체크
+                # 게임스탑 관련 뉴스 체크
+                is_gamestop = any(keyword in title.lower() for keyword in ['gamestop', '게임스탑', 'gme'])
+                if is_gamestop and gamestop_count >= 1:
+                    continue  # 이미 게임스탑 뉴스가 하나 있으면 스킵
+                
+                # 중복 체크 1: 해시 기반
                 news_hash = self._generate_news_hash(title, source)
-                if news_hash in seen_hashes:
+                if news_hash in seen_hashes or news_hash in self.processed_news_hashes:
                     continue
                 
-                # 유사한 제목 체크
+                # 중복 체크 2: 제목 유사도
                 is_similar = False
                 for seen_title in seen_titles:
                     if self._is_similar_news(title, seen_title):
@@ -366,14 +402,27 @@ class BaseReportGenerator:
                 if is_similar:
                     continue
                 
+                # 중복 체크 3: 내용 패턴 (회사명 + 행동)
+                content_pattern = self._extract_content_pattern(title)
+                if content_pattern and content_pattern in seen_content_patterns:
+                    continue
+                
                 # 통합 영향 분석
                 impact = await self.analyze_news_impact(title, description)
                 
                 # 형식: 시간 "제목" → 영향
                 formatted_news = f'{time_str} "{title[:60]}{"..." if len(title) > 60 else ""}" → {impact}'
                 formatted.append(formatted_news)
+                
+                # 기록 추가
                 seen_hashes.add(news_hash)
+                self.processed_news_hashes.add(news_hash)
                 seen_titles.append(title)
+                if content_pattern:
+                    seen_content_patterns.add(content_pattern)
+                
+                if is_gamestop:
+                    gamestop_count += 1
                 
                 # 원하는 개수만큼 수집했으면 종료
                 if len(formatted) >= max_items:
@@ -383,7 +432,45 @@ class BaseReportGenerator:
                 self.logger.warning(f"뉴스 포맷팅 오류: {e}")
                 continue
         
+        # 처리된 뉴스 해시 정리 (메모리 관리)
+        if len(self.processed_news_hashes) > 1000:
+            self.processed_news_hashes = set(list(self.processed_news_hashes)[-500:])
+        
         return formatted
+    
+    def _extract_content_pattern(self, title: str) -> Optional[str]:
+        """뉴스 제목에서 핵심 내용 패턴 추출"""
+        title_lower = title.lower()
+        
+        # 회사명 찾기
+        companies = ['gamestop', '게임스탑', 'tesla', '테슬라', 'microstrategy', '마이크로스트래티지', 'metaplanet', '메타플래닛']
+        found_company = None
+        for company in companies:
+            if company in title_lower:
+                found_company = company
+                break
+        
+        # 행동 찾기
+        actions = ['구매', '매입', 'bought', 'purchase', 'buys', '투자', 'investment']
+        found_action = None
+        for action in actions:
+            if action in title_lower:
+                found_action = action
+                break
+        
+        # 대상 찾기
+        targets = ['bitcoin', 'btc', '비트코인']
+        found_target = None
+        for target in targets:
+            if target in title_lower:
+                found_target = target
+                break
+        
+        # 패턴 생성
+        if found_company and found_action and found_target:
+            return f"{found_company}_{found_action}_{found_target}"
+        
+        return None
     
     async def _collect_all_data(self) -> Dict:
         """모든 데이터 수집"""
@@ -628,7 +715,7 @@ class BaseReportGenerator:
         return f"${price:,.0f} {change_emoji} ({change_percent:+.1f}%)"
     
     async def _get_recent_news(self, hours: int = 6) -> List[Dict]:
-        """최근 뉴스 가져오기 - 중복 제거"""
+        """최근 뉴스 가져오기 - 강화된 중복 제거"""
         try:
             if self.data_collector:
                 all_news = await self.data_collector.get_recent_news(hours)
@@ -636,17 +723,37 @@ class BaseReportGenerator:
                 # 추가 중복 제거
                 filtered_news = []
                 seen_hashes = set()
+                seen_patterns = set()
+                gamestop_count = 0
                 
                 for news in all_news:
+                    # 게임스탑 뉴스 제한
+                    is_gamestop = any(k in news.get('title_ko', news.get('title', '')).lower() 
+                                    for k in ['gamestop', '게임스탑', 'gme'])
+                    if is_gamestop and gamestop_count >= 1:
+                        continue
+                    
                     news_hash = self._generate_news_hash(
                         news.get('title_ko', news.get('title', '')),
                         news.get('source', '')
                     )
                     
-                    if news_hash not in seen_hashes and news_hash not in self.processed_news_hashes:
+                    content_pattern = self._extract_content_pattern(
+                        news.get('title_ko', news.get('title', ''))
+                    )
+                    
+                    if (news_hash not in seen_hashes and 
+                        news_hash not in self.processed_news_hashes and
+                        (not content_pattern or content_pattern not in seen_patterns)):
+                        
                         filtered_news.append(news)
                         seen_hashes.add(news_hash)
                         self.processed_news_hashes.add(news_hash)
+                        if content_pattern:
+                            seen_patterns.add(content_pattern)
+                        
+                        if is_gamestop:
+                            gamestop_count += 1
                 
                 # 해시 세트가 너무 커지면 정리
                 if len(self.processed_news_hashes) > 500:
