@@ -8,6 +8,8 @@ from bs4 import BeautifulSoup
 import feedparser
 import openai
 import os
+import hashlib
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,7 @@ class RealisticNewsCollector:
         self.config = config
         self.session = None
         self.news_buffer = []
+        self.emergency_alerts_sent = {}  # 중복 긴급 알림 방지용
         
         # OpenAI 클라이언트 초기화 (번역용)
         self.openai_client = None
@@ -27,20 +30,45 @@ class RealisticNewsCollector:
         self.newsdata_key = getattr(config, 'NEWSDATA_KEY', None)
         self.alpha_vantage_key = getattr(config, 'ALPHA_VANTAGE_KEY', None)
         
-        # 크리티컬 키워드 (즉시 알림용) - 한국어 추가
+        # 크리티컬 키워드 (즉시 알림용) - 한국어 추가 및 기업 비트코인 구매 추가
         self.critical_keywords = [
+            # 정부/정치 관련
             'trump bitcoin', 'trump crypto', 'trump ban', 'trump announces', 'trump says bitcoin',
             '트럼프 비트코인', '트럼프 암호화폐', '트럼프 규제',
+            # 연준/금리 관련
             'fed rate decision', 'fed raises', 'fed cuts', 'powell says', 'fomc decides', 'fed meeting',
             '연준 금리', 'FOMC 결정', '파월 발언', '금리 인상', '금리 인하',
+            # SEC 관련
             'sec lawsuit bitcoin', 'sec sues', 'sec enforcement', 'sec charges bitcoin',
             'SEC 소송', 'SEC 규제', 'SEC 비트코인',
+            # 규제/금지 관련
             'china bans bitcoin', 'china crypto ban', 'government bans crypto', 'regulatory ban',
             '중국 비트코인 금지', '정부 규제', '암호화폐 금지',
+            # 시장 급변동
             'bitcoin crash', 'crypto crash', 'market crash', 'flash crash', 'bitcoin plunge',
             '비트코인 폭락', '암호화폐 급락', '시장 붕괴',
+            # ETF 관련
             'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing',
-            'ETF 승인', 'ETF 거부', 'ETF 결정'
+            'ETF 승인', 'ETF 거부', 'ETF 결정',
+            # 기업 비트코인 구매 (새로 추가)
+            'bought bitcoin', 'buys bitcoin', 'purchased bitcoin', 'bitcoin purchase', 'bitcoin acquisition',
+            'tesla bitcoin', 'microstrategy bitcoin', 'square bitcoin', 'paypal bitcoin',
+            'gamestop bitcoin', 'gme bitcoin', '$gme bitcoin',
+            '비트코인 구매', '비트코인 매입', '비트코인 투자', '비트코인 보유',
+            # 대량 거래/이동
+            'whale alert', 'large bitcoin transfer', 'bitcoin moved', 'btc transferred',
+            '고래 이동', '대량 이체', '비트코인 이동',
+            # 해킹/보안
+            'exchange hacked', 'bitcoin stolen', 'crypto hack', 'security breach',
+            '거래소 해킹', '비트코인 도난', '보안 사고'
+        ]
+        
+        # 중요 기업 리스트 (비트코인 구매 감지용)
+        self.important_companies = [
+            'tesla', 'microstrategy', 'square', 'block', 'paypal', 'mastercard', 'visa',
+            'apple', 'google', 'amazon', 'meta', 'facebook', 'microsoft', 'netflix',
+            'gamestop', 'gme', 'amc', 'blackrock', 'fidelity', 'jpmorgan', 'goldman',
+            'samsung', 'lg', 'sk', 'kakao', 'naver', '삼성', '카카오', '네이버'
         ]
         
         # RSS 피드 (문제있는 2개 제거)
@@ -92,6 +120,43 @@ class RealisticNewsCollector:
         }
         
         logger.info(f"뉴스 수집기 초기화 완료 - API 키 상태: NewsAPI={bool(self.newsapi_key)}, NewsData={bool(self.newsdata_key)}, AlphaVantage={bool(self.alpha_vantage_key)}")
+    
+    def _generate_content_hash(self, title: str, description: str = "") -> str:
+        """뉴스 내용의 해시 생성 (중복 체크용)"""
+        content = f"{title.lower().strip()}{description.lower().strip()[:100]}"
+        # 숫자, 날짜, 특수문자 제거하여 더 일반화된 해시 생성
+        content = re.sub(r'[0-9.,\-:;!?@#$%^&*()\[\]{}]', '', content)
+        content = re.sub(r'\s+', ' ', content)
+        return hashlib.md5(content.encode()).hexdigest()
+    
+    def _is_duplicate_emergency(self, article: Dict, time_window: int = 30) -> bool:
+        """긴급 알림이 중복인지 확인 (30분 이내 유사 내용)"""
+        try:
+            current_time = datetime.now()
+            content_hash = self._generate_content_hash(
+                article.get('title', ''), 
+                article.get('description', '')
+            )
+            
+            # 시간이 지난 알림 제거
+            cutoff_time = current_time - timedelta(minutes=time_window)
+            self.emergency_alerts_sent = {
+                k: v for k, v in self.emergency_alerts_sent.items()
+                if v > cutoff_time
+            }
+            
+            # 중복 체크
+            if content_hash in self.emergency_alerts_sent:
+                logger.info(f"🔄 중복 긴급 알림 방지: {article.get('title', '')[:50]}...")
+                return True
+            
+            # 새로운 알림 기록
+            self.emergency_alerts_sent[content_hash] = current_time
+            return False
+            
+        except Exception as e:
+            logger.error(f"중복 체크 오류: {e}")
+            return False
     
     async def translate_text(self, text: str, max_length: int = 100) -> str:
         """텍스트를 한국어로 번역"""
@@ -167,7 +232,9 @@ class RealisticNewsCollector:
                                 # 가중치 8 이상은 크리티컬 체크
                                 if feed_info['weight'] >= 8:
                                     if self._is_critical_news(article):
-                                        await self._trigger_emergency_alert(article)
+                                        # 중복 체크 후 알림
+                                        if not self._is_duplicate_emergency(article):
+                                            await self._trigger_emergency_alert(article)
                                 
                                 # 모든 RSS는 중요 뉴스 체크
                                 if self._is_important_news(article):
@@ -224,7 +291,8 @@ class RealisticNewsCollector:
                                         }
                                         
                                         if self._is_critical_news(article):
-                                            await self._trigger_emergency_alert(article)
+                                            if not self._is_duplicate_emergency(article):
+                                                await self._trigger_emergency_alert(article)
                                             relevant_posts += 1
                                         elif self._is_important_news(article):
                                             await self._add_to_news_buffer(article)
@@ -366,16 +434,17 @@ class RealisticNewsCollector:
         return articles
     
     async def _call_newsapi(self):
-        """NewsAPI 호출"""
+        """NewsAPI 호출 - 기업 비트코인 구매 키워드 추가"""
         try:
+            # 기업 비트코인 구매 관련 쿼리 추가
             url = "https://newsapi.org/v2/everything"
             params = {
-                'q': '(trump AND bitcoin) OR (fed AND rate) OR (sec AND bitcoin) OR "bitcoin etf" OR (powell AND crypto)',
+                'q': '(bitcoin AND (bought OR purchased OR buys OR "buying bitcoin" OR acquisition)) OR (gamestop AND bitcoin) OR (tesla AND bitcoin) OR (microstrategy AND bitcoin) OR "whale alert" OR (trump AND bitcoin) OR (fed AND rate) OR (sec AND bitcoin) OR "bitcoin etf"',
                 'language': 'en',
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
-                'pageSize': 12,
-                'from': (datetime.now() - timedelta(hours=1)).isoformat()
+                'pageSize': 20,  # 더 많은 기사 확인
+                'from': (datetime.now() - timedelta(hours=2)).isoformat()
             }
             
             async with self.session.get(url, params=params) as response:
@@ -397,7 +466,8 @@ class RealisticNewsCollector:
                         }
                         
                         if self._is_critical_news(formatted_article):
-                            await self._trigger_emergency_alert(formatted_article)
+                            if not self._is_duplicate_emergency(formatted_article):
+                                await self._trigger_emergency_alert(formatted_article)
                             processed += 1
                         elif self._is_important_news(formatted_article):
                             await self._add_to_news_buffer(formatted_article)
@@ -417,10 +487,10 @@ class RealisticNewsCollector:
             url = "https://newsdata.io/api/1/news"
             params = {
                 'apikey': self.newsdata_key,
-                'q': 'bitcoin OR crypto OR "federal reserve" OR SEC',
+                'q': 'bitcoin OR crypto OR "federal reserve" OR SEC OR gamestop OR tesla',
                 'language': 'en',
-                'category': 'business,politics',
-                'size': 8
+                'category': 'business,politics,top',
+                'size': 10
             }
             
             async with self.session.get(url, params=params) as response:
@@ -442,7 +512,8 @@ class RealisticNewsCollector:
                         }
                         
                         if self._is_critical_news(formatted_article):
-                            await self._trigger_emergency_alert(formatted_article)
+                            if not self._is_duplicate_emergency(formatted_article):
+                                await self._trigger_emergency_alert(formatted_article)
                             processed += 1
                         elif self._is_important_news(formatted_article):
                             await self._add_to_news_buffer(formatted_article)
@@ -462,11 +533,11 @@ class RealisticNewsCollector:
             url = "https://www.alphavantage.co/query"
             params = {
                 'function': 'NEWS_SENTIMENT',
-                'tickers': 'CRYPTO:BTC',
-                'topics': 'financial_markets,economy_monetary',
+                'tickers': 'CRYPTO:BTC,COIN:MSTR,COIN:TSLA,COIN:GME',  # GME 추가
+                'topics': 'financial_markets,economy_monetary,technology',
                 'apikey': self.alpha_vantage_key,
                 'sort': 'LATEST',
-                'limit': 6
+                'limit': 10
             }
             
             async with self.session.get(url, params=params) as response:
@@ -489,7 +560,8 @@ class RealisticNewsCollector:
                         }
                         
                         if self._is_critical_news(formatted_article):
-                            await self._trigger_emergency_alert(formatted_article)
+                            if not self._is_duplicate_emergency(formatted_article):
+                                await self._trigger_emergency_alert(formatted_article)
                             processed += 1
                         elif self._is_important_news(formatted_article):
                             await self._add_to_news_buffer(formatted_article)
@@ -521,6 +593,19 @@ class RealisticNewsCollector:
         # 제목과 설명 모두 체크 (한글 제목도 포함)
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
+        # 기업 비트코인 구매 감지
+        for company in self.important_companies:
+            if company.lower() in content:
+                # 비트코인 구매 관련 키워드 체크
+                purchase_keywords = ['bought', 'buys', 'purchased', 'bitcoin purchase', 'bitcoin acquisition',
+                                   '비트코인 구매', '비트코인 매입', '비트코인 투자', 'bitcoin', 'btc']
+                if any(keyword in content for keyword in purchase_keywords):
+                    # 금액이 포함된 경우 더 높은 신뢰도
+                    if any(char in content for char in ['$', '달러', 'dollar', 'million', 'billion']):
+                        logger.warning(f"🚨 기업 비트코인 구매 감지: {company} - {article.get('title', '')[:50]}...")
+                        return True
+        
+        # 기존 크리티컬 키워드 체크
         for keyword in self.critical_keywords:
             if keyword.lower() in content:
                 # 신뢰할 만한 소스에서만 (가중치 7 이상)
@@ -542,13 +627,15 @@ class RealisticNewsCollector:
         finance_keywords = ['fed', 'federal reserve', 'interest rate', 'inflation', 'sec', 'regulation', 'monetary policy', '연준', '금리', '인플레이션', '규제']
         political_keywords = ['trump', 'biden', 'congress', 'government', 'policy', 'administration', 'white house', '트럼프', '바이든', '정부', '정책']
         market_keywords = ['market', 'trading', 'price', 'surge', 'crash', 'rally', 'dump', 'volatility', 'etf', '시장', '거래', '가격', '급등', '폭락', 'ETF']
+        company_keywords = self.important_companies
         
         crypto_score = sum(1 for word in crypto_keywords if word in content)
         finance_score = sum(1 for word in finance_keywords if word in content)
         political_score = sum(1 for word in political_keywords if word in content)
         market_score = sum(1 for word in market_keywords if word in content)
+        company_score = sum(1 for word in company_keywords if word.lower() in content)
         
-        total_score = crypto_score + finance_score + political_score + market_score
+        total_score = crypto_score + finance_score + political_score + market_score + company_score
         weight = article.get('weight', 0)
         category = article.get('category', '')
         
@@ -556,16 +643,18 @@ class RealisticNewsCollector:
         conditions = [
             crypto_score >= 2,  # 암호화폐 키워드 2개 이상
             crypto_score >= 1 and (finance_score >= 1 or political_score >= 1),  # 암호화폐 + 금융/정치
+            crypto_score >= 1 and company_score >= 1,  # 암호화폐 + 기업
             weight >= 9 and total_score >= 2,  # 고가중치 소스 + 관련 키워드
             category == 'crypto' and market_score >= 1,  # 암호화폐 소스 + 시장 키워드
             crypto_score >= 1 and 'etf' in content,  # ETF 관련
             finance_score >= 2 and weight >= 8,  # 금융 키워드 + 신뢰할만한 소스
+            company_score >= 1 and ('bitcoin' in content or 'btc' in content),  # 기업 + 비트코인
         ]
         
         is_important = any(conditions)
         
         if is_important:
-            logger.debug(f"📋 중요 뉴스: {article.get('source', '')[:15]} - 점수(C:{crypto_score},F:{finance_score},P:{political_score},M:{market_score})")
+            logger.debug(f"📋 중요 뉴스: {article.get('source', '')[:15]} - 점수(C:{crypto_score},F:{finance_score},P:{political_score},M:{market_score},Co:{company_score})")
         
         return is_important
     
@@ -645,10 +734,15 @@ class RealisticNewsCollector:
         """뉴스 영향도 판단 - 더 세밀한 분석"""
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
+        # 기업 비트코인 구매는 강한 호재
+        for company in self.important_companies:
+            if company.lower() in content and any(word in content for word in ['bought', 'purchased', 'buys', 'bitcoin', '비트코인 구매', '매입']):
+                return "➕강한 호재"
+        
         # 강한 악재 (즉시 매도 신호)
         strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked', '금지', '규제', '소송', '폭락', '해킹']
         # 강한 호재 (즉시 매수 신호)
-        strong_bullish = ['approval', 'approved', 'adoption', 'breakthrough', 'all-time high', 'ath', 'pump', '승인', '채택', '신고가']
+        strong_bullish = ['approval', 'approved', 'adoption', 'breakthrough', 'all-time high', 'ath', 'pump', '승인', '채택', '신고가', 'bought bitcoin', 'purchased bitcoin']
         # 일반 악재
         bearish = ['concern', 'worry', 'decline', 'fall', 'drop', 'uncertainty', 'regulation', 'fine', '우려', '하락', '불확실']
         # 일반 호재
