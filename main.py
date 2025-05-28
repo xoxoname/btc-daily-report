@@ -7,6 +7,8 @@ from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
+import hashlib
+import re
 
 from config import Config
 from telegram_bot import TelegramBot
@@ -63,6 +65,9 @@ class BitcoinPredictionSystem:
         # 스케줄러 초기화
         self.scheduler = AsyncIOScheduler()
         self._setup_scheduler()
+        
+        # 처리된 예외 이벤트 해시 저장 (중복 방지)
+        self.processed_exception_hashes = set()
         
         self.logger.info("시스템 초기화 완료")
     
@@ -232,6 +237,38 @@ class BitcoinPredictionSystem:
             self.logger.error(f"일정 명령 처리 실패: {str(e)}")
             await update.message.reply_text("❌ 일정 조회 중 오류가 발생했습니다.")
     
+    def _generate_event_hash(self, event: dict) -> str:
+        """이벤트의 고유 해시 생성"""
+        event_type = event.get('type', '')
+        
+        if event_type == 'critical_news':
+            # 뉴스는 제목으로 해시 생성
+            title = event.get('title', '').lower()
+            # 숫자와 특수문자 제거
+            clean_title = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title)
+            clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+            
+            # 회사명 추출
+            companies = ['gamestop', 'tesla', 'microstrategy', 'metaplanet', '게임스탑', '테슬라', '메타플래닛']
+            found_companies = [c for c in companies if c in clean_title]
+            
+            # 키워드 추출
+            keywords = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', '구매', '매입']
+            found_keywords = [k for k in keywords if k in clean_title]
+            
+            # 회사명과 키워드로 해시 생성
+            if found_companies and found_keywords:
+                hash_content = f"{','.join(sorted(found_companies))}_{','.join(sorted(found_keywords))}"
+            else:
+                hash_content = clean_title
+            
+            return hashlib.md5(f"event_{hash_content}".encode()).hexdigest()
+        
+        else:
+            # 기타 이벤트는 전체 내용으로 해시
+            content = f"{event_type}_{event.get('description', '')}_{event.get('severity', '')}"
+            return hashlib.md5(content.encode()).hexdigest()
+    
     async def check_exceptions(self):
         """예외 상황 감지"""
         try:
@@ -239,24 +276,115 @@ class BitcoinPredictionSystem:
             anomalies = await self.exception_detector.detect_all_anomalies()
             
             for anomaly in anomalies:
+                # exception_detector의 send_alert가 이미 중복 체크를 하므로 그대로 사용
                 await self.exception_detector.send_alert(anomaly)
             
             # 데이터 수집기의 이벤트 확인
-            for event in self.data_collector.events_buffer:
-                if hasattr(event, 'severity') and event.severity.value in ['high', 'critical']:
-                    # 🆕 새로운 예외 리포트 생성기 사용
-                    report = await self.report_manager.generate_exception_report(event.__dict__)
-                    await self.telegram_bot.send_message(report)
-                elif isinstance(event, dict) and event.get('severity') in ['high', 'critical']:
-                    # dict 형태의 이벤트 처리
-                    report = await self.report_manager.generate_exception_report(event)
-                    await self.telegram_bot.send_message(report)
-            
-            # 버퍼 클리어
-            self.data_collector.events_buffer = []
+            if self.data_collector and hasattr(self.data_collector, 'events_buffer'):
+                # 이벤트 버퍼 복사본 생성 (동시성 문제 방지)
+                events_to_process = list(self.data_collector.events_buffer)
+                
+                # 처리할 이벤트 필터링
+                for event in events_to_process:
+                    try:
+                        # 이벤트 해시 생성
+                        event_hash = self._generate_event_hash(event if isinstance(event, dict) else event.__dict__)
+                        
+                        # 이미 처리된 이벤트인지 확인
+                        if event_hash in self.processed_exception_hashes:
+                            self.logger.debug(f"이미 처리된 이벤트 스킵: {event_hash}")
+                            continue
+                        
+                        # 이벤트 심각도 확인
+                        severity = None
+                        if hasattr(event, 'severity'):
+                            severity = event.severity.value if hasattr(event.severity, 'value') else str(event.severity)
+                        elif isinstance(event, dict):
+                            severity = event.get('severity', '')
+                        
+                        # 높은 심각도 이벤트만 처리
+                        if severity in ['high', 'critical']:
+                            # 🆕 새로운 예외 리포트 생성기 사용
+                            event_dict = event.__dict__ if hasattr(event, '__dict__') else event
+                            
+                            # 예외 리포트 생성 및 전송
+                            report = await self.report_manager.generate_exception_report(event_dict)
+                            
+                            # 텔레그램 전송
+                            success = await self._send_exception_report(report)
+                            
+                            if success:
+                                # 성공적으로 전송된 경우만 처리된 것으로 기록
+                                self.processed_exception_hashes.add(event_hash)
+                                self.logger.info(f"예외 리포트 전송 완료: {event_hash}")
+                            
+                        # 해시 세트가 너무 커지면 정리
+                        if len(self.processed_exception_hashes) > 1000:
+                            # 가장 오래된 500개 제거
+                            self.processed_exception_hashes = set(list(self.processed_exception_hashes)[-500:])
+                            
+                    except Exception as e:
+                        self.logger.error(f"이벤트 처리 중 오류: {e}")
+                        continue
+                
+                # 처리된 이벤트 버퍼에서 제거
+                self.data_collector.events_buffer = [
+                    event for event in self.data_collector.events_buffer
+                    if self._generate_event_hash(event if isinstance(event, dict) else event.__dict__) 
+                    not in self.processed_exception_hashes
+                ]
                 
         except Exception as e:
             self.logger.error(f"예외 감지 실패: {str(e)}")
+    
+    async def _send_exception_report(self, report: str) -> bool:
+        """예외 리포트 전송 (중복 체크 포함)"""
+        try:
+            # 리포트 내용으로 해시 생성
+            report_lines = report.split('\n')
+            
+            # 제목과 원인에서 해시 생성
+            title_line = None
+            cause_lines = []
+            
+            for i, line in enumerate(report_lines):
+                if '급변 원인 요약' in line and i + 1 < len(report_lines):
+                    # 원인 요약 부분 추출
+                    j = i + 1
+                    while j < len(report_lines) and not line.strip().startswith('━'):
+                        if report_lines[j].strip():
+                            cause_lines.append(report_lines[j].strip())
+                        j += 1
+                    break
+            
+            if cause_lines:
+                # 원인 내용으로 해시 생성
+                cause_text = ' '.join(cause_lines)
+                # 숫자와 시간 제거하여 유사한 내용 감지
+                clean_text = re.sub(r'[0-9:\-\s]+', ' ', cause_text)
+                clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                
+                report_hash = hashlib.md5(clean_text.encode()).hexdigest()
+                
+                # 이미 전송된 리포트인지 확인
+                if report_hash in self.processed_exception_hashes:
+                    self.logger.info(f"중복 예외 리포트 전송 방지: {clean_text[:50]}...")
+                    return False
+                
+                # 전송
+                await self.telegram_bot.send_message(report)
+                
+                # 성공 시 해시 저장
+                self.processed_exception_hashes.add(report_hash)
+                return True
+            else:
+                # 해시 생성 실패 시 그냥 전송
+                await self.telegram_bot.send_message(report)
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"예외 리포트 전송 실패: {e}")
+            return False
     
     async def handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시작 명령 처리"""
