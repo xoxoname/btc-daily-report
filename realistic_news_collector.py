@@ -6,6 +6,8 @@ from typing import Dict, List, Optional
 import pytz
 from bs4 import BeautifulSoup
 import feedparser
+import openai
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -15,19 +17,30 @@ class RealisticNewsCollector:
         self.session = None
         self.news_buffer = []
         
+        # OpenAI 클라이언트 초기화 (번역용)
+        self.openai_client = None
+        if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY:
+            self.openai_client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+        
         # 모든 API 키들
         self.newsapi_key = getattr(config, 'NEWSAPI_KEY', None)
         self.newsdata_key = getattr(config, 'NEWSDATA_KEY', None)
         self.alpha_vantage_key = getattr(config, 'ALPHA_VANTAGE_KEY', None)
         
-        # 크리티컬 키워드 (즉시 알림용)
+        # 크리티컬 키워드 (즉시 알림용) - 한국어 추가
         self.critical_keywords = [
             'trump bitcoin', 'trump crypto', 'trump ban', 'trump announces', 'trump says bitcoin',
+            '트럼프 비트코인', '트럼프 암호화폐', '트럼프 규제',
             'fed rate decision', 'fed raises', 'fed cuts', 'powell says', 'fomc decides', 'fed meeting',
+            '연준 금리', 'FOMC 결정', '파월 발언', '금리 인상', '금리 인하',
             'sec lawsuit bitcoin', 'sec sues', 'sec enforcement', 'sec charges bitcoin',
+            'SEC 소송', 'SEC 규제', 'SEC 비트코인',
             'china bans bitcoin', 'china crypto ban', 'government bans crypto', 'regulatory ban',
+            '중국 비트코인 금지', '정부 규제', '암호화폐 금지',
             'bitcoin crash', 'crypto crash', 'market crash', 'flash crash', 'bitcoin plunge',
-            'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing'
+            '비트코인 폭락', '암호화폐 급락', '시장 붕괴',
+            'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing',
+            'ETF 승인', 'ETF 거부', 'ETF 결정'
         ]
         
         # RSS 피드 (문제있는 2개 제거)
@@ -80,6 +93,37 @@ class RealisticNewsCollector:
         
         logger.info(f"뉴스 수집기 초기화 완료 - API 키 상태: NewsAPI={bool(self.newsapi_key)}, NewsData={bool(self.newsdata_key)}, AlphaVantage={bool(self.alpha_vantage_key)}")
     
+    async def translate_text(self, text: str, max_length: int = 100) -> str:
+        """텍스트를 한국어로 번역"""
+        if not self.openai_client:
+            return text
+        
+        try:
+            # 길이 제한
+            if len(text) > max_length:
+                text = text[:max_length] + "..."
+            
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a professional translator. Translate the following text to Korean concisely and accurately. Keep it under 80 characters."},
+                    {"role": "user", "content": text}
+                ],
+                max_tokens=150,
+                temperature=0.3
+            )
+            
+            translated = response.choices[0].message.content.strip()
+            # 번역 결과가 너무 길면 자르기
+            if len(translated) > 80:
+                translated = translated[:77] + "..."
+            
+            return translated
+            
+        except Exception as e:
+            logger.warning(f"번역 실패: {str(e)[:50]}")
+            return text[:80] + "..." if len(text) > 80 else text
+    
     async def start_monitoring(self):
         """뉴스 모니터링 시작"""
         if not self.session:
@@ -114,6 +158,12 @@ class RealisticNewsCollector:
                             successful_feeds += 1
                             
                             for article in articles:
+                                # 제목 번역
+                                if self.openai_client and article.get('title'):
+                                    article['title_ko'] = await self.translate_text(article['title'])
+                                else:
+                                    article['title_ko'] = article.get('title', '')
+                                
                                 # 가중치 8 이상은 크리티컬 체크
                                 if feed_info['weight'] >= 8:
                                     if self._is_critical_news(article):
@@ -164,6 +214,7 @@ class RealisticNewsCollector:
                                     if post_data['ups'] > sub_info['threshold']:
                                         article = {
                                             'title': post_data['title'],
+                                            'title_ko': await self.translate_text(post_data['title']) if self.openai_client else post_data['title'],
                                             'description': post_data.get('selftext', '')[:200],
                                             'url': f"https://reddit.com{post_data['permalink']}",
                                             'source': f"Reddit r/{sub_info['name']}",
@@ -336,6 +387,7 @@ class RealisticNewsCollector:
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
+                            'title_ko': await self.translate_text(article.get('title', '')) if self.openai_client else article.get('title', ''),
                             'description': article.get('description', ''),
                             'url': article.get('url', ''),
                             'source': f"NewsAPI ({article.get('source', {}).get('name', 'Unknown')})",
@@ -380,6 +432,7 @@ class RealisticNewsCollector:
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
+                            'title_ko': await self.translate_text(article.get('title', '')) if self.openai_client else article.get('title', ''),
                             'description': article.get('description', ''),
                             'url': article.get('link', ''),
                             'source': f"NewsData ({article.get('source_id', 'Unknown')})",
@@ -425,6 +478,7 @@ class RealisticNewsCollector:
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
+                            'title_ko': await self.translate_text(article.get('title', '')) if self.openai_client else article.get('title', ''),
                             'description': article.get('summary', ''),
                             'url': article.get('url', ''),
                             'source': f"Alpha Vantage ({article.get('source', 'Unknown')})",
@@ -464,29 +518,30 @@ class RealisticNewsCollector:
     
     def _is_critical_news(self, article: Dict) -> bool:
         """크리티컬 뉴스 판단 - 더 정확한 필터링"""
-        content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
+        # 제목과 설명 모두 체크 (한글 제목도 포함)
+        content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
         for keyword in self.critical_keywords:
             if keyword.lower() in content:
                 # 신뢰할 만한 소스에서만 (가중치 7 이상)
                 if article.get('weight', 0) >= 7:
                     # 추가 검증: 부정적 키워드 제외
-                    negative_filters = ['fake', 'rumor', 'unconfirmed', 'alleged', 'speculation']
+                    negative_filters = ['fake', 'rumor', 'unconfirmed', 'alleged', 'speculation', '루머', '추측', '미확인']
                     if not any(neg in content for neg in negative_filters):
-                        logger.warning(f"🚨 크리티컬 뉴스 감지: {article.get('source', '')[:20]} - {article.get('title', '')[:50]}...")
+                        logger.warning(f"🚨 크리티컬 뉴스 감지: {article.get('source', '')[:20]} - {article.get('title_ko', article.get('title', ''))[:50]}...")
                         return True
         
         return False
     
     def _is_important_news(self, article: Dict) -> bool:
         """중요 뉴스 판단 - 향상된 로직"""
-        content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
+        content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
         # 키워드 그룹별 점수 시스템
-        crypto_keywords = ['bitcoin', 'btc', 'crypto', 'cryptocurrency', 'digital asset', 'blockchain']
-        finance_keywords = ['fed', 'federal reserve', 'interest rate', 'inflation', 'sec', 'regulation', 'monetary policy']
-        political_keywords = ['trump', 'biden', 'congress', 'government', 'policy', 'administration', 'white house']
-        market_keywords = ['market', 'trading', 'price', 'surge', 'crash', 'rally', 'dump', 'volatility', 'etf']
+        crypto_keywords = ['bitcoin', 'btc', 'crypto', 'cryptocurrency', 'digital asset', 'blockchain', '비트코인', '암호화폐', '블록체인']
+        finance_keywords = ['fed', 'federal reserve', 'interest rate', 'inflation', 'sec', 'regulation', 'monetary policy', '연준', '금리', '인플레이션', '규제']
+        political_keywords = ['trump', 'biden', 'congress', 'government', 'policy', 'administration', 'white house', '트럼프', '바이든', '정부', '정책']
+        market_keywords = ['market', 'trading', 'price', 'surge', 'crash', 'rally', 'dump', 'volatility', 'etf', '시장', '거래', '가격', '급등', '폭락', 'ETF']
         
         crypto_score = sum(1 for word in crypto_keywords if word in content)
         finance_score = sum(1 for word in finance_keywords if word in content)
@@ -519,7 +574,7 @@ class RealisticNewsCollector:
         try:
             event = {
                 'type': 'critical_news',
-                'title': article.get('title', '')[:100],
+                'title': article.get('title_ko', article.get('title', ''))[:100],
                 'description': article.get('description', '')[:250],
                 'source': article.get('source', ''),
                 'url': article.get('url', ''),
@@ -527,14 +582,15 @@ class RealisticNewsCollector:
                 'severity': 'critical',
                 'impact': self._determine_impact(article),
                 'weight': article.get('weight', 5),
-                'category': article.get('category', 'unknown')
+                'category': article.get('category', 'unknown'),
+                'published_at': article.get('published_at', '')
             }
             
             # 데이터 컬렉터에 전달
             if hasattr(self, 'data_collector') and self.data_collector:
                 self.data_collector.events_buffer.append(event)
             
-            logger.critical(f"🚨 긴급 뉴스 알림: {article.get('source', '')} - {article.get('title', '')[:60]}")
+            logger.critical(f"🚨 긴급 뉴스 알림: {article.get('source', '')} - {article.get('title_ko', article.get('title', ''))[:60]}")
             
         except Exception as e:
             logger.error(f"긴급 알림 처리 오류: {e}")
@@ -544,17 +600,19 @@ class RealisticNewsCollector:
         try:
             # 제목 기반 중복 체크 (더 정교하게)
             new_title = article.get('title', '').lower()
+            new_title_ko = article.get('title_ko', '').lower()
             new_source = article.get('source', '').lower()
             
             # 제목의 핵심 단어들 추출
             import re
-            new_keywords = set(re.findall(r'\b\w{4,}\b', new_title))  # 4글자 이상 단어만
+            new_keywords = set(re.findall(r'\b\w{4,}\b', new_title + ' ' + new_title_ko))  # 4글자 이상 단어만
             
             is_duplicate = False
             for existing in self.news_buffer:
                 existing_title = existing.get('title', '').lower()
+                existing_title_ko = existing.get('title_ko', '').lower()
                 existing_source = existing.get('source', '').lower()
-                existing_keywords = set(re.findall(r'\b\w{4,}\b', existing_title))
+                existing_keywords = set(re.findall(r'\b\w{4,}\b', existing_title + ' ' + existing_title_ko))
                 
                 # 중복 판단: (키워드 유사도 70% 이상 AND 같은 소스) OR (키워드 유사도 90% 이상)
                 if new_keywords and existing_keywords:
@@ -578,23 +636,23 @@ class RealisticNewsCollector:
                     self.news_buffer.sort(key=sort_key, reverse=True)
                     self.news_buffer = self.news_buffer[:50]
             else:
-                logger.debug(f"🔄 중복 뉴스 제외: {new_title[:30]}...")
+                logger.debug(f"🔄 중복 뉴스 제외: {new_title_ko[:30] if new_title_ko else new_title[:30]}...")
         
         except Exception as e:
             logger.error(f"뉴스 버퍼 추가 오류: {e}")
     
     def _determine_impact(self, article: Dict) -> str:
         """뉴스 영향도 판단 - 더 세밀한 분석"""
-        content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
+        content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
         # 강한 악재 (즉시 매도 신호)
-        strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked']
+        strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked', '금지', '규제', '소송', '폭락', '해킹']
         # 강한 호재 (즉시 매수 신호)
-        strong_bullish = ['approval', 'approved', 'adoption', 'breakthrough', 'all-time high', 'ath', 'pump']
+        strong_bullish = ['approval', 'approved', 'adoption', 'breakthrough', 'all-time high', 'ath', 'pump', '승인', '채택', '신고가']
         # 일반 악재
-        bearish = ['concern', 'worry', 'decline', 'fall', 'drop', 'uncertainty', 'regulation', 'fine']
+        bearish = ['concern', 'worry', 'decline', 'fall', 'drop', 'uncertainty', 'regulation', 'fine', '우려', '하락', '불확실']
         # 일반 호재
-        bullish = ['growth', 'rise', 'increase', 'positive', 'rally', 'surge', 'investment', 'institutional']
+        bullish = ['growth', 'rise', 'increase', 'positive', 'rally', 'surge', 'investment', 'institutional', '상승', '증가', '긍정적', '투자']
         
         # 가중치 계산
         strong_bearish_count = sum(2 for word in strong_bearish if word in content)  # 가중치 2
