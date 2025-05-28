@@ -116,7 +116,13 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         # 포지션 크기 (BTC)
         size = position_info.get('size', 0)
+        
+        # 실제 투입 금액 계산
+        # marginSize는 레버리지가 적용된 전체 포지션 가치
+        # 실제 투입 금액 = marginSize / leverage
         margin = position_info.get('margin', 0)
+        leverage = position_info.get('leverage', 1)
+        actual_investment = margin / leverage if leverage > 0 else margin
         
         lines = [
             f"• 종목: {position_info.get('symbol', 'BTCUSDT')}",
@@ -124,7 +130,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             f"• 진입가: ${position_info.get('entry_price', 0):,.2f}",
             f"• 현재가: ${current_price:,.2f}",
             f"• 포지션 크기: {size:.4f} BTC",
-            f"• 진입 증거금: ${margin:.2f} (약 {margin * 1350 / 10000:.1f}만원)",
+            f"• 실제 투입 금액: ${actual_investment:.2f} (약 {actual_investment * 1350 / 10000:.1f}만원)",
             f"• 청산가: ${liquidation_price:,.2f}" if liquidation_price > 0 else "• 청산가: 조회불가",
             f"• 청산까지 거리: {distance_text}"
         ]
@@ -146,17 +152,19 @@ class ProfitReportGenerator(BaseReportGenerator):
         # 금일 총 수익
         total_today = today_pnl + unrealized_pnl
         
-        # 수익률 (진입 자산 대비) - 포지션이 있을 때만
+        # 수익률 (실제 투입 금액 대비) - 포지션이 있을 때만
         entry_roi_text = ""
         if position_info.get('has_position'):
             margin = position_info.get('margin', 0)
-            if margin > 0:
-                entry_roi = (unrealized_pnl / margin) * 100
+            leverage = position_info.get('leverage', 1)
+            actual_investment = margin / leverage if leverage > 0 else margin
+            if actual_investment > 0:
+                entry_roi = (unrealized_pnl / actual_investment) * 100
                 entry_roi_text = f"• 수익률 (진입 자산 대비): {entry_roi:+.2f}%"
         
         lines = [
             f"• 미실현 손익: {self._format_currency(unrealized_pnl)}",
-            f"• 금일 실현 손익: {self._format_currency(today_pnl)}",
+            f"• 오늘 실현 손익: {self._format_currency(today_pnl)}",
             f"• 금일 총 수익: {self._format_currency(total_today)}"
         ]
         
@@ -175,10 +183,12 @@ class ProfitReportGenerator(BaseReportGenerator):
             f"• 가용 자산: ${available:,.2f} (약 {available * 1350 / 10000:.1f}만원)"
         ]
         
-        # 포지션이 있을 때만 증거금 표시
+        # 포지션이 있을 때 실제 투입 금액 표시
         if position_info and position_info.get('has_position'):
             margin = position_info.get('margin', 0)
-            lines.append(f"• 포지션 증거금: ${margin:.2f} (약 {margin * 1350 / 10000:.1f}만원)")
+            leverage = position_info.get('leverage', 1)
+            actual_investment = margin / leverage if leverage > 0 else margin
+            lines.append(f"• 포지션 증거금: ${actual_investment:.2f} (약 {actual_investment * 1350 / 10000:.1f}만원)")
         
         return '\n'.join(lines)
     
@@ -207,7 +217,13 @@ class ProfitReportGenerator(BaseReportGenerator):
             unrealized_pnl = account_info.get('unrealized_pnl', 0)
             has_position = position_info.get('has_position', False)
             position_side = position_info.get('side', '')
-            margin = position_info.get('margin', 0)
+            
+            # 실제 투입 금액 계산
+            actual_investment = 0
+            if has_position:
+                margin = position_info.get('margin', 0)
+                leverage = position_info.get('leverage', 1)
+                actual_investment = margin / leverage if leverage > 0 else margin
             
             # 전체 상황 요약
             situation_summary = f"""
@@ -217,7 +233,7 @@ class ProfitReportGenerator(BaseReportGenerator):
 - 오늘 실현손익: ${today_pnl:+,.0f}
 - 미실현손익: ${unrealized_pnl:+,.0f}
 - 최근 7일 수익: ${weekly_profit['total']:+,.0f} (일평균 ${weekly_profit['average']:+,.0f})
-- 포지션: {'있음 (' + position_side + ', 증거금 $' + str(int(margin)) + ')' if has_position else '없음'}
+- 포지션: {'있음 (' + position_side + ', 실제 투입 $' + f"{actual_investment:.2f}" + ')' if has_position else '없음'}
 """
             
             prompt = f"""당신은 전문 트레이딩 심리 코치입니다. 
