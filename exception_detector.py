@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,10 @@ class ExceptionDetector:
         # 마지막 알림 시간 추적
         self.last_alerts = {}
         self.alert_cooldown = timedelta(minutes=5)
+        
+        # 뉴스 중복 체크를 위한 해시 저장
+        self.news_hashes = {}
+        self.news_cooldown = timedelta(hours=2)  # 동일 뉴스는 2시간 쿨다운
         
     async def detect_all_anomalies(self) -> List[Dict]:
         """모든 이상 징후 감지"""
@@ -154,10 +159,33 @@ class ExceptionDetector:
         return None
     
     async def send_alert(self, anomaly: Dict):
-        """이상 징후 알림 전송"""
+        """이상 징후 알림 전송 - 뉴스 중복 체크 추가"""
         try:
             if not self.telegram_bot:
                 return
+            
+            # 뉴스 타입인 경우 중복 체크
+            if anomaly.get('type') == 'critical_news':
+                # 뉴스 내용으로 해시 생성
+                news_content = f"{anomaly.get('title', '')}{anomaly.get('source', '')}"
+                news_hash = hashlib.md5(news_content.encode()).hexdigest()
+                
+                # 중복 체크
+                if news_hash in self.news_hashes:
+                    last_time = self.news_hashes[news_hash]
+                    if datetime.now() - last_time < self.news_cooldown:
+                        self.logger.info(f"중복 뉴스 알림 스킵: {anomaly.get('title', '')[:30]}...")
+                        return
+                
+                # 해시 저장
+                self.news_hashes[news_hash] = datetime.now()
+                
+                # 오래된 해시 정리
+                cutoff_time = datetime.now() - timedelta(hours=6)
+                self.news_hashes = {
+                    h: t for h, t in self.news_hashes.items()
+                    if t > cutoff_time
+                }
             
             # 알림 메시지 생성
             severity_emoji = {
