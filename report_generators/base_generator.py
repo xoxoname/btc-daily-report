@@ -28,105 +28,251 @@ class BaseReportGenerator:
         self.bitget_client = bitget_client
         self.logger.info("✅ Bitget 클라이언트 설정 완료")
     
-    def _format_price_with_change(self, current_price: float, change_24h: float) -> str:
-        """현재가와 24시간 변동률을 함께 표시"""
-        change_percent = change_24h * 100
-        return f"${current_price:,.0f} ({change_percent:+.2f}%)"
-    
     async def analyze_news_impact(self, title: str, description: str = "") -> str:
-        """통합 뉴스 영향 분석 - 모든 리포트에서 동일한 결과 반환"""
+        """통합 뉴스 영향 분석 - 개선된 로직"""
         # 전체 텍스트 (제목 + 설명)
         full_text = (title + " " + description).lower()
         
         # 영향도 점수 계산
         bullish_score = 0
         bearish_score = 0
+        impact_reason = []
         
-        # 강한 호재 키워드
-        strong_bullish = [
-            'etf approved', 'etf 승인', 'institutional adoption', '기관 채택',
-            'bitcoin reserve', '비트코인 준비금', 'legal tender', '법정화폐',
-            'bullish', '상승', 'surge', '급등', 'rally', '랠리',
-            'all time high', 'ath', '신고가', 'breakthrough', '돌파'
-        ]
+        # 강한 호재 키워드 (확장 및 개선)
+        strong_bullish = {
+            # ETF 관련
+            'etf approved': (5, 'ETF 승인'),
+            'etf 승인': (5, 'ETF 승인'),
+            'etf approval': (5, 'ETF 승인 가능성'),
+            
+            # 기관 채택
+            'institutional adoption': (4, '기관 채택'),
+            '기관 채택': (4, '기관 채택'),
+            'institutional investment': (4, '기관 투자'),
+            'corporate treasury': (4, '기업 자금 투자'),
+            
+            # 직접 매입
+            'btc 구매': (5, 'BTC 직접 매입'),
+            'bitcoin 구매': (5, 'BTC 직접 매입'),
+            'bitcoin purchase': (5, 'BTC 직접 매입'),
+            'bought bitcoin': (5, 'BTC 매입 완료'),
+            '비트코인 매입': (5, 'BTC 직접 매입'),
+            'btc로 첫': (5, '첫 BTC 매입'),
+            
+            # 금액 관련
+            '억 달러': (4, '대규모 자금 유입'),
+            'million dollar': (3, '대규모 자금'),
+            'billion dollar': (5, '초대규모 자금'),
+            
+            # 규제 우호
+            'bitcoin reserve': (5, '비트코인 준비금'),
+            '비트코인 준비금': (5, '비트코인 준비금'),
+            'legal tender': (5, '법정화폐 지정'),
+            '법정화폐': (5, '법정화폐 지정'),
+            'regulatory clarity': (3, '규제 명확화'),
+            
+            # 시장 긍정
+            'bullish': (3, '강세 신호'),
+            '상승': (2, '상승 신호'),
+            'surge': (3, '급등'),
+            '급등': (3, '급등'),
+            'rally': (3, '랠리'),
+            '랠리': (3, '랠리'),
+            'all time high': (3, '신고가'),
+            'ath': (3, '신고가'),
+            '신고가': (3, '신고가'),
+            'breakthrough': (3, '돌파'),
+            '돌파': (3, '돌파'),
+            
+            # 기업 관련
+            'gamestop': (4, '게임스탑 참여'),
+            '게임스탑': (4, '게임스탑 참여'),
+            'metaplanet': (4, '메타플래닛 참여'),
+            '메타플래닛': (4, '메타플래닛 참여'),
+            'microstrategy': (4, '마이크로스트래티지'),
+            'tesla': (4, '테슬라 관련'),
+            
+            # 긍정적 판결/발표
+            '증권이 아니': (4, '증권 분류 제외'),
+            'not securities': (4, '증권 분류 제외'),
+            'not a security': (4, '증권 분류 제외'),
+        }
         
-        # 강한 악재 키워드
-        strong_bearish = [
-            'ban', '금지', 'crackdown', '단속', 'lawsuit', '소송',
-            'hack', '해킹', 'bankruptcy', '파산', 'liquidation', '청산',
-            'crash', '폭락', 'plunge', '급락', 'investigation', '조사',
-            'sec charges', 'sec 기소', 'fraud', '사기'
-        ]
+        # 강한 악재 키워드 (확장 및 개선)
+        strong_bearish = {
+            'ban': (5, '금지'),
+            '금지': (5, '금지'),
+            'banned': (5, '금지됨'),
+            'crackdown': (4, '단속'),
+            '단속': (4, '단속'),
+            'lawsuit': (4, '소송'),
+            '소송': (4, '소송'),
+            'sec lawsuit': (5, 'SEC 소송'),
+            'sec charges': (5, 'SEC 기소'),
+            'sec 기소': (5, 'SEC 기소'),
+            'hack': (5, '해킹'),
+            '해킹': (5, '해킹'),
+            'hacked': (5, '해킹 발생'),
+            'bankruptcy': (5, '파산'),
+            '파산': (5, '파산'),
+            'liquidation': (4, '청산'),
+            '청산': (4, '청산'),
+            'crash': (5, '폭락'),
+            '폭락': (5, '폭락'),
+            'plunge': (4, '급락'),
+            '급락': (4, '급락'),
+            'investigation': (3, '조사'),
+            '조사': (3, '조사'),
+            'fraud': (5, '사기'),
+            '사기': (5, '사기'),
+            'shutdown': (4, '폐쇄'),
+            'exit scam': (5, '먹튀'),
+        }
         
-        # 일반 호재 키워드
-        mild_bullish = [
-            'buy', '매입', 'invest', '투자', 'adoption', '채택',
-            'positive', '긍정', 'growth', '성장', 'partnership', '파트너십',
-            'upgrade', '상향', 'support', '지지', 'accumulate', '축적'
-        ]
+        # 약한 호재 키워드
+        mild_bullish = {
+            'buy': (1, '매입'),
+            '매입': (1, '매입'),
+            'invest': (1, '투자'),
+            '투자': (1, '투자'),
+            'adoption': (2, '채택'),
+            '채택': (2, '채택'),
+            'positive': (1, '긍정적'),
+            '긍정': (1, '긍정적'),
+            'growth': (1, '성장'),
+            '성장': (1, '성장'),
+            'partnership': (2, '파트너십'),
+            '파트너십': (2, '파트너십'),
+            'upgrade': (2, '상향'),
+            '상향': (2, '상향'),
+            'support': (1, '지지'),
+            '지지': (1, '지지'),
+            'accumulate': (2, '축적'),
+            '축적': (2, '축적'),
+            'integration': (2, '통합'),
+            'mainstream': (2, '주류 편입'),
+        }
         
-        # 일반 악재 키워드
-        mild_bearish = [
-            'sell', '매도', 'concern', '우려', 'risk', '위험',
-            'regulation', '규제', 'warning', '경고', 'decline', '하락',
-            'uncertainty', '불확실', 'delay', '지연', 'reject', '거부'
-        ]
+        # 약한 악재 키워드
+        mild_bearish = {
+            'sell': (1, '매도'),
+            '매도': (1, '매도'),
+            'concern': (1, '우려'),
+            '우려': (1, '우려'),
+            'risk': (1, '위험'),
+            '위험': (1, '위험'),
+            'regulation': (2, '규제'),
+            '규제': (2, '규제'),
+            'warning': (2, '경고'),
+            '경고': (2, '경고'),
+            'decline': (1, '하락'),
+            '하락': (1, '하락'),
+            'uncertainty': (2, '불확실성'),
+            '불확실': (2, '불확실성'),
+            'delay': (2, '지연'),
+            '지연': (2, '지연'),
+            'reject': (3, '거부'),
+            '거부': (3, '거부'),
+            'rejected': (3, '거부됨'),
+            'bearish': (2, '약세'),
+            'correction': (2, '조정'),
+        }
         
-        # 점수 계산
-        for keyword in strong_bullish:
+        # 점수 계산 - 키워드별 가중치와 이유 저장
+        for keyword, (weight, reason) in strong_bullish.items():
             if keyword in full_text:
-                bullish_score += 3
+                bullish_score += weight
+                if reason not in impact_reason:
+                    impact_reason.append(reason)
         
-        for keyword in strong_bearish:
+        for keyword, (weight, reason) in strong_bearish.items():
             if keyword in full_text:
-                bearish_score += 3
+                bearish_score += weight
+                if reason not in impact_reason:
+                    impact_reason.append(reason)
         
-        for keyword in mild_bullish:
+        for keyword, (weight, reason) in mild_bullish.items():
             if keyword in full_text:
-                bullish_score += 1
+                bullish_score += weight
+                if reason not in impact_reason:
+                    impact_reason.append(reason)
         
-        for keyword in mild_bearish:
+        for keyword, (weight, reason) in mild_bearish.items():
             if keyword in full_text:
-                bearish_score += 1
+                bearish_score += weight
+                if reason not in impact_reason:
+                    impact_reason.append(reason)
         
         # 특수 케이스 처리
         # Fed/FOMC 관련
-        if any(word in full_text for word in ['fed', 'fomc', '연준', '금리']):
+        if any(word in full_text for word in ['fed', 'fomc', '연준', '금리', 'federal reserve']):
             if any(word in full_text for word in ['raise', 'hike', '인상', 'hawkish', '매파']):
-                bearish_score += 2
+                bearish_score += 3
+                impact_reason.append('금리 인상')
             elif any(word in full_text for word in ['cut', 'lower', '인하', 'dovish', '비둘기']):
-                bullish_score += 2
-            else:
-                # 중립적 금리 뉴스
-                return "중립 (금리 정책 관망)"
+                bullish_score += 3
+                impact_reason.append('금리 인하')
+            elif any(word in full_text for word in ['pause', 'hold', '유지', '동결']):
+                bullish_score += 1
+                impact_reason.append('금리 동결')
+        
+        # BoJ (일본은행) 관련
+        if 'boj' in full_text or '일본은행' in full_text:
+            if '금리 인상' in full_text or 'rate hike' in full_text:
+                bearish_score += 2
+                impact_reason.append('엔화 강세 우려')
         
         # 중국 관련
-        if any(word in full_text for word in ['china', '중국']):
+        if any(word in full_text for word in ['china', '중국', 'chinese']):
             if any(word in full_text for word in ['ban', '금지', 'crackdown', '단속']):
-                bearish_score += 2
-            elif any(word in full_text for word in ['open', '개방', 'allow', '허용']):
-                bullish_score += 2
+                bearish_score += 3
+                impact_reason.append('중국 규제')
+            elif any(word in full_text for word in ['open', '개방', 'allow', '허용', 'approve']):
+                bullish_score += 3
+                impact_reason.append('중국 개방')
+        
+        # USD/JPY 관련 (달러/엔 환율)
+        if 'usd/jpy' in full_text or '달러엔' in full_text:
+            # USD/JPY는 비트코인과 직접적 관련이 적으므로 영향도를 낮춤
+            if impact_reason and '엔화' not in ' '.join(impact_reason):
+                impact_reason.append('간접 영향')
         
         # 최종 판단
         net_score = bullish_score - bearish_score
         
-        if net_score >= 3:
-            return "➕강한 호재"
-        elif net_score >= 1:
-            return "➕호재 예상"
-        elif net_score <= -3:
-            return "➖강한 악재"
-        elif net_score <= -1:
-            return "➖악재 예상"
+        # 이유가 없으면 일반적인 판단
+        if not impact_reason:
+            if '가격' in full_text or 'price' in full_text:
+                if '멈춰' in full_text or 'stop' in full_text or 'halt' in full_text:
+                    impact_reason.append('가격 정체')
+        
+        # 점수 기반 최종 판단
+        if net_score >= 5:
+            result = "➕강한 호재"
+        elif net_score >= 2:
+            result = "➕호재 예상"
+        elif net_score <= -5:
+            result = "➖강한 악재"
+        elif net_score <= -2:
+            result = "➖악재 예상"
         else:
-            # 중립적이지만 특정 카테고리 확인
-            if '비트코인' in full_text or 'bitcoin' in full_text:
-                if '매입' in full_text or 'buy' in full_text:
-                    return "➕호재 예상"
-                elif '매도' in full_text or 'sell' in full_text:
-                    return "➖악재 예상"
-            
-            return "중립"
+            # 중립이지만 이유가 있는 경우
+            if impact_reason:
+                if bullish_score > bearish_score:
+                    result = "➕약한 호재"
+                elif bearish_score > bullish_score:
+                    result = "➖약한 악재"
+                else:
+                    result = "중립"
+            else:
+                result = "중립"
+        
+        # 이유 추가
+        if impact_reason and result != "중립":
+            reason_text = ', '.join(impact_reason[:3])  # 최대 3개 이유만
+            return f"{result} ({reason_text})"
+        
+        return result
     
     async def format_news_with_time(self, news_list: List[Dict], max_items: int = 4) -> List[str]:
         """뉴스를 시간 포함 형식으로 포맷팅"""
@@ -393,7 +539,7 @@ class BaseReportGenerator:
         usd_text = f"${amount:+,.2f}" if amount != 0 else "$0.00"
         if include_krw and amount != 0:
             krw_amount = amount * 1350 / 10000
-            return f"{usd_text} (약 {krw_amount:+.1f}만원)"
+            return f"{usd_text} ({krw_amount:+.1f}만원)"
         return usd_text
     
     def _get_current_time_kst(self) -> str:
