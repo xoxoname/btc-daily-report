@@ -55,7 +55,7 @@ class ProfitReportGenerator(BaseReportGenerator):
 📅 작성 시각: {current_time} (KST)
 ━━━━━━━━━━━━━━━━━━━
 
-📌 보유 포지션 정보 (Bitget BTCUSDT 선물 기준)
+📌 보유 포지션 정보
 {position_text}
 
 ━━━━━━━━━━━━━━━━━━━
