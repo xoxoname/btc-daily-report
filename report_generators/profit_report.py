@@ -31,8 +31,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             # 손익 정보 포맷 
             pnl_text = self._format_pnl_details(
-                account_info, position_info, today_pnl, 
-                cumulative_profit, cumulative_roi
+                account_info, position_info, today_pnl, total_equity
             )
             
             # 자산 정보 포맷
@@ -138,8 +137,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     def _format_pnl_details(self, account_info: dict, position_info: dict, 
-                          today_pnl: float, cumulative_profit: float, 
-                          cumulative_roi: float) -> str:
+                          today_pnl: float, total_equity: float) -> str:
         """손익 정보 포맷팅"""
         unrealized_pnl = account_info.get('unrealized_pnl', 0)
         
@@ -152,24 +150,15 @@ class ProfitReportGenerator(BaseReportGenerator):
         # 금일 총 수익
         total_today = today_pnl + unrealized_pnl
         
-        # 수익률 (실제 투입 금액 대비) - 포지션이 있을 때만
-        entry_roi_text = ""
-        if position_info.get('has_position'):
-            margin = position_info.get('margin', 0)
-            leverage = position_info.get('leverage', 1)
-            actual_investment = margin / leverage if leverage > 0 else margin
-            if actual_investment > 0:
-                entry_roi = (unrealized_pnl / actual_investment) * 100
-                entry_roi_text = f"• 수익률 (진입 자산 대비): {entry_roi:+.2f}%"
+        # 금일 수익률 (총 자산 대비)
+        daily_roi = (total_today / total_equity * 100) if total_equity > 0 else 0
         
         lines = [
             f"• 미실현 손익: {self._format_currency(unrealized_pnl)}",
             f"• 오늘 실현 손익: {self._format_currency(today_pnl)}",
-            f"• 금일 총 수익: {self._format_currency(total_today)}"
+            f"• 금일 총 수익: {self._format_currency(total_today)}",
+            f"• 금일 수익률: {daily_roi:+.2f}%"
         ]
-        
-        if entry_roi_text:
-            lines.append(entry_roi_text)
         
         return '\n'.join(lines)
     
@@ -183,12 +172,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             f"• 가용 자산: ${available:,.2f} (약 {available * 1350 / 10000:.1f}만원)"
         ]
         
-        # 포지션이 있을 때 실제 투입 금액 표시
-        if position_info and position_info.get('has_position'):
-            margin = position_info.get('margin', 0)
-            leverage = position_info.get('leverage', 1)
-            actual_investment = margin / leverage if leverage > 0 else margin
-            lines.append(f"• 포지션 증거금: ${actual_investment:.2f} (약 {actual_investment * 1350 / 10000:.1f}만원)")
+        # 포지션 증거금 항목 제거 (실제 투입 금액과 중복)
         
         return '\n'.join(lines)
     
