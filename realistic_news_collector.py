@@ -21,6 +21,7 @@ class RealisticNewsCollector:
         self.emergency_alerts_sent = {}  # 중복 긴급 알림 방지용
         self.processed_news_hashes = set()  # 처리된 뉴스 해시 저장
         self.news_title_cache = {}  # 제목별 캐시
+        self.company_news_count = {}  # 회사별 뉴스 카운트
         
         # OpenAI 클라이언트 초기화 (번역용)
         self.openai_client = None
@@ -70,7 +71,8 @@ class RealisticNewsCollector:
             'tesla', 'microstrategy', 'square', 'block', 'paypal', 'mastercard', 'visa',
             'apple', 'google', 'amazon', 'meta', 'facebook', 'microsoft', 'netflix',
             'gamestop', 'gme', 'amc', 'blackrock', 'fidelity', 'jpmorgan', 'goldman',
-            'samsung', 'lg', 'sk', 'kakao', 'naver', '삼성', '카카오', '네이버'
+            'samsung', 'lg', 'sk', 'kakao', 'naver', '삼성', '카카오', '네이버',
+            'metaplanet', '메타플래닛'
         ]
         
         # RSS 피드 (문제있는 2개 제거)
@@ -124,7 +126,7 @@ class RealisticNewsCollector:
         logger.info(f"뉴스 수집기 초기화 완료 - API 키 상태: NewsAPI={bool(self.newsapi_key)}, NewsData={bool(self.newsdata_key)}, AlphaVantage={bool(self.alpha_vantage_key)}")
     
     def _generate_content_hash(self, title: str, description: str = "") -> str:
-        """뉴스 내용의 해시 생성 (중복 체크용)"""
+        """뉴스 내용의 해시 생성 (중복 체크용) - 강화된 버전"""
         # 제목에서 숫자와 특수문자 제거하여 유사한 뉴스 감지
         clean_title = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title.lower())
         clean_title = re.sub(r'\s+', ' ', clean_title).strip()
@@ -138,21 +140,23 @@ class RealisticNewsCollector:
                 companies.append(company.lower())
         
         # 핵심 키워드 추출
-        key_terms = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', 'acquisition', '구매', '매입']
+        key_terms = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', 'acquisition', '구매', '매입', 'first', '첫']
         for term in key_terms:
             if term in clean_title.lower():
                 keywords.append(term)
         
         # 회사명 + 핵심 키워드로 해시 생성
         if companies and keywords:
-            hash_content = f"{','.join(sorted(companies))}_{','.join(sorted(keywords))}"
+            # 회사별로 하나의 해시만 생성 (숫자 무시)
+            hash_content = f"{','.join(sorted(set(companies)))}_{','.join(sorted(set(keywords)))}"
         else:
+            # 일반 뉴스는 전체 내용으로 해시
             hash_content = clean_title
         
         return hashlib.md5(hash_content.encode()).hexdigest()
     
-    def _is_duplicate_emergency(self, article: Dict, time_window: int = 60) -> bool:
-        """긴급 알림이 중복인지 확인 (60분 이내 유사 내용)"""
+    def _is_duplicate_emergency(self, article: Dict, time_window: int = 120) -> bool:
+        """긴급 알림이 중복인지 확인 (120분 이내 유사 내용)"""
         try:
             current_time = datetime.now()
             content_hash = self._generate_content_hash(
@@ -181,13 +185,23 @@ class RealisticNewsCollector:
             return False
     
     def _is_similar_news(self, title1: str, title2: str) -> bool:
-        """두 뉴스 제목이 유사한지 확인"""
+        """두 뉴스 제목이 유사한지 확인 - 더 엄격한 기준"""
         # 숫자와 특수문자 제거
         clean1 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title1.lower())
         clean2 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title2.lower())
         
         clean1 = re.sub(r'\s+', ' ', clean1).strip()
         clean2 = re.sub(r'\s+', ' ', clean2).strip()
+        
+        # 특정 회사의 비트코인 구매 뉴스인지 체크
+        for company in self.important_companies:
+            company_lower = company.lower()
+            if company_lower in clean1 and company_lower in clean2:
+                # 같은 회사의 비트코인 관련 뉴스면 중복으로 처리
+                bitcoin_keywords = ['bitcoin', 'btc', '비트코인', 'purchase', 'bought', '구매', '매입']
+                if any(keyword in clean1 for keyword in bitcoin_keywords) and \
+                   any(keyword in clean2 for keyword in bitcoin_keywords):
+                    return True
         
         # 단어 집합 비교
         words1 = set(clean1.split())
@@ -205,8 +219,8 @@ class RealisticNewsCollector:
         
         similarity = intersection / union
         
-        # 70% 이상 유사하면 중복으로 간주
-        return similarity > 0.7
+        # 65% 이상 유사하면 중복으로 간주
+        return similarity > 0.65
     
     async def translate_text(self, text: str, max_length: int = 100) -> str:
         """텍스트를 한국어로 번역"""
@@ -248,6 +262,9 @@ class RealisticNewsCollector:
             )
         
         logger.info("🔍 뉴스 모니터링 시작 - RSS 중심 + 스마트 API 사용")
+        
+        # 회사별 뉴스 카운트 초기화
+        self.company_news_count = {}
         
         tasks = [
             self.monitor_rss_feeds(),      # 메인: RSS (45초마다)
@@ -636,6 +653,8 @@ class RealisticNewsCollector:
                 'alpha_vantage_today': 0,
                 'last_reset': today
             })
+            # 회사별 뉴스 카운트도 리셋
+            self.company_news_count = {}
             logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']}→0, NewsData {old_usage['newsdata_today']}→0")
     
     def _is_critical_news(self, article: Dict) -> bool:
@@ -748,7 +767,7 @@ class RealisticNewsCollector:
             logger.error(f"긴급 알림 처리 오류: {e}")
     
     async def _add_to_news_buffer(self, article: Dict):
-        """뉴스 버퍼에 추가 - 향상된 중복 제거"""
+        """뉴스 버퍼에 추가 - 회사별 카운트 제한"""
         try:
             # 제목 기반 중복 체크 (더 정교하게)
             new_title = article.get('title', '').lower()
@@ -760,6 +779,17 @@ class RealisticNewsCollector:
             if content_hash in self.processed_news_hashes:
                 logger.debug(f"🔄 이미 처리된 뉴스 스킵: {new_title[:30]}...")
                 return
+            
+            # 회사별 뉴스 카운트 확인
+            for company in self.important_companies:
+                if company.lower() in new_title or company.lower() in new_title_ko:
+                    # 비트코인 관련 뉴스인지 확인
+                    bitcoin_keywords = ['bitcoin', 'btc', '비트코인', 'purchase', 'bought', '구매', '매입']
+                    if any(keyword in new_title or keyword in new_title_ko for keyword in bitcoin_keywords):
+                        # 해당 회사의 비트코인 뉴스가 이미 1개 이상인지 확인
+                        if self.company_news_count.get(company.lower(), 0) >= 1:
+                            logger.debug(f"🔄 {company} 비트코인 뉴스 이미 있음, 스킵: {new_title[:30]}...")
+                            return
             
             # 버퍼에 있는 뉴스와 중복 체크
             is_duplicate = False
@@ -778,6 +808,14 @@ class RealisticNewsCollector:
             if not is_duplicate:
                 self.news_buffer.append(article)
                 self.processed_news_hashes.add(content_hash)
+                
+                # 회사별 카운트 업데이트
+                for company in self.important_companies:
+                    if company.lower() in new_title or company.lower() in new_title_ko:
+                        bitcoin_keywords = ['bitcoin', 'btc', '비트코인', 'purchase', 'bought', '구매', '매입']
+                        if any(keyword in new_title or keyword in new_title_ko for keyword in bitcoin_keywords):
+                            self.company_news_count[company.lower()] = self.company_news_count.get(company.lower(), 0) + 1
+                            logger.debug(f"📊 {company} 비트코인 뉴스 카운트: {self.company_news_count[company.lower()]}")
                 
                 # 버퍼 관리: 가중치, 카테고리, 시간 기준으로 정렬 후 상위 50개만 유지
                 if len(self.news_buffer) > 50:
@@ -843,11 +881,12 @@ class RealisticNewsCollector:
             return "중립"
     
     async def get_recent_news(self, hours: int = 6) -> List[Dict]:
-        """최근 뉴스 가져오기 - 중복 제거 강화"""
+        """최근 뉴스 가져오기 - 회사별 중복 제거 강화"""
         try:
             cutoff_time = datetime.now() - timedelta(hours=hours)
             recent_news = []
             seen_titles = set()  # 중복 체크용
+            company_count = {}  # 회사별 카운트
             
             for article in self.news_buffer:
                 try:
@@ -866,8 +905,23 @@ class RealisticNewsCollector:
                                 # 중복 체크
                                 title_hash = self._generate_content_hash(article.get('title', ''), '')
                                 if title_hash not in seen_titles:
-                                    recent_news.append(article)
-                                    seen_titles.add(title_hash)
+                                    # 회사별 카운트 확인
+                                    skip = False
+                                    article_title = (article.get('title', '') + ' ' + article.get('title_ko', '')).lower()
+                                    
+                                    for company in self.important_companies:
+                                        if company.lower() in article_title:
+                                            bitcoin_keywords = ['bitcoin', 'btc', '비트코인', 'purchase', 'bought', '구매', '매입']
+                                            if any(keyword in article_title for keyword in bitcoin_keywords):
+                                                if company_count.get(company.lower(), 0) >= 1:
+                                                    skip = True
+                                                    break
+                                                else:
+                                                    company_count[company.lower()] = company_count.get(company.lower(), 0) + 1
+                                    
+                                    if not skip:
+                                        recent_news.append(article)
+                                        seen_titles.add(title_hash)
                         except:
                             # 시간 파싱 실패시 최근 뉴스로 간주 (안전장치)
                             title_hash = self._generate_content_hash(article.get('title', ''), '')
