@@ -227,6 +227,7 @@ class ForecastReportGenerator(BaseReportGenerator):
     async def _format_technical_analysis(self, market_data: dict, indicators: dict) -> str:
         """기술적 분석 포맷"""
         current_price = market_data.get('current_price', 0)
+        change_24h = market_data.get('change_24h', 0)
         
         # 지지/저항선 계산
         support = current_price * 0.98  # 2% 아래
