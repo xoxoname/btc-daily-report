@@ -1,10 +1,12 @@
 # report_generators/base_generator.py
 from datetime import datetime, timedelta
 import asyncio
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 import logging
 import pytz
 import traceback
+import re
+import hashlib
 
 class BaseReportGenerator:
     """리포트 생성기 기본 클래스"""
@@ -16,6 +18,7 @@ class BaseReportGenerator:
         self.bitget_client = bitget_client
         self.logger = logging.getLogger(self.__class__.__name__)
         self.kst = pytz.timezone('Asia/Seoul')
+        self.processed_news_hashes: Set[str] = set()  # 처리된 뉴스 해시
         
         # OpenAI 클라이언트 초기화
         self.openai_client = None
@@ -27,6 +30,53 @@ class BaseReportGenerator:
         """Bitget 클라이언트 설정"""
         self.bitget_client = bitget_client
         self.logger.info("✅ Bitget 클라이언트 설정 완료")
+    
+    def _generate_news_hash(self, title: str, source: str = "") -> str:
+        """뉴스 제목과 소스로 해시 생성"""
+        # 제목에서 숫자와 특수문자 제거
+        clean_title = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title.lower())
+        clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+        
+        # 회사명 추출
+        companies = ['gamestop', 'tesla', 'microstrategy', 'metaplanet', '게임스탑', '테슬라', '메타플래닛']
+        found_companies = [c for c in companies if c in clean_title]
+        
+        # 키워드 추출
+        keywords = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', '구매', '매입', 'etf', '승인']
+        found_keywords = [k for k in keywords if k in clean_title]
+        
+        # 회사명과 키워드로 해시 생성
+        if found_companies and found_keywords:
+            hash_content = f"{','.join(sorted(found_companies))}_{','.join(sorted(found_keywords))}"
+        else:
+            hash_content = clean_title
+        
+        return hashlib.md5(f"{hash_content}_{source}".encode()).hexdigest()
+    
+    def _is_similar_news(self, title1: str, title2: str) -> bool:
+        """두 뉴스 제목이 유사한지 확인"""
+        # 숫자와 특수문자 제거
+        clean1 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title1.lower())
+        clean2 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title2.lower())
+        
+        clean1 = re.sub(r'\s+', ' ', clean1).strip()
+        clean2 = re.sub(r'\s+', ' ', clean2).strip()
+        
+        # 단어 집합 비교
+        words1 = set(clean1.split())
+        words2 = set(clean2.split())
+        
+        if not words1 or not words2:
+            return False
+        
+        # 교집합 비율 계산
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        
+        similarity = intersection / union if union > 0 else 0
+        
+        # 70% 이상 유사하면 중복으로 간주
+        return similarity > 0.7
     
     async def analyze_news_impact(self, title: str, description: str = "") -> str:
         """통합 뉴스 영향 분석 - 개선된 로직"""
@@ -275,10 +325,12 @@ class BaseReportGenerator:
         return result
     
     async def format_news_with_time(self, news_list: List[Dict], max_items: int = 4) -> List[str]:
-        """뉴스를 시간 포함 형식으로 포맷팅"""
+        """뉴스를 시간 포함 형식으로 포맷팅 - 중복 제거 강화"""
         formatted = []
+        seen_hashes = set()
+        seen_titles = []
         
-        for news in news_list[:max_items]:
+        for news in news_list[:max_items * 2]:  # 중복 제거를 위해 더 많이 처리
             try:
                 # 시간 처리
                 if news.get('published_at'):
@@ -297,12 +349,35 @@ class BaseReportGenerator:
                 # 한글 제목 우선 사용
                 title = news.get('title_ko', news.get('title', '')).strip()
                 description = news.get('description', '')
+                source = news.get('source', '')
+                
+                # 중복 체크
+                news_hash = self._generate_news_hash(title, source)
+                if news_hash in seen_hashes:
+                    continue
+                
+                # 유사한 제목 체크
+                is_similar = False
+                for seen_title in seen_titles:
+                    if self._is_similar_news(title, seen_title):
+                        is_similar = True
+                        break
+                
+                if is_similar:
+                    continue
                 
                 # 통합 영향 분석
                 impact = await self.analyze_news_impact(title, description)
                 
                 # 형식: 시간 "제목" → 영향
-                formatted.append(f'{time_str} "{title[:60]}{"..." if len(title) > 60 else ""}" → {impact}')
+                formatted_news = f'{time_str} "{title[:60]}{"..." if len(title) > 60 else ""}" → {impact}'
+                formatted.append(formatted_news)
+                seen_hashes.add(news_hash)
+                seen_titles.append(title)
+                
+                # 원하는 개수만큼 수집했으면 종료
+                if len(formatted) >= max_items:
+                    break
                 
             except Exception as e:
                 self.logger.warning(f"뉴스 포맷팅 오류: {e}")
@@ -546,11 +621,39 @@ class BaseReportGenerator:
         """현재 KST 시간 문자열"""
         return datetime.now(self.kst).strftime('%Y-%m-%d %H:%M')
     
+    def _format_price_with_change(self, price: float, change_24h: float) -> str:
+        """가격과 24시간 변동률 포맷팅"""
+        change_percent = change_24h * 100
+        change_emoji = "📈" if change_24h > 0 else "📉" if change_24h < 0 else "➖"
+        return f"${price:,.0f} {change_emoji} ({change_percent:+.1f}%)"
+    
     async def _get_recent_news(self, hours: int = 6) -> List[Dict]:
-        """최근 뉴스 가져오기"""
+        """최근 뉴스 가져오기 - 중복 제거"""
         try:
             if self.data_collector:
-                return await self.data_collector.get_recent_news(hours)
+                all_news = await self.data_collector.get_recent_news(hours)
+                
+                # 추가 중복 제거
+                filtered_news = []
+                seen_hashes = set()
+                
+                for news in all_news:
+                    news_hash = self._generate_news_hash(
+                        news.get('title_ko', news.get('title', '')),
+                        news.get('source', '')
+                    )
+                    
+                    if news_hash not in seen_hashes and news_hash not in self.processed_news_hashes:
+                        filtered_news.append(news)
+                        seen_hashes.add(news_hash)
+                        self.processed_news_hashes.add(news_hash)
+                
+                # 해시 세트가 너무 커지면 정리
+                if len(self.processed_news_hashes) > 500:
+                    self.processed_news_hashes = set(list(self.processed_news_hashes)[-250:])
+                
+                return filtered_news
+            
             return []
         except Exception as e:
             self.logger.error(f"뉴스 조회 실패: {e}")
