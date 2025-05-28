@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import aiohttp
 import pytz
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,10 @@ class BitgetClient:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
                     active_positions.append(pos)
+                    # 청산가 필드 로깅
+                    logger.info(f"포지션 청산가 필드 확인:")
+                    logger.info(f"  - liquidationPrice: {pos.get('liquidationPrice')}")
+                    logger.info(f"  - markPrice: {pos.get('markPrice')}")
             
             return active_positions
         except Exception as e:
@@ -308,20 +313,27 @@ class BitgetClient:
         return all_fills
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - API 데이터만 사용"""
+        """손익 내역 조회 - 모든 거래 내역 집계"""
         try:
             symbol = symbol or self.config.symbol
             
-            # 거래 내역 조회
-            end_time = int(datetime.now().timestamp() * 1000)
-            start_time = end_time - (days * 24 * 60 * 60 * 1000)
+            # KST 기준 7일 전부터 현재까지
+            kst = pytz.timezone('Asia/Seoul')
+            now = datetime.now(kst)
+            start_date = now - timedelta(days=days)
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
             
+            end_time = int(now.timestamp() * 1000)
+            start_time = int(start_date.timestamp() * 1000)
+            
+            # 모든 거래 내역 조회
             trades = await self.get_all_trade_fills(symbol, start_time, end_time)
-            logger.info(f"=== 거래 내역: {len(trades)}건 ===")
+            logger.info(f"=== 7일간 거래 내역: {len(trades)}건 ===")
             
             total_pnl = 0.0
             daily_pnl = {}
             total_fees = 0.0
+            trade_count = 0
             
             for trade in trades:
                 try:
@@ -329,12 +341,14 @@ class BitgetClient:
                     if trade_time == 0:
                         continue
                     
-                    trade_date = datetime.fromtimestamp(trade_time / 1000).strftime('%Y-%m-%d')
+                    # KST 기준 날짜
+                    trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
+                    trade_date = trade_date_kst.strftime('%Y-%m-%d')
                     
-                    # API에서 제공하는 profit 필드만 사용
+                    # API에서 제공하는 profit 필드 사용
                     profit = float(trade.get('profit', 0))
                     
-                    # 수수료
+                    # 수수료 계산
                     fee = 0.0
                     fee_detail = trade.get('feeDetail', [])
                     if isinstance(fee_detail, list):
@@ -342,36 +356,49 @@ class BitgetClient:
                             if isinstance(fee_info, dict):
                                 fee += abs(float(fee_info.get('totalFee', 0)))
                     
+                    # 실현 손익 = profit - 수수료
                     realized_pnl = profit - fee
+                    
+                    # 집계
                     total_pnl += realized_pnl
                     total_fees += fee
+                    trade_count += 1
                     
                     if trade_date not in daily_pnl:
                         daily_pnl[trade_date] = 0
                     daily_pnl[trade_date] += realized_pnl
                     
+                    logger.debug(f"거래 {trade_count}: {trade_date} profit={profit:.2f}, fee={fee:.2f}, pnl={realized_pnl:.2f}")
+                    
                 except Exception as e:
                     logger.warning(f"거래 파싱 오류: {e}")
                     continue
             
-            logger.info(f"=== 최종 7일 손익: ${total_pnl:,.2f} ===")
+            # 일별 손익 로그
+            for date, pnl in sorted(daily_pnl.items()):
+                logger.info(f"  {date}: ${pnl:,.2f}")
+            
+            logger.info(f"=== 최종 7일 손익: ${total_pnl:,.2f} (거래 {trade_count}건, 수수료 ${total_fees:.2f}) ===")
             
             return {
                 'total_pnl': total_pnl,
                 'daily_pnl': daily_pnl,
                 'days': days,
                 'average_daily': total_pnl / days if days > 0 else 0,
-                'trade_count': len(trades),
+                'trade_count': trade_count,
                 'total_fees': total_fees
             }
             
         except Exception as e:
             logger.error(f"손익 내역 조회 실패: {e}")
+            logger.error(f"상세 오류: {traceback.format_exc()}")
             return {
                 'total_pnl': 0,
                 'daily_pnl': {},
                 'days': days,
-                'average_daily': 0
+                'average_daily': 0,
+                'trade_count': 0,
+                'total_fees': 0
             }
     
     async def get_funding_rate(self, symbol: str = None) -> Dict:
