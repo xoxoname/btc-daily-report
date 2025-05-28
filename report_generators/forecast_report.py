@@ -225,7 +225,7 @@ class ForecastReportGenerator(BaseReportGenerator):
         return now.day >= 25 and now.weekday() == 4
     
     async def _format_technical_analysis(self, market_data: dict, indicators: dict) -> str:
-        """기술적 분석 포맷"""
+        """기술적 분석 포맷 - 종합 평가 추가"""
         current_price = market_data.get('current_price', 0)
         change_24h = market_data.get('change_24h', 0)
         
@@ -259,7 +259,54 @@ class ForecastReportGenerator(BaseReportGenerator):
             f"Long/Short Ratio: {ls_ratio.get('long_ratio', 50):.0f}:{ls_ratio.get('short_ratio', 50):.0f} → {ls_ratio.get('signal', '균형')}"
         ]
         
+        # 종합 평가 추가
+        lines.append("")
+        lines.append(self._generate_technical_summary_for_forecast(market_data, indicators))
+        
         return '\n'.join(lines)
+    
+    def _generate_technical_summary_for_forecast(self, market_data: dict, indicators: dict) -> str:
+        """기술적 분석 종합 평가 (예측용)"""
+        technical = indicators.get('technical', {})
+        volume_delta = indicators.get('volume_delta', {})
+        funding = indicators.get('funding_analysis', {})
+        oi = indicators.get('oi_analysis', {})
+        
+        bullish_signals = 0
+        bearish_signals = 0
+        
+        # RSI 체크
+        rsi_val = technical.get('rsi', {}).get('value', 50)
+        if rsi_val < 30:
+            bullish_signals += 2
+        elif rsi_val > 70:
+            bearish_signals += 2
+        
+        # 거래량 체크
+        if '매수 우세' in volume_delta.get('signal', ''):
+            bullish_signals += 1
+        elif '매도 우세' in volume_delta.get('signal', ''):
+            bearish_signals += 1
+        
+        # 펀딩비 체크
+        if '롱 유리' in funding.get('signal', ''):
+            bullish_signals += 1
+        elif '숏 유리' in funding.get('signal', ''):
+            bearish_signals += 1
+        
+        # OI 체크
+        if '강세' in oi.get('signal', ''):
+            bullish_signals += 1
+        elif '약세' in oi.get('signal', ''):
+            bearish_signals += 1
+        
+        # 종합 평가
+        if bullish_signals >= bearish_signals + 2:
+            return "기술적 분석 종합 평가 요약: 단기 상승 신호가 우세하여 롱이 유리하다"
+        elif bearish_signals >= bullish_signals + 2:
+            return "기술적 분석 종합 평가 요약: 단기 하락 압력이 강해 숏이 유리하다"
+        else:
+            return "기술적 분석 종합 평가 요약: 단기 방향성이 불명확하여 관망이 필요하다"
     
     def _get_macd_status(self, market_data: dict) -> str:
         """MACD 상태 판단 (시뮬레이션)"""
@@ -287,7 +334,7 @@ class ForecastReportGenerator(BaseReportGenerator):
             return "균형"
     
     async def _format_sentiment_structure(self, market_data: dict, indicators: dict) -> str:
-        """시장 심리 및 구조 분석"""
+        """시장 심리 및 구조 분석 - 종합 평가 추가"""
         lines = []
         
         # 공포탐욕지수
@@ -331,7 +378,51 @@ class ForecastReportGenerator(BaseReportGenerator):
             elif 'Value Area 하단' in position:
                 lines.append("가격 하단 지지 구간 → 반등 가능성")
         
+        # 종합 평가 추가
+        lines.append("")
+        lines.append(self._generate_sentiment_summary_for_forecast(market_data, indicators))
+        
         return '\n'.join(lines) if lines else "시장 심리 데이터 수집 중"
+    
+    def _generate_sentiment_summary_for_forecast(self, market_data: dict, indicators: dict) -> str:
+        """시장 심리 종합 평가 (예측용)"""
+        bullish_sentiment = 0
+        bearish_sentiment = 0
+        
+        # 공포탐욕지수 체크
+        if 'fear_greed' in market_data and market_data['fear_greed']:
+            fng_value = market_data['fear_greed'].get('value', 50)
+            if fng_value > 70:
+                bullish_sentiment += 2
+            elif fng_value < 30:
+                bearish_sentiment += 2
+        
+        # 청산 구조 체크
+        liquidations = indicators.get('liquidation_analysis', {})
+        if liquidations:
+            long_distance = liquidations.get('long_distance_percent', 0)
+            short_distance = liquidations.get('short_distance_percent', 0)
+            if long_distance < short_distance:
+                bullish_sentiment += 1
+            else:
+                bearish_sentiment += 1
+        
+        # 스마트머니 체크
+        smart_money = indicators.get('smart_money', {})
+        if smart_money:
+            net_flow = smart_money.get('net_flow', 0)
+            if net_flow > 5:
+                bullish_sentiment += 1
+            elif net_flow < -5:
+                bearish_sentiment += 1
+        
+        # 종합 평가
+        if bullish_sentiment >= bearish_sentiment + 2:
+            return "시장 심리 종합 평가 요약: 단기 매수 심리가 강해 롱이 유리하다"
+        elif bearish_sentiment >= bullish_sentiment + 2:
+            return "시장 심리 종합 평가 요약: 단기 매도 압력이 우세하여 숏이 유리하다"
+        else:
+            return "시장 심리 종합 평가 요약: 단기 심리가 혼재되어 명확한 방향성이 없다"
     
     async def _format_12h_prediction(self, market_data: dict, indicators: dict) -> str:
         """12시간 예측"""
