@@ -1,8 +1,9 @@
 import asyncio
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 import logging
 import hashlib
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +23,108 @@ class ExceptionDetector:
         
         # 마지막 알림 시간 추적
         self.last_alerts = {}
-        self.alert_cooldown = timedelta(minutes=5)
+        self.alert_cooldown = timedelta(minutes=15)  # 쿨다운 시간 증가
         
         # 뉴스 중복 체크를 위한 해시 저장
         self.news_hashes = {}
-        self.news_cooldown = timedelta(hours=2)  # 동일 뉴스는 2시간 쿨다운
+        self.news_cooldown = timedelta(hours=4)  # 동일 뉴스는 4시간 쿨다운
         
+        # 전송된 예외 리포트 해시 저장 (영구 중복 방지)
+        self.sent_exception_hashes: Set[str] = set()
+        
+        # 예외 리포트 내용 캐시
+        self.exception_content_cache = {}
+        self.cache_expiry = timedelta(hours=6)
+    
+    def _generate_exception_hash(self, anomaly: Dict) -> str:
+        """예외 상황의 고유 해시 생성"""
+        anomaly_type = anomaly.get('type', '')
+        
+        if anomaly_type == 'critical_news':
+            # 뉴스는 제목과 소스로 해시 생성
+            title = anomaly.get('title', '').lower()
+            source = anomaly.get('source', '').lower()
+            
+            # 숫자와 특수문자 제거하여 유사한 뉴스 감지
+            clean_title = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title)
+            clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+            
+            # 회사명 추출
+            companies = ['gamestop', 'tesla', 'microstrategy', 'metaplanet', '게임스탑', '테슬라', '메타플래닛']
+            found_companies = [c for c in companies if c in clean_title]
+            
+            # 키워드 추출
+            keywords = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', '구매', '매입']
+            found_keywords = [k for k in keywords if k in clean_title]
+            
+            # 회사명과 키워드로 해시 생성
+            if found_companies and found_keywords:
+                hash_content = f"{','.join(sorted(found_companies))}_{','.join(sorted(found_keywords))}"
+            else:
+                hash_content = clean_title
+            
+            return hashlib.md5(f"news_{hash_content}_{source}".encode()).hexdigest()
+        
+        elif anomaly_type == 'price_anomaly':
+            # 가격 변동은 방향과 크기로 해시
+            change = anomaly.get('change_24h', 0)
+            direction = 'up' if change > 0 else 'down'
+            magnitude = int(abs(change))  # 정수로 변환하여 비슷한 변동률 그룹화
+            return hashlib.md5(f"price_{direction}_{magnitude}".encode()).hexdigest()
+        
+        elif anomaly_type == 'volume_anomaly':
+            # 거래량은 대략적인 규모로 해시
+            volume = anomaly.get('volume_24h', 0)
+            scale = int(volume / 10000)  # 10000 단위로 그룹화
+            return hashlib.md5(f"volume_{scale}".encode()).hexdigest()
+        
+        elif anomaly_type == 'funding_rate_anomaly':
+            # 펀딩비는 부호와 크기로 해시
+            rate = anomaly.get('funding_rate', 0)
+            sign = 'positive' if rate > 0 else 'negative'
+            magnitude = int(abs(rate * 1000))  # 0.001 단위로 그룹화
+            return hashlib.md5(f"funding_{sign}_{magnitude}".encode()).hexdigest()
+        
+        else:
+            # 기타 타입은 전체 내용으로 해시
+            content = f"{anomaly_type}_{anomaly.get('description', '')}_{anomaly.get('severity', '')}"
+            return hashlib.md5(content.encode()).hexdigest()
+    
+    def _is_similar_exception(self, anomaly1: Dict, anomaly2: Dict) -> bool:
+        """두 예외 상황이 유사한지 확인"""
+        if anomaly1.get('type') != anomaly2.get('type'):
+            return False
+        
+        if anomaly1.get('type') == 'critical_news':
+            # 뉴스는 제목 유사도로 판단
+            title1 = anomaly1.get('title', '').lower()
+            title2 = anomaly2.get('title', '').lower()
+            
+            # 숫자 제거
+            clean1 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title1)
+            clean2 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title2)
+            
+            clean1 = re.sub(r'\s+', ' ', clean1).strip()
+            clean2 = re.sub(r'\s+', ' ', clean2).strip()
+            
+            # 단어 집합 비교
+            words1 = set(clean1.split())
+            words2 = set(clean2.split())
+            
+            if not words1 or not words2:
+                return False
+            
+            # 교집합 비율 계산
+            intersection = len(words1 & words2)
+            union = len(words1 | words2)
+            
+            similarity = intersection / union if union > 0 else 0
+            
+            # 70% 이상 유사하면 같은 것으로 간주
+            return similarity > 0.7
+        
+        return False
+    
     async def detect_all_anomalies(self) -> List[Dict]:
         """모든 이상 징후 감지"""
         anomalies = []
@@ -158,13 +255,34 @@ class ExceptionDetector:
         
         return None
     
-    async def send_alert(self, anomaly: Dict):
-        """이상 징후 알림 전송 - 뉴스 중복 체크 추가"""
+    async def send_alert(self, anomaly: Dict) -> bool:
+        """이상 징후 알림 전송 - 강화된 중복 체크"""
         try:
             if not self.telegram_bot:
-                return
+                return False
             
-            # 뉴스 타입인 경우 중복 체크
+            # 예외 해시 생성
+            exception_hash = self._generate_exception_hash(anomaly)
+            
+            # 이미 전송된 예외인지 확인
+            if exception_hash in self.sent_exception_hashes:
+                self.logger.info(f"🔄 이미 전송된 예외 리포트 스킵: {anomaly.get('title', anomaly.get('description', ''))[:30]}...")
+                return False
+            
+            # 캐시에 있는 내용과 비교
+            current_time = datetime.now()
+            for cached_hash, (cached_time, cached_anomaly) in list(self.exception_content_cache.items()):
+                # 만료된 캐시 삭제
+                if current_time - cached_time > self.cache_expiry:
+                    del self.exception_content_cache[cached_hash]
+                    continue
+                
+                # 유사한 예외인지 확인
+                if self._is_similar_exception(anomaly, cached_anomaly):
+                    self.logger.info(f"🔄 유사한 예외 리포트 스킵: {anomaly.get('title', anomaly.get('description', ''))[:30]}...")
+                    return False
+            
+            # 뉴스 타입인 경우 추가 중복 체크
             if anomaly.get('type') == 'critical_news':
                 # 뉴스 내용으로 해시 생성
                 news_content = f"{anomaly.get('title', '')}{anomaly.get('source', '')}"
@@ -175,13 +293,13 @@ class ExceptionDetector:
                     last_time = self.news_hashes[news_hash]
                     if datetime.now() - last_time < self.news_cooldown:
                         self.logger.info(f"중복 뉴스 알림 스킵: {anomaly.get('title', '')[:30]}...")
-                        return
+                        return False
                 
                 # 해시 저장
                 self.news_hashes[news_hash] = datetime.now()
                 
                 # 오래된 해시 정리
-                cutoff_time = datetime.now() - timedelta(hours=6)
+                cutoff_time = datetime.now() - timedelta(hours=12)
                 self.news_hashes = {
                     h: t for h, t in self.news_hashes.items()
                     if t > cutoff_time
@@ -202,10 +320,24 @@ class ExceptionDetector:
             message += f"심각도: {anomaly.get('severity', 'medium')}\n"
             message += f"시간: {anomaly.get('timestamp', datetime.now()).strftime('%Y-%m-%d %H:%M:%S')}"
             
+            # 전송 성공 시 기록
             await self.telegram_bot.send_message(message)
+            
+            # 전송 성공 기록
+            self.sent_exception_hashes.add(exception_hash)
+            self.exception_content_cache[exception_hash] = (current_time, anomaly)
+            
+            # 해시 세트가 너무 커지면 정리 (최대 1000개)
+            if len(self.sent_exception_hashes) > 1000:
+                # 가장 오래된 500개 제거
+                self.sent_exception_hashes = set(list(self.sent_exception_hashes)[-500:])
+            
+            self.logger.info(f"✅ 예외 리포트 전송 완료: {anomaly.get('title', anomaly.get('description', ''))[:50]}...")
+            return True
             
         except Exception as e:
             self.logger.error(f"알림 전송 실패: {e}")
+            return False
     
     def _is_on_cooldown(self, alert_type: str, key: str) -> bool:
         """알림 쿨다운 체크"""
