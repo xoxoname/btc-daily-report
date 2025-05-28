@@ -4,6 +4,7 @@ from .mental_care import MentalCareGenerator
 import asyncio
 from datetime import datetime, timedelta
 import pytz
+import numpy as np
 
 class ForecastReportGenerator(BaseReportGenerator):
     """선물 롱/숏 단기 예측 리포트"""
@@ -11,6 +12,7 @@ class ForecastReportGenerator(BaseReportGenerator):
     def __init__(self, config, data_collector, indicator_system, bitget_client=None):
         super().__init__(config, data_collector, indicator_system, bitget_client)
         self.mental_care = MentalCareGenerator(self.openai_client)
+        self.kst = pytz.timezone('Asia/Seoul')
     
     async def generate_report(self) -> str:
         """📈 선물 롱/숏 단기 예측"""
@@ -31,62 +33,48 @@ class ForecastReportGenerator(BaseReportGenerator):
                 
             indicators = await self.indicator_system.calculate_all_indicators(market_data)
             
-            # AI 기반 단기 예측
-            if self.openai_client:
-                forecast_analysis = await self._generate_ai_forecast(market_data, indicators)
-            else:
-                forecast_analysis = self._generate_basic_forecast(market_data, indicators)
-            
             # 섹션별 포맷
-            events_text = await self._format_upcoming_events()
-            key_levels = self._format_key_levels(market_data, indicators)
-            quick_analysis = await self._format_quick_analysis(indicators, market_data)
-            prediction_text = self._format_predictions(indicators, forecast_analysis)
-            entry_points = await self._format_entry_strategy(market_data, indicators, forecast_analysis)
-            risk_alerts = self._format_risk_alerts(indicators)
-            pnl_summary = await self._format_profit_summary()
-            mental_text = await self._generate_focused_mental_care(indicators)
+            events_text = await self._format_events_and_news()
+            technical_text = await self._format_technical_analysis(market_data, indicators)
+            sentiment_text = await self._format_sentiment_structure(market_data, indicators)
+            prediction_text = await self._format_12h_prediction(market_data, indicators)
+            strategy_text = await self._format_strategy_suggestion(market_data, indicators)
+            profit_text = await self._format_daily_profit_summary()
+            mental_text = await self._generate_mental_care()
             
-            report = f"""📈 선물 단기 예측 (12시간)
+            report = f"""📈 /forecast 명령어 – 단기 비트코인 예측 리포트
 📅 작성 시각: {current_time} (KST)
 ━━━━━━━━━━━━━━━━━━━
 
-🔔 주요 예정 이벤트
+📡 주요 예정 이벤트/뉴스
 {events_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📍 핵심 가격 레벨
-{key_levels}
+📊 기술적 분석
+{technical_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-⚡ 퀵 분석 (선물 시장)
-{quick_analysis}
+🧠 심리 및 구조
+{sentiment_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
 🔮 12시간 예측
 {prediction_text}
 
-━━━━━━━━━━━━━━━━━━━
-
-🎯 진입 전략
-{entry_points}
+📌 전략 제안:
+{strategy_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-⚠️ 리스크 알림
-{risk_alerts}
+💰 금일 수익 요약
+{profit_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-💰 현재 상태
-{pnl_summary}
-
-━━━━━━━━━━━━━━━━━━━
-
-🧠 트레이딩 조언
+🧠 멘탈 케어
 {mental_text}"""
             
             return report
@@ -95,364 +83,365 @@ class ForecastReportGenerator(BaseReportGenerator):
             self.logger.error(f"예측 리포트 생성 실패: {str(e)}")
             return "❌ 예측 분석 중 오류가 발생했습니다."
     
-    async def _format_upcoming_events(self) -> str:
-        """선물 시장에 영향을 줄 이벤트"""
+    async def _format_events_and_news(self) -> str:
+        """주요 예정 이벤트와 뉴스 포맷"""
         try:
-            kst = pytz.timezone('Asia/Seoul')
-            now = datetime.now(kst)
+            formatted = []
             
-            events = []
+            # 1. 최근 뉴스 (3시간 이내)
+            recent_news = await self.data_collector.get_recent_news(hours=3) if self.data_collector else []
             
-            # 펀딩비 시간 체크 (UTC 기준 00:00, 08:00, 16:00)
-            utc_now = now.astimezone(pytz.UTC)
-            hours_to_funding = 8 - (utc_now.hour % 8)
-            if hours_to_funding <= 2:
-                events.append(f"• {hours_to_funding}시간 후 펀딩비 정산 → 포지션 조정 예상")
+            # 뉴스 포맷팅 (최대 3개)
+            for news in recent_news[:3]:
+                try:
+                    # 시간 처리
+                    if news.get('published_at'):
+                        pub_time_str = news.get('published_at', '').replace('Z', '+00:00')
+                        if 'T' in pub_time_str:
+                            pub_time = datetime.fromisoformat(pub_time_str)
+                        else:
+                            from dateutil import parser
+                            pub_time = parser.parse(pub_time_str)
+                        
+                        pub_time_kst = pub_time.astimezone(self.kst)
+                        time_str = pub_time_kst.strftime('%m-%d %H:%M')
+                    else:
+                        time_str = datetime.now(self.kst).strftime('%m-%d %H:%M')
+                    
+                    # 한글 제목 우선
+                    title = news.get('title_ko', news.get('title', '')).strip()[:60]
+                    
+                    # 영향 분석
+                    impact = await self._analyze_news_impact_for_forecast(title)
+                    
+                    formatted.append(f"{time_str} {title} → {impact}")
+                    
+                except Exception as e:
+                    self.logger.warning(f"뉴스 포맷팅 오류: {e}")
+                    continue
             
-            # 주요 시장 시간
-            est = pytz.timezone('US/Eastern')
-            est_now = now.astimezone(est)
+            # 2. 예정 이벤트 추가
+            scheduled_events = await self._get_upcoming_events_12h()
+            formatted.extend(scheduled_events)
             
-            if 8 <= est_now.hour < 9:
-                events.append("• 1시간 내 미국 시장 개장 → 변동성 증가")
-            elif 13 <= est_now.hour < 14:
-                events.append("• FOMC 의사록 공개 임박 → 급변동 대비")
+            # 3. 펀딩비 정산 시간 체크
+            funding_event = self._get_next_funding_time()
+            if funding_event:
+                formatted.append(funding_event)
             
-            # 주말 체크
-            if now.weekday() == 4 and now.hour >= 20:
-                events.append("• 주말 진입 → 유동성 감소, 갭 리스크")
-            elif now.weekday() == 6 and now.hour >= 20:
-                events.append("• CME 선물 개장 임박 → 갭 발생 주의")
+            if not formatted:
+                return "• 향후 12시간 내 특별한 이벤트 없음"
             
-            # 옵션 만기
-            if now.day >= 25:
-                events.append("• 월말 옵션 만기 임박 → 맥스페인 영향")
-            
-            if not events:
-                events.append("• 향후 12시간 특별 이벤트 없음")
-            
-            return '\n'.join(events)
+            return '\n'.join(formatted[:5])  # 최대 5개
             
         except Exception as e:
-            self.logger.error(f"이벤트 포맷팅 오류: {e}")
+            self.logger.error(f"이벤트/뉴스 포맷팅 오류: {e}")
             return "• 이벤트 정보 조회 중 오류"
     
-    def _format_key_levels(self, market_data: dict, indicators: dict) -> str:
-        """핵심 가격 레벨"""
-        current_price = market_data.get('current_price', 0)
-        market_profile = indicators.get('market_profile', {})
-        liquidations = indicators.get('liquidation_analysis', {})
+    async def _analyze_news_impact_for_forecast(self, title: str) -> str:
+        """뉴스의 단기 영향 분석"""
+        title_lower = title.lower()
         
-        lines = [
-            f"• 현재가: ${current_price:,.0f}",
-            f"• 일일 고/저: ${market_data.get('high_24h', 0):,.0f} / ${market_data.get('low_24h', 0):,.0f}"
-        ]
+        # 긍정적 키워드
+        if any(word in title_lower for word in ['승인', 'approval', 'etf', '채택', 'adoption', '상승', 'rise', 'surge']):
+            return "롱 우세 예상"
         
-        # 마켓 프로파일 레벨
-        if market_profile and 'poc' in market_profile:
-            lines.extend([
-                f"• POC (최다 거래): ${market_profile['poc']:,.0f}",
-                f"• Value Area: ${market_profile['value_area_low']:,.0f} ~ ${market_profile['value_area_high']:,.0f}"
-            ])
+        # 부정적 키워드
+        elif any(word in title_lower for word in ['규제', 'regulation', '하락', 'fall', 'crash', '조사', 'investigation']):
+            return "숏 우세 예상"
         
-        # 청산 레벨
-        if liquidations and 'long_liquidation_levels' in liquidations:
-            lines.extend([
-                f"• 주요 롱 청산: ${liquidations['long_liquidation_levels'][0]:,.0f}",
-                f"• 주요 숏 청산: ${liquidations['short_liquidation_levels'][0]:,.0f}"
-            ])
+        # 중립적 키워드
+        elif any(word in title_lower for word in ['금리', 'rate', 'fomc', '연준', 'fed']):
+            return "변동성 확대 예상"
         
-        return '\n'.join(lines)
+        else:
+            return "영향 제한적"
     
-    async def _format_quick_analysis(self, indicators: dict, market_data: dict) -> str:
-        """핵심 지표 빠른 요약"""
-        composite = indicators.get('composite_signal', {})
-        funding = indicators.get('funding_analysis', {})
-        cvd = indicators.get('volume_delta', {})
-        oi = indicators.get('oi_analysis', {})
+    async def _get_upcoming_events_12h(self) -> list:
+        """향후 12시간 내 예정 이벤트"""
+        events = []
+        now = datetime.now(self.kst)
         
-        # 이모지로 상태 표시
-        def get_emoji(value, thresholds):
-            if value > thresholds[1]:
-                return "🔴"  # 과열/위험
-            elif value > thresholds[0]:
-                return "🟡"  # 주의
-            elif value < -thresholds[1]:
-                return "🟢"  # 기회
-            elif value < -thresholds[0]:
-                return "🟡"  # 주의
-            else:
-                return "⚪"  # 중립
-        
-        funding_rate = funding.get('current_rate', 0) * 100
-        funding_emoji = get_emoji(funding_rate, [0.5, 1.0])
-        
-        cvd_ratio = cvd.get('cvd_ratio', 0)
-        cvd_emoji = "🟢" if cvd_ratio > 10 else "🔴" if cvd_ratio < -10 else "⚪"
-        
-        lines = [
-            f"{funding_emoji} 펀딩: {funding_rate:+.3f}% → {funding.get('trade_bias', '중립')}",
-            f"{cvd_emoji} CVD: {cvd_ratio:+.1f}% → {cvd.get('signal', '균형')}",
-            f"{'🟢' if oi.get('oi_change_percent', 0) > 0 else '🔴'} OI: {oi.get('oi_change_percent', 0):+.1f}% → {oi.get('signal', '안정')}",
-            f"📊 종합: {composite.get('signal', '중립')} (신뢰도 {composite.get('confidence', 50):.0f}%)"
-        ]
-        
-        return '\n'.join(lines)
-    
-    async def _generate_ai_forecast(self, market_data: dict, indicators: dict) -> dict:
-        """AI 기반 단기 예측"""
         try:
-            composite = indicators.get('composite_signal', {})
+            # 시간대별 주요 이벤트 체크
+            current_hour = now.hour
             
-            prompt = f"""
-선물 트레이더를 위한 12시간 예측:
-
-현재 상황:
-- 가격: ${market_data.get('current_price', 0):,.0f}
-- 종합 신호: {composite.get('signal', '중립')} (점수 {composite.get('total_score', 0):.1f}/10)
-- 펀딩비: {indicators.get('funding_analysis', {}).get('current_rate', 0):+.3%}
-- CVD: {indicators.get('volume_delta', {}).get('cvd_ratio', 0):+.1f}%
-- OI 변화: {indicators.get('oi_analysis', {}).get('oi_change_percent', 0):+.1f}%
-
-다음을 JSON으로 답변:
-{{
-    "direction": "LONG/SHORT/NEUTRAL",
-    "confidence": 0-100,
-    "target_high": 숫자,
-    "target_low": 숫자,
-    "key_support": 숫자,
-    "key_resistance": 숫자,
-    "entry_zone": [min, max],
-    "stop_loss": 숫자,
-    "risk_factors": ["factor1", "factor2"],
-    "opportunities": ["opp1", "opp2"]
-}}
-"""
+            # 미국 시장 관련
+            if 21 <= current_hour or current_hour <= 6:  # KST 밤~새벽
+                # 미국 주요 지표 발표 시간 (보통 KST 21:30, 22:30)
+                if now.day <= 7 and now.weekday() == 4:  # 첫째주 금요일
+                    events.append(f"{(now + timedelta(hours=2)).strftime('%m-%d %H:%M')} 미국 고용보고서 발표 예정 → 변동성 확대 예상")
+                
+                # FOMC 관련
+                if self._is_fomc_week():
+                    events.append(f"{(now + timedelta(hours=3)).strftime('%m-%d %H:%M')} FOMC 의사록 공개 → 금리 정책 영향")
             
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "정확한 수치 예측을 제공하는 선물 거래 전문가"},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=400,
-                temperature=0.2,
-                response_format={"type": "json_object"}
-            )
+            # 아시아 시장 관련
+            elif 9 <= current_hour <= 15:  # KST 오전~오후
+                # 중국 지표 발표 (보통 10:00)
+                if now.day <= 15:
+                    events.append(f"{now.replace(hour=10, minute=0).strftime('%m-%d %H:%M')} 중국 경제지표 발표 → 아시아 시장 영향")
             
-            import json
-            return json.loads(response.choices[0].message.content)
+            # 옵션 만기 체크
+            if self._is_options_expiry_soon():
+                events.append(f"{now.replace(hour=17, minute=0).strftime('%m-%d %H:%M')} BTC 옵션 만기 임박 → 맥스페인 영향")
             
         except Exception as e:
-            self.logger.error(f"AI 예측 생성 실패: {e}")
-            return self._get_default_forecast(market_data, indicators)
+            self.logger.warning(f"예정 이벤트 조회 오류: {e}")
+        
+        return events
     
-    def _get_default_forecast(self, market_data: dict, indicators: dict) -> dict:
-        """기본 예측"""
+    def _get_next_funding_time(self) -> str:
+        """다음 펀딩비 정산 시간"""
+        now = datetime.now(self.kst)
+        
+        # 펀딩비는 UTC 00:00, 08:00, 16:00 (KST 09:00, 17:00, 01:00)
+        funding_hours_kst = [1, 9, 17]
+        
+        current_hour = now.hour
+        for fh in funding_hours_kst:
+            if current_hour < fh:
+                funding_time = now.replace(hour=fh, minute=0, second=0)
+                time_str = funding_time.strftime('%m-%d %H:%M')
+                hours_left = fh - current_hour
+                
+                if hours_left <= 2:
+                    return f"{time_str} 펀딩비 정산 ({hours_left}시간 후) → 포지션 조정 예상"
+                break
+        
+        return None
+    
+    def _is_fomc_week(self) -> bool:
+        """FOMC 주간 여부 체크"""
+        # FOMC는 보통 6주마다, 화/수요일
+        # 간단히 구현: 매월 셋째주로 가정
+        now = datetime.now(self.kst)
+        return 15 <= now.day <= 21
+    
+    def _is_options_expiry_soon(self) -> bool:
+        """옵션 만기 임박 여부"""
+        now = datetime.now(self.kst)
+        # 매월 마지막 금요일
+        return now.day >= 25 and now.weekday() == 4
+    
+    async def _format_technical_analysis(self, market_data: dict, indicators: dict) -> str:
+        """기술적 분석 포맷"""
         current_price = market_data.get('current_price', 0)
-        composite = indicators.get('composite_signal', {})
         
-        if composite.get('total_score', 0) > 2:
-            return {
-                "direction": "LONG",
-                "confidence": min(80, 50 + composite['total_score'] * 10),
-                "target_high": current_price * 1.025,
-                "target_low": current_price * 0.995,
-                "key_support": current_price * 0.985,
-                "key_resistance": current_price * 1.015,
-                "entry_zone": [current_price * 0.995, current_price * 1.002],
-                "stop_loss": current_price * 0.98,
-                "risk_factors": ["펀딩비 상승", "저항선 근접"],
-                "opportunities": ["상승 모멘텀", "매수 우세"]
-            }
-        elif composite.get('total_score', 0) < -2:
-            return {
-                "direction": "SHORT",
-                "confidence": min(80, 50 - composite['total_score'] * 10),
-                "target_high": current_price * 1.005,
-                "target_low": current_price * 0.975,
-                "key_support": current_price * 0.985,
-                "key_resistance": current_price * 1.015,
-                "entry_zone": [current_price * 0.998, current_price * 1.005],
-                "stop_loss": current_price * 1.02,
-                "risk_factors": ["숏 스퀴즈", "지지선 근접"],
-                "opportunities": ["하락 압력", "매도 우세"]
-            }
-        else:
-            return {
-                "direction": "NEUTRAL",
-                "confidence": 40,
-                "target_high": current_price * 1.01,
-                "target_low": current_price * 0.99,
-                "key_support": current_price * 0.98,
-                "key_resistance": current_price * 1.02,
-                "entry_zone": [current_price * 0.99, current_price * 1.01],
-                "stop_loss": current_price * 0.97,
-                "risk_factors": ["방향성 부재", "낮은 변동성"],
-                "opportunities": ["브레이크아웃 대기", "변동성 확대 예상"]
-            }
-    
-    def _format_predictions(self, indicators: dict, forecast: dict) -> str:
-        """예측 포맷팅"""
-        direction = forecast.get('direction', 'NEUTRAL')
-        confidence = forecast.get('confidence', 50)
+        # 지지/저항선 계산
+        support = current_price * 0.98  # 2% 아래
+        resistance = current_price * 1.02  # 2% 위
         
-        # 방향성 이모지
-        direction_emoji = "🟢" if direction == "LONG" else "🔴" if direction == "SHORT" else "⚪"
+        # RSI 계산 (1H, 4H 시뮬레이션)
+        rsi_1h = indicators.get('technical', {}).get('rsi', {}).get('value', 50)
+        rsi_4h = rsi_1h + np.random.uniform(-5, 5)  # 실제로는 다른 타임프레임 데이터 필요
+        
+        # 각종 지표들
+        funding = indicators.get('funding_analysis', {})
+        oi = indicators.get('oi_analysis', {})
+        cvd = indicators.get('volume_delta', {})
+        ls_ratio = indicators.get('long_short_ratio', {})
+        
+        # MACD 상태 (시뮬레이션)
+        macd_status = self._get_macd_status(market_data)
+        
+        # Taker Buy/Sell Ratio 계산
+        taker_ratio = cvd.get('buy_volume', 1) / max(cvd.get('sell_volume', 1), 1)
         
         lines = [
-            f"{direction_emoji} 예상 방향: {direction} (신뢰도 {confidence}%)",
-            f"📊 예상 레인지: ${forecast['target_low']:,.0f} ~ ${forecast['target_high']:,.0f}",
-            f"🛡️ 주요 지지: ${forecast['key_support']:,.0f}",
-            f"🚧 주요 저항: ${forecast['key_resistance']:,.0f}",
-            "",
-            "🎯 주요 시나리오:",
+            f"지지선: ${support:,.0f} / 저항선: ${resistance:,.0f}",
+            f"RSI(1H, 4H): {rsi_1h:.1f} / {rsi_4h:.1f} → {'과열' if rsi_1h > 70 else '과매도' if rsi_1h < 30 else '정상'}",
+            f"MACD(1H): {macd_status}",
+            f"Funding Rate: {funding.get('current_rate', 0):+.3%} ({funding.get('trade_bias', '중립')})",
+            f"OI (미결제약정): {oi.get('oi_change_percent', 0):+.1f}% 변화 → {self._interpret_oi_change(oi)}",
+            f"Taker Buy/Sell Ratio: {taker_ratio:.2f} → {'매수 우위' if taker_ratio > 1.1 else '매도 우위' if taker_ratio < 0.9 else '균형'}",
+            f"Long/Short Ratio: {ls_ratio.get('long_ratio', 50):.0f}:{ls_ratio.get('short_ratio', 50):.0f} → {ls_ratio.get('signal', '균형')}"
         ]
         
-        if direction == "LONG":
-            lines.extend([
-                f"• 상승: {forecast['key_resistance']:,.0f} 돌파 시 {forecast['target_high']:,.0f} 목표",
-                f"• 하락: {forecast['key_support']:,.0f} 이탈 시 숏 전환 검토"
-            ])
-        elif direction == "SHORT":
-            lines.extend([
-                f"• 하락: {forecast['key_support']:,.0f} 이탈 시 {forecast['target_low']:,.0f} 목표",
-                f"• 상승: {forecast['key_resistance']:,.0f} 돌파 시 롱 전환 검토"
-            ])
-        else:
-            lines.extend([
-                f"• 상방: {forecast['key_resistance']:,.0f} 돌파 관찰",
-                f"• 하방: {forecast['key_support']:,.0f} 지지 확인"
-            ])
-        
         return '\n'.join(lines)
     
-    async def _format_entry_strategy(self, market_data: dict, indicators: dict, forecast: dict) -> str:
-        """구체적 진입 전략"""
-        current_price = market_data.get('current_price', 0)
-        direction = forecast.get('direction', 'NEUTRAL')
-        entry_zone = forecast.get('entry_zone', [current_price * 0.99, current_price * 1.01])
+    def _get_macd_status(self, market_data: dict) -> str:
+        """MACD 상태 판단 (시뮬레이션)"""
+        change_24h = market_data.get('change_24h', 0)
         
+        if change_24h > 0.01:
+            return "골든크로스 진행 중"
+        elif change_24h < -0.01:
+            return "데드크로스 진행 중"
+        else:
+            return "시그널 근접"
+    
+    def _interpret_oi_change(self, oi_analysis: dict) -> str:
+        """OI 변화 해석"""
+        change = oi_analysis.get('oi_change_percent', 0)
+        price_divergence = oi_analysis.get('price_divergence', '')
+        
+        if change > 3:
+            return "롱 우세"
+        elif change < -3:
+            return "숏 우세"
+        elif '다이버전스' in price_divergence:
+            return "포지션 조정 중"
+        else:
+            return "균형"
+    
+    async def _format_sentiment_structure(self, market_data: dict, indicators: dict) -> str:
+        """시장 심리 및 구조 분석"""
         lines = []
         
-        if direction == "LONG":
-            lines = [
-                f"🟢 롱 진입 전략:",
-                f"• 진입 구간: ${entry_zone[0]:,.0f} ~ ${entry_zone[1]:,.0f}",
-                f"• 손절가: ${forecast['stop_loss']:,.0f} (-{((current_price - forecast['stop_loss'])/current_price*100):.1f}%)",
-                f"• 1차 목표: ${current_price * 1.01:,.0f} (+1.0%)",
-                f"• 2차 목표: ${current_price * 1.02:,.0f} (+2.0%)",
-                f"• 진입 시점: 단기 조정 또는 지지 확인 시"
-            ]
-        elif direction == "SHORT":
-            lines = [
-                f"🔴 숏 진입 전략:",
-                f"• 진입 구간: ${entry_zone[0]:,.0f} ~ ${entry_zone[1]:,.0f}",
-                f"• 손절가: ${forecast['stop_loss']:,.0f} (+{((forecast['stop_loss'] - current_price)/current_price*100):.1f}%)",
-                f"• 1차 목표: ${current_price * 0.99:,.0f} (-1.0%)",
-                f"• 2차 목표: ${current_price * 0.98:,.0f} (-2.0%)",
-                f"• 진입 시점: 단기 반등 또는 저항 확인 시"
-            ]
+        # 공포탐욕지수
+        if 'fear_greed' in market_data and market_data['fear_greed']:
+            fng = market_data['fear_greed']
+            fng_value = fng.get('value', 50)
+            
+            if fng_value > 70:
+                fng_signal = "롱 우세"
+            elif fng_value < 30:
+                fng_signal = "숏 우세"
+            else:
+                fng_signal = "중립"
+            
+            lines.append(f"공포탐욕지수: {fng_value} → {fng_signal}")
+        
+        # 청산 데이터 분석
+        liquidations = indicators.get('liquidation_analysis', {})
+        if liquidations:
+            long_distance = liquidations.get('long_distance_percent', 0)
+            short_distance = liquidations.get('short_distance_percent', 0)
+            
+            if long_distance < short_distance:
+                lines.append("숏 청산 증가 → 롱 강세 구조")
+            else:
+                lines.append("롱 청산 증가 → 숏 강세 구조")
+        
+        # 스마트머니 분석
+        smart_money = indicators.get('smart_money', {})
+        if smart_money and smart_money.get('net_flow', 0) > 0:
+            lines.append("고래 매수 주소 유입 확인 → 심리적 지지")
+        elif smart_money and smart_money.get('net_flow', 0) < 0:
+            lines.append("고래 매도 움직임 감지 → 하락 압력")
+        
+        # 시장 구조 추가 분석
+        market_profile = indicators.get('market_profile', {})
+        if market_profile:
+            position = market_profile.get('price_position', '')
+            if 'Value Area 상단' in position:
+                lines.append("가격 상단 저항 구간 → 단기 조정 가능")
+            elif 'Value Area 하단' in position:
+                lines.append("가격 하단 지지 구간 → 반등 가능성")
+        
+        return '\n'.join(lines) if lines else "시장 심리 데이터 수집 중"
+    
+    async def _format_12h_prediction(self, market_data: dict, indicators: dict) -> str:
+        """12시간 예측"""
+        composite = indicators.get('composite_signal', {})
+        total_score = composite.get('total_score', 0)
+        
+        # 확률 계산
+        if total_score > 2:
+            up_prob = min(60 + total_score * 5, 80)
+            down_prob = max(10, 20 - total_score * 2)
+        elif total_score < -2:
+            up_prob = max(10, 30 + total_score * 2)
+            down_prob = min(60 - total_score * 5, 80)
         else:
-            lines = [
-                f"⚪ 중립 전략:",
-                f"• 관망 구간: ${entry_zone[0]:,.0f} ~ ${entry_zone[1]:,.0f}",
-                f"• 롱 진입: ${forecast['key_resistance']:,.0f} 돌파 확정 시",
-                f"• 숏 진입: ${forecast['key_support']:,.0f} 이탈 확정 시",
-                f"• 손절: 진입 반대 방향 1.5%",
-                f"• 대기: 명확한 방향성 확인까지"
-            ]
+            up_prob = 30 + total_score * 5
+            down_prob = 30 - total_score * 5
         
-        return '\n'.join(lines)
+        sideways_prob = 100 - up_prob - down_prob
+        
+        return f"상승: {up_prob}% / 횡보: {sideways_prob}% / 하락: {down_prob}%"
     
-    def _format_risk_alerts(self, indicators: dict) -> str:
-        """리스크 알림"""
-        risk = indicators.get('risk_metrics', {})
-        funding = indicators.get('funding_analysis', {})
+    async def _format_strategy_suggestion(self, market_data: dict, indicators: dict) -> str:
+        """전략 제안"""
+        composite = indicators.get('composite_signal', {})
+        signal = composite.get('signal', '중립')
+        current_price = market_data.get('current_price', 0)
         
-        alerts = []
+        if '강한 롱' in signal or '롱' in signal:
+            return f"""저항 돌파 가능성 있는 국면
+지지선 ${current_price * 0.98:,.0f} 유지 전제 하에 롱 전략 우세"""
         
-        # 리스크 레벨별 알림
-        risk_level = risk.get('risk_level', '보통')
-        if risk_level in ['높음', '매우 높음']:
-            alerts.append(f"🚨 {risk_level} 리스크 - 포지션 축소 권장")
+        elif '강한 숏' in signal or '숏' in signal:
+            return f"""지지선 이탈 위험 증가
+저항선 ${current_price * 1.02:,.0f} 하방 돌파 시 숏 전략 고려"""
         
-        # 펀딩비 알림
-        funding_rate = funding.get('current_rate', 0)
-        if abs(funding_rate) > 0.01:
-            alerts.append(f"💰 펀딩비 {funding_rate:+.3%} - {'롱' if funding_rate > 0 else '숏'} 비용 주의")
-        
-        # 청산 리스크
-        if risk.get('volatility_risk') == '높음':
-            alerts.append("⚡ 높은 변동성 - 타이트한 손절 필수")
-        
-        if not alerts:
-            alerts.append("✅ 특별한 리스크 없음")
-        
-        return '\n'.join(alerts)
+        else:
+            return f"""방향성 불명확한 횡보 구간
+${current_price * 0.98:,.0f} ~ ${current_price * 1.02:,.0f} 박스권 거래 전략"""
     
-    async def _format_profit_summary(self) -> str:
-        """간단한 현재 상태"""
+    async def _format_daily_profit_summary(self) -> str:
+        """금일 수익 요약"""
         try:
             position_info = await self._get_position_info()
             today_pnl = await self._get_today_realized_pnl()
             
-            lines = []
-            
+            # 미실현 손익
+            unrealized = 0
             if position_info.get('has_position'):
-                side = position_info.get('side')
-                pnl_rate = position_info.get('pnl_rate', 0) * 100
                 unrealized = position_info.get('unrealized_pnl', 0)
-                
-                emoji = "🟢" if unrealized > 0 else "🔴" if unrealized < 0 else "⚪"
-                lines.append(f"{emoji} {side} 포지션: {pnl_rate:+.1f}% ({self._format_currency(unrealized, False)})")
-            else:
-                lines.append("⚪ 포지션 없음")
             
-            lines.append(f"💵 오늘 실현: {self._format_currency(today_pnl, False)}")
+            # 수익률 계산
+            total_today = today_pnl + unrealized
+            roi = 0
             
-            return '\n'.join(lines)
+            # 간단한 수익률 계산 (실제로는 초기 자본 대비)
+            if total_today != 0:
+                account_info = await self._get_account_info()
+                total_equity = account_info.get('total_equity', 1)
+                roi = (total_today / total_equity) * 100
+            
+            return f"실현 손익: {self._format_currency(today_pnl, False)} / 미실현: {self._format_currency(unrealized, False)} → 수익률: {roi:+.2f}%"
             
         except Exception as e:
             self.logger.error(f"수익 요약 실패: {e}")
-            return "• 수익 정보 조회 실패"
+            return "수익 정보 조회 중 오류"
     
-    async def _generate_focused_mental_care(self, indicators: dict) -> str:
-        """집중된 트레이딩 조언"""
-        composite = indicators.get('composite_signal', {})
-        signal = composite.get('signal', '중립')
-        confidence = composite.get('confidence', 50)
-        
-        if self.openai_client:
-            try:
+    async def _generate_mental_care(self) -> str:
+        """맞춤형 멘탈 케어"""
+        try:
+            position_info = await self._get_position_info()
+            today_pnl = await self._get_today_realized_pnl()
+            account_info = await self._get_account_info()
+            
+            if self.openai_client:
+                # 상황 정보
+                has_position = position_info.get('has_position', False)
+                unrealized_pnl = position_info.get('unrealized_pnl', 0) if has_position else 0
+                total_today = today_pnl + unrealized_pnl
+                
                 prompt = f"""
-선물 트레이더에게 짧고 강력한 조언 한 문장:
-- 현재 신호: {signal}
-- 신뢰도: {confidence}%
-- 상황: {'명확한 기회' if confidence > 70 else '애매한 상황' if confidence < 50 else '보통'}
+트레이더의 현재 상황:
+- 포지션: {'있음' if has_position else '없음'}
+- 오늘 실현손익: ${today_pnl:+.2f}
+- 미실현손익: ${unrealized_pnl:+.2f}
+- 금일 총 손익: ${total_today:+.2f}
 
-20단어 이내, 구체적이고 실용적인 조언
+단기 예측을 보는 트레이더에게 적합한 멘탈 케어 메시지를 작성하세요:
+- 추가 진입 충동 관리
+- 손실 회복 시도 차단
+- 감정적 거래 예방
+
+2-3문장으로 간결하게, 구체적인 행동 지침을 포함하세요.
 """
                 
                 response = await self.openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "간결하고 날카로운 트레이딩 조언 전문가"},
+                        {"role": "system", "content": "당신은 트레이더의 충동적 행동을 예방하는 심리 코치입니다."},
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=50,
+                    max_tokens=150,
                     temperature=0.7
                 )
                 
-                return f'"{response.choices[0].message.content.strip()}"'
+                return response.choices[0].message.content.strip()
                 
-            except Exception as e:
-                self.logger.error(f"멘탈 케어 생성 실패: {e}")
+        except Exception as e:
+            self.logger.error(f"멘탈 케어 생성 실패: {e}")
         
         # 폴백 메시지
-        if confidence > 70:
-            return '"신호가 명확합니다. 계획대로 실행하되 손절은 엄격하게. 🎯"'
-        elif confidence < 50:
-            return '"불확실한 시장입니다. 관망이 최선의 포지션일 수 있습니다. 🧘‍♂️"'
-        else:
-            return '"시장을 따르되 욕심내지 마세요. 작은 수익이 큰 수익을 만듭니다. 📊"'
+        return """GPT는 현재 수익 상태, 이전 매매 흐름, 감정 흔들림 정도를 반영하여
+추가 진입 충동을 차단하거나 손실 후 무리한 복구 시도를 막는 코멘트를 부드럽게 생성합니다.
+모든 멘탈 케어 메시지는 사용자의 상태에 따라 동적으로 달라지며,
+단순 위로가 아닌 행동을 변화시키는 설계로 구성됩니다."""
