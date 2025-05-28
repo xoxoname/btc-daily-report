@@ -1,3 +1,4 @@
+# report_generators/profit_report.py
 from .base_generator import BaseReportGenerator
 from .mental_care import MentalCareGenerator
 import traceback
@@ -15,6 +16,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             current_time = self._get_current_time_kst()
             
             # 실시간 데이터 조회
+            market_data = await self._get_market_data()
             position_info = await self._get_position_info()
             account_info = await self._get_account_info()
             today_pnl = await self._get_today_realized_pnl()
@@ -27,7 +29,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             
             # 포지션 정보 포맷
-            position_text = self._format_position_details(position_info)
+            position_text = self._format_position_details(position_info, market_data.get('change_24h', 0))
             
             # 손익 정보 포맷 
             pnl_text = self._format_pnl_details(
@@ -90,7 +92,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return "❌ 수익 현황 조회 중 오류가 발생했습니다."
     
-    def _format_position_details(self, position_info: dict) -> str:
+    def _format_position_details(self, position_info: dict, change_24h: float) -> str:
         """포지션 상세 포맷팅"""
         if not position_info or not position_info.get('has_position'):
             return "• 현재 보유 포지션 없음"
@@ -127,7 +129,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             f"• 종목: {position_info.get('symbol', 'BTCUSDT')}",
             f"• 방향: {side}",
             f"• 진입가: ${position_info.get('entry_price', 0):,.2f}",
-            f"• 현재가: ${current_price:,.2f}",
+            f"• 현재가: {self._format_price_with_change(current_price, change_24h)}",
             f"• 포지션 크기: {size:.4f} BTC",
             f"• 실제 투입 금액: ${actual_investment:.2f} (약 {actual_investment * 1350 / 10000:.1f}만원)",
             f"• 청산가: ${liquidation_price:,.2f}" if liquidation_price > 0 else "• 청산가: 조회불가",
