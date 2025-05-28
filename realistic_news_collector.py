@@ -2,7 +2,7 @@ import aiohttp
 import asyncio
 from datetime import datetime, timedelta
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 import pytz
 from bs4 import BeautifulSoup
 import feedparser
@@ -19,6 +19,8 @@ class RealisticNewsCollector:
         self.session = None
         self.news_buffer = []
         self.emergency_alerts_sent = {}  # 중복 긴급 알림 방지용
+        self.processed_news_hashes = set()  # 처리된 뉴스 해시 저장
+        self.news_title_cache = {}  # 제목별 캐시
         
         # OpenAI 클라이언트 초기화 (번역용)
         self.openai_client = None
@@ -123,14 +125,34 @@ class RealisticNewsCollector:
     
     def _generate_content_hash(self, title: str, description: str = "") -> str:
         """뉴스 내용의 해시 생성 (중복 체크용)"""
-        content = f"{title.lower().strip()}{description.lower().strip()[:100]}"
-        # 숫자, 날짜, 특수문자 제거하여 더 일반화된 해시 생성
-        content = re.sub(r'[0-9.,\-:;!?@#$%^&*()\[\]{}]', '', content)
-        content = re.sub(r'\s+', ' ', content)
-        return hashlib.md5(content.encode()).hexdigest()
+        # 제목에서 숫자와 특수문자 제거하여 유사한 뉴스 감지
+        clean_title = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title.lower())
+        clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+        
+        # 회사명과 키워드 추출
+        companies = []
+        keywords = []
+        
+        for company in self.important_companies:
+            if company.lower() in clean_title.lower():
+                companies.append(company.lower())
+        
+        # 핵심 키워드 추출
+        key_terms = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', 'acquisition', '구매', '매입']
+        for term in key_terms:
+            if term in clean_title.lower():
+                keywords.append(term)
+        
+        # 회사명 + 핵심 키워드로 해시 생성
+        if companies and keywords:
+            hash_content = f"{','.join(sorted(companies))}_{','.join(sorted(keywords))}"
+        else:
+            hash_content = clean_title
+        
+        return hashlib.md5(hash_content.encode()).hexdigest()
     
-    def _is_duplicate_emergency(self, article: Dict, time_window: int = 30) -> bool:
-        """긴급 알림이 중복인지 확인 (30분 이내 유사 내용)"""
+    def _is_duplicate_emergency(self, article: Dict, time_window: int = 60) -> bool:
+        """긴급 알림이 중복인지 확인 (60분 이내 유사 내용)"""
         try:
             current_time = datetime.now()
             content_hash = self._generate_content_hash(
@@ -157,6 +179,34 @@ class RealisticNewsCollector:
         except Exception as e:
             logger.error(f"중복 체크 오류: {e}")
             return False
+    
+    def _is_similar_news(self, title1: str, title2: str) -> bool:
+        """두 뉴스 제목이 유사한지 확인"""
+        # 숫자와 특수문자 제거
+        clean1 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title1.lower())
+        clean2 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title2.lower())
+        
+        clean1 = re.sub(r'\s+', ' ', clean1).strip()
+        clean2 = re.sub(r'\s+', ' ', clean2).strip()
+        
+        # 단어 집합 비교
+        words1 = set(clean1.split())
+        words2 = set(clean2.split())
+        
+        if not words1 or not words2:
+            return False
+        
+        # 교집합 비율 계산
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        
+        if union == 0:
+            return False
+        
+        similarity = intersection / union
+        
+        # 70% 이상 유사하면 중복으로 간주
+        return similarity > 0.7
     
     async def translate_text(self, text: str, max_length: int = 100) -> str:
         """텍스트를 한국어로 번역"""
@@ -661,6 +711,19 @@ class RealisticNewsCollector:
     async def _trigger_emergency_alert(self, article: Dict):
         """긴급 알림 트리거"""
         try:
+            # 이미 처리된 뉴스인지 확인
+            content_hash = self._generate_content_hash(article.get('title', ''), article.get('description', ''))
+            if content_hash in self.processed_news_hashes:
+                logger.info(f"🔄 이미 처리된 긴급 뉴스 스킵: {article.get('title', '')[:30]}...")
+                return
+            
+            # 처리된 뉴스로 기록
+            self.processed_news_hashes.add(content_hash)
+            
+            # 오래된 해시 정리 (1000개 초과시)
+            if len(self.processed_news_hashes) > 1000:
+                self.processed_news_hashes = set(list(self.processed_news_hashes)[-500:])
+            
             event = {
                 'type': 'critical_news',
                 'title': article.get('title_ko', article.get('title', ''))[:100],
@@ -692,26 +755,29 @@ class RealisticNewsCollector:
             new_title_ko = article.get('title_ko', '').lower()
             new_source = article.get('source', '').lower()
             
-            # 제목의 핵심 단어들 추출
-            import re
-            new_keywords = set(re.findall(r'\b\w{4,}\b', new_title + ' ' + new_title_ko))  # 4글자 이상 단어만
+            # 이미 처리된 뉴스인지 확인
+            content_hash = self._generate_content_hash(article.get('title', ''), article.get('description', ''))
+            if content_hash in self.processed_news_hashes:
+                logger.debug(f"🔄 이미 처리된 뉴스 스킵: {new_title[:30]}...")
+                return
             
+            # 버퍼에 있는 뉴스와 중복 체크
             is_duplicate = False
             for existing in self.news_buffer:
-                existing_title = existing.get('title', '').lower()
-                existing_title_ko = existing.get('title_ko', '').lower()
-                existing_source = existing.get('source', '').lower()
-                existing_keywords = set(re.findall(r'\b\w{4,}\b', existing_title + ' ' + existing_title_ko))
+                # 동일한 뉴스 체크
+                if self._is_similar_news(new_title, existing.get('title', '')):
+                    is_duplicate = True
+                    break
                 
-                # 중복 판단: (키워드 유사도 70% 이상 AND 같은 소스) OR (키워드 유사도 90% 이상)
-                if new_keywords and existing_keywords:
-                    similarity = len(new_keywords & existing_keywords) / len(new_keywords | existing_keywords)
-                    if (similarity > 0.7 and new_source == existing_source) or similarity > 0.9:
+                # 한글 제목도 체크
+                if new_title_ko and existing.get('title_ko', ''):
+                    if self._is_similar_news(new_title_ko, existing.get('title_ko', '')):
                         is_duplicate = True
                         break
             
             if not is_duplicate:
                 self.news_buffer.append(article)
+                self.processed_news_hashes.add(content_hash)
                 
                 # 버퍼 관리: 가중치, 카테고리, 시간 기준으로 정렬 후 상위 50개만 유지
                 if len(self.news_buffer) > 50:
@@ -777,10 +843,11 @@ class RealisticNewsCollector:
             return "중립"
     
     async def get_recent_news(self, hours: int = 6) -> List[Dict]:
-        """최근 뉴스 가져오기 - 향상된 필터링"""
+        """최근 뉴스 가져오기 - 중복 제거 강화"""
         try:
             cutoff_time = datetime.now() - timedelta(hours=hours)
             recent_news = []
+            seen_titles = set()  # 중복 체크용
             
             for article in self.news_buffer:
                 try:
@@ -796,14 +863,36 @@ class RealisticNewsCollector:
                                 pub_time = parser.parse(article.get('published_at', ''))
                             
                             if pub_time > cutoff_time:
-                                recent_news.append(article)
+                                # 중복 체크
+                                title_hash = self._generate_content_hash(article.get('title', ''), '')
+                                if title_hash not in seen_titles:
+                                    recent_news.append(article)
+                                    seen_titles.add(title_hash)
                         except:
                             # 시간 파싱 실패시 최근 뉴스로 간주 (안전장치)
-                            recent_news.append(article)
+                            title_hash = self._generate_content_hash(article.get('title', ''), '')
+                            if title_hash not in seen_titles:
+                                recent_news.append(article)
+                                seen_titles.add(title_hash)
                     else:
-                        recent_news.append(article)
+                        title_hash = self._generate_content_hash(article.get('title', ''), '')
+                        if title_hash not in seen_titles:
+                            recent_news.append(article)
+                            seen_titles.add(title_hash)
                 except:
-                    recent_news.append(article)
+                    pass
+            
+            # 추가 중복 제거: 유사한 제목 제거
+            final_news = []
+            for article in recent_news:
+                is_similar = False
+                for final_article in final_news:
+                    if self._is_similar_news(article.get('title', ''), final_article.get('title', '')):
+                        is_similar = True
+                        break
+                
+                if not is_similar:
+                    final_news.append(article)
             
             # 정렬 기준: 가중치 → 카테고리 → 시간
             def sort_key(x):
@@ -813,14 +902,14 @@ class RealisticNewsCollector:
                 pub_time = x.get('published_at', '')
                 return (weight, cat_score, pub_time)
             
-            recent_news.sort(key=sort_key, reverse=True)
+            final_news.sort(key=sort_key, reverse=True)
             
             # 카테고리별 균형 조정 (암호화폐 뉴스 우선, 하지만 다양성 유지)
             balanced_news = []
             crypto_count = 0
             other_count = 0
             
-            for article in recent_news:
+            for article in final_news:
                 category = article.get('category', '')
                 if category == 'crypto' and crypto_count < 8:
                     balanced_news.append(article)
@@ -831,10 +920,10 @@ class RealisticNewsCollector:
                 elif len(balanced_news) < 10:  # 총 10개 미만이면 추가
                     balanced_news.append(article)
             
-            final_news = balanced_news[:12]  # 최대 12개
+            final_result = balanced_news[:12]  # 최대 12개
             
-            logger.info(f"📰 최근 {hours}시간 뉴스 반환: 총 {len(final_news)}건 (암호화폐: {crypto_count}, 기타: {other_count})")
-            return final_news
+            logger.info(f"📰 최근 {hours}시간 뉴스 반환: 총 {len(final_result)}건 (암호화폐: {crypto_count}, 기타: {other_count})")
+            return final_result
             
         except Exception as e:
             logger.error(f"최근 뉴스 조회 오류: {e}")
