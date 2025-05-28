@@ -117,6 +117,12 @@ class RegularReportGenerator(BaseReportGenerator):
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return f"❌ 리포트 생성 중 오류가 발생했습니다: {str(e)}"
     
+    def _format_price_with_change(self, price: float, change_24h: float) -> str:
+        """가격과 24시간 변동률 포맷팅"""
+        change_percent = change_24h * 100
+        change_emoji = "📈" if change_24h > 0 else "📉" if change_24h < 0 else "➖"
+        return f"${price:,.0f} {change_emoji} ({change_percent:+.1f}%)"
+    
     async def _format_market_events(self, market_data: dict) -> str:
         """시장 이벤트 - 통합 뉴스 분석 사용"""
         try:
