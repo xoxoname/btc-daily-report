@@ -28,6 +28,11 @@ class BaseReportGenerator:
         self.bitget_client = bitget_client
         self.logger.info("✅ Bitget 클라이언트 설정 완료")
     
+    def _format_price_with_change(self, current_price: float, change_24h: float) -> str:
+        """현재가와 24시간 변동률을 함께 표시"""
+        change_percent = change_24h * 100
+        return f"${current_price:,.0f} ({change_percent:+.2f}%)"
+    
     async def analyze_news_impact(self, title: str, description: str = "") -> str:
         """통합 뉴스 영향 분석 - 모든 리포트에서 동일한 결과 반환"""
         # 전체 텍스트 (제목 + 설명)
@@ -388,7 +393,7 @@ class BaseReportGenerator:
         usd_text = f"${amount:+,.2f}" if amount != 0 else "$0.00"
         if include_krw and amount != 0:
             krw_amount = amount * 1350 / 10000
-            return f"{usd_text} ({krw_amount:+.1f}만원)"
+            return f"{usd_text} (약 {krw_amount:+.1f}만원)"
         return usd_text
     
     def _get_current_time_kst(self) -> str:
