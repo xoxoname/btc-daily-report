@@ -124,6 +124,13 @@ class ExceptionDetector:
             if not funding_data:
                 return None
             
+            # API가 리스트를 반환하는 경우 처리
+            if isinstance(funding_data, list):
+                if len(funding_data) > 0:
+                    funding_data = funding_data[0]
+                else:
+                    return None
+            
             funding_rate = float(funding_data.get('fundingRate', 0))
             
             # 펀딩비가 임계값 초과
