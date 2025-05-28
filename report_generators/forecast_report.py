@@ -391,8 +391,7 @@ ${current_price * 0.98:,.0f} ~ ${current_price * 1.02:,.0f} 박스권 거래 전
                 total_equity = account_info.get('total_equity', 1)
                 roi = (total_today / total_equity) * 100
             
-            return f"실현 손익: {self._format_currency(today_pnl, False)} / 미실현: {self._format_currency(unrealized, False)} 
-            → 수익률: {roi:+.2f}%"
+            return f"실현 손익: {self._format_currency(today_pnl, False)} / 미실현: {self._format_currency(unrealized, False)} → 수익률: {roi:+.2f}%"
             
         except Exception as e:
             self.logger.error(f"수익 요약 실패: {e}")
