@@ -313,189 +313,181 @@ class BitgetClient:
         return all_fills
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - 개선된 버전"""
+        """손익 내역 조회 - 일별로 나눠서 조회"""
         try:
             symbol = symbol or self.config.symbol
             
-            # KST 기준 7일 전부터 현재까지
+            # KST 기준
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
-            start_date = now - timedelta(days=days)
-            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            end_time = int(now.timestamp() * 1000)
-            start_time = int(start_date.timestamp() * 1000)
             
             logger.info(f"=== 7일 손익 조회 시작 ===")
-            logger.info(f"조회 기간: {start_date} ~ {now}")
             
-            # 거래 내역 조회 - 더 많은 엔드포인트 시도
-            trades = []
-            
-            # 1. fill-history 엔드포인트
-            try:
-                endpoint = "/api/v2/mix/order/fill-history"
-                params = {
-                    'symbol': symbol,
-                    'productType': 'USDT-FUTURES',
-                    'startTime': str(start_time),
-                    'endTime': str(end_time),
-                    'limit': '500'
-                }
-                response = await self._request('GET', endpoint, params=params)
-                
-                if isinstance(response, dict):
-                    fills = response.get('fillList', response.get('list', []))
-                    if fills:
-                        trades.extend(fills)
-                        logger.info(f"fill-history에서 {len(fills)}건 조회")
-                elif isinstance(response, list):
-                    trades.extend(response)
-                    logger.info(f"fill-history에서 {len(response)}건 조회")
-                        
-            except Exception as e:
-                logger.warning(f"fill-history 조회 실패: {e}")
-            
-            # 2. order history 엔드포인트
-            if not trades:
-                try:
-                    endpoint = "/api/v2/mix/order/history"
-                    params = {
-                        'symbol': symbol,
-                        'productType': 'USDT-FUTURES',
-                        'startTime': str(start_time),
-                        'endTime': str(end_time),
-                        'limit': '500'
-                    }
-                    response = await self._request('GET', endpoint, params=params)
-                    
-                    if isinstance(response, dict):
-                        orders = response.get('orderList', response.get('list', []))
-                        if orders:
-                            trades.extend(orders)
-                            logger.info(f"order history에서 {len(orders)}건 조회")
-                    elif isinstance(response, list):
-                        trades.extend(response)
-                        logger.info(f"order history에서 {len(response)}건 조회")
-                            
-                except Exception as e:
-                    logger.warning(f"order history 조회 실패: {e}")
-            
-            # 3. 손익 계정 내역 조회
-            if not trades:
-                try:
-                    endpoint = "/api/v2/mix/account/bill"
-                    params = {
-                        'symbol': symbol,
-                        'productType': 'USDT-FUTURES',
-                        'marginCoin': 'USDT',
-                        'startTime': str(start_time),
-                        'endTime': str(end_time),
-                        'limit': '500'
-                    }
-                    response = await self._request('GET', endpoint, params=params)
-                    
-                    if isinstance(response, dict):
-                        bills = response.get('billList', response.get('list', []))
-                        if bills:
-                            trades.extend(bills)
-                            logger.info(f"account bill에서 {len(bills)}건 조회")
-                    elif isinstance(response, list):
-                        trades.extend(response)
-                        logger.info(f"account bill에서 {len(response)}건 조회")
-                            
-                except Exception as e:
-                    logger.warning(f"account bill 조회 실패: {e}")
-            
-            logger.info(f"=== 총 {len(trades)}건의 거래 내역 수집 ===")
-            
-            # 손익 계산
             total_pnl = 0.0
             daily_pnl = {}
             total_fees = 0.0
             trade_count = 0
+            all_trades = []
             
-            for trade in trades:
+            # 일별로 조회 (API 7일 제한 회피)
+            for day_offset in range(days):
+                day_start = now - timedelta(days=day_offset+1)
+                day_start = day_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                day_end = day_start + timedelta(days=1) - timedelta(seconds=1)
+                
+                start_time = int(day_start.timestamp() * 1000)
+                end_time = int(day_end.timestamp() * 1000)
+                
+                logger.info(f"Day {day_offset+1}: {day_start.strftime('%Y-%m-%d')} 조회 중...")
+                
+                # 각 날짜별로 여러 엔드포인트 시도
+                day_trades = []
+                
+                # 1. fill-history 시도
                 try:
-                    # 시간 필드 찾기
-                    trade_time = None
-                    for time_field in ['cTime', 'createdTime', 'createTime', 'time']:
-                        if time_field in trade:
-                            trade_time = int(trade[time_field])
-                            break
+                    endpoint = "/api/v2/mix/order/fill-history"
+                    params = {
+                        'symbol': symbol,
+                        'productType': 'USDT-FUTURES',
+                        'startTime': str(start_time),
+                        'endTime': str(end_time),
+                        'limit': '100'
+                    }
+                    response = await self._request('GET', endpoint, params=params)
                     
-                    if not trade_time:
-                        continue
-                    
-                    # KST 기준 날짜
-                    trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
-                    trade_date = trade_date_kst.strftime('%Y-%m-%d')
-                    
-                    # 손익 필드 찾기
-                    profit = 0.0
-                    for profit_field in ['profit', 'realizedPL', 'realizedPnl', 'pnl', 'amount']:
-                        if profit_field in trade:
-                            val = trade[profit_field]
-                            if val and str(val).replace('.', '').replace('-', '').isdigit():
-                                profit = float(val)
-                                break
-                    
-                    # 수수료 계산
-                    fee = 0.0
-                    
-                    # 1. feeDetail 확인
-                    fee_detail = trade.get('feeDetail', [])
-                    if isinstance(fee_detail, list):
-                        for fee_info in fee_detail:
-                            if isinstance(fee_info, dict):
-                                fee += abs(float(fee_info.get('totalFee', 0)))
-                    
-                    # 2. fee 필드 확인
-                    if fee == 0 and 'fee' in trade:
-                        fee = abs(float(trade.get('fee', 0)))
-                    
-                    # 3. fees 필드 확인
-                    if fee == 0 and 'fees' in trade:
-                        fee = abs(float(trade.get('fees', 0)))
-                    
-                    # 실현 손익 = profit - 수수료
-                    realized_pnl = profit - fee
-                    
-                    # 집계
-                    if profit != 0 or fee != 0:  # 손익이나 수수료가 있는 경우만
-                        total_pnl += realized_pnl
-                        total_fees += fee
-                        trade_count += 1
+                    if isinstance(response, dict):
+                        fills = response.get('fillList', response.get('list', []))
+                        if fills:
+                            day_trades.extend(fills)
+                            logger.info(f"  - fill-history: {len(fills)}건")
+                    elif isinstance(response, list):
+                        day_trades.extend(response)
+                        logger.info(f"  - fill-history: {len(response)}건")
                         
-                        if trade_date not in daily_pnl:
-                            daily_pnl[trade_date] = 0
-                        daily_pnl[trade_date] += realized_pnl
-                        
-                        logger.debug(f"거래 {trade_count}: {trade_date} profit={profit:.2f}, fee={fee:.2f}, pnl={realized_pnl:.2f}")
-                    
                 except Exception as e:
-                    logger.warning(f"거래 파싱 오류: {e}, trade: {trade}")
-                    continue
+                    logger.debug(f"  - fill-history 실패: {str(e)[:50]}")
+                
+                # 2. fills 엔드포인트 시도
+                if not day_trades:
+                    try:
+                        endpoint = "/api/v2/mix/order/fills"
+                        params = {
+                            'symbol': symbol,
+                            'productType': 'USDT-FUTURES',
+                            'startTime': str(start_time),
+                            'endTime': str(end_time),
+                            'limit': '100'
+                        }
+                        response = await self._request('GET', endpoint, params=params)
+                        
+                        if isinstance(response, dict):
+                            fills = response.get('fills', response.get('list', []))
+                            if fills:
+                                day_trades.extend(fills)
+                                logger.info(f"  - fills: {len(fills)}건")
+                        elif isinstance(response, list):
+                            day_trades.extend(response)
+                            logger.info(f"  - fills: {len(response)}건")
+                            
+                    except Exception as e:
+                        logger.debug(f"  - fills 실패: {str(e)[:50]}")
+                
+                # 3. account/bill 시도 (limit 줄여서)
+                if not day_trades:
+                    try:
+                        endpoint = "/api/v2/mix/account/bill"
+                        params = {
+                            'symbol': symbol,
+                            'productType': 'USDT-FUTURES',
+                            'marginCoin': 'USDT',
+                            'startTime': str(start_time),
+                            'endTime': str(end_time),
+                            'limit': '100'  # 500에서 100으로 줄임
+                        }
+                        response = await self._request('GET', endpoint, params=params)
+                        
+                        if isinstance(response, dict):
+                            bills = response.get('billList', response.get('list', []))
+                            if bills:
+                                day_trades.extend(bills)
+                                logger.info(f"  - account/bill: {len(bills)}건")
+                        elif isinstance(response, list):
+                            day_trades.extend(response)
+                            logger.info(f"  - account/bill: {len(response)}건")
+                            
+                    except Exception as e:
+                        logger.debug(f"  - account/bill 실패: {str(e)[:50]}")
+                
+                # 해당 날짜의 거래 처리
+                for trade in day_trades:
+                    try:
+                        # 시간 필드 찾기
+                        trade_time = None
+                        for time_field in ['cTime', 'createdTime', 'createTime', 'time']:
+                            if time_field in trade:
+                                trade_time = int(trade[time_field])
+                                break
+                        
+                        if not trade_time:
+                            continue
+                        
+                        # KST 기준 날짜
+                        trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
+                        trade_date_str = trade_date_kst.strftime('%Y-%m-%d')
+                        
+                        # 손익 필드 찾기
+                        profit = 0.0
+                        for profit_field in ['profit', 'realizedPL', 'realizedPnl', 'pnl', 'amount']:
+                            if profit_field in trade:
+                                val = trade[profit_field]
+                                if val and str(val).replace('.', '').replace('-', '').isdigit():
+                                    profit = float(val)
+                                    break
+                        
+                        # 수수료 계산
+                        fee = 0.0
+                        
+                        # feeDetail 확인
+                        fee_detail = trade.get('feeDetail', [])
+                        if isinstance(fee_detail, list):
+                            for fee_info in fee_detail:
+                                if isinstance(fee_info, dict):
+                                    fee += abs(float(fee_info.get('totalFee', 0)))
+                        
+                        # fee 필드 확인
+                        if fee == 0 and 'fee' in trade:
+                            fee = abs(float(trade.get('fee', 0)))
+                        
+                        # fees 필드 확인
+                        if fee == 0 and 'fees' in trade:
+                            fee = abs(float(trade.get('fees', 0)))
+                        
+                        # 실현 손익 = profit - 수수료
+                        if profit != 0 or fee != 0:
+                            realized_pnl = profit - fee
+                            total_pnl += realized_pnl
+                            total_fees += fee
+                            trade_count += 1
+                            
+                            if trade_date_str not in daily_pnl:
+                                daily_pnl[trade_date_str] = 0
+                            daily_pnl[trade_date_str] += realized_pnl
+                            
+                            logger.debug(f"    거래: {trade_date_str} profit={profit:.2f}, fee={fee:.2f}, pnl={realized_pnl:.2f}")
+                        
+                    except Exception as e:
+                        logger.warning(f"거래 파싱 오류: {e}")
+                        continue
+                
+                all_trades.extend(day_trades)
+                await asyncio.sleep(0.2)  # API 부하 방지
             
-            # 일별 손익 로그
+            # 결과 로그
             logger.info("=== 일별 손익 내역 ===")
             for date, pnl in sorted(daily_pnl.items()):
                 logger.info(f"  {date}: ${pnl:,.2f}")
             
             logger.info(f"=== 최종 7일 손익: ${total_pnl:,.2f} (거래 {trade_count}건, 수수료 ${total_fees:.2f}) ===")
-            
-            # 만약 손익이 0이면 하드코딩된 예상값 반환 (임시)
-            if total_pnl == 0 and trade_count == 0:
-                logger.warning("거래 내역이 없습니다. 예상값 반환")
-                return {
-                    'total_pnl': 800.0,  # 예상값
-                    'daily_pnl': {'임시': 800.0},
-                    'days': days,
-                    'average_daily': 800.0 / days,
-                    'trade_count': 0,
-                    'total_fees': 0,
-                    'note': '실제 거래 내역을 가져올 수 없어 예상값을 표시합니다'
-                }
             
             return {
                 'total_pnl': total_pnl,
@@ -510,10 +502,10 @@ class BitgetClient:
             logger.error(f"손익 내역 조회 실패: {e}")
             logger.error(f"상세 오류: {traceback.format_exc()}")
             return {
-                'total_pnl': 800.0,  # 폴백 값
+                'total_pnl': 0,
                 'daily_pnl': {},
                 'days': days,
-                'average_daily': 800.0 / days,
+                'average_daily': 0,
                 'trade_count': 0,
                 'total_fees': 0,
                 'error': str(e)
