@@ -1,3 +1,4 @@
+# report_generators/base_generator.py
 from datetime import datetime, timedelta
 import asyncio
 from typing import Dict, List, Optional, Any
@@ -26,6 +27,137 @@ class BaseReportGenerator:
         """Bitget 클라이언트 설정"""
         self.bitget_client = bitget_client
         self.logger.info("✅ Bitget 클라이언트 설정 완료")
+    
+    async def analyze_news_impact(self, title: str, description: str = "") -> str:
+        """통합 뉴스 영향 분석 - 모든 리포트에서 동일한 결과 반환"""
+        # 전체 텍스트 (제목 + 설명)
+        full_text = (title + " " + description).lower()
+        
+        # 영향도 점수 계산
+        bullish_score = 0
+        bearish_score = 0
+        
+        # 강한 호재 키워드
+        strong_bullish = [
+            'etf approved', 'etf 승인', 'institutional adoption', '기관 채택',
+            'bitcoin reserve', '비트코인 준비금', 'legal tender', '법정화폐',
+            'bullish', '상승', 'surge', '급등', 'rally', '랠리',
+            'all time high', 'ath', '신고가', 'breakthrough', '돌파'
+        ]
+        
+        # 강한 악재 키워드
+        strong_bearish = [
+            'ban', '금지', 'crackdown', '단속', 'lawsuit', '소송',
+            'hack', '해킹', 'bankruptcy', '파산', 'liquidation', '청산',
+            'crash', '폭락', 'plunge', '급락', 'investigation', '조사',
+            'sec charges', 'sec 기소', 'fraud', '사기'
+        ]
+        
+        # 일반 호재 키워드
+        mild_bullish = [
+            'buy', '매입', 'invest', '투자', 'adoption', '채택',
+            'positive', '긍정', 'growth', '성장', 'partnership', '파트너십',
+            'upgrade', '상향', 'support', '지지', 'accumulate', '축적'
+        ]
+        
+        # 일반 악재 키워드
+        mild_bearish = [
+            'sell', '매도', 'concern', '우려', 'risk', '위험',
+            'regulation', '규제', 'warning', '경고', 'decline', '하락',
+            'uncertainty', '불확실', 'delay', '지연', 'reject', '거부'
+        ]
+        
+        # 점수 계산
+        for keyword in strong_bullish:
+            if keyword in full_text:
+                bullish_score += 3
+        
+        for keyword in strong_bearish:
+            if keyword in full_text:
+                bearish_score += 3
+        
+        for keyword in mild_bullish:
+            if keyword in full_text:
+                bullish_score += 1
+        
+        for keyword in mild_bearish:
+            if keyword in full_text:
+                bearish_score += 1
+        
+        # 특수 케이스 처리
+        # Fed/FOMC 관련
+        if any(word in full_text for word in ['fed', 'fomc', '연준', '금리']):
+            if any(word in full_text for word in ['raise', 'hike', '인상', 'hawkish', '매파']):
+                bearish_score += 2
+            elif any(word in full_text for word in ['cut', 'lower', '인하', 'dovish', '비둘기']):
+                bullish_score += 2
+            else:
+                # 중립적 금리 뉴스
+                return "중립 (금리 정책 관망)"
+        
+        # 중국 관련
+        if any(word in full_text for word in ['china', '중국']):
+            if any(word in full_text for word in ['ban', '금지', 'crackdown', '단속']):
+                bearish_score += 2
+            elif any(word in full_text for word in ['open', '개방', 'allow', '허용']):
+                bullish_score += 2
+        
+        # 최종 판단
+        net_score = bullish_score - bearish_score
+        
+        if net_score >= 3:
+            return "➕강한 호재"
+        elif net_score >= 1:
+            return "➕호재 예상"
+        elif net_score <= -3:
+            return "➖강한 악재"
+        elif net_score <= -1:
+            return "➖악재 예상"
+        else:
+            # 중립적이지만 특정 카테고리 확인
+            if '비트코인' in full_text or 'bitcoin' in full_text:
+                if '매입' in full_text or 'buy' in full_text:
+                    return "➕호재 예상"
+                elif '매도' in full_text or 'sell' in full_text:
+                    return "➖악재 예상"
+            
+            return "중립"
+    
+    async def format_news_with_time(self, news_list: List[Dict], max_items: int = 4) -> List[str]:
+        """뉴스를 시간 포함 형식으로 포맷팅"""
+        formatted = []
+        
+        for news in news_list[:max_items]:
+            try:
+                # 시간 처리
+                if news.get('published_at'):
+                    pub_time_str = news.get('published_at', '').replace('Z', '+00:00')
+                    if 'T' in pub_time_str:
+                        pub_time = datetime.fromisoformat(pub_time_str)
+                    else:
+                        from dateutil import parser
+                        pub_time = parser.parse(pub_time_str)
+                    
+                    pub_time_kst = pub_time.astimezone(self.kst)
+                    time_str = pub_time_kst.strftime('%m-%d %H:%M')
+                else:
+                    time_str = datetime.now(self.kst).strftime('%m-%d %H:%M')
+                
+                # 한글 제목 우선 사용
+                title = news.get('title_ko', news.get('title', '')).strip()
+                description = news.get('description', '')
+                
+                # 통합 영향 분석
+                impact = await self.analyze_news_impact(title, description)
+                
+                # 형식: 시간 "제목" → 영향
+                formatted.append(f'{time_str} "{title[:60]}{"..." if len(title) > 60 else ""}" → {impact}')
+                
+            except Exception as e:
+                self.logger.warning(f"뉴스 포맷팅 오류: {e}")
+                continue
+        
+        return formatted
     
     async def _collect_all_data(self) -> Dict:
         """모든 데이터 수집"""
