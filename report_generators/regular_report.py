@@ -137,6 +137,7 @@ class RegularReportGenerator(BaseReportGenerator):
     async def _format_futures_analysis(self, market_data: dict, indicators: dict) -> str:
         """선물 시장 핵심 지표"""
         current_price = market_data.get('current_price', 0)
+        change_24h = market_data.get('change_24h', 0)
         
         # 각 분석 결과 가져오기
         funding = indicators.get('funding_analysis', {})
@@ -146,7 +147,7 @@ class RegularReportGenerator(BaseReportGenerator):
         liquidations = indicators.get('liquidation_analysis', {})
         
         lines = [
-            f"• 현재가: ${current_price:,.0f} (Bitget BTCUSDT)",
+            f"• 현재가: {self._format_price_with_change(current_price, change_24h)} (Bitget BTCUSDT)",
             f"• 펀딩비: {funding.get('current_rate', 0):+.3%} (연환산 {funding.get('annual_rate', 0):+.1f}%) → {funding.get('signal', '중립')}",
             f"• 미결제약정: {oi.get('oi_change_percent', 0):+.1f}% 변화 → {oi.get('price_divergence', '중립')}",
             f"• 선물 베이시스: {basis.get('rate', 0):+.3f}% → {basis.get('signal', '중립')}",
@@ -379,6 +380,7 @@ class RegularReportGenerator(BaseReportGenerator):
         composite = indicators.get('composite_signal', {})
         signal = composite.get('signal', '중립')
         current_price = market_data.get('current_price', 0)
+        change_24h = market_data.get('change_24h', 0)
         
         if self.openai_client:
             # GPT 기반 전략 생성
@@ -397,7 +399,7 @@ class RegularReportGenerator(BaseReportGenerator):
 비트코인 선물 트레이더를 위한 구체적 전략을 제시하세요:
 
 현재 상황:
-- 가격: ${current_price:,.0f}
+- 가격: ${current_price:,.0f} (24시간 변동: {change_24h*100:+.2f}%)
 - 종합 신호: {summary['신호']} (점수 {summary['점수']:.1f})
 - 펀딩비: {summary['펀딩비']:+.3%}
 - OI 변화: {summary['OI변화']:+.1f}%
