@@ -41,7 +41,7 @@ class RegularReportGenerator(BaseReportGenerator):
             sentiment_text = await self._format_market_sentiment(market_data, indicators)
             signal_text = self._format_trading_signals(indicators)
             strategy_text = await self._format_strategy_recommendation(market_data, indicators)
-            risk_text = self._format_risk_assessment(indicators)
+            risk_text = await self._format_risk_assessment(market_data, indicators)
             
             # 향후 12시간 예측 추가
             prediction_text = await self._format_12h_prediction(market_data, indicators)
@@ -57,57 +57,57 @@ class RegularReportGenerator(BaseReportGenerator):
 📅 작성 시각: {current_time} (KST)
 ━━━━━━━━━━━━━━━━━━━
 
-📌 시장 이벤트 및 주요 속보
+📌 **시장 이벤트 및 주요 속보**
 {events_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📊 선물 시장 핵심 지표
+📊 **선물 시장 핵심 지표**
 {futures_analysis}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📉 기술적 분석
+📉 **기술적 분석**
 {technical_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-🧠 시장 심리 및 포지셔닝
+🧠 **시장 심리 및 포지셔닝**
 {sentiment_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-🎯 롱/숏 신호 분석
+🎯 **롱/숏 신호 분석**
 {signal_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📌 전략 제안
+📌 **전략 제안**
 {strategy_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-⚠️ 리스크 평가
+⚠️ **리스크 평가**
 {risk_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-🔮 향후 12시간 예측
+🔮 **향후 12시간 예측**
 {prediction_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📊 예측 검증
+📊 **예측 검증**
 {validation_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-💰 손익 현황
+💰 **손익 현황**
 {pnl_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-🧠 멘탈 케어
+🧠 **멘탈 케어**
 {mental_text}"""
             
             return report
@@ -124,15 +124,60 @@ class RegularReportGenerator(BaseReportGenerator):
         return f"${price:,.0f} {change_emoji} ({change_percent:+.1f}%)"
     
     async def _format_market_events(self, market_data: dict) -> str:
-        """시장 이벤트 - 통합 뉴스 분석 사용"""
+        """시장 이벤트 - 비트코인/미증시 직결 뉴스만"""
         try:
-            recent_news = await self.data_collector.get_recent_news(hours=6) if self.data_collector else []
+            recent_news = await self.data_collector.get_recent_news(hours=3) if self.data_collector else []
             
             if not recent_news:
                 return "• 현재 주요 시장 이벤트 없음"
             
-            # 통합 포맷팅 함수 사용
-            formatted = await self.format_news_with_time(recent_news, max_items=4)
+            # 비트코인/미증시 직결 뉴스만 필터링
+            filtered_news = []
+            for news in recent_news:
+                title = news.get('title_ko', news.get('title', '')).lower()
+                description = news.get('description', '').lower()
+                content = title + ' ' + description
+                
+                # 중요 키워드 체크
+                important_keywords = [
+                    # 비트코인 직접 관련
+                    'bitcoin', 'btc', '비트코인',
+                    # 기업 매입
+                    'bought', 'purchase', 'acquisition', '구매', '매입',
+                    # 정책/규제
+                    'sec', 'fed', 'fomc', 'trump', 'regulation', 'policy',
+                    '연준', '금리', '규제', '정책', '트럼프',
+                    # ETF
+                    'etf', '승인', 'approval', 'reject',
+                    # 시장 급변동
+                    'crash', 'surge', 'plunge', 'rally', '폭락', '급등',
+                    # 주요 기업
+                    'tesla', 'microstrategy', 'gamestop', 'coinbase', 'blackrock'
+                ]
+                
+                # 제외 키워드
+                exclude_keywords = [
+                    'how to', 'tutorial', 'guide', 'learn',
+                    '방법', '가이드', '배우기', '입문',
+                    'price prediction', '가격 예측',
+                    'crypto news today', '오늘의 암호화폐',
+                    'gold', '금', 'oil', '원유'
+                ]
+                
+                # 제외 키워드가 있으면 스킵
+                if any(keyword in content for keyword in exclude_keywords):
+                    continue
+                
+                # 중요 키워드가 2개 이상 포함된 경우만
+                keyword_count = sum(1 for keyword in important_keywords if keyword in content)
+                if keyword_count >= 2:
+                    filtered_news.append(news)
+            
+            # 중요도 순으로 정렬
+            filtered_news.sort(key=lambda x: x.get('weight', 0), reverse=True)
+            
+            # 상위 4개만 포맷팅
+            formatted = await self.format_news_with_time(filtered_news[:4], max_items=4)
             
             return '\n'.join(formatted) if formatted else "• 특이 뉴스 없음"
             
@@ -153,18 +198,18 @@ class RegularReportGenerator(BaseReportGenerator):
         liquidations = indicators.get('liquidation_analysis', {})
         
         lines = [
-            f"• 현재가: {self._format_price_with_change(current_price, change_24h)} (Bitget BTCUSDT)",
-            f"• 펀딩비: {funding.get('current_rate', 0):+.3%} (연환산 {funding.get('annual_rate', 0):+.1f}%) → {funding.get('signal', '중립')}",
-            f"• 미결제약정: {oi.get('oi_change_percent', 0):+.1f}% 변화 → {oi.get('price_divergence', '중립')}",
-            f"• 선물 베이시스: {basis.get('rate', 0):+.3f}% → {basis.get('signal', '중립')}",
-            f"• 롱/숏 비율: {ls_ratio.get('long_ratio', 50):.0f}:{ls_ratio.get('short_ratio', 50):.0f} → {ls_ratio.get('signal', '균형')}",
-            f"• 청산 위험: {liquidations.get('liquidation_pressure', '중립')}"
+            f"• **현재가**: {self._format_price_with_change(current_price, change_24h)} (Bitget BTCUSDT)",
+            f"• **펀딩비**: {funding.get('current_rate', 0):+.3%} (연환산 {funding.get('annual_rate', 0):+.1f}%) → {funding.get('signal', '중립')}",
+            f"• **미결제약정**: {oi.get('oi_change_percent', 0):+.1f}% 변화 → {oi.get('price_divergence', '중립')}",
+            f"• **선물 베이시스**: {basis.get('rate', 0):+.3f}% → {basis.get('signal', '중립')}",
+            f"• **롱/숏 비율**: {ls_ratio.get('long_ratio', 50):.0f}:{ls_ratio.get('short_ratio', 50):.0f} → {ls_ratio.get('signal', '균형')}",
+            f"• **청산 위험**: {liquidations.get('liquidation_pressure', '중립')}"
         ]
         
         # Fear & Greed Index 추가
         if 'fear_greed' in market_data and market_data['fear_greed']:
             fng = market_data['fear_greed']
-            lines.append(f"• 공포탐욕지수: {fng.get('value', 50)}/100 ({fng.get('value_classification', 'Neutral')})")
+            lines.append(f"• **공포탐욕지수**: {fng.get('value', 50)}/100 ({fng.get('value_classification', 'Neutral')})")
         
         # 종합 평가 추가
         lines.append("")
@@ -173,20 +218,28 @@ class RegularReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     def _generate_futures_summary(self, indicators: dict) -> str:
-        """선물 지표 종합 평가"""
+        """선물 지표 종합 평가 - 더 명확한 방향성"""
         composite = indicators.get('composite_signal', {})
+        total_score = composite.get('total_score', 0)
         signal = composite.get('signal', '중립')
         
-        if '강한 롱' in signal:
-            return "핵심 지표 분석 종합 평가 요약: 펀딩비 안정적이고 매수 압력 우세로 롱이 유리하다"
-        elif '강한 숏' in signal:
-            return "핵심 지표 분석 종합 평가 요약: 매도 압력 증가와 과열 신호로 숏이 유리하다"
-        elif '롱' in signal:
-            return "핵심 지표 분석 종합 평가 요약: 전반적으로 롱 신호가 우세하나 신중한 접근 필요"
-        elif '숏' in signal:
-            return "핵심 지표 분석 종합 평가 요약: 숏 신호가 나타나고 있으나 강도는 보통 수준"
+        # 더 구체적인 평가
+        if total_score >= 5:
+            return "**핵심 지표 분석 종합 평가**: 강한 상승 신호로 적극적 롱 진입이 유리하다"
+        elif total_score >= 3:
+            return "**핵심 지표 분석 종합 평가**: 상승 우위로 신중한 롱 포지션이 유리하다"
+        elif total_score <= -5:
+            return "**핵심 지표 분석 종합 평가**: 강한 하락 신호로 적극적 숏 진입이 유리하다"
+        elif total_score <= -3:
+            return "**핵심 지표 분석 종합 평가**: 하락 우위로 신중한 숏 포지션이 유리하다"
         else:
-            return "핵심 지표 분석 종합 평가 요약: 명확한 방향성 없이 중립 상태 지속"
+            # 중립이어도 약간의 방향성 제시
+            if total_score > 0:
+                return "**핵심 지표 분석 종합 평가**: 약한 상승 신호나 명확한 돌파 확인 후 진입 권장"
+            elif total_score < 0:
+                return "**핵심 지표 분석 종합 평가**: 약한 하락 신호나 명확한 이탈 확인 후 진입 권장"
+            else:
+                return "**핵심 지표 분석 종합 평가**: 방향성 부재로 관망하되 돌파/이탈 시 빠른 대응 준비"
     
     async def _format_technical_analysis(self, market_data: dict, indicators: dict) -> str:
         """기술적 분석 - 선물 관점"""
@@ -195,17 +248,17 @@ class RegularReportGenerator(BaseReportGenerator):
         volume_delta = indicators.get('volume_delta', {})
         
         lines = [
-            f"• 24H 고/저: ${market_data.get('high_24h', 0):,.0f} / ${market_data.get('low_24h', 0):,.0f}",
-            f"• 24H 변동: {market_data.get('change_24h', 0):+.1%} | 거래량: {market_data.get('volume_24h', 0):,.0f} BTC"
+            f"• **24H 고/저**: ${market_data.get('high_24h', 0):,.0f} / ${market_data.get('low_24h', 0):,.0f}",
+            f"• **24H 변동**: {market_data.get('change_24h', 0):+.1%} | **거래량**: {market_data.get('volume_24h', 0):,.0f} BTC"
         ]
         
         # 거래량 분석 추가
         if volume_delta and volume_delta.get('signal'):
             buy_vol = volume_delta.get('buy_volume', 0)
             sell_vol = volume_delta.get('sell_volume', 0)
-            if buy_vol > sell_vol * 1.1:
+            if buy_vol > sell_vol * 1.2:
                 lines.append("• 거래량 증가, 매수 체결 우세 → 롱 지지")
-            elif sell_vol > buy_vol * 1.1:
+            elif sell_vol > buy_vol * 1.2:
                 lines.append("• 거래량 증가, 매도 체결 우세 → 숏 지지")
             else:
                 lines.append("• 거래량 균형 상태")
@@ -214,28 +267,32 @@ class RegularReportGenerator(BaseReportGenerator):
         if 'rsi' in technical:
             rsi_data = technical['rsi']
             rsi_val = rsi_data.get('value', 50)
-            if rsi_val < 40:
-                lines.append(f"• RSI(14): {rsi_val:.1f} → 상승 여력 존재")
-            elif rsi_val > 60:
-                lines.append(f"• RSI(14): {rsi_val:.1f} → 과열 주의")
+            if rsi_val < 35:
+                lines.append(f"• **RSI(14)**: {rsi_val:.1f} → 과매도 구간 (반등 가능)")
+            elif rsi_val > 65:
+                lines.append(f"• **RSI(14)**: {rsi_val:.1f} → 과매수 구간 (조정 가능)")
             else:
-                lines.append(f"• RSI(14): {rsi_val:.1f} → 중립")
+                lines.append(f"• **RSI(14)**: {rsi_val:.1f} → 중립")
         
         # 마켓 프로파일
         if market_profile and 'poc' in market_profile:
             poc = market_profile['poc']
             current = market_data.get('current_price', 0)
             
-            if current > poc * 1.01:
-                poc_signal = "롱 강세 신호"
-            elif current < poc * 0.99:
-                poc_signal = "숏 압력 증가"
+            if current > poc * 1.02:
+                poc_signal = "강한 롱 신호"
+            elif current > poc * 1.005:
+                poc_signal = "롱 우세"
+            elif current < poc * 0.98:
+                poc_signal = "강한 숏 신호"
+            elif current < poc * 0.995:
+                poc_signal = "숏 압력"
             else:
                 poc_signal = "균형점 근처"
             
-            lines.append(f"• POC (Point of Control): ${poc:,.0f} → {poc_signal}")
-            lines.append(f"• Value Area: ${market_profile['value_area_low']:,.0f} ~ ${market_profile['value_area_high']:,.0f}")
-            lines.append(f"• 현재 위치: {market_profile.get('price_position', '중립')}")
+            lines.append(f"• **POC (Point of Control)**: ${poc:,.0f} → {poc_signal}")
+            lines.append(f"• **Value Area**: ${market_profile['value_area_low']:,.0f} ~ ${market_profile['value_area_high']:,.0f}")
+            lines.append(f"• **현재 위치**: {market_profile.get('price_position', '중립')}")
         
         # 기술적 분석 종합
         lines.append("")
@@ -244,38 +301,53 @@ class RegularReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     def _generate_technical_summary(self, market_data: dict, indicators: dict) -> str:
-        """기술적 분석 종합 평가"""
+        """기술적 분석 종합 평가 - 더 명확한 방향성"""
         technical = indicators.get('technical', {})
         volume_delta = indicators.get('volume_delta', {})
+        market_profile = indicators.get('market_profile', {})
         
         bullish_count = 0
         bearish_count = 0
         
-        # RSI 체크
-        if technical.get('rsi', {}).get('signal') == '과매도':
-            bullish_count += 1
-        elif technical.get('rsi', {}).get('signal') == '과매수':
-            bearish_count += 1
+        # RSI 체크 (가중치 2)
+        rsi_val = technical.get('rsi', {}).get('value', 50)
+        if rsi_val < 35:
+            bullish_count += 2
+        elif rsi_val > 65:
+            bearish_count += 2
         
-        # 거래량 체크
+        # 거래량 체크 (가중치 1.5)
         if '매수 우세' in volume_delta.get('signal', ''):
-            bullish_count += 1
+            bullish_count += 1.5
         elif '매도 우세' in volume_delta.get('signal', ''):
-            bearish_count += 1
+            bearish_count += 1.5
         
-        # 가격 위치 체크
-        market_profile = indicators.get('market_profile', {})
-        if 'Value Area 하단' in market_profile.get('price_position', ''):
+        # 가격 위치 체크 (가중치 1)
+        price_position = market_profile.get('price_position', '')
+        if 'Value Area 하단' in price_position:
             bullish_count += 1
-        elif 'Value Area 상단' in market_profile.get('price_position', ''):
+        elif 'Value Area 상단' in price_position:
             bearish_count += 1
         
-        if bullish_count > bearish_count:
-            return "기술적 분석 종합 평가 요약: 주요 지표들이 상승 신호를 보이며 롱이 유리하다"
+        # POC 대비 위치 (가중치 1.5)
+        current = market_data.get('current_price', 0)
+        poc = market_profile.get('poc', current)
+        if current > poc * 1.01:
+            bullish_count += 1.5
+        elif current < poc * 0.99:
+            bearish_count += 1.5
+        
+        # 명확한 방향성 제시
+        if bullish_count >= bearish_count + 2:
+            return "**기술적 분석 종합 평가**: 강한 상승 신호들이 확인되어 즉시 롱 진입이 유리하다"
+        elif bullish_count > bearish_count:
+            return "**기술적 분석 종합 평가**: 상승 지표 우세로 롱 포지션 구축이 유리하다"
+        elif bearish_count >= bullish_count + 2:
+            return "**기술적 분석 종합 평가**: 강한 하락 신호들이 확인되어 즉시 숏 진입이 유리하다"
         elif bearish_count > bullish_count:
-            return "기술적 분석 종합 평가 요약: 기술적 지표들이 하락 압력을 시사하여 숏이 유리하다"
+            return "**기술적 분석 종합 평가**: 하락 지표 우세로 숏 포지션 구축이 유리하다"
         else:
-            return "기술적 분석 종합 평가 요약: 기술적 지표들이 혼재되어 방향성이 불명확하다"
+            return "**기술적 분석 종합 평가**: 지표 혼재로 추세 전환점 대기, 돌파 방향 추종 전략 권장"
     
     async def _format_market_sentiment(self, market_data: dict, indicators: dict) -> str:
         """시장 심리 및 포지셔닝"""
@@ -286,19 +358,19 @@ class RegularReportGenerator(BaseReportGenerator):
         
         # CVD (누적 거래량 델타)
         if cvd:
-            lines.append(f"• CVD: {cvd.get('cvd_ratio', 0):+.1f}% → {cvd.get('signal', '균형')}")
-            lines.append(f"• 매수/매도 거래량: {cvd.get('buy_volume', 0):,.0f} / {cvd.get('sell_volume', 0):,.0f} BTC")
+            lines.append(f"• **CVD**: {cvd.get('cvd_ratio', 0):+.1f}% → {cvd.get('signal', '균형')}")
+            lines.append(f"• **매수/매도 거래량**: {cvd.get('buy_volume', 0):,.0f} / {cvd.get('sell_volume', 0):,.0f} BTC")
         
         # 스마트머니
         if smart_money:
-            lines.append(f"• 대형 거래: 매수 {smart_money.get('large_buy_count', 0)}건 vs 매도 {smart_money.get('large_sell_count', 0)}건")
-            lines.append(f"• 스마트머니 플로우: {smart_money.get('net_flow', 0):+.1f} BTC → {smart_money.get('signal', '중립')}")
+            lines.append(f"• **대형 거래**: 매수 {smart_money.get('large_buy_count', 0)}건 vs 매도 {smart_money.get('large_sell_count', 0)}건")
+            lines.append(f"• **스마트머니 플로우**: {smart_money.get('net_flow', 0):+.1f} BTC → {smart_money.get('signal', '중립')}")
         
         # 시장 개요 (CoinGecko)
         if 'market_overview' in market_data and market_data['market_overview']:
             overview = market_data['market_overview']
-            lines.append(f"• BTC 도미넌스: {overview.get('btc_dominance', 0):.1f}%")
-            lines.append(f"• 전체 시총 변화: {overview.get('market_cap_change_24h', 0):+.1f}%")
+            lines.append(f"• **BTC 도미넌스**: {overview.get('btc_dominance', 0):.1f}%")
+            lines.append(f"• **전체 시총 변화**: {overview.get('market_cap_change_24h', 0):+.1f}%")
         
         # 시장 심리 종합
         lines.append("")
@@ -307,62 +379,86 @@ class RegularReportGenerator(BaseReportGenerator):
         return '\n'.join(lines) if lines else "• 센티먼트 데이터 수집 중"
     
     def _generate_sentiment_summary(self, indicators: dict, market_data: dict) -> str:
-        """시장 심리 종합 평가"""
+        """시장 심리 종합 평가 - 더 명확한 방향성"""
         cvd = indicators.get('volume_delta', {})
         smart_money = indicators.get('smart_money', {})
         
         bullish_signals = 0
         bearish_signals = 0
         
-        # CVD 체크
-        if cvd.get('cvd_ratio', 0) > 10:
+        # CVD 체크 (가중치 2)
+        cvd_ratio = cvd.get('cvd_ratio', 0)
+        if cvd_ratio > 15:
+            bullish_signals += 2
+        elif cvd_ratio > 5:
             bullish_signals += 1
-        elif cvd.get('cvd_ratio', 0) < -10:
+        elif cvd_ratio < -15:
+            bearish_signals += 2
+        elif cvd_ratio < -5:
             bearish_signals += 1
         
-        # 스마트머니 체크
-        if smart_money.get('net_flow', 0) > 5:
+        # 스마트머니 체크 (가중치 2)
+        net_flow = smart_money.get('net_flow', 0)
+        if net_flow > 5:
+            bullish_signals += 2
+        elif net_flow > 2:
             bullish_signals += 1
-        elif smart_money.get('net_flow', 0) < -5:
+        elif net_flow < -5:
+            bearish_signals += 2
+        elif net_flow < -2:
             bearish_signals += 1
         
-        # Fear & Greed 체크
+        # Fear & Greed 체크 (가중치 1.5)
         if 'fear_greed' in market_data and market_data['fear_greed']:
             fng_value = market_data['fear_greed'].get('value', 50)
-            if fng_value > 70:
-                bullish_signals += 1
-            elif fng_value < 30:
-                bearish_signals += 1
+            if fng_value > 75:
+                bullish_signals += 1.5
+            elif fng_value > 60:
+                bullish_signals += 0.5
+            elif fng_value < 25:
+                bearish_signals += 1.5
+            elif fng_value < 40:
+                bearish_signals += 0.5
         
-        if bullish_signals > bearish_signals:
-            return "시장 심리 종합 평가 요약: 매수 심리가 우세하여 롱이 유리하다"
+        # 명확한 방향성 제시
+        if bullish_signals >= bearish_signals + 2:
+            return "**시장 심리 종합 평가**: 매수 심리 압도적 우위로 롱 포지션 적극 권장"
+        elif bullish_signals > bearish_signals:
+            return "**시장 심리 종합 평가**: 긍정적 심리 우세로 롱 진입이 유리하다"
+        elif bearish_signals >= bullish_signals + 2:
+            return "**시장 심리 종합 평가**: 매도 심리 압도적 우위로 숏 포지션 적극 권장"
         elif bearish_signals > bullish_signals:
-            return "시장 심리 종합 평가 요약: 매도 심리가 강해 숏이 유리하다"
+            return "**시장 심리 종합 평가**: 부정적 심리 우세로 숏 진입이 유리하다"
         else:
-            return "시장 심리 종합 평가 요약: 시장 심리가 중립적이며 관망세가 우세하다"
+            return "**시장 심리 종합 평가**: 심리 지표 중립, 기술적 지표 우선 고려 필요"
     
     def _format_trading_signals(self, indicators: dict) -> str:
-        """롱/숏 신호 분석"""
+        """롱/숏 신호 분석 - 더 명확한 신호"""
         composite = indicators.get('composite_signal', {})
         scores = composite.get('scores', {})
+        total_score = composite.get('total_score', 0)
         
-        # 신호 색상 결정
-        signal = composite.get('signal', '중립')
-        if '강한 롱' in signal:
+        # 신호 색상과 강도 결정
+        if total_score >= 5:
             signal_emoji = "🟢"
-        elif '롱' in signal:
+            signal = "강한 롱 신호"
+        elif total_score >= 2:
             signal_emoji = "🟡"
-        elif '강한 숏' in signal:
+            signal = "롱 신호"
+        elif total_score <= -5:
             signal_emoji = "🔴"
-        elif '숏' in signal:
+            signal = "강한 숏 신호"
+        elif total_score <= -2:
             signal_emoji = "🟠"
+            signal = "숏 신호"
         else:
             signal_emoji = "⚪"
+            signal = "중립 (방향성 부재)"
         
         lines = [
-            f"{signal_emoji} 종합 신호: {signal} (신뢰도 {composite.get('confidence', 50):.0f}%)",
+            f"{signal_emoji} **종합 신호**: {signal} (신뢰도 {composite.get('confidence', 50):.0f}%)",
             "",
-            "📊 세부 점수 (±10점):"
+            "📊 **세부 점수** (±10점):"
         ]
         
         # 점수별 정렬 (절대값 기준)
@@ -374,27 +470,54 @@ class RegularReportGenerator(BaseReportGenerator):
         
         lines.extend([
             "",
-            f"📍 최종 점수: {composite.get('total_score', 0):+.1f}/10",
-            f"📍 추천 액션: {composite.get('action', '관망')}",
-            f"📍 포지션 크기: {composite.get('position_size', '표준')}"
+            f"📍 **최종 점수**: {total_score:+.1f}/10",
+            f"📍 **추천 액션**: {self._get_clear_action(total_score)}",
+            f"📍 **포지션 크기**: {composite.get('position_size', '표준')}"
         ])
         
         return '\n'.join(lines)
     
+    def _get_clear_action(self, score: float) -> str:
+        """명확한 액션 제시"""
+        if score >= 5:
+            return "즉시 롱 진입 (전체 자금의 30-40%)"
+        elif score >= 3:
+            return "롱 진입 (전체 자금의 20-30%)"
+        elif score >= 1:
+            return "소량 롱 테스트 (전체 자금의 10-15%)"
+        elif score <= -5:
+            return "즉시 숏 진입 (전체 자금의 30-40%)"
+        elif score <= -3:
+            return "숏 진입 (전체 자금의 20-30%)"
+        elif score <= -1:
+            return "소량 숏 테스트 (전체 자금의 10-15%)"
+        else:
+            return "관망 (명확한 신호 대기)"
+    
     async def _format_strategy_recommendation(self, market_data: dict, indicators: dict) -> str:
         """구체적 전략 제안"""
         composite = indicators.get('composite_signal', {})
-        signal = composite.get('signal', '중립')
+        total_score = composite.get('total_score', 0)
         current_price = market_data.get('current_price', 0)
-        change_24h = market_data.get('change_24h', 0)
+        volatility = market_data.get('volatility', 0)
+        
+        # 변동성 기반 진입 범위 조정
+        if volatility > 5:
+            entry_range = 0.008  # 0.8%
+        elif volatility > 3:
+            entry_range = 0.005  # 0.5%
+        else:
+            entry_range = 0.003  # 0.3%
         
         if self.openai_client:
             # GPT 기반 전략 생성
             try:
                 # 주요 지표 요약
                 summary = {
-                    '신호': signal,
-                    '점수': composite.get('total_score', 0),
+                    '신호': self._get_clear_action(total_score),
+                    '점수': total_score,
+                    '현재가': current_price,
+                    '변동성': volatility,
                     '펀딩비': indicators.get('funding_analysis', {}).get('current_rate', 0),
                     'OI변화': indicators.get('oi_analysis', {}).get('oi_change_percent', 0),
                     'CVD': indicators.get('volume_delta', {}).get('cvd_ratio', 0),
@@ -405,28 +528,29 @@ class RegularReportGenerator(BaseReportGenerator):
 비트코인 선물 트레이더를 위한 구체적 전략을 제시하세요:
 
 현재 상황:
-- 가격: ${current_price:,.0f} (24시간 변동: {change_24h*100:+.2f}%)
-- 종합 신호: {summary['신호']} (점수 {summary['점수']:.1f})
+- 가격: ${summary['현재가']:,.0f}
+- 종합 점수: {summary['점수']:.1f} (강한 신호: ±5 이상)
+- 변동성: {summary['변동성']:.1f}%
 - 펀딩비: {summary['펀딩비']:+.3%}
 - OI 변화: {summary['OI변화']:+.1f}%
 - CVD: {summary['CVD']:+.1f}%
 - 리스크: {summary['리스크']}
 
-다음을 포함하여 5줄 이내로 작성:
-1. 진입 방향 (롱/숏/관망)
-2. 구체적 진입가 범위
-3. 손절가 설정
+다음을 포함하여 5줄로 작성:
+1. 진입 방향과 이유 (점수 기반)
+2. 구체적 진입가 범위 (현재가 기준 ±{entry_range*100:.1f}%)
+3. 손절가 설정 (변동성 고려)
 4. 목표가 (1차, 2차)
 5. 주의사항
 
 번호를 붙여서 각 항목을 명확히 구분하세요.
-레버리지 언급은 절대 금지
+중립인 경우 관망을 권하되 돌파/이탈 가격을 명시하세요.
 """
                 
                 response = await self.openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "당신은 리스크 관리를 최우선으로 하는 선물 트레이딩 전문가입니다."},
+                        {"role": "system", "content": "당신은 명확한 방향성을 제시하는 선물 트레이딩 전문가입니다."},
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=300,
@@ -438,45 +562,100 @@ class RegularReportGenerator(BaseReportGenerator):
             except Exception as e:
                 self.logger.error(f"GPT 전략 생성 실패: {e}")
         
-        # 규칙 기반 전략
-        if '강한 롱' in signal:
-            return f"""1. 진입: 현재가 근처 또는 단기 조정 시 롱 진입
-2. 진입가 범위: ${current_price * 0.995:,.0f} ~ ${current_price * 1.002:,.0f}
-3. 손절가: ${current_price * 0.985:,.0f} (-1.5%)
-4. 목표가: 1차 ${current_price * 1.015:,.0f} (+1.5%), 2차 ${current_price * 1.03:,.0f} (+3%)
-5. 주의: 펀딩비 과열 시 익절 타이밍 중요"""
+        # 규칙 기반 전략 (더 명확한 방향성)
+        if total_score >= 5:
+            return f"""1. 강한 상승 신호 확인, 즉시 롱 진입 권장
+2. 진입가 범위: ${current_price * (1-entry_range):,.0f} ~ ${current_price:,.0f}
+3. 손절가: ${current_price * 0.98:,.0f} (-2%)
+4. 목표가: 1차 ${current_price * 1.02:,.0f} (+2%), 2차 ${current_price * 1.04:,.0f} (+4%)
+5. 주의: 과열 구간 진입 시 분할 익절 필수"""
         
-        elif '강한 숏' in signal:
-            return f"""1. 진입: 현재가 근처 또는 단기 반등 시 숏 진입
-2. 진입가 범위: ${current_price * 0.998:,.0f} ~ ${current_price * 1.005:,.0f}
+        elif total_score >= 2:
+            return f"""1. 상승 우위 확인, 신중한 롱 진입 권장
+2. 진입가 범위: ${current_price * (1-entry_range):,.0f} ~ ${current_price * 0.998:,.0f}
+3. 손절가: ${current_price * 0.985:,.0f} (-1.5%)
+4. 목표가: 1차 ${current_price * 1.015:,.0f} (+1.5%), 2차 ${current_price * 1.025:,.0f} (+2.5%)
+5. 주의: 저항선 근처 도달 시 일부 익절 고려"""
+        
+        elif total_score <= -5:
+            return f"""1. 강한 하락 신호 확인, 즉시 숏 진입 권장
+2. 진입가 범위: ${current_price:,.0f} ~ ${current_price * (1+entry_range):,.0f}
+3. 손절가: ${current_price * 1.02:,.0f} (+2%)
+4. 목표가: 1차 ${current_price * 0.98:,.0f} (-2%), 2차 ${current_price * 0.96:,.0f} (-4%)
+5. 주의: 과매도 구간 진입 시 분할 익절 필수"""
+        
+        elif total_score <= -2:
+            return f"""1. 하락 우위 확인, 신중한 숏 진입 권장
+2. 진입가 범위: ${current_price * 1.002:,.0f} ~ ${current_price * (1+entry_range):,.0f}
 3. 손절가: ${current_price * 1.015:,.0f} (+1.5%)
-4. 목표가: 1차 ${current_price * 0.985:,.0f} (-1.5%), 2차 ${current_price * 0.97:,.0f} (-3%)
-5. 주의: 숏 스퀴즈 가능성 항상 염두"""
+4. 목표가: 1차 ${current_price * 0.985:,.0f} (-1.5%), 2차 ${current_price * 0.975:,.0f} (-2.5%)
+5. 주의: 지지선 근처 도달 시 일부 익절 고려"""
         
         else:
-            return f"""1. 현재 명확한 방향성 부재, 관망 권장
-2. 상방 돌파 대기: ${current_price * 1.01:,.0f} 이상 확정 시 롱
-3. 하방 이탈 대기: ${current_price * 0.99:,.0f} 이하 확정 시 숏
+            return f"""1. 방향성 부재로 관망 권장, 돌파/이탈 대기
+2. 상방 돌파: ${current_price * 1.008:,.0f} 이상 확정 시 롱
+3. 하방 이탈: ${current_price * 0.992:,.0f} 이하 확정 시 숏
 4. 목표: 돌파/이탈 방향으로 1.5~2% 수익
-5. 주의: 변동성 확대 시점까지 인내심 필요"""
+5. 주의: 가짜 돌파 주의, 거래량 확인 필수"""
     
-    def _format_risk_assessment(self, indicators: dict) -> str:
-        """리스크 평가"""
+    async def _format_risk_assessment(self, market_data: dict, indicators: dict) -> str:
+        """리스크 평가 - 동적 생성"""
         risk = indicators.get('risk_metrics', {})
         liquidations = indicators.get('liquidation_analysis', {})
         
+        # 계정 정보 가져오기
+        position_info = await self._get_position_info()
+        account_info = await self._get_account_info()
+        
+        # 기본 리스크 정보
         lines = [
-            f"• 종합 리스크: {risk.get('risk_level', '보통')} (점수 {risk.get('risk_score', 0)}/10)",
-            f"• 변동성 리스크: {risk.get('volatility_risk', '보통')}",
-            f"• 펀딩비 리스크: {risk.get('funding_risk', '보통')}",
-            f"• 권장 포지션: {risk.get('position_sizing', '표준 포지션')}"
+            f"• **종합 리스크**: {risk.get('risk_level', '보통')} (점수 {risk.get('risk_score', 0)}/10)",
+            f"• **변동성 리스크**: {risk.get('volatility_risk', '보통')}",
+            f"• **펀딩비 리스크**: {risk.get('funding_risk', '보통')}"
         ]
+        
+        # 포지션별 맞춤 리스크 평가
+        if position_info.get('has_position'):
+            side = position_info.get('side', '')
+            entry_price = position_info.get('entry_price', 0)
+            current_price = market_data.get('current_price', 0)
+            liquidation_price = position_info.get('liquidation_price', 0)
+            
+            # 청산까지 거리
+            if liquidation_price > 0:
+                if side == '롱':
+                    liq_distance = ((current_price - liquidation_price) / current_price) * 100
+                else:
+                    liq_distance = ((liquidation_price - current_price) / current_price) * 100
+                
+                if liq_distance < 5:
+                    lines.append(f"• ⚠️ **청산 경고**: 청산가까지 {liq_distance:.1f}%만 남음!")
+                    lines.append("• **긴급 대응**: 즉시 포지션 축소 또는 증거금 추가 필요")
+                elif liq_distance < 10:
+                    lines.append(f"• **청산 주의**: 청산가까지 {liq_distance:.1f}% 여유")
+                    lines.append("• **권장 대응**: 일부 포지션 정리 고려")
+                else:
+                    lines.append(f"• **청산 안전**: 청산가까지 {liq_distance:.1f}% 여유")
+        else:
+            # 포지션 없을 때
+            total_equity = account_info.get('total_equity', 0)
+            if total_equity > 0:
+                # 권장 포지션 크기
+                if risk.get('risk_level') == '높음':
+                    recommended_size = total_equity * 0.1  # 10%
+                    lines.append(f"• **권장 포지션**: ${recommended_size:.0f} (총 자산의 10%)")
+                elif risk.get('risk_level') == '낮음':
+                    recommended_size = total_equity * 0.3  # 30%
+                    lines.append(f"• **권장 포지션**: ${recommended_size:.0f} (총 자산의 30%)")
+                else:
+                    recommended_size = total_equity * 0.2  # 20%
+                    lines.append(f"• **권장 포지션**: ${recommended_size:.0f} (총 자산의 20%)")
         
         # 청산 레벨
         if liquidations and 'long_liquidation_levels' in liquidations:
             lines.extend([
                 "",
-                "⚡ 주요 청산 레벨:",
+                "⚡ **주요 청산 레벨**:",
                 f"• 롱 청산: ${liquidations['long_liquidation_levels'][0]:,.0f} (3% 하락)",
                 f"• 숏 청산: ${liquidations['short_liquidation_levels'][0]:,.0f} (3% 상승)"
             ])
@@ -484,36 +663,69 @@ class RegularReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     async def _format_12h_prediction(self, market_data: dict, indicators: dict) -> str:
-        """향후 12시간 예측"""
+        """향후 12시간 예측 - 더 정확한 확률"""
         composite = indicators.get('composite_signal', {})
         total_score = composite.get('total_score', 0)
         current_price = market_data.get('current_price', 0)
         
-        # 확률 계산
-        if total_score > 2:
-            up_prob = min(60 + total_score * 5, 80)
-            down_prob = max(10, 20 - total_score * 2)
-        elif total_score < -2:
-            up_prob = max(10, 30 + total_score * 2)
-            down_prob = min(60 - total_score * 5, 80)
-        else:
-            up_prob = 35 + total_score * 5
-            down_prob = 35 - total_score * 5
+        # 더 정밀한 확률 계산
+        base_up = 33
+        base_down = 33
+        base_sideways = 34
         
+        # 점수 기반 확률 조정 (더 극단적으로)
+        if total_score > 0:
+            up_bonus = min(total_score * 8, 40)  # 최대 +40%
+            up_prob = base_up + up_bonus
+            down_prob = max(10, base_down - up_bonus * 0.7)
+            sideways_prob = 100 - up_prob - down_prob
+        elif total_score < 0:
+            down_bonus = min(abs(total_score) * 8, 40)  # 최대 +40%
+            down_prob = base_down + down_bonus
+            up_prob = max(10, base_up - down_bonus * 0.7)
+            sideways_prob = 100 - up_prob - down_prob
+        else:
+            up_prob = base_up
+            down_prob = base_down
+            sideways_prob = base_sideways
+        
+        # 추가 요인 고려
+        funding = indicators.get('funding_analysis', {})
+        if funding.get('current_rate', 0) > 0.001:  # 펀딩비 과열
+            down_prob += 5
+            up_prob -= 5
+        elif funding.get('current_rate', 0) < -0.001:
+            up_prob += 5
+            down_prob -= 5
+        
+        # 정규화
+        total = up_prob + down_prob + sideways_prob
+        up_prob = int(up_prob / total * 100)
+        down_prob = int(down_prob / total * 100)
         sideways_prob = 100 - up_prob - down_prob
         
         lines = [
-            f"상승: {up_prob}% / 횡보: {sideways_prob}% / 하락: {down_prob}%",
+            f"**상승**: {up_prob}% / **횡보**: {sideways_prob}% / **하락**: {down_prob}%",
             "",
-            "📌 전략 제안:"
+            "📌 **전략 제안**:"
         ]
         
-        if up_prob > 60:
-            lines.append(f"지지선 ${current_price * 0.98:,.0f} 이탈 전까지 롱 유지 / 저항선 ${current_price * 1.02:,.0f} 돌파 시 추가 상승 가능성")
-        elif down_prob > 60:
-            lines.append(f"저항선 ${current_price * 1.02:,.0f} 돌파 전까지 숏 유지 / 지지선 ${current_price * 0.98:,.0f} 이탈 시 추가 하락 가능성")
+        # 명확한 전략 제안
+        if up_prob >= 60:
+            lines.append(f"높은 상승 확률로 지지선 ${current_price * 0.985:,.0f} 위에서는 롱 유지")
+            lines.append(f"저항선 ${current_price * 1.02:,.0f} 돌파 시 추가 상승 가속화 예상")
+        elif down_prob >= 60:
+            lines.append(f"높은 하락 확률로 저항선 ${current_price * 1.015:,.0f} 아래에서는 숏 유지")
+            lines.append(f"지지선 ${current_price * 0.98:,.0f} 이탈 시 추가 하락 가속화 예상")
+        elif up_prob > down_prob + 10:
+            lines.append(f"상승 우위로 ${current_price * 0.992:,.0f} 위에서 롱 포지션 유리")
+            lines.append(f"목표가 ${current_price * 1.015:,.0f} 도달 시 일부 익절 권장")
+        elif down_prob > up_prob + 10:
+            lines.append(f"하락 우위로 ${current_price * 1.008:,.0f} 아래에서 숏 포지션 유리")
+            lines.append(f"목표가 ${current_price * 0.985:,.0f} 도달 시 일부 익절 권장")
         else:
-            lines.append(f"${current_price * 0.98:,.0f} ~ ${current_price * 1.02:,.0f} 박스권 내 횡보 예상 / 이탈 방향 주시")
+            lines.append(f"${current_price * 0.99:,.0f} ~ ${current_price * 1.01:,.0f} 박스권 횡보 예상")
+            lines.append("명확한 이탈 방향 확인 후 진입 권장")
         
         return '\n'.join(lines)
     
@@ -541,13 +753,13 @@ class RegularReportGenerator(BaseReportGenerator):
                 current = position_info.get('current_price', 0)
                 pnl_rate = position_info.get('pnl_rate', 0) * 100
                 
-                lines.append(f"• 현재 포지션: {side} (진입 ${entry:,.0f}, {pnl_rate:+.1f}%)")
-                lines.append(f"• 미실현 손익: {self._format_currency(position_info.get('unrealized_pnl', 0), False)}")
+                lines.append(f"• **현재 포지션**: {side} (진입 ${entry:,.0f}, {pnl_rate:+.1f}%)")
+                lines.append(f"• **미실현 손익**: {self._format_currency(position_info.get('unrealized_pnl', 0), False)}")
             else:
-                lines.append("• 현재 포지션: 없음")
+                lines.append("• **현재 포지션**: 없음")
             
             # 실현 손익
-            lines.append(f"• 오늘 실현: {self._format_currency(today_pnl, False)}")
+            lines.append(f"• **오늘 실현**: {self._format_currency(today_pnl, False)}")
             
             return '\n'.join(lines)
             
