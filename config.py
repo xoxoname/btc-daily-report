@@ -22,6 +22,16 @@ class Config:
         self.bitget_passphrase = self.BITGET_PASSPHRASE
         self.symbol = "BTCUSDT"
         
+        # Gate.io API 설정 (새로 추가)
+        self.GATEIO_API_KEY = os.getenv('GATEIO_API_KEY')
+        self.GATEIO_API_SECRET = os.getenv('GATEIO_API_SECRET')
+        self.gateio_api_key = self.GATEIO_API_KEY
+        self.gateio_api_secret = self.GATEIO_API_SECRET
+        
+        # 미러 트레이딩 설정
+        self.ENABLE_MIRROR_TRADING = os.getenv('ENABLE_MIRROR_TRADING', 'false').lower() == 'true'
+        self.MIRROR_CHECK_INTERVAL = int(os.getenv('MIRROR_CHECK_INTERVAL', '10'))  # 초
+        
         # 기존 뉴스 API (3개)
         self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
         self.NEWSDATA_KEY = os.getenv('NEWSDATA_KEY')
@@ -35,6 +45,10 @@ class Config:
         # OpenAI 설정
         self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
         
+        # OpenAI Rate Limit 설정
+        self.OPENAI_MAX_RETRIES = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
+        self.OPENAI_RETRY_DELAY = int(os.getenv('OPENAI_RETRY_DELAY', '60'))  # 초
+        
         # 설정 검증
         self._validate_config()
     
@@ -47,6 +61,13 @@ class Config:
             'BITGET_SECRET_KEY': self.BITGET_SECRET_KEY,
             'BITGET_PASSPHRASE': self.BITGET_PASSPHRASE
         }
+        
+        # 미러 트레이딩이 활성화된 경우 Gate.io API 검증
+        if self.ENABLE_MIRROR_TRADING:
+            required_configs.update({
+                'GATEIO_API_KEY': self.GATEIO_API_KEY,
+                'GATEIO_API_SECRET': self.GATEIO_API_SECRET
+            })
         
         missing_configs = []
         for config_name, config_value in required_configs.items():
@@ -64,6 +85,13 @@ class Config:
         print("✅ 필수 API:")
         print(f"  • Telegram Bot: 설정됨")
         print(f"  • Bitget API: 설정됨")
+        
+        # 미러 트레이딩
+        if self.ENABLE_MIRROR_TRADING:
+            print(f"  • Gate.io API: 설정됨")
+            print(f"  • 미러 트레이딩: 활성화 (체크 간격: {self.MIRROR_CHECK_INTERVAL}초)")
+        else:
+            print(f"  • 미러 트레이딩: 비활성화")
         
         # 선택 API들
         optional_apis = {
@@ -100,4 +128,7 @@ class Config:
         print("  COINGECKO_API_KEY=your_key_here")
         print("  CRYPTOCOMPARE_API_KEY=your_key_here")
         print("  GLASSNODE_API_KEY=your_key_here")
+        print("  GATEIO_API_KEY=your_key_here")
+        print("  GATEIO_API_SECRET=your_secret_here")
+        print("  ENABLE_MIRROR_TRADING=true")
         print("━" * 50 + "\n")
