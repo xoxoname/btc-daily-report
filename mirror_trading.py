@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from datetime import datetime, timedelta
 import json
 
@@ -14,14 +14,13 @@ class MirrorTradingSystem:
         self.logger = logging.getLogger('mirror_trading')
         
         # 상태 추적
-        self.last_positions = {}
+        self.synced_positions = {}  # 이미 동기화된 포지션 추적
         self.pending_orders = {}
         self.sync_enabled = True
         
         # 설정
-        self.check_interval = config.MIRROR_CHECK_INTERVAL  # 환경변수에서 가져오기
-        self.min_trade_size = 0.001  # 최소 거래 크기 (BTC)
-        self.min_investment = 5  # 최소 투자금 ($)
+        self.check_interval = config.MIRROR_CHECK_INTERVAL
+        self.min_margin = 10  # 최소 증거금 $10
         
     async def start_monitoring(self):
         """미러 트레이딩 모니터링 시작"""
@@ -34,278 +33,216 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.check_interval)
             except Exception as e:
                 self.logger.error(f"미러 트레이딩 오류: {e}")
-                await asyncio.sleep(30)  # 오류 시 30초 대기
+                await asyncio.sleep(30)
     
     async def check_and_sync_positions(self):
         """포지션 체크 및 동기화"""
         try:
-            # 1. Bitget 포지션 조회
-            bitget_positions = await self.bitget_client.get_positions('BTCUSDT')
+            # 1. 계정 정보 먼저 조회
+            bitget_account = await self.bitget_client.get_account_info()
+            gateio_account = await self.gateio_client.get_futures_account()
             
-            # 2. Gate.io 포지션 조회
+            bitget_total = float(bitget_account.get('accountEquity', 0))
+            gateio_total = float(gateio_account.get('total', 0))
+            
+            # 2. 포지션 조회
+            bitget_positions = await self.bitget_client.get_positions('BTCUSDT')
             gateio_positions = await self.gateio_client.get_positions('usdt')
             
-            # 3. 포지션 비교 및 동기화
-            await self._sync_positions(bitget_positions, gateio_positions)
+            # 3. 신규 포지션만 동기화
+            await self._sync_new_positions(
+                bitget_positions, 
+                gateio_positions,
+                bitget_total,
+                gateio_total
+            )
             
         except Exception as e:
             self.logger.error(f"포지션 체크 실패: {e}")
     
-    async def _sync_positions(self, bitget_positions: List[Dict], gateio_positions: List[Dict]):
-        """포지션 동기화"""
+    async def _sync_new_positions(self, bitget_positions: List[Dict], 
+                                 gateio_positions: List[Dict],
+                                 bitget_total: float,
+                                 gateio_total: float):
+        """신규 포지션만 동기화"""
+        
         # Bitget 활성 포지션 찾기
-        bitget_active = None
         for pos in bitget_positions:
             if float(pos.get('total', 0)) > 0:
-                bitget_active = pos
-                break
-        
-        # Gate.io BTC 포지션 찾기
-        gateio_btc = None
-        for pos in gateio_positions:
-            if pos.get('contract', '') == 'BTC_USDT':
-                gateio_btc = pos
-                break
-        
-        # 동기화 필요 여부 확인
-        if bitget_active:
-            await self._handle_bitget_position(bitget_active, gateio_btc)
-        elif gateio_btc and float(gateio_btc.get('size', 0)) != 0:
-            # Bitget에는 포지션이 없는데 Gate.io에는 있는 경우
-            await self._close_gateio_position(gateio_btc)
+                position_id = self._generate_position_id(pos)
+                
+                # 이미 동기화된 포지션인지 확인
+                if position_id in self.synced_positions:
+                    continue
+                
+                # 신규 포지션 발견
+                self.logger.info(f"🆕 신규 Bitget 포지션 발견: {position_id}")
+                
+                # Gate.io에 미러링
+                success = await self._mirror_position_to_gateio(
+                    pos, bitget_total, gateio_total
+                )
+                
+                if success:
+                    self.synced_positions[position_id] = datetime.now()
+                    self.logger.info(f"✅ 포지션 동기화 완료: {position_id}")
     
-    async def _handle_bitget_position(self, bitget_pos: Dict, gateio_pos: Optional[Dict]):
-        """Bitget 포지션 처리"""
+    def _generate_position_id(self, position: Dict) -> str:
+        """포지션 고유 ID 생성"""
+        side = position.get('holdSide', '')
+        entry = float(position.get('openPriceAvg', 0))
+        size = float(position.get('total', 0))
+        return f"{side}_{entry:.2f}_{size:.6f}"
+    
+    async def _mirror_position_to_gateio(self, bitget_pos: Dict, 
+                                       bitget_total: float, 
+                                       gateio_total: float) -> bool:
+        """Bitget 포지션을 Gate.io에 미러링"""
         try:
-            # Bitget 포지션 정보
-            bitget_side = bitget_pos.get('holdSide', '').lower()
-            bitget_size = float(bitget_pos.get('total', 0))
-            bitget_entry = float(bitget_pos.get('openPriceAvg', 0))
-            bitget_leverage = int(float(bitget_pos.get('leverage', 1)))
+            # Bitget 포지션 정보 추출
+            side = bitget_pos.get('holdSide', '').lower()
+            margin_used = float(bitget_pos.get('marginSize', 0))  # 실제 사용된 증거금
+            leverage = int(float(bitget_pos.get('leverage', 1)))
+            entry_price = float(bitget_pos.get('openPriceAvg', 0))
             
-            # 포지션이 변경되었는지 확인
-            position_key = f"{bitget_side}_{bitget_size}_{bitget_entry}"
-            if position_key == self.last_positions.get('bitget'):
-                return  # 변경 없음
+            # 총 자산 대비 증거금 비율 계산
+            margin_ratio = margin_used / bitget_total if bitget_total > 0 else 0
             
-            self.logger.info(f"📊 Bitget 포지션 감지: {bitget_side} {bitget_size} BTC @ ${bitget_entry} (레버리지: {bitget_leverage}x)")
+            # Gate.io에서 사용할 증거금 계산
+            gateio_margin = gateio_total * margin_ratio
             
-            # 자산 비율 계산
-            ratio = await self._calculate_position_ratio(bitget_pos)
+            self.logger.info(f"📊 미러링 계산:")
+            self.logger.info(f"  - Bitget 총자산: ${bitget_total:,.2f}")
+            self.logger.info(f"  - Bitget 증거금: ${margin_used:,.2f} ({margin_ratio:.2%})")
+            self.logger.info(f"  - Bitget 레버리지: {leverage}x")
+            self.logger.info(f"  - Gate.io 총자산: ${gateio_total:,.2f}")
+            self.logger.info(f"  - Gate.io 증거금 (계산): ${gateio_margin:,.2f}")
             
-            # Gate.io에서 동일 설정으로 포지션 생성
-            await self._create_gateio_position(bitget_pos, ratio, gateio_pos)
+            # 최소 증거금 체크
+            if gateio_margin < self.min_margin:
+                self.logger.warning(f"⚠️ 증거금이 너무 작습니다: ${gateio_margin:.2f}")
+                gateio_margin = self.min_margin
             
-            # 마지막 포지션 업데이트
-            self.last_positions['bitget'] = position_key
+            # Gate.io 레버리지 설정 (Bitget과 동일하게)
+            await self._ensure_gateio_settings('BTC_USDT', leverage)
+            
+            # 지정가 주문을 위한 가격 계산 (유리한 가격)
+            ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
+            current_price = float(ticker.get('last', 0))
+            
+            if side == 'long':
+                # 롱은 현재가보다 약간 낮은 가격으로
+                order_price = min(entry_price, current_price * 0.9995)
+            else:
+                # 숏은 현재가보다 약간 높은 가격으로
+                order_price = max(entry_price, current_price * 1.0005)
+            
+            # 계약 수 계산 (증거금과 레버리지 기반)
+            contract_info = await self.gateio_client.get_contract_info('usdt', 'BTC_USDT')
+            quanto_multiplier = float(contract_info.get('quanto_multiplier', 0.0001))
+            
+            # 포지션 가치 = 증거금 × 레버리지
+            position_value = gateio_margin * leverage
+            btc_amount = position_value / order_price
+            contracts = int(btc_amount / quanto_multiplier)
+            
+            # 방향 설정
+            if side in ['short', 'sell']:
+                contracts = -abs(contracts)
+            else:
+                contracts = abs(contracts)
+            
+            # 최소 1계약
+            if abs(contracts) < 1:
+                contracts = 1 if contracts >= 0 else -1
+            
+            # 주문 생성
+            order_params = {
+                'contract': 'BTC_USDT',
+                'size': contracts,
+                'price': str(order_price),
+                'tif': 'gtc',  # Good Till Cancel
+                'text': f'mirror_bitget_{leverage}x_{margin_ratio:.2%}'
+            }
+            
+            result = await self.gateio_client.create_futures_order('usdt', **order_params)
+            
+            if result.get('id'):
+                self.logger.info(f"✅ Gate.io 미러 주문 생성:")
+                self.logger.info(f"  - 방향: {side}")
+                self.logger.info(f"  - 레버리지: {leverage}x")
+                self.logger.info(f"  - 증거금: ${gateio_margin:,.2f}")
+                self.logger.info(f"  - 계약수: {abs(contracts)}")
+                self.logger.info(f"  - 주문가: ${order_price:,.2f}")
+                
+                # 손절/익절 설정 (TODO: Bitget에서 실제 손절/익절 정보 가져오기)
+                # await self._mirror_stop_orders(bitget_pos, contracts, order_price)
+                
+                return True
+            
+            return False
             
         except Exception as e:
-            self.logger.error(f"Bitget 포지션 처리 실패: {e}")
+            self.logger.error(f"Gate.io 미러링 실패: {e}")
+            return False
     
-    async def _calculate_position_ratio(self, bitget_pos: Dict) -> float:
-        """포지션 비율 계산 - 포지션 가치 기준"""
+    async def _ensure_gateio_settings(self, contract: str, leverage: int):
+        """Gate.io 설정 확인 및 조정"""
         try:
-            # Bitget 계정 정보 조회
-            bitget_account = await self.bitget_client.get_account_info()
+            # 현재 포지션 설정 조회
+            positions = await self.gateio_client.get_positions('usdt')
             
-            # 총 자산
-            total_equity = float(bitget_account.get('accountEquity', 0))
+            for pos in positions:
+                if pos.get('contract') == contract:
+                    current_leverage = int(pos.get('leverage', 0))
+                    if current_leverage != leverage:
+                        self.logger.info(f"⚙️ 레버리지 변경 필요: {current_leverage}x → {leverage}x")
+                        # 레버리지 변경 API 호출
+                        await self._update_gateio_leverage(contract, leverage)
+                    return
             
-            # 포지션 가치 (레버리지 적용된 전체 가치)
-            margin_size = float(bitget_pos.get('marginSize', 0))
-            leverage = float(bitget_pos.get('leverage', 1))
-            
-            # 총 자산 대비 포지션 가치 비율
-            ratio = margin_size / total_equity if total_equity > 0 else 0
-            
-            # 로깅
-            self.logger.info(f"📊 Bitget 자산 분석:")
-            self.logger.info(f"  - 총 자산: ${total_equity:,.2f}")
-            self.logger.info(f"  - 포지션 증거금: ${margin_size:,.2f}")
-            self.logger.info(f"  - 레버리지: {leverage}x")
-            self.logger.info(f"  - 포지션 비율: {ratio:.2%}")
-            
-            return ratio
+            # 포지션이 없으면 기본 설정
+            await self._update_gateio_leverage(contract, leverage)
             
         except Exception as e:
-            self.logger.error(f"비율 계산 실패: {e}")
-            return 0.01  # 기본값 1%
+            self.logger.error(f"Gate.io 설정 확인 실패: {e}")
     
-    async def _set_gateio_leverage(self, contract: str, leverage: int):
-        """Gate.io 레버리지 설정"""
+    async def _update_gateio_leverage(self, contract: str, leverage: int):
+        """Gate.io 레버리지 업데이트"""
         try:
+            # Gate.io API를 통한 레버리지 설정
+            # 실제 API 엔드포인트에 맞게 수정 필요
             endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
             
-            # Gate.io API로 레버리지 설정
+            # POST 요청으로 레버리지 변경
             async with self.gateio_client.session.post(
                 f"{self.gateio_client.base_url}{endpoint}",
-                headers=self.gateio_client._get_headers('POST', endpoint, '', ''),
-                json={'leverage': str(leverage)}
+                headers=self.gateio_client._get_headers('POST', endpoint, '', json.dumps({'leverage': leverage})),
+                json={'leverage': leverage}
             ) as response:
                 if response.status in [200, 201]:
-                    self.logger.info(f"✅ Gate.io 레버리지 설정 완료: {leverage}x")
+                    self.logger.info(f"✅ 레버리지 설정 완료: {leverage}x")
                 else:
                     response_text = await response.text()
                     self.logger.warning(f"레버리지 설정 실패: {response_text}")
                     
         except Exception as e:
-            self.logger.error(f"레버리지 설정 오류: {e}")
+            self.logger.error(f"레버리지 업데이트 오류: {e}")
     
-    async def _create_gateio_position(self, bitget_pos: Dict, ratio: float, existing_pos: Optional[Dict]):
-        """Gate.io에서 포지션 생성 - Bitget 설정 동기화"""
-        try:
-            # Bitget 포지션 정보 추출
-            bitget_side = bitget_pos.get('holdSide', '').lower()
-            bitget_leverage = int(float(bitget_pos.get('leverage', 1)))
-            bitget_entry = float(bitget_pos.get('openPriceAvg', 0))
-            
-            # Gate.io 계정 정보 조회
-            gateio_account = await self.gateio_client.get_futures_account()
-            total_equity = float(gateio_account.get('total', 0))
-            
-            # 투자금 계산 (총 자산의 동일 비율)
-            investment_amount = total_equity * ratio
-            
-            self.logger.info(f"📊 Gate.io 미러링 계산:")
-            self.logger.info(f"  - Gate.io 총 자산: ${total_equity:,.2f}")
-            self.logger.info(f"  - 미러링 비율: {ratio:.2%}")
-            self.logger.info(f"  - 계산된 투자금: ${investment_amount:,.2f}")
-            self.logger.info(f"  - Bitget 레버리지: {bitget_leverage}x")
-            
-            # 최소 투자금 체크
-            if investment_amount < self.min_investment:
-                self.logger.warning(f"⚠️ 투자금이 너무 작습니다: ${investment_amount:.2f} (최소 ${self.min_investment})")
-                self.logger.info(f"  → 최소 투자금 ${self.min_investment}로 진행")
-                investment_amount = self.min_investment
-                
-                # 최소 투자금이 총 자산의 50%를 초과하면 스킵
-                if investment_amount > total_equity * 0.5:
-                    self.logger.warning(f"⚠️ 최소 투자금이 총 자산의 50%를 초과합니다. 미러링 스킵.")
-                    return
-            
-            # 레버리지 설정 (Bitget과 동일하게)
-            await self._set_gateio_leverage('BTC_USDT', bitget_leverage)
-            await asyncio.sleep(0.5)  # API 제한 대응
-            
-            # 현재가 조회
-            ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
-            current_price = float(ticker.get('last', 0))
-            
-            # 계약 정보 조회
-            contract_info = await self.gateio_client.get_contract_info('usdt', 'BTC_USDT')
-            quanto_multiplier = float(contract_info.get('quanto_multiplier', 0.0001))
-            
-            # 레버리지를 고려한 실제 BTC 수량 계산
-            # investment_amount는 증거금이므로, 레버리지를 곱해서 실제 포지션 크기 계산
-            position_value = investment_amount * bitget_leverage
-            btc_amount = position_value / current_price
-            contracts = int(btc_amount / quanto_multiplier)
-            
-            # 방향에 따른 사이즈 설정
-            if bitget_side in ['short', 'sell']:
-                contracts = -abs(contracts)
-            else:
-                contracts = abs(contracts)
-            
-            # 최소 크기 체크
-            if abs(contracts) < 1:
-                self.logger.warning(f"⚠️ 계약 수가 너무 작습니다: {contracts}")
-                # 최소 1계약으로 설정
-                contracts = 1 if contracts > 0 else -1
-            
-            # 기존 포지션이 있다면 정리
-            if existing_pos and float(existing_pos.get('size', 0)) != 0:
-                await self._close_gateio_position(existing_pos)
-                await asyncio.sleep(1)
-            
-            # 새 포지션 생성 (시장가 주문)
-            order_params = {
-                'contract': 'BTC_USDT',
-                'size': contracts,
-                'price': '0',  # 시장가
-                'tif': 'ioc',  # Immediate or Cancel
-                'text': f'mirror_from_bitget_{bitget_leverage}x'  # 주문 메모
-            }
-            
-            result = await self.gateio_client.create_futures_order('usdt', **order_params)
-            
-            # 손절/익절 설정 (Bitget에 손절/익절이 있다면)
-            # 참고: Bitget API에서 손절/익절 정보를 가져와야 함
-            # 여기서는 기본적인 손절 설정만 예시로 구현
-            if result.get('status') == 'finished':
-                await self._set_stop_orders(contracts, current_price, bitget_leverage)
-            
-            # 로깅
-            self.logger.info(f"✅ Gate.io 포지션 생성 완료:")
-            self.logger.info(f"  - 투입 증거금: ${investment_amount:,.2f}")
-            self.logger.info(f"  - 방향: {bitget_side}")
-            self.logger.info(f"  - 레버리지: {bitget_leverage}x")
-            self.logger.info(f"  - 계약 수: {abs(contracts)}계약")
-            self.logger.info(f"  - BTC 수량: {btc_amount:.4f} BTC")
-            self.logger.info(f"  - 포지션 가치: ${position_value:,.2f}")
-            
-        except Exception as e:
-            self.logger.error(f"Gate.io 포지션 생성 실패: {e}")
+    async def _mirror_stop_orders(self, bitget_pos: Dict, contracts: int, entry_price: float):
+        """손절/익절 주문 미러링"""
+        # TODO: Bitget API에서 실제 손절/익절 정보를 가져와서 동일하게 설정
+        # 여기서는 기본 예시만 제공
+        pass
     
-    async def _set_stop_orders(self, contracts: int, entry_price: float, leverage: int):
-        """손절 주문 설정 (예시)"""
-        try:
-            # 레버리지에 따른 손절가 계산 (예: 2% 손실)
-            stop_loss_percent = 2.0 / leverage
-            
-            if contracts > 0:  # 롱 포지션
-                stop_price = entry_price * (1 - stop_loss_percent)
-            else:  # 숏 포지션
-                stop_price = entry_price * (1 + stop_loss_percent)
-            
-            # 손절 주문 생성
-            stop_params = {
-                'contract': 'BTC_USDT',
-                'size': -contracts,  # 반대 방향
-                'price': '0',  # 시장가
-                'tif': 'gtc',
-                'reduce_only': True,
-                'trigger': {
-                    'strategy_type': 0,  # 0: by price
-                    'price_type': 0,  # 0: latest price
-                    'price': str(stop_price),
-                    'rule': 1 if contracts > 0 else 2  # 1: >=, 2: <=
-                }
-            }
-            
-            # 여기서 실제 손절 주문 API 호출
-            # await self.gateio_client.create_trigger_order('usdt', **stop_params)
-            
-            self.logger.info(f"📌 손절가 설정: ${stop_price:,.2f}")
-            
-        except Exception as e:
-            self.logger.error(f"손절 주문 설정 실패: {e}")
-    
-    async def _close_gateio_position(self, position: Dict):
-        """Gate.io 포지션 종료"""
-        try:
-            current_size = float(position.get('size', 0))
-            
-            if current_size == 0:
-                return
-            
-            # 반대 방향으로 같은 수량 주문
-            close_size = -current_size
-            
-            order_params = {
-                'contract': 'BTC_USDT',
-                'size': int(close_size),
-                'price': '0',  # 시장가
-                'tif': 'ioc',
-                'reduce_only': True
-            }
-            
-            result = await self.gateio_client.create_futures_order('usdt', **order_params)
-            
-            self.logger.info(f"✅ Gate.io 포지션 종료: {close_size}계약")
-            
-        except Exception as e:
-            self.logger.error(f"Gate.io 포지션 종료 실패: {e}")
+    def _cleanup_old_synced_positions(self):
+        """오래된 동기화 기록 정리"""
+        cutoff_time = datetime.now() - timedelta(hours=24)
+        self.synced_positions = {
+            pid: sync_time 
+            for pid, sync_time in self.synced_positions.items()
+            if sync_time > cutoff_time
+        }
     
     def stop(self):
         """미러 트레이딩 중지"""
