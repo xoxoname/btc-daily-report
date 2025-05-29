@@ -7,6 +7,7 @@ from report_generators import ReportGeneratorManager
 
 manager = ReportGeneratorManager(config, data_collector, indicator_system)
 manager.set_bitget_client(bitget_client)
+manager.set_gateio_client(gateio_client)  # 새로 추가
 
 # 각종 리포트 생성
 regular_report = await manager.generate_regular_report()
@@ -32,6 +33,7 @@ class ReportGeneratorManager:
         self.data_collector = data_collector
         self.indicator_system = indicator_system
         self.bitget_client = bitget_client
+        self.gateio_client = None  # Gate.io 클라이언트 추가
         
         # 각 리포트 생성기 초기화
         self.regular_generator = RegularReportGenerator(
@@ -76,6 +78,13 @@ class ReportGeneratorManager:
         
         for generator in generators:
             generator.set_bitget_client(bitget_client)
+    
+    def set_gateio_client(self, gateio_client):
+        """Gate.io 클라이언트 설정"""
+        self.gateio_client = gateio_client
+        # profit_generator에 Gate.io 클라이언트 설정
+        if hasattr(self.profit_generator, 'set_gateio_client'):
+            self.profit_generator.set_gateio_client(gateio_client)
     
     async def generate_regular_report(self) -> str:
         """🧾 정기 리포트 생성 (/report)"""
