@@ -57,32 +57,32 @@ class ProfitReportGenerator(BaseReportGenerator):
 📅 작성 시각: {current_time} (KST)
 ━━━━━━━━━━━━━━━━━━━
 
-📌 보유 포지션 정보
+📌 **보유 포지션 정보**
 {position_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-💸 손익 정보
+💸 **손익 정보**
 {pnl_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-💼 자산 정보
+💼 **자산 정보**
 {asset_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📊 누적 성과
+📊 **누적 성과**
 {cumulative_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📈 최근 수익 흐름
+📈 **최근 수익 흐름**
 {recent_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-🧠 멘탈 케어
+🧠 **멘탈 케어**
 {mental_text}"""
             
             return report
@@ -126,14 +126,14 @@ class ProfitReportGenerator(BaseReportGenerator):
         actual_investment = margin / leverage if leverage > 0 else margin
         
         lines = [
-            f"• 종목: {position_info.get('symbol', 'BTCUSDT')}",
-            f"• 방향: {side}",
-            f"• 진입가: ${position_info.get('entry_price', 0):,.2f}",
-            f"• 현재가: {self._format_price_with_change(current_price, change_24h)}",
-            f"• 포지션 크기: {size:.4f} BTC",
-            f"• 실제 투입 금액: ${actual_investment:.2f} (약 {actual_investment * 1350 / 10000:.1f}만원)",
-            f"• 청산가: ${liquidation_price:,.2f}" if liquidation_price > 0 else "• 청산가: 조회불가",
-            f"• 청산까지 거리: {distance_text}"
+            f"• **종목**: {position_info.get('symbol', 'BTCUSDT')}",
+            f"• **방향**: {side}",
+            f"• **진입가**: ${position_info.get('entry_price', 0):,.2f}",
+            f"• **현재가**: {self._format_price_with_change(current_price, change_24h)}",
+            f"• **포지션 크기**: {size:.4f} BTC",
+            f"• **실제 투입 금액**: ${actual_investment:.2f} (약 {actual_investment * 1350 / 10000:.1f}만원)",
+            f"• **청산가**: ${liquidation_price:,.2f}" if liquidation_price > 0 else "• **청산가**: 조회불가",
+            f"• **청산까지 거리**: {distance_text}"
         ]
         
         return '\n'.join(lines)
@@ -156,10 +156,10 @@ class ProfitReportGenerator(BaseReportGenerator):
         daily_roi = (total_today / total_equity * 100) if total_equity > 0 else 0
         
         lines = [
-            f"• 미실현 손익: {self._format_currency(unrealized_pnl)}",
-            f"• 오늘 실현 손익: {self._format_currency(today_pnl)}",
-            f"• 금일 총 수익: {self._format_currency(total_today)}",
-            f"• 금일 수익률: {daily_roi:+.2f}%"
+            f"• **미실현 손익**: {self._format_currency(unrealized_pnl)}",
+            f"• **오늘 실현 손익**: {self._format_currency(today_pnl)}",
+            f"• **금일 총 수익**: {self._format_currency(total_today)}",
+            f"• **금일 수익률**: {daily_roi:+.2f}%"
         ]
         
         return '\n'.join(lines)
@@ -170,8 +170,8 @@ class ProfitReportGenerator(BaseReportGenerator):
         available = account_info.get('available', 0)
         
         lines = [
-            f"• 총 자산: ${total_equity:,.2f} (약 {total_equity * 1350 / 10000:.0f}만원)",
-            f"• 가용 자산: ${available:,.2f} (약 {available * 1350 / 10000:.1f}만원)"
+            f"• **총 자산**: ${total_equity:,.2f} (약 {total_equity * 1350 / 10000:.0f}만원)",
+            f"• **가용 자산**: ${available:,.2f} (약 {available * 1350 / 10000:.1f}만원)"
         ]
         
         # 포지션 증거금 항목 제거 (실제 투입 금액과 중복)
@@ -181,13 +181,13 @@ class ProfitReportGenerator(BaseReportGenerator):
     def _format_cumulative_performance(self, cumulative_profit: float, 
                                      cumulative_roi: float) -> str:
         """누적 성과 포맷팅"""
-        return f"""• 전체 누적 수익: {self._format_currency(cumulative_profit)}
-- 전체 누적 수익률: {cumulative_roi:+.2f}%"""
+        return f"""• **전체 누적 수익**: {self._format_currency(cumulative_profit)}
+- **전체 누적 수익률**: {cumulative_roi:+.2f}%"""
     
     def _format_recent_performance(self, weekly_profit: dict) -> str:
         """최근 수익 흐름 포맷팅"""
-        return f"""• 최근 7일 수익: {self._format_currency(weekly_profit['total'])}
-- 최근 7일 평균: {self._format_currency(weekly_profit['average'])}/일"""
+        return f"""• **최근 7일 수익**: {self._format_currency(weekly_profit['total'])}
+- **최근 7일 평균**: {self._format_currency(weekly_profit['average'])}/일"""
     
     async def _generate_dynamic_mental_care(self, account_info: dict, 
                                           position_info: dict, today_pnl: float, 
