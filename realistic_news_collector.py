@@ -33,40 +33,57 @@ class RealisticNewsCollector:
         self.newsdata_key = getattr(config, 'NEWSDATA_KEY', None)
         self.alpha_vantage_key = getattr(config, 'ALPHA_VANTAGE_KEY', None)
         
-        # 크리티컬 키워드 (즉시 알림용) - 한국어 추가 및 기업 비트코인 구매 추가
+        # 크리티컬 키워드 (즉시 알림용) - 강화
         self.critical_keywords = [
-            # 정부/정치 관련
+            # 정부/정치 관련 - 트럼프 추가
             'trump bitcoin', 'trump crypto', 'trump ban', 'trump announces', 'trump says bitcoin',
-            '트럼프 비트코인', '트럼프 암호화폐', '트럼프 규제',
+            'trump tariff', 'trump executive order', 'trump policy', 'trump federal',
+            '트럼프 비트코인', '트럼프 암호화폐', '트럼프 규제', '트럼프 관세', '트럼프 정책',
             # 연준/금리 관련
             'fed rate decision', 'fed raises', 'fed cuts', 'powell says', 'fomc decides', 'fed meeting',
+            'interest rate hike', 'interest rate cut', 'monetary policy',
             '연준 금리', 'FOMC 결정', '파월 발언', '금리 인상', '금리 인하',
             # SEC 관련
             'sec lawsuit bitcoin', 'sec sues', 'sec enforcement', 'sec charges bitcoin',
-            'SEC 소송', 'SEC 규제', 'SEC 비트코인',
+            'sec approves', 'sec rejects', 'sec bitcoin etf',
+            'SEC 소송', 'SEC 규제', 'SEC 비트코인', 'SEC 승인', 'SEC 거부',
             # 규제/금지 관련
             'china bans bitcoin', 'china crypto ban', 'government bans crypto', 'regulatory ban',
-            '중국 비트코인 금지', '정부 규제', '암호화폐 금지',
+            'court blocks', 'federal court', 'supreme court crypto',
+            '중국 비트코인 금지', '정부 규제', '암호화폐 금지', '법원 판결',
             # 시장 급변동
             'bitcoin crash', 'crypto crash', 'market crash', 'flash crash', 'bitcoin plunge',
-            '비트코인 폭락', '암호화폐 급락', '시장 붕괴',
+            'bitcoin surge', 'bitcoin rally', 'bitcoin breaks',
+            '비트코인 폭락', '암호화폐 급락', '시장 붕괴', '비트코인 급등',
             # ETF 관련
             'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing',
             'ETF 승인', 'ETF 거부', 'ETF 결정',
-            # 기업 비트코인 구매 (새로 추가)
+            # 기업 비트코인 구매
             'bought bitcoin', 'buys bitcoin', 'purchased bitcoin', 'bitcoin purchase', 'bitcoin acquisition',
             'tesla bitcoin', 'microstrategy bitcoin', 'square bitcoin', 'paypal bitcoin',
             'gamestop bitcoin', 'gme bitcoin', '$gme bitcoin',
             '비트코인 구매', '비트코인 매입', '비트코인 투자', '비트코인 보유',
             # 대량 거래/이동
             'whale alert', 'large bitcoin transfer', 'bitcoin moved', 'btc transferred',
-            '고래 이동', '대량 이체', '비트코인 이동',
+            'exchange inflow', 'exchange outflow',
+            '고래 이동', '대량 이체', '비트코인 이동', '거래소 유입', '거래소 유출',
             # 해킹/보안
             'exchange hacked', 'bitcoin stolen', 'crypto hack', 'security breach',
             '거래소 해킹', '비트코인 도난', '보안 사고'
         ]
         
-        # 중요 기업 리스트 (비트코인 구매 감지용)
+        # 제외 키워드 (비트코인과 직접 관련 없는 것들)
+        self.exclude_keywords = [
+            'gold price', 'gold rises', 'gold falls', 'gold market',
+            'oil price', 'oil market', 'commodity',
+            'stock market', 'nasdaq', 's&p 500', 'dow jones',
+            '금 가격', '금값', '원유', '주식시장',
+            'mining at home', '집에서 채굴', 'how to mine',
+            'crypto news today', '오늘의 암호화폐 소식',
+            'price prediction', '가격 예측'
+        ]
+        
+        # 중요 기업 리스트
         self.important_companies = [
             'tesla', 'microstrategy', 'square', 'block', 'paypal', 'mastercard', 'visa',
             'apple', 'google', 'amazon', 'meta', 'facebook', 'microsoft', 'netflix',
@@ -75,19 +92,19 @@ class RealisticNewsCollector:
             'metaplanet', '메타플래닛'
         ]
         
-        # RSS 피드 (문제있는 2개 제거)
+        # RSS 피드
         self.rss_feeds = [
-            # 암호화폐 전문 (최우선) - 확실히 작동하는 것들
+            # 암호화폐 전문 (최우선)
             {'url': 'https://cointelegraph.com/rss', 'source': 'Cointelegraph', 'weight': 10, 'category': 'crypto'},
             {'url': 'https://www.coindesk.com/arc/outboundfeeds/rss/', 'source': 'CoinDesk', 'weight': 10, 'category': 'crypto'},
             {'url': 'https://decrypt.co/feed', 'source': 'Decrypt', 'weight': 9, 'category': 'crypto'},
             {'url': 'https://bitcoinmagazine.com/.rss/full/', 'source': 'Bitcoin Magazine', 'weight': 9, 'category': 'crypto'},
             
-            # 새로운 암호화폐 소스 (CryptoCoinsNews 제거됨)
+            # 새로운 암호화폐 소스
             {'url': 'https://ambcrypto.com/feed/', 'source': 'AMBCrypto', 'weight': 8, 'category': 'crypto'},
             {'url': 'https://cryptopotato.com/feed/', 'source': 'CryptoPotato', 'weight': 8, 'category': 'crypto'},
             
-            # 일반 금융 (Reuters Finance 제거됨)
+            # 일반 금융
             {'url': 'https://www.marketwatch.com/rss/topstories', 'source': 'MarketWatch', 'weight': 8, 'category': 'finance'},
             {'url': 'https://seekingalpha.com/feed.xml', 'source': 'Seeking Alpha', 'weight': 8, 'category': 'finance'},
             {'url': 'https://feeds.feedburner.com/InvestingcomAnalysis', 'source': 'Investing.com', 'weight': 8, 'category': 'finance'},
@@ -99,12 +116,12 @@ class RealisticNewsCollector:
             {'url': 'https://feeds.npr.org/1001/rss.xml', 'source': 'NPR News', 'weight': 7, 'category': 'news'},
             {'url': 'https://feeds.washingtonpost.com/rss/business', 'source': 'Washington Post Business', 'weight': 7, 'category': 'finance'},
             
-            # 테크/비즈니스 (안정적인 것들)
+            # 테크/비즈니스
             {'url': 'https://techcrunch.com/feed/', 'source': 'TechCrunch', 'weight': 7, 'category': 'tech'},
             {'url': 'https://www.wired.com/feed/rss', 'source': 'Wired', 'weight': 6, 'category': 'tech'},
             {'url': 'https://feeds.feedburner.com/venturebeat/SZYF', 'source': 'VentureBeat', 'weight': 7, 'category': 'tech'},
             
-            # 추가 신뢰할만한 금융 소스 (Bloomberg만 유지)
+            # 추가 신뢰할만한 금융 소스
             {'url': 'https://feeds.bloomberg.com/markets/news.rss', 'source': 'Bloomberg Markets', 'weight': 9, 'category': 'finance'},
         ]
         
@@ -118,9 +135,9 @@ class RealisticNewsCollector:
         
         # API 일일 한도
         self.api_limits = {
-            'newsapi': 15,      # 하루 15회 (안전하게)
-            'newsdata': 8,      # 하루 8회 (월 200건의 1/4)
-            'alpha_vantage': 1  # 하루 1회
+            'newsapi': 15,
+            'newsdata': 8,
+            'alpha_vantage': 1
         }
         
         logger.info(f"뉴스 수집기 초기화 완료 - API 키 상태: NewsAPI={bool(self.newsapi_key)}, NewsData={bool(self.newsdata_key)}, AlphaVantage={bool(self.alpha_vantage_key)}")
@@ -257,7 +274,7 @@ class RealisticNewsCollector:
         """뉴스 모니터링 시작"""
         if not self.session:
             self.session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=15),  # 타임아웃 설정
+                timeout=aiohttp.ClientTimeout(total=15),
                 connector=aiohttp.TCPConnector(limit=100, limit_per_host=30)
             )
         
@@ -501,16 +518,16 @@ class RealisticNewsCollector:
         return articles
     
     async def _call_newsapi(self):
-        """NewsAPI 호출 - 기업 비트코인 구매 키워드 추가"""
+        """NewsAPI 호출 - 트럼프 및 정책 관련 키워드 추가"""
         try:
-            # 기업 비트코인 구매 관련 쿼리 추가
+            # 검색어 강화
             url = "https://newsapi.org/v2/everything"
             params = {
-                'q': '(bitcoin AND (bought OR purchased OR buys OR "buying bitcoin" OR acquisition)) OR (gamestop AND bitcoin) OR (tesla AND bitcoin) OR (microstrategy AND bitcoin) OR "whale alert" OR (trump AND bitcoin) OR (fed AND rate) OR (sec AND bitcoin) OR "bitcoin etf"',
+                'q': '(bitcoin AND (bought OR purchased OR buys OR "buying bitcoin" OR acquisition)) OR (gamestop AND bitcoin) OR (tesla AND bitcoin) OR (microstrategy AND bitcoin) OR "whale alert" OR (trump AND (bitcoin OR crypto OR tariff OR policy)) OR (fed AND rate) OR (sec AND bitcoin) OR "bitcoin etf" OR (court AND bitcoin)',
                 'language': 'en',
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
-                'pageSize': 20,  # 더 많은 기사 확인
+                'pageSize': 20,
                 'from': (datetime.now() - timedelta(hours=2)).isoformat()
             }
             
@@ -554,7 +571,7 @@ class RealisticNewsCollector:
             url = "https://newsdata.io/api/1/news"
             params = {
                 'apikey': self.newsdata_key,
-                'q': 'bitcoin OR crypto OR "federal reserve" OR SEC OR gamestop OR tesla',
+                'q': 'bitcoin OR crypto OR "federal reserve" OR SEC OR gamestop OR tesla OR trump',
                 'language': 'en',
                 'category': 'business,politics,top',
                 'size': 10
@@ -600,7 +617,7 @@ class RealisticNewsCollector:
             url = "https://www.alphavantage.co/query"
             params = {
                 'function': 'NEWS_SENTIMENT',
-                'tickers': 'CRYPTO:BTC,COIN:MSTR,COIN:TSLA,COIN:GME',  # GME 추가
+                'tickers': 'CRYPTO:BTC,COIN:MSTR,COIN:TSLA,COIN:GME',
                 'topics': 'financial_markets,economy_monetary,technology',
                 'apikey': self.alpha_vantage_key,
                 'sort': 'LATEST',
@@ -662,6 +679,17 @@ class RealisticNewsCollector:
         # 제목과 설명 모두 체크 (한글 제목도 포함)
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
+        # 제외 키워드 먼저 체크
+        for exclude in self.exclude_keywords:
+            if exclude.lower() in content:
+                return False
+        
+        # 비트코인 관련성 체크
+        bitcoin_related = ['bitcoin', 'btc', 'crypto', '비트코인', '암호화폐']
+        if not any(keyword in content for keyword in bitcoin_related):
+            # 비트코인 관련 언급이 없으면 크리티컬 아님
+            return False
+        
         # 기업 비트코인 구매 감지
         for company in self.important_companies:
             if company.lower() in content:
@@ -690,6 +718,11 @@ class RealisticNewsCollector:
     def _is_important_news(self, article: Dict) -> bool:
         """중요 뉴스 판단 - 향상된 로직"""
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
+        
+        # 제외 키워드 체크
+        for exclude in self.exclude_keywords:
+            if exclude.lower() in content:
+                return False
         
         # 키워드 그룹별 점수 시스템
         crypto_keywords = ['bitcoin', 'btc', 'crypto', 'cryptocurrency', 'digital asset', 'blockchain', '비트코인', '암호화폐', '블록체인']
@@ -769,7 +802,7 @@ class RealisticNewsCollector:
     async def _add_to_news_buffer(self, article: Dict):
         """뉴스 버퍼에 추가 - 회사별 카운트 제한"""
         try:
-            # 제목 기반 중복 체크 (더 정교하게)
+            # 제목 기반 중복 체크
             new_title = article.get('title', '').lower()
             new_title_ko = article.get('title_ko', '').lower()
             new_source = article.get('source', '').lower()
@@ -842,6 +875,13 @@ class RealisticNewsCollector:
         for company in self.important_companies:
             if company.lower() in content and any(word in content for word in ['bought', 'purchased', 'buys', 'bitcoin', '비트코인 구매', '매입']):
                 return "➕강한 호재"
+        
+        # 트럼프 관련
+        if 'trump' in content:
+            if any(word in content for word in ['tariff', 'ban', 'restrict', 'court blocks', '관세', '금지']):
+                return "➖악재 예상"  # 트럼프 정책 차단은 일반적으로 시장에 부정적
+            elif any(word in content for word in ['approve', 'support', 'bitcoin reserve', '지지', '승인']):
+                return "➕호재 예상"
         
         # 강한 악재 (즉시 매도 신호)
         strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked', '금지', '규제', '소송', '폭락', '해킹']
