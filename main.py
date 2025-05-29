@@ -19,6 +19,8 @@ from exception_detector import ExceptionDetector
 from data_collector import RealTimeDataCollector
 from trading_indicators import AdvancedTradingIndicators
 from report_generators import ReportGeneratorManager  # 🆕 통합 리포트 생성기
+from gateio_client import GateioClient  # 새로 추가
+from mirror_trading import MirrorTradingSystem  # 새로 추가
 
 # 로깅 설정
 logging.basicConfig(
@@ -36,6 +38,18 @@ class BitcoinPredictionSystem:
         # 클라이언트 초기화
         self.bitget_client = BitgetClient(self.config)
         self.telegram_bot = TelegramBot(self.config)
+        
+        # Gate.io 클라이언트 (미러 트레이딩 활성화 시)
+        self.gateio_client = None
+        self.mirror_trading = None
+        if self.config.ENABLE_MIRROR_TRADING:
+            self.gateio_client = GateioClient(self.config)
+            self.mirror_trading = MirrorTradingSystem(
+                self.bitget_client, 
+                self.gateio_client, 
+                self.config
+            )
+            self.logger.info("🔄 미러 트레이딩 시스템 초기화 완료")
         
         # 새로운 컴포넌트 추가
         self.data_collector = RealTimeDataCollector(self.config)
@@ -145,6 +159,10 @@ class BitcoinPredictionSystem:
             elif any(word in message for word in ['일정', '언제', '시간', 'schedule']):
                 await self.handle_schedule_command(update, context)
             
+            # 미러 트레이딩 관련
+            elif any(word in message for word in ['미러', '동기화', 'mirror', 'sync']):
+                await self.handle_mirror_status(update, context)
+            
             # 도움말
             elif any(word in message for word in ['도움', '명령', 'help']):
                 await self.handle_start_command(update, context)
@@ -156,13 +174,69 @@ class BitcoinPredictionSystem:
                     "• '오늘 수익은?'\n"
                     "• '지금 매수해도 돼?'\n"
                     "• '시장 상황 어때?'\n"
-                    "• '다음 리포트 언제?'\n\n"
+                    "• '다음 리포트 언제?'\n"
+                    "• '미러 트레이딩 상태'\n\n"
                     "또는 /help 명령어로 전체 기능을 확인하세요."
                 )
                 
         except Exception as e:
             self.logger.error(f"자연어 처리 실패: {str(e)}")
             await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.")
+    
+    async def handle_mirror_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """미러 트레이딩 상태 확인"""
+        try:
+            if not self.config.ENABLE_MIRROR_TRADING:
+                await update.message.reply_text("⚠️ 미러 트레이딩이 비활성화되어 있습니다.")
+                return
+            
+            # 현재 포지션 상태 확인
+            bitget_positions = await self.bitget_client.get_positions('BTCUSDT')
+            gateio_positions = await self.gateio_client.get_positions('usdt')
+            
+            status_message = "🔄 **미러 트레이딩 상태**\n\n"
+            
+            # Bitget 포지션
+            status_message += "**Bitget 포지션:**\n"
+            bitget_active = False
+            for pos in bitget_positions:
+                if float(pos.get('total', 0)) > 0:
+                    bitget_active = True
+                    side = pos.get('holdSide', '')
+                    size = float(pos.get('total', 0))
+                    entry = float(pos.get('openPriceAvg', 0))
+                    pnl = float(pos.get('unrealizedPL', 0))
+                    status_message += f"• {side} {size:.4f} BTC @ ${entry:,.2f} (PnL: ${pnl:+,.2f})\n"
+                    break
+            
+            if not bitget_active:
+                status_message += "• 포지션 없음\n"
+            
+            # Gate.io 포지션
+            status_message += "\n**Gate.io 포지션:**\n"
+            gateio_active = False
+            for pos in gateio_positions:
+                if pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0:
+                    gateio_active = True
+                    size = float(pos.get('size', 0))
+                    side = 'LONG' if size > 0 else 'SHORT'
+                    entry = float(pos.get('entry_price', 0))
+                    pnl = float(pos.get('unrealised_pnl', 0))
+                    status_message += f"• {side} {abs(size)}계약 @ ${entry:,.2f} (PnL: ${pnl:+,.2f})\n"
+                    break
+            
+            if not gateio_active:
+                status_message += "• 포지션 없음\n"
+            
+            # 동기화 상태
+            status_message += f"\n**동기화 상태:** {'✅ 동기화됨' if (bitget_active == gateio_active) else '⚠️ 동기화 필요'}"
+            status_message += f"\n**체크 간격:** {self.config.MIRROR_CHECK_INTERVAL}초"
+            
+            await update.message.reply_text(status_message, parse_mode='Markdown')
+            
+        except Exception as e:
+            self.logger.error(f"미러 상태 확인 실패: {str(e)}")
+            await update.message.reply_text("❌ 미러 트레이딩 상태 확인 중 오류가 발생했습니다.")
     
     # 🆕 각 리포트 핸들러들이 이제 전담 생성기를 사용
     async def handle_report_command(self, update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
@@ -543,12 +617,14 @@ class BitcoinPredictionSystem:
 - /forecast - 단기 예측 요약
 - /profit - 실시간 수익 현황
 - /schedule - 자동 일정 안내
+- /mirror - 미러 트레이딩 상태
 
 💬 자연어 질문 예시:
 - "오늘 수익은?"
 - "지금 매수해도 돼?"
 - "시장 상황 어때?"
 - "얼마 벌었어?"
+- "미러 트레이딩 상태"
 
 🔔 자동 리포트:
 매일 09:00, 13:00, 18:00, 22:00
@@ -556,7 +632,15 @@ class BitcoinPredictionSystem:
 ⚡ 실시간 알림:
 가격 급변동, 뉴스 이벤트, 펀딩비 이상 등
 
-📈 GPT 기반 정확한 비트코인 분석을 제공합니다."""
+"""
+        
+        if self.config.ENABLE_MIRROR_TRADING:
+            welcome_message += """🔄 미러 트레이딩:
+Bitget → Gate.io 자동 동기화 활성화
+
+"""
+        
+        welcome_message += "📈 GPT 기반 정확한 비트코인 분석을 제공합니다."
         
         await update.message.reply_text(welcome_message)
     
@@ -565,6 +649,13 @@ class BitcoinPredictionSystem:
         try:
             # Bitget 클라이언트 초기화
             await self.bitget_client.initialize()
+            
+            # Gate.io 클라이언트 초기화 (미러 트레이딩 활성화 시)
+            if self.config.ENABLE_MIRROR_TRADING and self.gateio_client:
+                await self.gateio_client.initialize()
+                # 미러 트레이딩 시작
+                asyncio.create_task(self.mirror_trading.start_monitoring())
+                self.logger.info("🔄 미러 트레이딩 모니터링 시작")
             
             # 데이터 수집기 시작
             asyncio.create_task(self.data_collector.start())
@@ -578,6 +669,7 @@ class BitcoinPredictionSystem:
             self.telegram_bot.add_handler('forecast', self.handle_forecast_command)
             self.telegram_bot.add_handler('profit', self.handle_profit_command)
             self.telegram_bot.add_handler('schedule', self.handle_schedule_command)
+            self.telegram_bot.add_handler('mirror', self.handle_mirror_status)
             
             # 자연어 메시지 핸들러 추가
             self.telegram_bot.add_message_handler(self.handle_natural_language)
@@ -588,7 +680,12 @@ class BitcoinPredictionSystem:
             self.logger.info("비트코인 예측 시스템 시작됨")
             
             # 시작 메시지
-            await self.telegram_bot.send_message("🚀 비트코인 예측 시스템이 시작되었습니다!\n\n명령어를 입력하거나 자연어로 질문해보세요.\n예: '오늘 수익은?' 또는 /help")
+            start_msg = "🚀 비트코인 예측 시스템이 시작되었습니다!\n\n"
+            if self.config.ENABLE_MIRROR_TRADING:
+                start_msg += "🔄 미러 트레이딩: 활성화\n\n"
+            start_msg += "명령어를 입력하거나 자연어로 질문해보세요.\n예: '오늘 수익은?' 또는 /help"
+            
+            await self.telegram_bot.send_message(start_msg)
             
             # 프로그램이 종료되지 않도록 유지
             try:
@@ -606,6 +703,10 @@ class BitcoinPredictionSystem:
     async def stop(self):
         """시스템 종료"""
         try:
+            # 미러 트레이딩 중지
+            if self.mirror_trading:
+                self.mirror_trading.stop()
+            
             self.scheduler.shutdown()
             await self.telegram_bot.stop()
             
@@ -616,6 +717,10 @@ class BitcoinPredictionSystem:
             # Bitget 클라이언트 종료
             if self.bitget_client.session:
                 await self.bitget_client.close()
+            
+            # Gate.io 클라이언트 종료
+            if self.gateio_client and self.gateio_client.session:
+                await self.gateio_client.close()
             
             self.logger.info("시스템이 안전하게 종료되었습니다")
         except Exception as e:
