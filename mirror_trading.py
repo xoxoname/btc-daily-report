@@ -21,6 +21,7 @@ class MirrorTradingSystem:
         # 설정
         self.check_interval = config.MIRROR_CHECK_INTERVAL  # 환경변수에서 가져오기
         self.min_trade_size = 0.001  # 최소 거래 크기 (BTC)
+        self.min_investment = 5  # 최소 투자금 ($)
         
     async def start_monitoring(self):
         """미러 트레이딩 모니터링 시작"""
@@ -101,7 +102,7 @@ class MirrorTradingSystem:
             self.logger.error(f"Bitget 포지션 처리 실패: {e}")
     
     async def _calculate_position_ratio(self, bitget_pos: Dict) -> float:
-        """포지션 비율 계산 - 개선된 버전"""
+        """포지션 비율 계산 - 포지션 가치 기준"""
         try:
             # Bitget 계정 정보 조회
             bitget_account = await self.bitget_client.get_account_info()
@@ -109,25 +110,19 @@ class MirrorTradingSystem:
             # 총 자산
             total_equity = float(bitget_account.get('accountEquity', 0))
             
-            # 포지션 가치 계산 (레버리지 적용 전 실제 투입 금액)
-            # marginSize = 포지션 가치 (size * entry_price)
-            # 실제 투입 금액 = marginSize / leverage
+            # 포지션 가치 (레버리지 적용된 전체 가치)
             margin_size = float(bitget_pos.get('marginSize', 0))
             leverage = float(bitget_pos.get('leverage', 1))
             
-            # 실제 투입된 증거금
-            actual_investment = margin_size / leverage if leverage > 0 else margin_size
-            
-            # 총 자산 대비 비율
-            ratio = actual_investment / total_equity if total_equity > 0 else 0
+            # 총 자산 대비 포지션 가치 비율
+            ratio = margin_size / total_equity if total_equity > 0 else 0
             
             # 로깅
             self.logger.info(f"📊 Bitget 자산 분석:")
             self.logger.info(f"  - 총 자산: ${total_equity:,.2f}")
             self.logger.info(f"  - 포지션 가치: ${margin_size:,.2f}")
             self.logger.info(f"  - 레버리지: {leverage}x")
-            self.logger.info(f"  - 실제 투입금: ${actual_investment:,.2f}")
-            self.logger.info(f"  - 투입 비율: {ratio:.2%}")
+            self.logger.info(f"  - 포지션 가치 비율: {ratio:.2%}")
             
             return ratio
             
@@ -145,10 +140,21 @@ class MirrorTradingSystem:
             # 투자금 계산 (총 자산의 동일 비율)
             investment_amount = total_equity * ratio
             
-            # 최소 투자금 체크 ($5)
-            if investment_amount < 5:
-                self.logger.warning(f"⚠️ 투자금이 너무 작습니다: ${investment_amount:.2f} (최소 $5)")
-                return
+            self.logger.info(f"📊 Gate.io 미러링 계산:")
+            self.logger.info(f"  - Gate.io 총 자산: ${total_equity:,.2f}")
+            self.logger.info(f"  - 미러링 비율: {ratio:.2%}")
+            self.logger.info(f"  - 계산된 투자금: ${investment_amount:,.2f}")
+            
+            # 최소 투자금 체크
+            if investment_amount < self.min_investment:
+                self.logger.warning(f"⚠️ 투자금이 너무 작습니다: ${investment_amount:.2f} (최소 ${self.min_investment})")
+                self.logger.info(f"  → 최소 투자금 ${self.min_investment}로 진행")
+                investment_amount = self.min_investment
+                
+                # 최소 투자금이 총 자산의 50%를 초과하면 스킵
+                if investment_amount > total_equity * 0.5:
+                    self.logger.warning(f"⚠️ 최소 투자금이 총 자산의 50%를 초과합니다. 미러링 스킵.")
+                    return
             
             # 현재가 조회
             ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
@@ -189,12 +195,12 @@ class MirrorTradingSystem:
             result = await self.gateio_client.create_futures_order('usdt', **order_params)
             
             # 로깅
-            self.logger.info(f"✅ Gate.io 포지션 생성:")
-            self.logger.info(f"  - 총 자산: ${total_equity:,.2f}")
-            self.logger.info(f"  - 투입금: ${investment_amount:,.2f} ({ratio:.2%})")
+            self.logger.info(f"✅ Gate.io 포지션 생성 완료:")
+            self.logger.info(f"  - 투입금: ${investment_amount:,.2f}")
             self.logger.info(f"  - 방향: {side}")
             self.logger.info(f"  - 계약 수: {abs(contracts)}계약")
             self.logger.info(f"  - BTC 수량: {btc_amount:.4f} BTC")
+            self.logger.info(f"  - Gate.io 레버리지 적용 시 포지션 가치: ${investment_amount * 10:,.2f} (10x 기준)")
             
         except Exception as e:
             self.logger.error(f"Gate.io 포지션 생성 실패: {e}")
