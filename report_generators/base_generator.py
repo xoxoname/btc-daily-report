@@ -102,9 +102,26 @@ class BaseReportGenerator:
         return self._is_similar_news(title1, title2)
     
     async def analyze_news_impact(self, title: str, description: str = "") -> str:
-        """통합 뉴스 영향 분석 - 개선된 로직"""
+        """통합 뉴스 영향 분석 - 더 정밀한 분석"""
         # 전체 텍스트 (제목 + 설명)
         full_text = (title + " " + description).lower()
+        
+        # 제외 키워드 먼저 체크 (비트코인과 무관한 뉴스)
+        exclude_keywords = [
+            'gold price', 'gold rises', 'gold falls', 'gold market',
+            'oil price', 'oil market', 'commodity',
+            'mining at home', '집에서 채굴', 'how to mine',
+            'crypto news today', '오늘의 암호화폐 소식',
+            'price prediction', '가격 예측'
+        ]
+        
+        for exclude in exclude_keywords:
+            if exclude in full_text:
+                return "중립"
+        
+        # 비트코인/암호화폐 직접 언급 확인
+        bitcoin_related = ['bitcoin', 'btc', 'crypto', '비트코인', '암호화폐', 'ethereum', 'eth']
+        has_bitcoin_mention = any(keyword in full_text for keyword in bitcoin_related)
         
         # 영향도 점수 계산
         bullish_score = 0
@@ -158,8 +175,6 @@ class BaseReportGenerator:
             '신고가': (3, '신고가'),
             'breakthrough': (3, '돌파'),
             '돌파': (3, '돌파'),
-            '상승 예상': (3, '상승 예상'),
-            '상승 기조': (3, '상승 기조'),
             
             # 기업 관련
             'gamestop': (4, '게임스탑 참여'),
@@ -224,10 +239,6 @@ class BaseReportGenerator:
             '상향': (2, '상향'),
             'support': (1, '지지'),
             '지지': (1, '지지'),
-            'accumulate': (2, '축적'),
-            '축적': (2, '축적'),
-            'integration': (2, '통합'),
-            'mainstream': (2, '주류 편입'),
         }
         
         # 약한 악재 키워드
@@ -248,11 +259,6 @@ class BaseReportGenerator:
             '불확실': (2, '불확실성'),
             'delay': (2, '지연'),
             '지연': (2, '지연'),
-            'reject': (3, '거부'),
-            '거부': (3, '거부'),
-            'rejected': (3, '거부됨'),
-            'bearish': (2, '약세'),
-            'correction': (2, '조정'),
         }
         
         # 점수 계산 - 키워드별 가중치와 이유 저장
@@ -293,11 +299,24 @@ class BaseReportGenerator:
                 bullish_score += 1
                 impact_reason.append('금리 동결')
         
-        # BoJ (일본은행) 관련
-        if 'boj' in full_text or '일본은행' in full_text:
-            if '금리 인상' in full_text or 'rate hike' in full_text:
+        # 트럼프 관련
+        if 'trump' in full_text or '트럼프' in full_text:
+            if any(word in full_text for word in ['tariff', 'ban', 'restrict', 'court blocks', '관세', '금지', '차단']):
                 bearish_score += 2
-                impact_reason.append('엔화 강세 우려')
+                impact_reason.append('트럼프 정책 우려')
+            elif any(word in full_text for word in ['approve', 'support', 'bitcoin reserve', '지지', '승인']):
+                bullish_score += 2
+                impact_reason.append('트럼프 지지')
+        
+        # 거래소 유입/유출 (고래 이동)
+        if any(word in full_text for word in ['whale', '고래', 'large transfer', '대량 이체']):
+            if any(word in full_text for word in ['exchange', 'coinbase', 'binance', '거래소']):
+                if any(word in full_text for word in ['to', 'inflow', '유입']):
+                    bearish_score += 3
+                    impact_reason.append('거래소 유입 (매도 압력)')
+                elif any(word in full_text for word in ['from', 'outflow', '유출']):
+                    bullish_score += 2
+                    impact_reason.append('거래소 유출 (매수 신호)')
         
         # 중국 관련
         if any(word in full_text for word in ['china', '중국', 'chinese']):
@@ -308,20 +327,13 @@ class BaseReportGenerator:
                 bullish_score += 3
                 impact_reason.append('중국 개방')
         
-        # USD/JPY 관련 (달러/엔 환율)
-        if 'usd/jpy' in full_text or '달러엔' in full_text:
-            # USD/JPY는 비트코인과 직접적 관련이 적으므로 영향도를 낮춤
-            if impact_reason and '엔화' not in ' '.join(impact_reason):
-                impact_reason.append('간접 영향')
+        # 비트코인 언급이 없는 경우 영향도 감소
+        if not has_bitcoin_mention:
+            bullish_score = bullish_score * 0.3
+            bearish_score = bearish_score * 0.3
         
         # 최종 판단
         net_score = bullish_score - bearish_score
-        
-        # 이유가 없으면 일반적인 판단
-        if not impact_reason:
-            if '가격' in full_text or 'price' in full_text:
-                if '멈춰' in full_text or 'stop' in full_text or 'halt' in full_text:
-                    impact_reason.append('가격 정체')
         
         # 점수 기반 최종 판단
         if net_score >= 5:
@@ -334,7 +346,7 @@ class BaseReportGenerator:
             result = "➖악재 예상"
         else:
             # 중립이지만 이유가 있는 경우
-            if impact_reason:
+            if impact_reason and has_bitcoin_mention:
                 if bullish_score > bearish_score:
                     result = "➕약한 호재"
                 elif bearish_score > bullish_score:
