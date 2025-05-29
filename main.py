@@ -239,6 +239,99 @@ class BitcoinPredictionSystem:
             self.logger.error(f"일정 명령 처리 실패: {str(e)}")
             await update.message.reply_text("❌ 일정 조회 중 오류가 발생했습니다.")
     
+    def _is_critical_news(self, article: Dict) -> bool:
+        """크리티컬 뉴스 판단 - 트럼프 관세 뉴스 포함"""
+        # 제목과 설명 모두 체크
+        content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
+        
+        # 제외 키워드 먼저 체크 (골드, 금 등)
+        exclude_keywords = [
+            'gold price', 'gold rises', 'gold falls', 'gold market',
+            'oil price', 'oil market', 'commodity',
+            'mining at home', '집에서 채굴', 'how to mine',
+            'crypto news today', '오늘의 암호화폐 소식',
+            'price prediction', '가격 예측'
+        ]
+        
+        for exclude in exclude_keywords:
+            if exclude.lower() in content:
+                return False
+        
+        # 비트코인 관련성 체크
+        bitcoin_related = ['bitcoin', 'btc', 'crypto', '비트코인', '암호화폐']
+        has_bitcoin = any(keyword in content for keyword in bitcoin_related)
+        
+        # 트럼프 관세 뉴스는 비트코인 언급 없어도 중요
+        if any(word in content for word in ['trump', '트럼프']):
+            if any(word in content for word in ['tariff', 'court', 'blocks', '관세', '법원', '차단', 'federal']):
+                return True
+        
+        # 나머지는 비트코인 관련성 필수
+        if not has_bitcoin:
+            return False
+        
+        # 기업 비트코인 구매 감지
+        important_companies = [
+            'tesla', 'microstrategy', 'square', 'block', 'paypal', 'mastercard', 'visa',
+            'apple', 'google', 'amazon', 'meta', 'facebook', 'microsoft', 'netflix',
+            'gamestop', 'gme', 'amc', 'blackrock', 'fidelity', 'jpmorgan', 'goldman',
+            'samsung', 'lg', 'sk', 'kakao', 'naver', '삼성', '카카오', '네이버',
+            'metaplanet', '메타플래닛'
+        ]
+        
+        for company in important_companies:
+            if company.lower() in content:
+                # 비트코인 구매 관련 키워드 체크
+                purchase_keywords = ['bought', 'buys', 'purchased', 'bitcoin purchase', 'bitcoin acquisition',
+                                   '비트코인 구매', '비트코인 매입', '비트코인 투자', 'bitcoin', 'btc']
+                if any(keyword in content for keyword in purchase_keywords):
+                    # 금액이 포함된 경우 더 높은 신뢰도
+                    if any(char in content for char in ['$', '달러', 'dollar', 'million', 'billion']):
+                        return True
+        
+        # 기존 크리티컬 키워드 체크
+        critical_keywords = [
+            # 트럼프 추가
+            'trump bitcoin', 'trump crypto', 'trump ban', 'trump announces', 'trump says bitcoin',
+            'trump tariff', 'trump executive order', 'trump policy', 'trump federal',
+            '트럼프 비트코인', '트럼프 암호화폐', '트럼프 규제', '트럼프 관세', '트럼프 정책',
+            # 연준/금리
+            'fed rate decision', 'fed raises', 'fed cuts', 'powell says', 'fomc decides', 'fed meeting',
+            'interest rate hike', 'interest rate cut', 'monetary policy',
+            '연준 금리', 'FOMC 결정', '파월 발언', '금리 인상', '금리 인하',
+            # SEC
+            'sec lawsuit bitcoin', 'sec sues', 'sec enforcement', 'sec charges bitcoin',
+            'sec approves', 'sec rejects', 'sec bitcoin etf',
+            'SEC 소송', 'SEC 규제', 'SEC 비트코인', 'SEC 승인', 'SEC 거부',
+            # 규제/금지
+            'china bans bitcoin', 'china crypto ban', 'government bans crypto', 'regulatory ban',
+            'court blocks', 'federal court', 'supreme court crypto',
+            '중국 비트코인 금지', '정부 규제', '암호화폐 금지', '법원 판결',
+            # 시장 급변동
+            'bitcoin crash', 'crypto crash', 'market crash', 'flash crash', 'bitcoin plunge',
+            'bitcoin surge', 'bitcoin rally', 'bitcoin breaks',
+            '비트코인 폭락', '암호화폐 급락', '시장 붕괴', '비트코인 급등',
+            # ETF
+            'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing',
+            'ETF 승인', 'ETF 거부', 'ETF 결정',
+            # 기업 구매
+            'bought bitcoin', 'buys bitcoin', 'purchased bitcoin', 'bitcoin purchase', 'bitcoin acquisition',
+            '비트코인 구매', '비트코인 매입', '비트코인 투자', '비트코인 보유',
+            # 대량 거래
+            'whale alert', 'large bitcoin transfer', 'bitcoin moved', 'btc transferred',
+            'exchange inflow', 'exchange outflow',
+            '고래 이동', '대량 이체', '비트코인 이동', '거래소 유입', '거래소 유출',
+            # 해킹/보안
+            'exchange hacked', 'bitcoin stolen', 'crypto hack', 'security breach',
+            '거래소 해킹', '비트코인 도난', '보안 사고'
+        ]
+        
+        for keyword in critical_keywords:
+            if keyword.lower() in content:
+                return True
+        
+        return False
+    
     def _generate_event_hash(self, event: dict) -> str:
         """이벤트의 고유 해시 생성 - 더 강력한 중복 체크"""
         event_type = event.get('type', '')
@@ -309,6 +402,11 @@ class BitcoinPredictionSystem:
                 
                 for event in events_to_process:
                     try:
+                        # 비트코인 관련성 체크 - 트럼프 관세 뉴스도 포함
+                        if hasattr(event, 'type') and event.type == 'critical_news':
+                            if not self._is_critical_news(event.__dict__ if hasattr(event, '__dict__') else event):
+                                continue
+                        
                         # 이벤트 해시 생성
                         event_hash = self._generate_event_hash(event if isinstance(event, dict) else event.__dict__)
                         
@@ -440,16 +538,16 @@ class BitcoinPredictionSystem:
         welcome_message = """🚀 비트코인 예측 시스템에 오신 것을 환영합니다!
 
 📊 슬래시 명령어:
-• /report - 전체 분석 리포트
-• /forecast - 단기 예측 요약
-• /profit - 실시간 수익 현황
-• /schedule - 자동 일정 안내
+- /report - 전체 분석 리포트
+- /forecast - 단기 예측 요약
+- /profit - 실시간 수익 현황
+- /schedule - 자동 일정 안내
 
 💬 자연어 질문 예시:
-• "오늘 수익은?"
-• "지금 매수해도 돼?"
-• "시장 상황 어때?"
-• "얼마 벌었어?"
+- "오늘 수익은?"
+- "지금 매수해도 돼?"
+- "시장 상황 어때?"
+- "얼마 벌었어?"
 
 🔔 자동 리포트:
 매일 09:00, 13:00, 18:00, 22:00
