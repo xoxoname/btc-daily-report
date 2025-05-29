@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime
 import traceback
+from typing import Dict  # 추가된 import
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
