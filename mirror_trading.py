@@ -19,12 +19,13 @@ class MirrorTradingSystem:
         self.sync_enabled = True
         
         # 설정
-        self.check_interval = 10  # 10초마다 체크
+        self.check_interval = config.MIRROR_CHECK_INTERVAL  # 환경변수에서 가져오기
         self.min_trade_size = 0.001  # 최소 거래 크기 (BTC)
         
     async def start_monitoring(self):
         """미러 트레이딩 모니터링 시작"""
         self.logger.info("🔄 미러 트레이딩 시스템 시작")
+        self.logger.info(f"체크 간격: {self.check_interval}초")
         
         while self.sync_enabled:
             try:
@@ -100,7 +101,7 @@ class MirrorTradingSystem:
             self.logger.error(f"Bitget 포지션 처리 실패: {e}")
     
     async def _calculate_position_ratio(self, bitget_pos: Dict) -> float:
-        """포지션 비율 계산"""
+        """포지션 비율 계산 - 개선된 버전"""
         try:
             # Bitget 계정 정보 조회
             bitget_account = await self.bitget_client.get_account_info()
@@ -108,46 +109,60 @@ class MirrorTradingSystem:
             # 총 자산
             total_equity = float(bitget_account.get('accountEquity', 0))
             
-            # 사용된 증거금 (레버리지 고려)
-            margin_used = float(bitget_pos.get('marginSize', 0))
+            # 포지션 가치 계산 (레버리지 적용 전 실제 투입 금액)
+            # marginSize = 포지션 가치 (size * entry_price)
+            # 실제 투입 금액 = marginSize / leverage
+            margin_size = float(bitget_pos.get('marginSize', 0))
             leverage = float(bitget_pos.get('leverage', 1))
-            actual_investment = margin_used / leverage if leverage > 0 else margin_used
             
-            # 비율 계산
+            # 실제 투입된 증거금
+            actual_investment = margin_size / leverage if leverage > 0 else margin_size
+            
+            # 총 자산 대비 비율
             ratio = actual_investment / total_equity if total_equity > 0 else 0
             
-            self.logger.info(f"📊 포지션 비율: {ratio:.2%} (투자금 ${actual_investment:.2f} / 총자산 ${total_equity:.2f})")
+            # 로깅
+            self.logger.info(f"📊 Bitget 자산 분석:")
+            self.logger.info(f"  - 총 자산: ${total_equity:,.2f}")
+            self.logger.info(f"  - 포지션 가치: ${margin_size:,.2f}")
+            self.logger.info(f"  - 레버리지: {leverage}x")
+            self.logger.info(f"  - 실제 투입금: ${actual_investment:,.2f}")
+            self.logger.info(f"  - 투입 비율: {ratio:.2%}")
             
             return ratio
             
         except Exception as e:
             self.logger.error(f"비율 계산 실패: {e}")
-            return 0.1  # 기본값 10%
+            return 0.01  # 기본값 1%
     
     async def _create_gateio_position(self, side: str, ratio: float, existing_pos: Optional[Dict]):
-        """Gate.io에서 포지션 생성"""
+        """Gate.io에서 포지션 생성 - 개선된 버전"""
         try:
             # Gate.io 계정 정보 조회
             gateio_account = await self.gateio_client.get_futures_account()
             total_equity = float(gateio_account.get('total', 0))
             
-            # 투자금 계산
+            # 투자금 계산 (총 자산의 동일 비율)
             investment_amount = total_equity * ratio
+            
+            # 최소 투자금 체크 ($5)
+            if investment_amount < 5:
+                self.logger.warning(f"⚠️ 투자금이 너무 작습니다: ${investment_amount:.2f} (최소 $5)")
+                return
             
             # 현재가 조회
             ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
             current_price = float(ticker.get('last', 0))
             
-            # 계약 정보 조회 (계약 크기 확인)
+            # 계약 정보 조회
             contract_info = await self.gateio_client.get_contract_info('usdt', 'BTC_USDT')
             quanto_multiplier = float(contract_info.get('quanto_multiplier', 0.0001))
             
             # 계약 수 계산
-            # Gate.io는 계약 단위로 거래 (1계약 = quanto_multiplier BTC)
             btc_amount = investment_amount / current_price
             contracts = int(btc_amount / quanto_multiplier)
             
-            # 방향에 따른 사이즈 설정 (양수: 롱, 음수: 숏)
+            # 방향에 따른 사이즈 설정
             if side in ['short', 'sell']:
                 contracts = -abs(contracts)
             else:
@@ -161,19 +176,25 @@ class MirrorTradingSystem:
             # 기존 포지션이 있다면 정리
             if existing_pos and float(existing_pos.get('size', 0)) != 0:
                 await self._close_gateio_position(existing_pos)
-                await asyncio.sleep(1)  # 잠시 대기
+                await asyncio.sleep(1)
             
             # 새 포지션 생성
             order_params = {
                 'contract': 'BTC_USDT',
                 'size': contracts,
-                'price': '0',  # 시장가 주문
-                'tif': 'ioc'  # immediate or cancel
+                'price': '0',  # 시장가
+                'tif': 'ioc'
             }
             
             result = await self.gateio_client.create_futures_order('usdt', **order_params)
             
-            self.logger.info(f"✅ Gate.io 포지션 생성: {side} {contracts}계약 (${investment_amount:.2f}, {ratio:.2%})")
+            # 로깅
+            self.logger.info(f"✅ Gate.io 포지션 생성:")
+            self.logger.info(f"  - 총 자산: ${total_equity:,.2f}")
+            self.logger.info(f"  - 투입금: ${investment_amount:,.2f} ({ratio:.2%})")
+            self.logger.info(f"  - 방향: {side}")
+            self.logger.info(f"  - 계약 수: {abs(contracts)}계약")
+            self.logger.info(f"  - BTC 수량: {btc_amount:.4f} BTC")
             
         except Exception as e:
             self.logger.error(f"Gate.io 포지션 생성 실패: {e}")
