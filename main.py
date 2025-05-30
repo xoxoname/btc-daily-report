@@ -295,7 +295,8 @@ class BitcoinPredictionSystem:
             # 🆕 새로운 수익 리포트 생성기 사용
             profit_report = await self.report_manager.generate_profit_report()
             
-            await update.message.reply_text(profit_report, parse_mode='Markdown')
+            # HTML 파싱 모드로 전송
+            await update.message.reply_text(profit_report, parse_mode='HTML')
             
         except Exception as e:
             self.logger.error(f"수익 명령 처리 실패: {str(e)}")
