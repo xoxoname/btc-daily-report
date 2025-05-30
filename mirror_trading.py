@@ -27,6 +27,9 @@ class MirrorTradingSystem:
         self.tracked_positions = {}  # {symbol: {'side': 'long/short', 'entry_time': datetime, 'margin_ratio': float}}
         self.initial_scan_done = False  # 첫 스캔 완료 플래그
         
+        # 초기 포지션 스냅샷 (시스템 시작 시점의 포지션만 제외)
+        self.initial_positions = set()  # 초기 포지션의 고유 ID 저장
+        
         # 주문 추적 (TP/SL 수정 감지용)
         self.tracked_orders = {}  # {symbol: {'tp_price': float, 'sl_price': float, 'tp_order_id': str, 'sl_order_id': str}}
         
@@ -160,7 +163,7 @@ class MirrorTradingSystem:
         self.logger.info("🛑 미러 트레이딩 모니터링 중지")
     
     async def _initial_position_scan(self):
-        """초기 포지션 스캔 - 기존 포지션은 추적만"""
+        """초기 포지션 스캔 - 기존 포지션의 고유 ID만 저장"""
         try:
             self.logger.info("📋 초기 포지션 스캔 시작...")
             
@@ -171,18 +174,24 @@ class MirrorTradingSystem:
                 if float(pos.get('total', 0)) > 0:
                     symbol = pos.get('symbol', 'BTCUSDT')
                     side = 'long' if pos.get('holdSide', '').lower() in ['long', 'buy'] else 'short'
+                    cTime = pos.get('cTime', '')  # 포지션 생성 시간
                     
-                    # 기존 포지션은 tracked_positions에만 추가 (복제하지 않음)
+                    # 포지션의 고유 ID 생성 (심볼 + 방향 + 생성시간)
+                    position_id = f"{symbol}_{side}_{cTime}"
+                    self.initial_positions.add(position_id)
+                    
+                    # 추적은 하지만 미러링은 하지 않을 것임을 표시
                     self.tracked_positions[symbol] = {
                         'side': side,
-                        'entry_time': datetime.now() - timedelta(hours=1),  # 과거 시간으로 설정
-                        'margin_ratio': 0,  # 기존 포지션은 비율 계산 안함
-                        'is_existing': True  # 기존 포지션 플래그
+                        'entry_time': datetime.now(),
+                        'margin_ratio': 0,
+                        'position_id': position_id,
+                        'cTime': cTime
                     }
                     
                     # 기존 TP/SL 추적
-                    tp_price = float(pos.get('takeProfitPrice', 0))
-                    sl_price = float(pos.get('stopLossPrice', 0))
+                    tp_price = float(pos.get('takeProfitPrice', 0) or pos.get('takeProfit', 0) or 0)
+                    sl_price = float(pos.get('stopLossPrice', 0) or pos.get('stopLoss', 0) or 0)
                     
                     if tp_price > 0 or sl_price > 0:
                         self.tracked_orders[symbol] = {
@@ -192,10 +201,10 @@ class MirrorTradingSystem:
                             'sl_order_id': None
                         }
                     
-                    self.logger.info(f"📌 기존 포지션 발견 (복제하지 않음): {symbol} {side}")
+                    self.logger.info(f"📌 초기 포지션 발견: {symbol} {side} (ID: {position_id})")
             
             self.initial_scan_done = True
-            self.logger.info("✅ 초기 포지션 스캔 완료")
+            self.logger.info(f"✅ 초기 포지션 스캔 완료 - {len(self.initial_positions)}개 포지션 발견")
             
         except Exception as e:
             self.logger.error(f"초기 포지션 스캔 실패: {e}")
@@ -211,6 +220,8 @@ class MirrorTradingSystem:
             # 2. 게이트 계정 정보
             gateio_account = await self.gateio_client.get_futures_account()
             gateio_total_equity = float(gateio_account.get('total', 0))
+            
+            self.logger.debug(f"💰 계정 잔고 - Bitget: ${bitget_total_equity:.2f}, Gate.io: ${gateio_total_equity:.2f}")
             
             # 3. 활성 포지션 처리
             active_symbols = set()
@@ -241,6 +252,10 @@ class MirrorTradingSystem:
         try:
             symbol = bitget_pos.get('symbol', 'BTCUSDT')
             side = 'long' if bitget_pos.get('holdSide', '').lower() in ['long', 'buy'] else 'short'
+            cTime = bitget_pos.get('cTime', '')
+            
+            # 포지션의 고유 ID 생성
+            position_id = f"{symbol}_{side}_{cTime}"
             
             # 마진 계산 (USDT 기준)
             margin = float(bitget_pos.get('marginSize', 0))
@@ -255,32 +270,57 @@ class MirrorTradingSystem:
                     'side': side,
                     'entry_time': datetime.now(),
                     'margin_ratio': margin_ratio,
-                    'is_existing': False
+                    'position_id': position_id,
+                    'cTime': cTime
                 }
                 
-                # 게이트에 미러링
-                success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
-                
-                if success:
-                    self.daily_stats['mirror_entries'] += 1
-                    self.daily_stats['successful_mirrors'] += 1
+                # 초기 스캔에서 발견된 포지션이 아닌 경우만 미러링
+                if position_id not in self.initial_positions:
+                    self.logger.info(f"🔄 신규 포지션 미러링 시작: {symbol} {side}")
+                    # 게이트에 미러링
+                    success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
+                    
+                    if success:
+                        self.daily_stats['mirror_entries'] += 1
+                        self.daily_stats['successful_mirrors'] += 1
+                    else:
+                        self.daily_stats['failed_mirrors'] += 1
                 else:
-                    self.daily_stats['failed_mirrors'] += 1
+                    self.logger.info(f"⏭️ 초기 포지션이므로 미러링 스킵: {symbol} {side}")
                 
             else:
                 # 기존 포지션 업데이트 체크
                 tracked = self.tracked_positions[symbol]
                 
-                # 기존 포지션(초기 스캔)은 미러링하지 않음
-                if tracked.get('is_existing', False):
-                    return
-                
-                # 부분 청산 체크
-                current_margin_ratio = margin / bitget_equity if bitget_equity > 0 else 0
-                if abs(current_margin_ratio - tracked['margin_ratio']) > 0.01:  # 1% 이상 변화
-                    await self._handle_partial_close(symbol, bitget_pos, current_margin_ratio, gateio_equity)
-                    tracked['margin_ratio'] = current_margin_ratio
-                    self.daily_stats['partial_closes'] += 1
+                # 포지션 ID가 변경되었는지 확인 (같은 심볼이지만 다른 포지션)
+                if tracked.get('position_id') != position_id:
+                    self.logger.info(f"🔄 포지션 ID 변경 감지 - 새로운 포지션: {symbol} {side}")
+                    
+                    # 이전 포지션 정보 업데이트
+                    self.tracked_positions[symbol] = {
+                        'side': side,
+                        'entry_time': datetime.now(),
+                        'margin_ratio': margin_ratio,
+                        'position_id': position_id,
+                        'cTime': cTime
+                    }
+                    
+                    # 초기 포지션이 아니면 미러링
+                    if position_id not in self.initial_positions:
+                        success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
+                        
+                        if success:
+                            self.daily_stats['mirror_entries'] += 1
+                            self.daily_stats['successful_mirrors'] += 1
+                        else:
+                            self.daily_stats['failed_mirrors'] += 1
+                else:
+                    # 부분 청산 체크
+                    current_margin_ratio = margin / bitget_equity if bitget_equity > 0 else 0
+                    if abs(current_margin_ratio - tracked['margin_ratio']) > 0.01:  # 1% 이상 변화
+                        await self._handle_partial_close(symbol, bitget_pos, current_margin_ratio, gateio_equity)
+                        tracked['margin_ratio'] = current_margin_ratio
+                        self.daily_stats['partial_closes'] += 1
             
         except Exception as e:
             self.logger.error(f"포지션 처리 실패: {e}")
@@ -335,6 +375,11 @@ class MirrorTradingSystem:
             leverage = int(float(bitget_pos.get('leverage', 1)))
             entry_price = float(bitget_pos.get('openPriceAvg', 0))
             
+            # 현재가 조회 (진입가가 0인 경우 대비)
+            if entry_price == 0:
+                ticker = await self.bitget_client.get_ticker('BTCUSDT')
+                entry_price = float(ticker.get('last', 0))
+            
             # 게이트 주문 크기 계산 (USDT 기준)
             # Gate.io는 계약 단위로 거래하므로 변환 필요
             # 1 계약 = 0.0001 BTC
@@ -355,7 +400,12 @@ class MirrorTradingSystem:
                 'text': f'mirror_from_bitget_{datetime.now().strftime("%Y%m%d%H%M%S")}'
             }
             
-            self.logger.info(f"📤 게이트 미러 주문: {side} {contract_size}계약 @ ${entry_price}")
+            self.logger.info(f"📤 게이트 미러 주문 시작:")
+            self.logger.info(f"   - 방향: {side}")
+            self.logger.info(f"   - 계약수: {contract_size}")
+            self.logger.info(f"   - 가격: ${entry_price}")
+            self.logger.info(f"   - 마진: ${gateio_margin:.2f}")
+            self.logger.info(f"   - 레버리지: {leverage}x")
             
             order_result = await self.gateio_client.create_futures_order(**order_params)
             
@@ -376,6 +426,18 @@ class MirrorTradingSystem:
             
             self.logger.info(f"✅ 미러 주문 성공: {order_result.get('id')}")
             
+            # 성공 알림
+            if self.telegram_bot:
+                await self.telegram_bot.send_message(
+                    f"✅ 미러 주문 성공\n\n"
+                    f"거래소: Gate.io\n"
+                    f"방향: {side.upper()}\n"
+                    f"계약수: {contract_size}\n"
+                    f"진입가: ${entry_price:,.2f}\n"
+                    f"마진: ${gateio_margin:.2f}\n"
+                    f"레버리지: {leverage}x"
+                )
+            
             # TP/SL 설정 미러링
             await self._mirror_tp_sl(bitget_pos, contract_size, side)
             
@@ -392,8 +454,8 @@ class MirrorTradingSystem:
         """TP/SL 설정 미러링"""
         try:
             symbol = bitget_pos.get('symbol', 'BTCUSDT')
-            tp_price = float(bitget_pos.get('takeProfitPrice', 0))
-            sl_price = float(bitget_pos.get('stopLossPrice', 0))
+            tp_price = float(bitget_pos.get('takeProfitPrice', 0) or bitget_pos.get('takeProfit', 0) or 0)
+            sl_price = float(bitget_pos.get('stopLossPrice', 0) or bitget_pos.get('stopLoss', 0) or 0)
             
             tp_order_id = None
             sl_order_id = None
@@ -446,8 +508,8 @@ class MirrorTradingSystem:
                 return
             
             tracked = self.tracked_orders[symbol]
-            current_tp = float(bitget_pos.get('takeProfitPrice', 0))
-            current_sl = float(bitget_pos.get('stopLossPrice', 0))
+            current_tp = float(bitget_pos.get('takeProfitPrice', 0) or bitget_pos.get('takeProfit', 0) or 0)
+            current_sl = float(bitget_pos.get('stopLossPrice', 0) or bitget_pos.get('stopLoss', 0) or 0)
             
             # TP 수정 체크
             if abs(current_tp - tracked['tp_price']) > 0.01:  # 가격 변경
@@ -798,5 +860,6 @@ class MirrorTradingSystem:
             'order_logs_count': len(self.order_logs),
             'last_orders': self.order_logs[-10:],  # 최근 10개
             'daily_stats': self.daily_stats,
-            'retry_counts': self.retry_count
+            'retry_counts': self.retry_count,
+            'initial_positions_count': len(self.initial_positions)
         }
