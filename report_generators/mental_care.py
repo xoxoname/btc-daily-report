@@ -67,7 +67,7 @@ class MentalCareGenerator:
                 {"role": "system", "content": "당신은 따뜻하고 현실적인 트레이딩 멘토입니다."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=200,
+            max_tokens=300,
             temperature=0.8
         )
         
