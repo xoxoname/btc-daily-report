@@ -989,10 +989,12 @@ class BitcoinPredictionSystem:
             self.logger.info(f"✅ 비트코인 예측 시스템 시작 완료 (모드: {mode_text})")
             
             # 시작 메시지 전송
+            kst = pytz.timezone('Asia/Seoul')
+            start_time_kst = datetime.now(kst)
             startup_msg = f"""<b>🚀 비트코인 예측 시스템이 시작되었습니다!</b>
 
 <b>📊 운영 모드:</b> {mode_text}
-<b>🕐 시작 시각:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+<b>🕐 시작 시각:</b> {start_time_kst.strftime('%Y-%m-%d %H:%M:%S')} (KST)
 """
             
             if self.mirror_mode:
