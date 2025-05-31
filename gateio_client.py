@@ -396,19 +396,9 @@ class GateClient:
             
             # 2025년 5월 1일 0시 (KST)
             start_date = datetime(2025, 5, 1, 0, 0, 0, tzinfo=kst)
-            start_time = int(start_date.timestamp())
             
             # 현재 시간
             now = datetime.now(kst)
-            end_time = int(now.timestamp())
-            
-            # 계정 장부에서 손익 내역 조회
-            pnl_records = await self.get_account_book(
-                type="pnl",
-                start_time=start_time,
-                end_time=end_time,
-                limit=1000
-            )
             
             total_pnl = 0.0
             weekly_pnl = 0.0
@@ -422,26 +412,53 @@ class GateClient:
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             today_timestamp = int(today_start.timestamp())
             
-            for record in pnl_records:
-                change = float(record.get('change', 0))
-                record_time = int(record.get('time', 0))
+            # 30일씩 나눠서 조회
+            current_start = start_date
+            while current_start < now:
+                # 30일 후 또는 현재 시간 중 더 이른 시간
+                current_end = min(current_start + timedelta(days=29), now)
                 
-                # 전체 누적
-                total_pnl += change
+                start_time = int(current_start.timestamp())
+                end_time = int(current_end.timestamp())
                 
-                # 7일 수익
-                if record_time >= seven_days_timestamp:
-                    weekly_pnl += change
+                logger.info(f"Gate 손익 조회 기간: {current_start.strftime('%Y-%m-%d')} ~ {current_end.strftime('%Y-%m-%d')}")
                 
-                # 오늘 수익
-                if record_time >= today_timestamp:
-                    today_pnl += change
+                # 계정 장부에서 손익 내역 조회
+                pnl_records = await self.get_account_book(
+                    type="pnl",
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=1000
+                )
+                
+                for record in pnl_records:
+                    change = float(record.get('change', 0))
+                    record_time = int(record.get('time', 0))
+                    
+                    # 전체 누적
+                    total_pnl += change
+                    
+                    # 7일 수익
+                    if record_time >= seven_days_timestamp:
+                        weekly_pnl += change
+                    
+                    # 오늘 수익
+                    if record_time >= today_timestamp:
+                        today_pnl += change
+                
+                # 다음 기간으로 이동
+                current_start = current_end + timedelta(seconds=1)
+                
+                # API 제한 방지를 위한 잠시 대기
+                await asyncio.sleep(0.1)
+            
+            logger.info(f"Gate 총 손익: ${total_pnl:.2f}, 7일: ${weekly_pnl:.2f}, 오늘: ${today_pnl:.2f}")
             
             return {
                 'total': total_pnl,
                 'weekly': {
                     'total': weekly_pnl,
-                    'average': weekly_pnl / 7
+                    'average': weekly_pnl / 7 if weekly_pnl else 0
                 },
                 'today_realized': today_pnl
             }
