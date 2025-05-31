@@ -132,7 +132,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_exchange_data('Bitget')
     
     async def _get_gateio_data(self) -> dict:
-        """Gate 데이터 조회"""
+        """Gate 데이터 조회 (개선된 버전)"""
         try:
             # Gate.io 클라이언트가 없는 경우
             if not self.gateio_client:
@@ -198,16 +198,24 @@ class ProfitReportGenerator(BaseReportGenerator):
             # 사용 증거금 계산
             used_margin = position_info.get('margin', 0) if position_info['has_position'] else 0
             
-            # Gate 2025년 5월부터의 수익 계산
-            gate_profit_data = await self._get_gate_profit_since_may()
-            cumulative_profit = gate_profit_data['total']
+            # Gate 손익 데이터 조회 (개선된 메서드 사용)
+            gate_profit_data = await self.gateio_client.get_profit_history_since_may()
+            
+            # 실제 수익 사용 (계정 history의 PnL 기반)
+            cumulative_profit = gate_profit_data.get('total', 0)
             cumulative_roi = (cumulative_profit / self.GATE_INITIAL_CAPITAL * 100) if self.GATE_INITIAL_CAPITAL > 0 else 0
             
             # Gate 7일 손익
             weekly_profit = gate_profit_data.get('weekly', {'total': 0, 'average': 0})
             
-            # 오늘 실현 손익 (KST 0시 기준)
+            # 오늘 실현 손익
             today_pnl = gate_profit_data.get('today_realized', 0)
+            
+            # 실제 수익 (현재 잔고 - 초기 자본)
+            actual_profit = gate_profit_data.get('actual_profit', 0)
+            actual_initial = gate_profit_data.get('initial_capital', self.GATE_INITIAL_CAPITAL)
+            
+            self.logger.info(f"Gate 손익 데이터: 누적={cumulative_profit:.2f}, 7일={weekly_profit['total']:.2f}, 오늘={today_pnl:.2f}")
             
             return {
                 'exchange': 'Gate',
@@ -223,53 +231,17 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'cumulative_profit': cumulative_profit,
                 'cumulative_roi': cumulative_roi,
                 'total_equity': total_equity,
-                'initial_capital': self.GATE_INITIAL_CAPITAL,
+                'initial_capital': actual_initial,
                 'available': available,
                 'used_margin': used_margin,
-                'has_account': total_equity > 0  # Gate 계정 존재 여부
+                'has_account': total_equity > 0,  # Gate 계정 존재 여부
+                'actual_profit': actual_profit  # 실제 수익
             }
             
         except Exception as e:
             self.logger.error(f"Gate 데이터 조회 실패: {e}")
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return self._get_empty_exchange_data('Gate')
-    
-    async def _get_gate_profit_since_may(self) -> dict:
-        """Gate 2025년 5월부터의 손익 계산"""
-        try:
-            # Gate.io 거래 내역에서 실제 손익 조회
-            if hasattr(self.gateio_client, 'get_profit_history_since_may'):
-                return await self.gateio_client.get_profit_history_since_may()
-            
-            # 폴백: 현재 잔고 기반 계산
-            account_response = await self.gateio_client.get_account_balance()
-            total_equity = float(account_response.get('total', 0))
-            
-            # 2025년 5월부터의 누적 수익 (현재 잔고 - 초기 자본)
-            cumulative_profit = total_equity - self.GATE_INITIAL_CAPITAL
-            
-            # 7일 수익 (누적 수익의 일부로 추정)
-            weekly_total = cumulative_profit * 0.1 if cumulative_profit > 0 else 0
-            weekly_avg = weekly_total / 7
-            
-            # 오늘 실현 손익 (향후 구현)
-            today_realized = 0.0
-            
-            return {
-                'total': cumulative_profit,
-                'weekly': {
-                    'total': weekly_total,
-                    'average': weekly_avg
-                },
-                'today_realized': today_realized
-            }
-        except Exception as e:
-            self.logger.error(f"Gate 수익 계산 실패: {e}")
-            return {
-                'total': 0,
-                'weekly': {'total': 0, 'average': 0},
-                'today_realized': 0
-            }
     
     async def _get_today_realized_pnl_kst(self) -> float:
         """KST 0시 기준 오늘 실현 손익 조회"""
@@ -400,7 +372,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         weekly_roi = (weekly_total / initial_7d * 100) if initial_7d > 0 else 0
         
         # 누적 수익률
-        total_initial = self.BITGET_INITIAL_CAPITAL + self.GATE_INITIAL_CAPITAL
+        total_initial = self.BITGET_INITIAL_CAPITAL + gateio_data.get('initial_capital', self.GATE_INITIAL_CAPITAL)
         cumulative_roi = (cumulative_profit / total_initial * 100) if total_initial > 0 else 0
         
         return {
@@ -641,7 +613,8 @@ class ProfitReportGenerator(BaseReportGenerator):
 5. 이모티콘 1개 포함
 6. "반갑습니다", "Bitget에서의", "화이팅하세요" 같은 표현 금지
 7. 통합 자산과 전체 수익을 기준으로 분석
-8. 레버리지 관련 조언은 하지 않음"""
+8. 레버리지 관련 조언은 하지 않음
+9. 메시지를 항상 완전한 문장으로 마무리"""
             
             response = await self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -649,7 +622,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                     {"role": "system", "content": "당신은 트레이더의 현재 상황에 맞는 심리적 조언을 제공하는 전문가입니다. 인사말이나 격려보다는 구체적인 상황 분석과 행동 지침을 제공하세요. 레버리지 관련 언급은 피하세요."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=200,
+                max_tokens=300,  # 충분한 토큰 할당
                 temperature=0.8
             )
             
@@ -661,6 +634,16 @@ class ProfitReportGenerator(BaseReportGenerator):
                 gpt_message = gpt_message.replace(phrase, "")
             
             gpt_message = gpt_message.strip()
+            
+            # 메시지가 완전히 끝났는지 확인
+            if not gpt_message.endswith(('.', '!', '?', ')', '"')):
+                # 미완성 문장 처리
+                if '.' in gpt_message:
+                    # 마지막 완전한 문장까지만 사용
+                    gpt_message = gpt_message[:gpt_message.rfind('.')+1]
+                else:
+                    # 기본 이모티콘 추가
+                    gpt_message += " 🎯"
             
             # 따옴표로 감싸기
             if not gpt_message.startswith('"'):
