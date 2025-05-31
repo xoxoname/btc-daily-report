@@ -15,22 +15,16 @@ class Config:
         self.BITGET_SECRET_KEY = os.getenv('BITGET_APISECRET')
         self.BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
         
+        # Gate.io API 설정
+        self.GATE_API_KEY = os.getenv('GATE_API_KEY')
+        self.GATE_API_SECRET = os.getenv('GATE_API_SECRET')
+        
         # Bitget 추가 설정
         self.bitget_base_url = "https://api.bitget.com"
         self.bitget_api_key = self.BITGET_API_KEY
         self.bitget_api_secret = self.BITGET_SECRET_KEY
         self.bitget_passphrase = self.BITGET_PASSPHRASE
         self.symbol = "BTCUSDT"
-        
-        # Gate.io API 설정 (새로 추가)
-        self.GATEIO_API_KEY = os.getenv('GATEIO_API_KEY')
-        self.GATEIO_API_SECRET = os.getenv('GATEIO_API_SECRET')
-        self.gateio_api_key = self.GATEIO_API_KEY
-        self.gateio_api_secret = self.GATEIO_API_SECRET
-        
-        # 미러 트레이딩 설정
-        self.ENABLE_MIRROR_TRADING = os.getenv('ENABLE_MIRROR_TRADING', 'false').lower() == 'true'
-        self.MIRROR_CHECK_INTERVAL = int(os.getenv('MIRROR_CHECK_INTERVAL', '10'))  # 초
         
         # 기존 뉴스 API (3개)
         self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
@@ -45,15 +39,14 @@ class Config:
         # OpenAI 설정
         self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
         
-        # OpenAI Rate Limit 설정
-        self.OPENAI_MAX_RETRIES = int(os.getenv('OPENAI_MAX_RETRIES', '3'))
-        self.OPENAI_RETRY_DELAY = int(os.getenv('OPENAI_RETRY_DELAY', '60'))  # 초
-        
         # 설정 검증
         self._validate_config()
     
     def _validate_config(self):
         """필수 설정 검증"""
+        # 미러 트레이딩 모드 체크
+        mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'true').lower() == 'true'
+        
         required_configs = {
             'TELEGRAM_TOKEN': self.TELEGRAM_TOKEN,
             'TELEGRAM_CHAT_ID': self.TELEGRAM_CHAT_ID,
@@ -62,11 +55,11 @@ class Config:
             'BITGET_PASSPHRASE': self.BITGET_PASSPHRASE
         }
         
-        # 미러 트레이딩이 활성화된 경우 Gate.io API 검증
-        if self.ENABLE_MIRROR_TRADING:
+        # 미러 트레이딩 모드일 때만 Gate.io API 필수
+        if mirror_mode:
             required_configs.update({
-                'GATEIO_API_KEY': self.GATEIO_API_KEY,
-                'GATEIO_API_SECRET': self.GATEIO_API_SECRET
+                'GATE_API_KEY': self.GATE_API_KEY,
+                'GATE_API_SECRET': self.GATE_API_SECRET
             })
         
         missing_configs = []
@@ -86,12 +79,11 @@ class Config:
         print(f"  • Telegram Bot: 설정됨")
         print(f"  • Bitget API: 설정됨")
         
-        # 미러 트레이딩
-        if self.ENABLE_MIRROR_TRADING:
+        if mirror_mode:
             print(f"  • Gate.io API: 설정됨")
-            print(f"  • 미러 트레이딩: 활성화 (체크 간격: {self.MIRROR_CHECK_INTERVAL}초)")
+            print(f"\n🔄 미러 트레이딩: 활성화")
         else:
-            print(f"  • 미러 트레이딩: 비활성화")
+            print(f"\n📊 분석 전용 모드: 활성화")
         
         # 선택 API들
         optional_apis = {
@@ -103,6 +95,10 @@ class Config:
             'CryptoCompare': self.CRYPTOCOMPARE_API_KEY,
             'Glassnode': self.GLASSNODE_API_KEY
         }
+        
+        # Gate.io가 선택사항일 때
+        if not mirror_mode and self.GATE_API_KEY:
+            optional_apis['Gate.io API'] = self.GATE_API_KEY
         
         available = []
         missing = []
@@ -123,12 +119,24 @@ class Config:
             for api in missing:
                 print(f"  • {api}")
         
+        if mirror_mode:
+            print("\n💡 미러 트레이딩 설정:")
+            print("  • 기준 거래소: Bitget")
+            print("  • 미러 거래소: Gate.io")
+            print("  • 미러링 방식: 마진 비율 기반")
+            print("  • 기존 포지션: 복제 제외")
+        
         print("\n💡 추가 API 설정 방법:")
         print("  .env 파일에 다음 형식으로 추가:")
         print("  COINGECKO_API_KEY=your_key_here")
         print("  CRYPTOCOMPARE_API_KEY=your_key_here")
         print("  GLASSNODE_API_KEY=your_key_here")
-        print("  GATEIO_API_KEY=your_key_here")
-        print("  GATEIO_API_SECRET=your_secret_here")
-        print("  ENABLE_MIRROR_TRADING=true")
+        
+        if not mirror_mode:
+            print("\n💡 미러 트레이딩 활성화:")
+            print("  .env 파일에 추가:")
+            print("  MIRROR_TRADING_MODE=true")
+            print("  GATE_API_KEY=your_gate_key")
+            print("  GATE_API_SECRET=your_gate_secret")
+        
         print("━" * 50 + "\n")
