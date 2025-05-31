@@ -22,6 +22,7 @@ class RealisticNewsCollector:
         self.processed_news_hashes = set()  # 처리된 뉴스 해시 저장
         self.news_title_cache = {}  # 제목별 캐시
         self.company_news_count = {}  # 회사별 뉴스 카운트
+        self.news_first_seen = {}  # 뉴스 최초 발견 시간
         
         # 번역 캐시 및 rate limit 관리 - 한도 증가
         self.translation_cache = {}  # 번역 캐시
@@ -276,8 +277,8 @@ class RealisticNewsCollector:
         
         return hashlib.md5(hash_content.encode()).hexdigest()
     
-    def _is_duplicate_emergency(self, article: Dict, time_window: int = 120) -> bool:
-        """긴급 알림이 중복인지 확인 (120분 이내 유사 내용)"""
+    def _is_duplicate_emergency(self, article: Dict, time_window: int = 60) -> bool:
+        """긴급 알림이 중복인지 확인 (60분 이내 유사 내용)"""
         try:
             current_time = datetime.now()
             content_hash = self._generate_content_hash(
@@ -343,6 +344,32 @@ class RealisticNewsCollector:
         # 65% 이상 유사하면 중복으로 간주
         return similarity > 0.65
     
+    def _is_recent_news(self, article: Dict, hours: int = 2) -> bool:
+        """뉴스가 최근 것인지 확인 - 더 엄격한 시간 체크"""
+        try:
+            pub_time_str = article.get('published_at', '')
+            if not pub_time_str:
+                return True  # 시간 정보 없으면 일단 포함
+            
+            # 다양한 시간 형식 처리
+            try:
+                if 'T' in pub_time_str:
+                    pub_time = datetime.fromisoformat(pub_time_str.replace('Z', ''))
+                else:
+                    from dateutil import parser
+                    pub_time = parser.parse(pub_time_str)
+                
+                # UTC to local time if needed
+                if pub_time.tzinfo is None:
+                    pub_time = pytz.UTC.localize(pub_time)
+                
+                time_diff = datetime.now(pytz.UTC) - pub_time
+                return time_diff.total_seconds() < (hours * 3600)
+            except:
+                return True  # 파싱 실패시 포함
+        except:
+            return True
+    
     async def start_monitoring(self):
         """뉴스 모니터링 시작"""
         if not self.session:
@@ -358,7 +385,7 @@ class RealisticNewsCollector:
         self.company_news_count = {}
         
         tasks = [
-            self.monitor_rss_feeds(),      # 메인: RSS (45초마다)
+            self.monitor_rss_feeds(),      # 메인: RSS (30초마다로 단축)
             self.monitor_reddit(),         # 보조: Reddit (10분마다)
             self.smart_api_rotation()      # 제한적: 3개 API 순환 사용
         ]
@@ -366,7 +393,7 @@ class RealisticNewsCollector:
         await asyncio.gather(*tasks, return_exceptions=True)
     
     async def monitor_rss_feeds(self):
-        """RSS 피드 모니터링 - 메인 소스"""
+        """RSS 피드 모니터링 - 메인 소스 - 더 빠른 체크"""
         while True:
             try:
                 # 가중치가 높은 소스부터 처리
@@ -381,6 +408,10 @@ class RealisticNewsCollector:
                             successful_feeds += 1
                             
                             for article in articles:
+                                # 최신 뉴스만 처리 (2시간 이내)
+                                if not self._is_recent_news(article, hours=2):
+                                    continue
+                                
                                 # 번역 필요 여부 체크
                                 if self.openai_client and self._should_translate(article):
                                     article['title_ko'] = await self.translate_text(article['title'])
@@ -392,6 +423,8 @@ class RealisticNewsCollector:
                                     if self._is_critical_news(article):
                                         # 중복 체크 후 알림
                                         if not self._is_duplicate_emergency(article):
+                                            # 변동 예상률 추가
+                                            article['expected_change'] = self._estimate_price_impact(article)
                                             await self._trigger_emergency_alert(article)
                                 
                                 # 모든 RSS는 중요 뉴스 체크
@@ -403,11 +436,64 @@ class RealisticNewsCollector:
                         continue
                 
                 logger.info(f"📰 RSS 스캔 완료: {successful_feeds}/{len(sorted_feeds)} 피드 성공 (번역: {self.translation_count}/{self.max_translations_per_30min})")
-                await asyncio.sleep(45)  # 45초마다 전체 RSS 체크
+                await asyncio.sleep(30)  # 30초마다 전체 RSS 체크 (기존 45초에서 단축)
                 
             except Exception as e:
                 logger.error(f"RSS 모니터링 전체 오류: {e}")
-                await asyncio.sleep(180)
+                await asyncio.sleep(60)
+    
+    def _estimate_price_impact(self, article: Dict) -> str:
+        """뉴스의 예상 가격 영향 추정"""
+        content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
+        impact = article.get('impact', '')
+        
+        # 키워드별 예상 변동률
+        strong_bullish_keywords = {
+            'etf approved': '+5~10%',
+            'bought bitcoin': '+2~5%',
+            'bitcoin purchase': '+2~5%',
+            'adoption': '+3~7%',
+            'all-time high': '+5~15%',
+            'institutional': '+2~4%'
+        }
+        
+        strong_bearish_keywords = {
+            'ban': '-5~10%',
+            'lawsuit': '-3~7%',
+            'hack': '-5~8%',
+            'crash': '-10~20%',
+            'reject': '-3~5%',
+            'crackdown': '-5~10%'
+        }
+        
+        moderate_keywords = {
+            'concern': '±1~3%',
+            'uncertainty': '±2~4%',
+            'volatility': '±3~5%',
+            'meeting': '±1~2%',
+            'discussion': '±1~2%'
+        }
+        
+        # 예상 변동률 결정
+        for keyword, change in strong_bullish_keywords.items():
+            if keyword in content:
+                return change
+        
+        for keyword, change in strong_bearish_keywords.items():
+            if keyword in content:
+                return change
+        
+        for keyword, change in moderate_keywords.items():
+            if keyword in content:
+                return change
+        
+        # 기본값
+        if '호재' in impact:
+            return '+1~3%'
+        elif '악재' in impact:
+            return '-1~3%'
+        else:
+            return '±1~2%'
     
     async def monitor_reddit(self):
         """Reddit 모니터링"""
@@ -454,6 +540,7 @@ class RealisticNewsCollector:
                                         
                                         if self._is_critical_news(article):
                                             if not self._is_duplicate_emergency(article):
+                                                article['expected_change'] = self._estimate_price_impact(article)
                                                 await self._trigger_emergency_alert(article)
                                             relevant_posts += 1
                                         elif self._is_important_news(article):
@@ -562,13 +649,7 @@ class RealisticNewsCollector:
                                 
                                 # 유효한 기사만 추가
                                 if article['title'] and article['url']:
-                                    # 최근 6시간 내 기사만
-                                    try:
-                                        article_time = datetime.fromisoformat(pub_time.replace('Z', ''))
-                                        if datetime.now() - article_time < timedelta(hours=6):
-                                            articles.append(article)
-                                    except:
-                                        articles.append(article)  # 시간 파싱 실패시 포함
+                                    articles.append(article)
                                         
                             except Exception as e:
                                 logger.debug(f"기사 파싱 오류 {feed_info['source']}: {str(e)[:50]}")
@@ -633,6 +714,7 @@ class RealisticNewsCollector:
                         
                         if self._is_critical_news(formatted_article):
                             if not self._is_duplicate_emergency(formatted_article):
+                                formatted_article['expected_change'] = self._estimate_price_impact(formatted_article)
                                 await self._trigger_emergency_alert(formatted_article)
                             processed += 1
                         elif self._is_important_news(formatted_article):
@@ -683,6 +765,7 @@ class RealisticNewsCollector:
                         
                         if self._is_critical_news(formatted_article):
                             if not self._is_duplicate_emergency(formatted_article):
+                                formatted_article['expected_change'] = self._estimate_price_impact(formatted_article)
                                 await self._trigger_emergency_alert(formatted_article)
                             processed += 1
                         elif self._is_important_news(formatted_article):
@@ -735,6 +818,7 @@ class RealisticNewsCollector:
                         
                         if self._is_critical_news(formatted_article):
                             if not self._is_duplicate_emergency(formatted_article):
+                                formatted_article['expected_change'] = self._estimate_price_impact(formatted_article)
                                 await self._trigger_emergency_alert(formatted_article)
                             processed += 1
                         elif self._is_important_news(formatted_article):
@@ -765,6 +849,8 @@ class RealisticNewsCollector:
             # 번역 카운트 리셋
             self.translation_count = 0
             self.last_translation_reset = datetime.now()
+            # 최초 발견 시간 정리
+            self.news_first_seen = {}
             logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']}→0, NewsData {old_usage['newsdata_today']}→0")
     
     def _is_critical_news(self, article: Dict) -> bool:
@@ -854,7 +940,7 @@ class RealisticNewsCollector:
         return is_important
     
     async def _trigger_emergency_alert(self, article: Dict):
-        """긴급 알림 트리거"""
+        """긴급 알림 트리거 - 첫 발견 시간 추적"""
         try:
             # 이미 처리된 뉴스인지 확인
             content_hash = self._generate_content_hash(article.get('title', ''), article.get('description', ''))
@@ -869,6 +955,10 @@ class RealisticNewsCollector:
             if len(self.processed_news_hashes) > 1000:
                 self.processed_news_hashes = set(list(self.processed_news_hashes)[-500:])
             
+            # 최초 발견 시간 기록
+            if content_hash not in self.news_first_seen:
+                self.news_first_seen[content_hash] = datetime.now()
+            
             event = {
                 'type': 'critical_news',
                 'title': article.get('title_ko', article.get('title', ''))[:100],
@@ -878,16 +968,18 @@ class RealisticNewsCollector:
                 'timestamp': datetime.now(),
                 'severity': 'critical',
                 'impact': self._determine_impact(article),
+                'expected_change': article.get('expected_change', '±1~2%'),
                 'weight': article.get('weight', 5),
                 'category': article.get('category', 'unknown'),
-                'published_at': article.get('published_at', '')
+                'published_at': article.get('published_at', ''),
+                'first_seen': self.news_first_seen[content_hash]
             }
             
             # 데이터 컬렉터에 전달
             if hasattr(self, 'data_collector') and self.data_collector:
                 self.data_collector.events_buffer.append(event)
             
-            logger.critical(f"🚨 긴급 뉴스 알림: {article.get('source', '')} - {article.get('title_ko', article.get('title', ''))[:60]}")
+            logger.critical(f"🚨 긴급 뉴스 알림: {article.get('source', '')} - {article.get('title_ko', article.get('title', ''))[:60]} (예상: {event['expected_change']})")
             
         except Exception as e:
             logger.error(f"긴급 알림 처리 오류: {e}")
@@ -967,14 +1059,14 @@ class RealisticNewsCollector:
         # 기업 비트코인 구매는 강한 호재
         for company in self.important_companies:
             if company.lower() in content and any(word in content for word in ['bought', 'purchased', 'buys', 'bitcoin', '비트코인 구매', '매입']):
-                return "➕강한 호재"
+                return "📈 강한 호재"
         
         # 트럼프 관련
         if 'trump' in content:
             if any(word in content for word in ['tariff', 'ban', 'restrict', 'court blocks', '관세', '금지']):
-                return "➖악재 예상"  # 트럼프 정책 차단은 일반적으로 시장에 부정적
+                return "📉 악재 예상"  # 트럼프 정책 차단은 일반적으로 시장에 부정적
             elif any(word in content for word in ['approve', 'support', 'bitcoin reserve', '지지', '승인']):
-                return "➕호재 예상"
+                return "📈 호재 예상"
         
         # 강한 악재 (즉시 매도 신호)
         strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked', '금지', '규제', '소송', '폭락', '해킹']
@@ -1003,15 +1095,15 @@ class RealisticNewsCollector:
         
         # 최종 판단
         if strong_bearish_count > 0:
-            return "➖강한 악재"
+            return "📉 강한 악재"
         elif strong_bullish_count > 0:
-            return "➕강한 호재"
+            return "📈 강한 호재"
         elif bearish_total > bullish_total + 1:  # 명확한 차이
-            return "➖악재 예상"
+            return "📉 악재 예상"
         elif bullish_total > bearish_total + 1:  # 명확한 차이
-            return "➕호재 예상"
+            return "📈 호재 예상"
         else:
-            return "중립"
+            return "⚠️ 중립"
     
     async def get_recent_news(self, hours: int = 6) -> List[Dict]:
         """최근 뉴스 가져오기 - 회사별 중복 제거 강화"""
