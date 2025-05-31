@@ -6,7 +6,8 @@ import time
 import json
 import logging
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
+import pytz
 
 logger = logging.getLogger(__name__)
 
@@ -468,3 +469,9 @@ class GateClient:
                     'weekly': {'total': 0, 'average': 0},
                     'today_realized': 0
                 }
+    
+    async def close(self):
+        """세션 종료"""
+        if self.session:
+            await self.session.close()
+            logger.info("Gate.io 클라이언트 세션 종료")
