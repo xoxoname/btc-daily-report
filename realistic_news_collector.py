@@ -23,6 +23,12 @@ class RealisticNewsCollector:
         self.news_title_cache = {}  # 제목별 캐시
         self.company_news_count = {}  # 회사별 뉴스 카운트
         
+        # 번역 캐시 및 rate limit 관리
+        self.translation_cache = {}  # 번역 캐시
+        self.translation_count = 0  # 번역 횟수 추적
+        self.last_translation_reset = datetime.now()
+        self.max_translations_per_hour = 50  # 시간당 최대 번역 수
+        
         # OpenAI 클라이언트 초기화 (번역용)
         self.openai_client = None
         if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY:
@@ -142,6 +148,73 @@ class RealisticNewsCollector:
         
         logger.info(f"뉴스 수집기 초기화 완료 - API 키 상태: NewsAPI={bool(self.newsapi_key)}, NewsData={bool(self.newsdata_key)}, AlphaVantage={bool(self.alpha_vantage_key)}")
     
+    def _reset_translation_count_if_needed(self):
+        """필요시 번역 카운트 리셋"""
+        now = datetime.now()
+        if (now - self.last_translation_reset).total_seconds() > 3600:  # 1시간 경과
+            self.translation_count = 0
+            self.last_translation_reset = now
+            logger.info("번역 카운트 리셋됨")
+    
+    async def translate_text(self, text: str, max_length: int = 100) -> str:
+        """텍스트를 한국어로 번역 (Rate limit 처리 포함)"""
+        if not self.openai_client:
+            return text
+        
+        # 번역 카운트 리셋 체크
+        self._reset_translation_count_if_needed()
+        
+        # 캐시 확인
+        cache_key = hashlib.md5(text.encode()).hexdigest()
+        if cache_key in self.translation_cache:
+            return self.translation_cache[cache_key]
+        
+        # Rate limit 체크
+        if self.translation_count >= self.max_translations_per_hour:
+            logger.warning(f"번역 한도 초과: {self.translation_count}/{self.max_translations_per_hour}")
+            return text[:max_length] + "..." if len(text) > max_length else text
+        
+        try:
+            # 길이 제한
+            if len(text) > max_length:
+                text = text[:max_length] + "..."
+            
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a professional translator. Translate the following text to Korean concisely and accurately. Keep it under 80 characters."},
+                    {"role": "user", "content": text}
+                ],
+                max_tokens=150,
+                temperature=0.3
+            )
+            
+            translated = response.choices[0].message.content.strip()
+            # 번역 결과가 너무 길면 자르기
+            if len(translated) > 80:
+                translated = translated[:77] + "..."
+            
+            # 캐시 저장 및 카운트 증가
+            self.translation_cache[cache_key] = translated
+            self.translation_count += 1
+            
+            # 캐시 크기 제한
+            if len(self.translation_cache) > 1000:
+                # 가장 오래된 500개 제거
+                keys_to_remove = list(self.translation_cache.keys())[:500]
+                for key in keys_to_remove:
+                    del self.translation_cache[key]
+            
+            return translated
+            
+        except openai.RateLimitError as e:
+            logger.warning(f"OpenAI Rate limit 오류: {str(e)}")
+            self.translation_count = self.max_translations_per_hour  # 더 이상 시도하지 않도록
+            return text[:80] + "..." if len(text) > 80 else text
+        except Exception as e:
+            logger.warning(f"번역 실패: {str(e)[:50]}")
+            return text[:80] + "..." if len(text) > 80 else text
+    
     def _generate_content_hash(self, title: str, description: str = "") -> str:
         """뉴스 내용의 해시 생성 (중복 체크용) - 강화된 버전"""
         # 제목에서 숫자와 특수문자 제거하여 유사한 뉴스 감지
@@ -239,37 +312,6 @@ class RealisticNewsCollector:
         # 65% 이상 유사하면 중복으로 간주
         return similarity > 0.65
     
-    async def translate_text(self, text: str, max_length: int = 100) -> str:
-        """텍스트를 한국어로 번역"""
-        if not self.openai_client:
-            return text
-        
-        try:
-            # 길이 제한
-            if len(text) > max_length:
-                text = text[:max_length] + "..."
-            
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a professional translator. Translate the following text to Korean concisely and accurately. Keep it under 80 characters."},
-                    {"role": "user", "content": text}
-                ],
-                max_tokens=150,
-                temperature=0.3
-            )
-            
-            translated = response.choices[0].message.content.strip()
-            # 번역 결과가 너무 길면 자르기
-            if len(translated) > 80:
-                translated = translated[:77] + "..."
-            
-            return translated
-            
-        except Exception as e:
-            logger.warning(f"번역 실패: {str(e)[:50]}")
-            return text[:80] + "..." if len(text) > 80 else text
-    
     async def start_monitoring(self):
         """뉴스 모니터링 시작"""
         if not self.session:
@@ -307,9 +349,15 @@ class RealisticNewsCollector:
                             successful_feeds += 1
                             
                             for article in articles:
-                                # 제목 번역
+                                # Rate limit을 고려한 선택적 번역
                                 if self.openai_client and article.get('title'):
-                                    article['title_ko'] = await self.translate_text(article['title'])
+                                    # 중요도가 높거나 크리티컬한 뉴스만 번역
+                                    if (feed_info['weight'] >= 8 or 
+                                        self._is_critical_news(article) or 
+                                        self._is_important_news(article)):
+                                        article['title_ko'] = await self.translate_text(article['title'])
+                                    else:
+                                        article['title_ko'] = article.get('title', '')
                                 else:
                                     article['title_ko'] = article.get('title', '')
                                 
@@ -365,7 +413,7 @@ class RealisticNewsCollector:
                                     if post_data['ups'] > sub_info['threshold']:
                                         article = {
                                             'title': post_data['title'],
-                                            'title_ko': await self.translate_text(post_data['title']) if self.openai_client else post_data['title'],
+                                            'title_ko': post_data['title'],  # Reddit은 번역 생략
                                             'description': post_data.get('selftext', '')[:200],
                                             'url': f"https://reddit.com{post_data['permalink']}",
                                             'source': f"Reddit r/{sub_info['name']}",
@@ -373,6 +421,10 @@ class RealisticNewsCollector:
                                             'upvotes': post_data['ups'],
                                             'weight': sub_info['weight']
                                         }
+                                        
+                                        # Reddit 게시물도 선택적으로만 번역
+                                        if self._is_critical_news(article) and self.openai_client:
+                                            article['title_ko'] = await self.translate_text(article['title'])
                                         
                                         if self._is_critical_news(article):
                                             if not self._is_duplicate_emergency(article):
@@ -540,7 +592,7 @@ class RealisticNewsCollector:
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
-                            'title_ko': await self.translate_text(article.get('title', '')) if self.openai_client else article.get('title', ''),
+                            'title_ko': article.get('title', ''),  # 번역은 나중에 선택적으로
                             'description': article.get('description', ''),
                             'url': article.get('url', ''),
                             'source': f"NewsAPI ({article.get('source', {}).get('name', 'Unknown')})",
@@ -548,6 +600,11 @@ class RealisticNewsCollector:
                             'weight': 10,
                             'category': 'api'
                         }
+                        
+                        # 중요한 뉴스만 번역
+                        if self._is_critical_news(formatted_article) or self._is_important_news(formatted_article):
+                            if self.openai_client:
+                                formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                         
                         if self._is_critical_news(formatted_article):
                             if not self._is_duplicate_emergency(formatted_article):
@@ -586,7 +643,7 @@ class RealisticNewsCollector:
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
-                            'title_ko': await self.translate_text(article.get('title', '')) if self.openai_client else article.get('title', ''),
+                            'title_ko': article.get('title', ''),
                             'description': article.get('description', ''),
                             'url': article.get('link', ''),
                             'source': f"NewsData ({article.get('source_id', 'Unknown')})",
@@ -594,6 +651,11 @@ class RealisticNewsCollector:
                             'weight': 9,
                             'category': 'api'
                         }
+                        
+                        # 중요한 뉴스만 번역
+                        if self._is_critical_news(formatted_article) or self._is_important_news(formatted_article):
+                            if self.openai_client:
+                                formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                         
                         if self._is_critical_news(formatted_article):
                             if not self._is_duplicate_emergency(formatted_article):
@@ -633,7 +695,7 @@ class RealisticNewsCollector:
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
-                            'title_ko': await self.translate_text(article.get('title', '')) if self.openai_client else article.get('title', ''),
+                            'title_ko': article.get('title', ''),
                             'description': article.get('summary', ''),
                             'url': article.get('url', ''),
                             'source': f"Alpha Vantage ({article.get('source', 'Unknown')})",
@@ -642,6 +704,11 @@ class RealisticNewsCollector:
                             'category': 'api',
                             'sentiment': article.get('overall_sentiment_label', 'Neutral')
                         }
+                        
+                        # 중요한 뉴스만 번역
+                        if self._is_critical_news(formatted_article) or self._is_important_news(formatted_article):
+                            if self.openai_client:
+                                formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                         
                         if self._is_critical_news(formatted_article):
                             if not self._is_duplicate_emergency(formatted_article):
@@ -672,6 +739,9 @@ class RealisticNewsCollector:
             })
             # 회사별 뉴스 카운트도 리셋
             self.company_news_count = {}
+            # 번역 카운트 리셋
+            self.translation_count = 0
+            self.last_translation_reset = datetime.now()
             logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']}→0, NewsData {old_usage['newsdata_today']}→0")
     
     def _is_critical_news(self, article: Dict) -> bool:
