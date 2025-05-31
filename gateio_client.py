@@ -387,80 +387,104 @@ class GateClient:
             return []
     
     async def get_profit_history_since_may(self) -> Dict:
-        """2025년 5월부터의 손익 계산"""
+        """2025년 5월부터의 손익 계산 (더 정확한 방법)"""
         try:
             import pytz
             from datetime import datetime
             
             kst = pytz.timezone('Asia/Seoul')
             
-            # 2025년 5월 1일 0시 (KST)
-            start_date = datetime(2025, 5, 1, 0, 0, 0, tzinfo=kst)
-            
             # 현재 시간
             now = datetime.now(kst)
             
-            total_pnl = 0.0
-            weekly_pnl = 0.0
-            today_pnl = 0.0
-            
-            # 7일 전 시간
-            seven_days_ago = now - timedelta(days=7)
-            seven_days_timestamp = int(seven_days_ago.timestamp())
-            
-            # 오늘 0시
+            # 오늘 0시 (KST)
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             today_timestamp = int(today_start.timestamp())
             
-            # 30일씩 나눠서 조회
-            current_start = start_date
-            while current_start < now:
-                # 30일 후 또는 현재 시간 중 더 이른 시간
-                current_end = min(current_start + timedelta(days=29), now)
-                
-                start_time = int(current_start.timestamp())
-                end_time = int(current_end.timestamp())
-                
-                logger.info(f"Gate 손익 조회 기간: {current_start.strftime('%Y-%m-%d')} ~ {current_end.strftime('%Y-%m-%d')}")
-                
-                # 계정 장부에서 손익 내역 조회
-                pnl_records = await self.get_account_book(
-                    type="pnl",
-                    start_time=start_time,
-                    end_time=end_time,
-                    limit=1000
-                )
-                
-                for record in pnl_records:
-                    change = float(record.get('change', 0))
-                    record_time = int(record.get('time', 0))
-                    
-                    # 전체 누적
-                    total_pnl += change
-                    
-                    # 7일 수익
-                    if record_time >= seven_days_timestamp:
-                        weekly_pnl += change
-                    
-                    # 오늘 수익
-                    if record_time >= today_timestamp:
-                        today_pnl += change
-                
-                # 다음 기간으로 이동
-                current_start = current_end + timedelta(seconds=1)
-                
-                # API 제한 방지를 위한 잠시 대기
-                await asyncio.sleep(0.1)
+            # 7일 전
+            seven_days_ago = now - timedelta(days=7)
+            seven_days_timestamp = int(seven_days_ago.timestamp())
             
-            logger.info(f"Gate 총 손익: ${total_pnl:.2f}, 7일: ${weekly_pnl:.2f}, 오늘: ${today_pnl:.2f}")
+            # 계정 정보에서 누적 손익 가져오기
+            account = await self.get_account_balance()
+            
+            # Gate.io history 필드에서 누적 손익 정보 추출
+            history = account.get('history', {})
+            total_pnl = float(history.get('pnl', 0))  # 실현 손익
+            total_fee = abs(float(history.get('fee', 0)))  # 수수료
+            total_fund = float(history.get('fund', 0))  # 펀딩비
+            
+            # 실제 순수익 = 실현손익 - 수수료 - 펀딩비
+            net_profit = total_pnl - total_fee + total_fund
+            
+            logger.info(f"Gate.io 누적 통계 - PnL: ${total_pnl:.2f}, Fee: ${total_fee:.2f}, Fund: ${total_fund:.2f}, Net: ${net_profit:.2f}")
+            
+            # 7일간 손익 계산
+            weekly_pnl = 0.0
+            today_pnl = 0.0
+            
+            # 최근 7일 account_book 조회
+            pnl_records = await self.get_account_book(
+                type="pnl",
+                start_time=seven_days_timestamp,
+                limit=1000
+            )
+            
+            for record in pnl_records:
+                change = float(record.get('change', 0))
+                record_time = int(record.get('time', 0))
+                
+                weekly_pnl += change
+                
+                # 오늘 손익
+                if record_time >= today_timestamp:
+                    today_pnl += change
+            
+            # 7일간 수수료 조회
+            fee_records = await self.get_account_book(
+                type="fee",
+                start_time=seven_days_timestamp,
+                limit=1000
+            )
+            
+            weekly_fee = 0.0
+            for record in fee_records:
+                weekly_fee += abs(float(record.get('change', 0)))
+            
+            # 7일간 순수익
+            weekly_net = weekly_pnl - weekly_fee
+            
+            logger.info(f"Gate.io 7일 손익 - PnL: ${weekly_pnl:.2f}, Fee: ${weekly_fee:.2f}, Net: ${weekly_net:.2f}")
+            logger.info(f"Gate.io 오늘 실현 손익: ${today_pnl:.2f}")
+            
+            # 현재 잔고와 초기 자본을 이용한 실제 수익 계산
+            current_balance = float(account.get('total', 0))
+            initial_capital = 700.0  # 초기 자본
+            
+            # 입출금 내역 고려
+            dnw = abs(float(history.get('dnw', 0)))  # 입출금 (음수면 입금)
+            
+            # 실제 초기 자본 (입금액 기준)
+            if dnw > 0:
+                actual_initial = dnw
+            else:
+                actual_initial = initial_capital
+            
+            # 현재 잔고 기반 실제 수익
+            actual_profit = current_balance - actual_initial
+            
+            logger.info(f"Gate.io 실제 수익 계산 - 현재잔고: ${current_balance:.2f}, 초기자본: ${actual_initial:.2f}, 실제수익: ${actual_profit:.2f}")
             
             return {
-                'total': total_pnl,
+                'total': net_profit,  # 누적 순수익 (실현손익 - 수수료 - 펀딩비)
                 'weekly': {
-                    'total': weekly_pnl,
-                    'average': weekly_pnl / 7 if weekly_pnl else 0
+                    'total': weekly_net,
+                    'average': weekly_net / 7 if weekly_net else 0
                 },
-                'today_realized': today_pnl
+                'today_realized': today_pnl,
+                'current_balance': current_balance,
+                'initial_capital': actual_initial,
+                'actual_profit': actual_profit
             }
             
         except Exception as e:
@@ -475,16 +499,22 @@ class GateClient:
                 return {
                     'total': total_pnl,
                     'weekly': {
-                        'total': total_pnl * 0.1,  # 임시값
-                        'average': total_pnl * 0.1 / 7
+                        'total': 0,  # 알 수 없음
+                        'average': 0
                     },
-                    'today_realized': 0.0
+                    'today_realized': 0.0,
+                    'current_balance': total_equity,
+                    'initial_capital': 700,
+                    'actual_profit': total_pnl
                 }
             except:
                 return {
                     'total': 0,
                     'weekly': {'total': 0, 'average': 0},
-                    'today_realized': 0
+                    'today_realized': 0,
+                    'current_balance': 0,
+                    'initial_capital': 700,
+                    'actual_profit': 0
                 }
     
     async def close(self):
