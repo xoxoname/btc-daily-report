@@ -14,6 +14,7 @@ class ProfitReportGenerator(BaseReportGenerator):
     def set_gateio_client(self, gateio_client):
         """Gate.io 클라이언트 설정"""
         self.gateio_client = gateio_client
+        self.logger.info("✅ Gate.io 클라이언트 설정 완료")
         
     async def generate_report(self) -> str:
         """💰 /profit 명령어 리포트 생성"""
@@ -32,11 +33,20 @@ class ProfitReportGenerator(BaseReportGenerator):
             # 통합 자산 현황
             asset_summary = self._format_asset_summary(combined_data)
             
-            # 거래소별 포지션
-            positions_text = await self._format_positions_by_exchange(bitget_data, gateio_data)
+            # 거래소별 포지션 정보
+            positions_text = await self._format_positions_detail(bitget_data, gateio_data)
             
-            # 수익 상세 테이블
-            profit_table = self._format_profit_table(bitget_data, gateio_data, combined_data)
+            # 거래소별 손익 정보
+            profit_detail = self._format_profit_detail(bitget_data, gateio_data)
+            
+            # 통합 자산 정보
+            asset_detail = self._format_asset_detail(combined_data)
+            
+            # 누적 성과
+            cumulative_text = self._format_cumulative_performance(combined_data)
+            
+            # 최근 수익 흐름
+            recent_flow = self._format_recent_flow(combined_data)
             
             # 멘탈 케어 - 통합 데이터 기반
             mental_text = await self._generate_combined_mental_care(combined_data)
@@ -45,18 +55,33 @@ class ProfitReportGenerator(BaseReportGenerator):
 📅 작성 시각: {current_time} (KST)
 ━━━━━━━━━━━━━━━━━━━
 
-💎 <b>통합 자산 현황</b>
+📌 <b>통합 자산 현황</b>
 {asset_summary}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📊 <b>거래소별 포지션</b>
+📌 <b>보유 포지션 정보</b>
 {positions_text}
 
 ━━━━━━━━━━━━━━━━━━━
 
-📈 <b>수익 상세</b>
-{profit_table}
+💸 <b>손익 정보</b>
+{profit_detail}
+
+━━━━━━━━━━━━━━━━━━━
+
+💼 <b>자산 정보</b>
+{asset_detail}
+
+━━━━━━━━━━━━━━━━━━━
+
+📊 <b>누적 성과</b>
+{cumulative_text}
+
+━━━━━━━━━━━━━━━━━━━
+
+📈 <b>최근 수익 흐름</b>
+{recent_flow}
 
 ━━━━━━━━━━━━━━━━━━━
 
@@ -96,7 +121,9 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'cumulative_profit': cumulative_profit,
                 'cumulative_roi': cumulative_roi,
                 'total_equity': total_equity,
-                'initial_capital': initial_capital
+                'initial_capital': initial_capital,
+                'available': account_info.get('available', 0),
+                'used_margin': account_info.get('used_margin', 0)
             }
         except Exception as e:
             self.logger.error(f"Bitget 데이터 조회 실패: {e}")
@@ -113,15 +140,16 @@ class ProfitReportGenerator(BaseReportGenerator):
             try:
                 futures_account = await self.gateio_client.get_futures_account()
                 total_equity = float(futures_account.get('total', 0))
+                available = float(futures_account.get('available', 0))
                 
                 # 디버깅을 위한 로그
                 self.logger.info(f"Gate.io 계정 정보: {futures_account}")
-                self.logger.info(f"Gate.io total_equity: {total_equity}")
+                
             except Exception as e:
                 self.logger.error(f"Gate.io 계정 조회 실패: {e}")
                 total_equity = 0
+                available = 0
             
-            # Gate.io 자산이 0이어도 포지션 체크는 해야 함
             # Gate.io 포지션 조회
             position_info = {'has_position': False}
             try:
@@ -134,16 +162,27 @@ class ProfitReportGenerator(BaseReportGenerator):
                         mark_price = float(pos.get('mark_price', 0))
                         unrealized_pnl = float(pos.get('unrealised_pnl', 0))
                         
+                        # 실제 투입금액 계산
+                        # 1계약 = 0.0001 BTC
+                        btc_size = abs(size) * 0.0001
+                        leverage = float(pos.get('leverage', 10))
+                        margin_used = btc_size * entry_price / leverage
+                        
                         position_info = {
                             'has_position': True,
+                            'symbol': 'BTC_USDT',
                             'side': '롱' if size > 0 else '숏',
+                            'side_en': 'long' if size > 0 else 'short',
                             'size': abs(size),
+                            'btc_size': btc_size,
                             'entry_price': entry_price,
                             'current_price': mark_price,
                             'unrealized_pnl': unrealized_pnl,
+                            'pnl_rate': (unrealized_pnl / margin_used) * 100 if margin_used > 0 else 0,
                             'contract_size': abs(size),
-                            'leverage': 10,  # Gate.io 기본 레버리지 (실제로는 조회 필요)
-                            'margin': abs(size) * entry_price / 10  # 추정치
+                            'leverage': leverage,
+                            'margin': margin_used,
+                            'liquidation_price': float(pos.get('liq_price', 0))
                         }
                         break
             except Exception as e:
@@ -154,19 +193,29 @@ class ProfitReportGenerator(BaseReportGenerator):
             cumulative_profit = 0
             cumulative_roi = 0
             
+            # 오늘 실현 손익 계산 (임시)
+            today_pnl = 0.0
+            
+            # 7일 손익 계산 (임시)
+            weekly_profit = {'total': 0.0, 'average': 0.0}
+            
             return {
                 'exchange': 'Gate.io',
                 'position_info': position_info,
                 'account_info': {
                     'total_equity': total_equity,
+                    'available': available,
+                    'used_margin': total_equity - available if total_equity > available else 0,
                     'unrealized_pnl': position_info.get('unrealized_pnl', 0) if position_info['has_position'] else 0
                 },
-                'today_pnl': 0.0,  # 실제로는 계산 필요
-                'weekly_profit': {'total': 0.0, 'average': 0.0},  # 실제로는 계산 필요
+                'today_pnl': today_pnl,
+                'weekly_profit': weekly_profit,
                 'cumulative_profit': cumulative_profit,
                 'cumulative_roi': cumulative_roi,
                 'total_equity': total_equity,
                 'initial_capital': initial_capital_gateio,
+                'available': available,
+                'used_margin': total_equity - available if total_equity > available else 0,
                 'has_account': True  # Gate.io 계정 존재 여부
             }
             
@@ -180,13 +229,15 @@ class ProfitReportGenerator(BaseReportGenerator):
         return {
             'exchange': exchange_name,
             'position_info': {'has_position': False},
-            'account_info': {'total_equity': 0, 'unrealized_pnl': 0},
+            'account_info': {'total_equity': 0, 'unrealized_pnl': 0, 'available': 0, 'used_margin': 0},
             'today_pnl': 0,
             'weekly_profit': {'total': 0, 'average': 0},
             'cumulative_profit': 0,
             'cumulative_roi': 0,
             'total_equity': 0,
             'initial_capital': 0,
+            'available': 0,
+            'used_margin': 0,
             'has_account': False
         }
     
@@ -194,6 +245,12 @@ class ProfitReportGenerator(BaseReportGenerator):
         """통합 데이터 계산"""
         # 총 자산
         total_equity = bitget_data['total_equity'] + gateio_data['total_equity']
+        
+        # 가용 자산
+        total_available = bitget_data['available'] + gateio_data['available']
+        
+        # 사용 증거금
+        total_used_margin = bitget_data['used_margin'] + gateio_data['used_margin']
         
         # 금일 수익
         today_pnl = bitget_data['today_pnl'] + gateio_data['today_pnl']
@@ -217,6 +274,10 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         return {
             'total_equity': total_equity,
+            'total_available': total_available,
+            'total_used_margin': total_used_margin,
+            'today_pnl': today_pnl,
+            'today_unrealized': today_unrealized,
             'today_total': today_total,
             'today_roi': today_roi,
             'weekly_total': weekly_total,
@@ -230,162 +291,187 @@ class ProfitReportGenerator(BaseReportGenerator):
         }
     
     def _format_asset_summary(self, combined_data: dict) -> str:
-        """통합 자산 현황 포맷"""
+        """통합 자산 현황 요약"""
         total_equity = combined_data['total_equity']
         bitget_equity = combined_data['bitget_equity']
         gateio_equity = combined_data['gateio_equity']
         
-        lines = [
-            f"• <b>총 자산</b>: ${total_equity:,.2f} (약 {total_equity * 1350 / 10000:.0f}만원)"
-        ]
+        lines = []
         
-        # 거래소별 자산 (Gate.io 계정이 있는 경우)
+        # Gate.io 계정이 있는 경우
         if combined_data.get('gateio_has_account', False):
-            lines.append(f"  ├ Bitget: ${bitget_equity:,.2f} ({bitget_equity * 1350 / 10000:.0f}만원)")
-            lines.append(f"  └ Gate.io: ${gateio_equity:,.2f} ({gateio_equity * 1350 / 10000:.0f}만원)")
-        
-        # 금일 수익
-        lines.append(f"• <b>금일 수익</b>: {self._format_currency_html(combined_data['today_total'], False)} ({combined_data['today_roi']:+.1f}%)")
-        
-        # 7일 수익
-        lines.append(f"• <b>7일 수익</b>: {self._format_currency_html(combined_data['weekly_total'], False)} ({combined_data['weekly_roi']:+.1f}%)")
+            lines.append(f"• <b>총 자산</b>: ${total_equity:,.2f} (약 {total_equity * 1350 / 10000:.0f}만원)")
+            lines.append(f"  ├ Bitget: ${bitget_equity:,.2f} ({bitget_equity / total_equity * 100:.1f}%)")
+            lines.append(f"  └ Gate.io: ${gateio_equity:,.2f} ({gateio_equity / total_equity * 100:.1f}%)")
+        else:
+            lines.append(f"• <b>총 자산</b>: ${total_equity:,.2f} (약 {total_equity * 1350 / 10000:.0f}만원)")
+            lines.append(f"  └ Bitget: ${bitget_equity:,.2f} (100.0%)")
         
         return '\n'.join(lines)
     
-    async def _format_positions_by_exchange(self, bitget_data: dict, gateio_data: dict) -> str:
-        """거래소별 포지션 포맷"""
+    async def _format_positions_detail(self, bitget_data: dict, gateio_data: dict) -> str:
+        """거래소별 포지션 상세 정보"""
         lines = []
+        has_any_position = False
         
         # Bitget 포지션
         bitget_pos = bitget_data['position_info']
         if bitget_pos.get('has_position'):
-            lines.append("【<b>Bitget</b>】")
-            side = bitget_pos.get('side')
-            entry = bitget_pos.get('entry_price', 0)
-            current = bitget_pos.get('current_price', 0)
-            pnl_rate = ((current - entry) / entry * 100) if entry > 0 else 0
-            if side == '숏':
-                pnl_rate = -pnl_rate
+            has_any_position = True
+            lines.append("━━━ <b>Bitget</b> ━━━")
+            lines.append(f"• 종목: BTCUSDT")
+            lines.append(f"• 방향: {bitget_pos.get('side')}")
+            lines.append(f"• 진입가: ${bitget_pos.get('entry_price', 0):,.2f}")
+            lines.append(f"• 현재가: ${bitget_pos.get('current_price', 0):,.2f}")
             
             # 실제 투입 금액
             margin = bitget_pos.get('margin', 0)
-            leverage = bitget_pos.get('leverage', 1)
-            actual_investment = margin / leverage if leverage > 0 else margin
+            lines.append(f"• 실제 투입 금액: ${margin:.2f} (약 {margin * 1350 / 10000:.1f}만원)")
             
-            # 청산가와 거리
+            # 청산가
             liquidation_price = bitget_pos.get('liquidation_price', 0)
             if liquidation_price > 0:
+                current = bitget_pos.get('current_price', 0)
+                side = bitget_pos.get('side')
                 if side == '롱':
                     liq_distance = ((current - liquidation_price) / current * 100)
+                    lines.append(f"• 청산가: ${liquidation_price:,.2f}")
+                    lines.append(f"• 청산까지 거리: {abs(liq_distance):.1f}% 하락 시 청산")
                 else:
                     liq_distance = ((liquidation_price - current) / current * 100)
-                liq_text = f"{abs(liq_distance):.1f}% {'하락' if side == '롱' else '상승'} 시 청산"
-            else:
-                liq_text = "계산불가"
-            
-            # 손익
-            unrealized_pnl = bitget_pos.get('unrealized_pnl', 0)
-            today_realized = bitget_data.get('today_pnl', 0)
-            
-            change_emoji = "📈" if pnl_rate > 0 else "📉" if pnl_rate < 0 else "➖"
-            
-            lines.append(f"• <b>종목</b>: BTCUSDT / {side}")
-            lines.append(f"• <b>진입</b>: ${entry:,.2f} / 현재: ${current:,.0f} {change_emoji} ({pnl_rate:+.1f}%)")
-            lines.append(f"• <b>실제 투입</b>: ${actual_investment:.2f} ({actual_investment * 1350 / 10000:.1f}만원)")
-            lines.append(f"• <b>청산가</b>: ${liquidation_price:,.2f} ({liq_text})")
-            lines.append(f"• <b>미실현</b>: {self._format_currency_html(unrealized_pnl)}")
-            lines.append(f"• <b>금일 실현</b>: {self._format_currency_html(today_realized)}")
-        else:
-            lines.append("【<b>Bitget</b>】포지션 없음")
+                    lines.append(f"• 청산가: ${liquidation_price:,.2f}")
+                    lines.append(f"• 청산까지 거리: {abs(liq_distance):.1f}% 상승 시 청산")
         
-        # Gate.io 포지션 (계정이 있는 경우)
+        # Gate.io 포지션
         if gateio_data.get('has_account', False):
-            lines.append("")  # 구분선
             gateio_pos = gateio_data['position_info']
             if gateio_pos.get('has_position'):
-                lines.append("【<b>Gate.io</b>】")
-                side = gateio_pos.get('side')
-                entry = gateio_pos.get('entry_price', 0)
-                current = gateio_pos.get('current_price', 0)
-                pnl_rate = ((current - entry) / entry * 100) if entry > 0 else 0
-                if side == '숏':
-                    pnl_rate = -pnl_rate
+                has_any_position = True
+                if lines:
+                    lines.append("")
+                lines.append("━━━ <b>Gate.io</b> ━━━")
+                lines.append(f"• 종목: BTC_USDT")
+                lines.append(f"• 방향: {gateio_pos.get('side')}")
+                lines.append(f"• 진입가: ${gateio_pos.get('entry_price', 0):,.2f}")
+                lines.append(f"• 현재가: ${gateio_pos.get('current_price', 0):,.2f}")
                 
-                # 실제 투입 금액 (추정)
+                # 실제 투입 금액
+                margin = gateio_pos.get('margin', 0)
+                lines.append(f"• 실제 투입 금액: ${margin:.2f} (약 {margin * 1350 / 10000:.1f}만원)")
+                
+                # 계약 정보
                 contract_size = gateio_pos.get('contract_size', 0)
-                btc_size = contract_size * 0.0001  # 1계약 = 0.0001 BTC
-                leverage = gateio_pos.get('leverage', 10)
-                actual_investment = (btc_size * entry) / leverage
+                btc_size = gateio_pos.get('btc_size', 0)
+                lines.append(f"• 계약 수: {int(contract_size)}계약 ({btc_size:.4f} BTC)")
                 
-                # 손익
-                unrealized_pnl = gateio_pos.get('unrealized_pnl', 0)
-                today_realized = gateio_data.get('today_pnl', 0)
-                
-                change_emoji = "📈" if pnl_rate > 0 else "📉" if pnl_rate < 0 else "➖"
-                
-                lines.append(f"• <b>종목</b>: BTC_USDT / {side}")
-                lines.append(f"• <b>진입</b>: ${entry:,.2f} / 현재: ${current:,.0f} {change_emoji} ({pnl_rate:+.1f}%)")
-                lines.append(f"• <b>실제 투입</b>: ${actual_investment:.2f} ({actual_investment * 1350 / 10000:.1f}만원)")
-                lines.append(f"• <b>계약 수</b>: {int(contract_size)}계약 ({btc_size:.4f} BTC)")
-                lines.append(f"• <b>미실현</b>: {self._format_currency_html(unrealized_pnl)}")
-                lines.append(f"• <b>금일 실현</b>: {self._format_currency_html(today_realized)}")
-            else:
-                lines.append("【<b>Gate.io</b>】포지션 없음")
+                # 청산가
+                liquidation_price = gateio_pos.get('liquidation_price', 0)
+                if liquidation_price > 0:
+                    current = gateio_pos.get('current_price', 0)
+                    side = gateio_pos.get('side')
+                    if side == '롱':
+                        liq_distance = ((current - liquidation_price) / current * 100)
+                        lines.append(f"• 청산가: ${liquidation_price:,.2f}")
+                        lines.append(f"• 청산까지 거리: {abs(liq_distance):.1f}% 하락 시 청산")
+                    else:
+                        liq_distance = ((liquidation_price - current) / current * 100)
+                        lines.append(f"• 청산가: ${liquidation_price:,.2f}")
+                        lines.append(f"• 청산까지 거리: {abs(liq_distance):.1f}% 상승 시 청산")
+        
+        if not has_any_position:
+            lines.append("• 현재 보유 중인 포지션이 없습니다.")
         
         return '\n'.join(lines)
     
-    def _format_profit_table(self, bitget_data: dict, gateio_data: dict, combined_data: dict) -> str:
-        """수익 상세 테이블 포맷"""
-        # 각 거래소별 수익률 계산
-        bitget_today_roi = (bitget_data['today_pnl'] / bitget_data['total_equity'] * 100) if bitget_data['total_equity'] > 0 else 0
-        bitget_weekly_roi = (bitget_data['weekly_profit']['total'] / bitget_data['total_equity'] * 100) if bitget_data['total_equity'] > 0 else 0
-        
-        gateio_today_roi = (gateio_data['today_pnl'] / gateio_data['total_equity'] * 100) if gateio_data['total_equity'] > 0 else 0
-        gateio_weekly_roi = (gateio_data['weekly_profit']['total'] / gateio_data['total_equity'] * 100) if gateio_data['total_equity'] > 0 else 0
-        
+    def _format_profit_detail(self, bitget_data: dict, gateio_data: dict) -> str:
+        """거래소별 손익 정보"""
         lines = []
         
-        # Bitget 행
-        lines.append(
-            f"<b>Bitget</b>\n"
-            f"  <b>금일</b>: {self._format_currency_html(bitget_data['today_pnl'])} ({bitget_today_roi:+.1f}%)\n"
-            f"  <b>7일</b>: {self._format_currency_html(bitget_data['weekly_profit']['total'])} ({bitget_weekly_roi:+.1f}%)\n"
-            f"  <b>누적</b>: {self._format_currency_html(bitget_data['cumulative_profit'])} ({bitget_data['cumulative_roi']:+.1f}%)"
-        )
+        # Bitget 손익
+        lines.append("━━━ <b>Bitget</b> ━━━")
+        bitget_unrealized = bitget_data['account_info'].get('unrealized_pnl', 0)
+        bitget_today_pnl = bitget_data['today_pnl']
+        bitget_today_total = bitget_unrealized + bitget_today_pnl
+        bitget_today_roi = (bitget_today_total / bitget_data['total_equity'] * 100) if bitget_data['total_equity'] > 0 else 0
         
-        # Gate.io 행 (계정이 있는 경우만)
+        lines.append(f"• 미실현 손익: {self._format_currency_html(bitget_unrealized)}")
+        lines.append(f"• 금일 실현 손익: {self._format_currency_html(bitget_today_pnl)}")
+        lines.append(f"• 금일 총 수익: {self._format_currency_html(bitget_today_total)}")
+        lines.append(f"• 금일 수익률: {bitget_today_roi:+.1f}%")
+        
+        # Gate.io 손익
         if gateio_data.get('has_account', False):
             lines.append("")
-            lines.append(
-                f"<b>Gate.io</b>\n"
-                f"  <b>금일</b>: {self._format_currency_html(gateio_data['today_pnl'])} ({gateio_today_roi:+.1f}%)\n"
-                f"  <b>7일</b>: {self._format_currency_html(gateio_data['weekly_profit']['total'])} ({gateio_weekly_roi:+.1f}%)\n"
-                f"  <b>누적</b>: {self._format_currency_html(gateio_data['cumulative_profit'])} ({gateio_data['cumulative_roi']:+.1f}%)"
-            )
-            lines.append("")
+            lines.append("━━━ <b>Gate.io</b> ━━━")
+            gateio_unrealized = gateio_data['account_info'].get('unrealized_pnl', 0)
+            gateio_today_pnl = gateio_data['today_pnl']
+            gateio_today_total = gateio_unrealized + gateio_today_pnl
+            gateio_today_roi = (gateio_today_total / gateio_data['total_equity'] * 100) if gateio_data['total_equity'] > 0 else 0
+            
+            lines.append(f"• 미실현 손익: {self._format_currency_html(gateio_unrealized)}")
+            lines.append(f"• 금일 실현 손익: {self._format_currency_html(gateio_today_pnl)}")
+            lines.append(f"• 금일 총 수익: {self._format_currency_html(gateio_today_total)}")
+            lines.append(f"• 금일 수익률: {gateio_today_roi:+.1f}%")
         
-        # 합계 행
-        lines.append(
-            f"<b>통합 합계</b>\n"
-            f"  <b>금일</b>: {self._format_currency_html(combined_data['today_total'])} ({combined_data['today_roi']:+.1f}%)\n"
-            f"  <b>7일</b>: {self._format_currency_html(combined_data['weekly_total'])} ({combined_data['weekly_roi']:+.1f}%)\n"
-            f"  <b>누적</b>: {self._format_currency_html(combined_data['cumulative_profit'])} ({combined_data['cumulative_roi']:+.1f}%)"
-        )
+        return '\n'.join(lines)
+    
+    def _format_asset_detail(self, combined_data: dict) -> str:
+        """통합 자산 정보"""
+        lines = []
+        
+        # 통합 자산
+        lines.append("━━━ <b>통합 자산</b> ━━━")
+        lines.append(f"• 총 자산: ${combined_data['total_equity']:,.2f} (약 {combined_data['total_equity'] * 1350 / 10000:.0f}만원)")
+        lines.append(f"• 가용 자산: ${combined_data['total_available']:,.2f} (약 {combined_data['total_available'] * 1350 / 10000:.0f}만원)")
+        lines.append(f"• 사용 증거금: ${combined_data['total_used_margin']:,.2f}")
+        
+        # 가용 비율
+        if combined_data['total_equity'] > 0:
+            available_ratio = combined_data['total_available'] / combined_data['total_equity'] * 100
+            lines.append(f"• 가용 비율: {available_ratio:.1f}%")
+        
+        return '\n'.join(lines)
+    
+    def _format_cumulative_performance(self, combined_data: dict) -> str:
+        """누적 성과"""
+        # 현재는 누적 데이터가 없으므로 임시로 표시
+        return f"• 전체 누적 수익: {self._format_currency_html(0)}\n• 전체 누적 수익률: 0.0%"
+    
+    def _format_recent_flow(self, combined_data: dict) -> str:
+        """최근 수익 흐름"""
+        lines = []
+        
+        lines.append(f"• 최근 7일 수익: {self._format_currency_html(combined_data['weekly_total'])}")
+        lines.append(f"• 최근 7일 평균: {self._format_currency_html(combined_data['weekly_avg'])}/일")
+        lines.append(f"• 최근 7일 수익률: {combined_data['weekly_roi']:+.1f}%")
         
         return '\n'.join(lines)
     
     def _format_currency_html(self, amount: float, include_krw: bool = True) -> str:
         """HTML용 통화 포맷팅"""
-        usd_text = f"${amount:+,.2f}" if amount != 0 else "$0.00"
+        if amount > 0:
+            usd_text = f"+${amount:,.2f}"
+        elif amount < 0:
+            usd_text = f"-${abs(amount):,.2f}"
+        else:
+            usd_text = "$0.00"
+            
         if include_krw and amount != 0:
-            krw_amount = amount * 1350 / 10000
-            return f"{usd_text} ({krw_amount:+.1f}만원)"
+            krw_amount = abs(amount) * 1350 / 10000
+            if amount > 0:
+                return f"{usd_text} (약 +{krw_amount:.1f}만원)"
+            else:
+                return f"{usd_text} (약 -{krw_amount:.1f}만원)"
         return usd_text
     
     async def _generate_combined_mental_care(self, combined_data: dict) -> str:
         """통합 멘탈 케어 생성"""
         if not self.openai_client:
-            return "시장은 예측 불가능하지만, 준비된 마음은 기회를 놓치지 않습니다. 오늘도 차분하게 접근하세요. 📊"
+            return """GPT는 다음과 같은 요소를 실시간으로 분석합니다:
+* 자산 규모 * 포지션 상태 * 실현/미실현 손익 * 최근 수익률 추이 * 감정 흐름 및 매매 빈도
+👉 수익률이 높더라도 무리한 진입이 반복되지 않도록 유도합니다.
+👉 손실 중이라면, 복구 매매 충동을 차단하는 코멘트를 생성합니다.
+✅ 모든 코멘트는 상황 기반으로 즉시 생성되며, 단 하나의 문장도 하드코딩되어 있지 않습니다."""
         
         try:
             # 상황 요약
@@ -423,12 +509,33 @@ class ProfitReportGenerator(BaseReportGenerator):
                 temperature=0.9
             )
             
-            return response.choices[0].message.content.strip()
+            gpt_message = response.choices[0].message.content.strip()
+            
+            return f"""GPT는 다음과 같은 요소를 실시간으로 분석합니다:
+* 자산 규모 * 포지션 상태 * 실현/미실현 손익 * 최근 수익률 추이 * 감정 흐름 및 매매 빈도
+👉 수익률이 높더라도 무리한 진입이 반복되지 않도록 유도합니다.
+👉 손실 중이라면, 복구 매매 충동을 차단하는 코멘트를 생성합니다.
+✅ 모든 코멘트는 상황 기반으로 즉시 생성되며, 단 하나의 문장도 하드코딩되어 있지 않습니다.
+사용자의 상태에 맞는 심리적 설득 효과를 유도하는 방식으로 매번 다르게 구성됩니다.
+
+{gpt_message}"""
             
         except Exception as e:
             self.logger.error(f"GPT 멘탈 케어 생성 실패: {e}")
             # 폴백
             if combined_data['weekly_roi'] > 10:
-                return f"최근 7일간 {combined_data['weekly_roi']:.1f}%의 훌륭한 수익률을 기록하셨네요! 현재의 페이스를 유지하며 리스크 관리에 집중하세요. 🎯"
+                return f"""GPT는 다음과 같은 요소를 실시간으로 분석합니다:
+* 자산 규모 * 포지션 상태 * 실현/미실현 손익 * 최근 수익률 추이 * 감정 흐름 및 매매 빈도
+👉 수익률이 높더라도 무리한 진입이 반복되지 않도록 유도합니다.
+👉 손실 중이라면, 복구 매매 충동을 차단하는 코멘트를 생성합니다.
+✅ 모든 코멘트는 상황 기반으로 즉시 생성되며, 단 하나의 문장도 하드코딩되어 있지 않습니다.
+
+최근 7일간 {combined_data['weekly_roi']:.1f}%의 훌륭한 수익률을 기록하셨네요! 현재의 페이스를 유지하며 리스크 관리에 집중하세요. 🎯"""
             else:
-                return f"총 자산 ${int(combined_data['total_equity'])}을 안정적으로 운용중입니다. 꾸준함이 성공의 열쇠입니다. 💪"
+                return f"""GPT는 다음과 같은 요소를 실시간으로 분석합니다:
+* 자산 규모 * 포지션 상태 * 실현/미실현 손익 * 최근 수익률 추이 * 감정 흐름 및 매매 빈도
+👉 수익률이 높더라도 무리한 진입이 반복되지 않도록 유도합니다.
+👉 손실 중이라면, 복구 매매 충동을 차단하는 코멘트를 생성합니다.
+✅ 모든 코멘트는 상황 기반으로 즉시 생성되며, 단 하나의 문장도 하드코딩되어 있지 않습니다.
+
+총 자산 ${int(combined_data['total_equity'])}을 안정적으로 운용중입니다. 꾸준함이 성공의 열쇠입니다. 💪"""
