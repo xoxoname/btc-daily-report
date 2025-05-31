@@ -237,8 +237,11 @@ class ProfitReportGenerator(BaseReportGenerator):
     async def _get_gate_profit_since_may(self) -> dict:
         """Gate 2025년 5월부터의 손익 계산"""
         try:
-            # 현재 Gate API로는 거래 내역을 직접 조회하기 어려움
-            # 임시로 계정 잔고 변화로 추정
+            # Gate.io 거래 내역에서 실제 손익 조회
+            if hasattr(self.gateio_client, 'get_profit_history_since_may'):
+                return await self.gateio_client.get_profit_history_since_may()
+            
+            # 폴백: 현재 잔고 기반 계산
             account_response = await self.gateio_client.get_account_balance()
             total_equity = float(account_response.get('total', 0))
             
