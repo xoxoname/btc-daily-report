@@ -1,962 +1,833 @@
-# mirror_trading.py
 import asyncio
 import logging
-from datetime import datetime, timedelta, time
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Set, Tuple
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
 import json
-import pytz
+import traceback
 
 logger = logging.getLogger(__name__)
 
-class MirrorTradingSystem:
-    """비트겟 → 게이트 미러 트레이딩 시스템"""
+@dataclass
+class PositionInfo:
+    """포지션 정보"""
+    symbol: str
+    side: str  # long/short
+    size: float
+    entry_price: float
+    margin: float
+    leverage: int
+    mode: str  # cross/isolated
+    tp_orders: List[Dict] = field(default_factory=list)
+    sl_orders: List[Dict] = field(default_factory=list)
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    last_update: datetime = field(default_factory=datetime.now)
     
-    def __init__(self, bitget_client, gateio_client, config, telegram_bot=None):
-        self.bitget_client = bitget_client
-        self.gateio_client = gateio_client
+@dataclass
+class MirrorResult:
+    """미러링 결과"""
+    success: bool
+    action: str
+    bitget_data: Dict
+    gate_data: Optional[Dict] = None
+    error: Optional[str] = None
+    timestamp: datetime = field(default_factory=datetime.now)
+
+class MirrorTradingSystem:
+    def __init__(self, config, bitget_client, gate_client, telegram_bot):
         self.config = config
-        self.telegram_bot = telegram_bot
+        self.bitget = bitget_client
+        self.gate = gate_client
+        self.telegram = telegram_bot
         self.logger = logging.getLogger('mirror_trading')
         
-        # 상태 추적
-        self.is_running = False
-        self.check_interval = config.MIRROR_CHECK_INTERVAL  # 초
-        self.kst = pytz.timezone('Asia/Seoul')
+        # 미러링 상태 관리
+        self.mirrored_positions: Dict[str, PositionInfo] = {}  # 포지션 ID: PositionInfo
+        self.startup_positions: Set[str] = set()   # 시작 시 존재했던 포지션
+        self.failed_mirrors: List[MirrorResult] = []  # 실패한 미러링 기록
+        self.last_sync_check = datetime.min
+        self.last_report_time = datetime.min
         
-        # 포지션 추적
-        self.tracked_positions = {}  # {symbol: {'side': 'long/short', 'entry_time': datetime, 'margin_ratio': float}}
-        self.initial_scan_done = False  # 첫 스캔 완료 플래그
+        # 포지션 크기 추적 (부분 청산 감지용)
+        self.position_sizes: Dict[str, float] = {}  # 포지션 ID: 마지막 크기
         
-        # 초기 포지션 미러링 옵션 (True로 변경하면 초기 포지션도 미러링)
-        self.mirror_initial_positions = True  # 이 값을 True로 변경
+        # TP/SL 주문 추적
+        self.tp_sl_orders: Dict[str, Dict] = {}  # 포지션 ID: {tp: [주문ID], sl: [주문ID]}
         
-        # 초기 포지션 스냅샷
-        self.initial_positions = set()  # 초기 포지션의 고유 ID 저장
-        
-        # 주문 추적 (TP/SL 수정 감지용)
-        self.tracked_orders = {}  # {symbol: {'tp_price': float, 'sl_price': float, 'tp_order_id': str, 'sl_order_id': str}}
-        
-        # 주문 로그
-        self.order_logs = []
-        
-        # 에러 복구
-        self.retry_count = {}  # {action_key: count}
-        self.max_retries = 3
-        self.retry_delay = 5  # 초
-        
-        # 모니터링
-        self.position_mismatch_alerts = {}  # {symbol: last_alert_time}
-        self.alert_cooldown = timedelta(minutes=30)  # 30분 쿨다운
+        # 설정
+        self.SYMBOL = "BTCUSDT"
+        self.GATE_CONTRACT = "BTC_USDT"
+        self.CHECK_INTERVAL = 3  # 3초마다 체크
+        self.SYNC_CHECK_INTERVAL = 30  # 30초마다 동기화 체크
+        self.MAX_RETRIES = 3
+        self.MIN_POSITION_SIZE = 0.00001  # BTC
+        self.MIN_MARGIN = 1.0  # 최소 마진 $1
+        self.DAILY_REPORT_HOUR = 9  # 매일 오전 9시 리포트
         
         # 성과 추적
         self.daily_stats = {
-            'mirror_entries': 0,
+            'total_mirrored': 0,
+            'successful_mirrors': 0,
+            'failed_mirrors': 0,
             'partial_closes': 0,
             'full_closes': 0,
-            'errors': 0,
-            'successful_mirrors': 0,
-            'failed_mirrors': 0
+            'total_volume': 0.0,
+            'errors': []
         }
         
-        self.logger.info(f"🔄 미러 트레이딩 시스템 초기화 (체크 간격: {self.check_interval}초)")
-        self.logger.info(f"🔄 초기 포지션 미러링: {'활성화' if self.mirror_initial_positions else '비활성화'}")
+        self.monitoring = True
+        self.logger.info("미러 트레이딩 시스템 초기화 완료")
     
-    async def start_monitoring(self):
-        """미러링 모니터링 시작"""
-        self.is_running = True
-        self.logger.info("🚀 미러 트레이딩 모니터링 시작")
-        
-        # 초기 포지션 스캔
-        await self._initial_position_scan()
-        
-        # 메인 모니터링 루프
-        monitoring_task = asyncio.create_task(self._monitoring_loop())
-        
-        # 일일 리포트 스케줄러
-        report_task = asyncio.create_task(self._daily_report_scheduler())
-        
-        # 두 태스크 동시 실행
-        await asyncio.gather(monitoring_task, report_task, return_exceptions=True)
+    async def start(self):
+        """미러 트레이딩 시작"""
+        try:
+            self.logger.info("🚀 미러 트레이딩 시스템 시작")
+            
+            # 초기 포지션 기록 (복제하지 않을 기존 포지션)
+            await self._record_startup_positions()
+            
+            # 초기 계정 상태 출력
+            await self._log_account_status()
+            
+            # 모니터링 태스크 시작
+            tasks = [
+                self.monitor_positions(),
+                self.monitor_sync_status(),
+                self.generate_daily_reports()
+            ]
+            
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+        except Exception as e:
+            self.logger.error(f"미러 트레이딩 시작 실패: {e}")
+            await self.telegram.send_message(
+                f"❌ 미러 트레이딩 시작 실패\n"
+                f"오류: {str(e)[:200]}"
+            )
+            raise
     
-    async def _monitoring_loop(self):
-        """메인 모니터링 루프"""
+    async def _record_startup_positions(self):
+        """시작 시 존재하는 포지션 기록"""
+        try:
+            # 비트겟 기존 포지션 확인
+            bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+            
+            for pos in bitget_positions:
+                if float(pos.get('total', 0)) > 0:
+                    # 포지션 ID 생성
+                    pos_id = self._generate_position_id(pos)
+                    self.startup_positions.add(pos_id)
+                    
+                    # 크기 기록
+                    self.position_sizes[pos_id] = float(pos.get('total', 0))
+                    
+                    self.logger.info(f"기존 포지션 기록 (복제 제외): {pos_id}")
+            
+            self.logger.info(f"총 {len(self.startup_positions)}개의 기존 포지션이 복제에서 제외됩니다")
+            
+            # 게이트 기존 포지션 확인
+            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+            if gate_positions and any(pos.get('size', 0) != 0 for pos in gate_positions):
+                self.logger.warning("⚠️ 게이트에 기존 포지션이 있습니다. 수동 확인이 필요할 수 있습니다.")
+            
+        except Exception as e:
+            self.logger.error(f"기존 포지션 기록 실패: {e}")
+    
+    async def _log_account_status(self):
+        """계정 상태 로깅"""
+        try:
+            # 비트겟 계정 정보
+            bitget_account = await self.bitget.get_account_info()
+            bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
+            
+            # 게이트 계정 정보
+            gate_account = await self.gate.get_account_balance()
+            gate_equity = float(gate_account.get('total', 0))
+            
+            self.logger.info(
+                f"💰 계정 상태\n"
+                f"비트겟: ${bitget_equity:,.2f}\n"
+                f"게이트: ${gate_equity:,.2f}"
+            )
+            
+            await self.telegram.send_message(
+                f"🔄 미러 트레이딩 시작\n\n"
+                f"💰 계정 잔고:\n"
+                f"• 비트겟: ${bitget_equity:,.2f}\n"
+                f"• 게이트: ${gate_equity:,.2f}\n\n"
+                f"📊 기존 포지션: {len(self.startup_positions)}개 (복제 제외)"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"계정 상태 조회 실패: {e}")
+    
+    async def monitor_positions(self):
+        """포지션 모니터링 메인 루프"""
+        self.logger.info("포지션 모니터링 시작")
         consecutive_errors = 0
         
-        while self.is_running:
+        while self.monitoring:
             try:
-                await self._check_and_mirror()
-                consecutive_errors = 0  # 성공 시 리셋
-                await asyncio.sleep(self.check_interval)
+                # 비트겟 포지션 확인
+                bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+                
+                # 활성 포지션 처리
+                active_position_ids = set()
+                
+                for pos in bitget_positions:
+                    if float(pos.get('total', 0)) > 0:
+                        pos_id = self._generate_position_id(pos)
+                        active_position_ids.add(pos_id)
+                        
+                        # 새 포지션 또는 업데이트 확인
+                        await self._process_position(pos)
+                
+                # 종료된 포지션 처리
+                closed_positions = set(self.mirrored_positions.keys()) - active_position_ids
+                for pos_id in closed_positions:
+                    if pos_id not in self.startup_positions:
+                        await self._handle_position_close(pos_id)
+                
+                consecutive_errors = 0
+                await asyncio.sleep(self.CHECK_INTERVAL)
                 
             except Exception as e:
                 consecutive_errors += 1
-                self.logger.error(f"미러링 체크 중 오류 (연속 {consecutive_errors}회): {e}")
-                self.daily_stats['errors'] += 1
+                self.logger.error(f"모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
                 
-                # 연속 오류 시 재연결 시도
-                if consecutive_errors >= 3:
-                    await self._reconnect_clients()
-                    consecutive_errors = 0
+                if consecutive_errors >= 5:
+                    await self.telegram.send_message(
+                        f"⚠️ 미러 트레이딩 모니터링 오류\n"
+                        f"연속 {consecutive_errors}회 실패\n"
+                        f"오류: {str(e)[:200]}"
+                    )
                 
-                await asyncio.sleep(self.check_interval * 2)  # 오류 시 대기 시간 증가
+                await asyncio.sleep(self.CHECK_INTERVAL * 2)
     
-    async def _reconnect_clients(self):
-        """클라이언트 재연결"""
-        self.logger.warning("🔄 클라이언트 재연결 시도...")
-        
+    async def _process_position(self, bitget_pos: Dict):
+        """포지션 처리 (신규/업데이트)"""
         try:
-            # 세션 재초기화
-            if hasattr(self.bitget_client, '_initialize_session'):
-                self.bitget_client._initialize_session()
-            if hasattr(self.gateio_client, '_initialize_session'):
-                self.gateio_client._initialize_session()
+            pos_id = self._generate_position_id(bitget_pos)
             
-            # 연결 테스트
-            await self.bitget_client.get_account_info()
-            await self.gateio_client.get_futures_account()
+            # 시작 시 존재했던 포지션은 무시
+            if pos_id in self.startup_positions:
+                return
             
-            self.logger.info("✅ 클라이언트 재연결 성공")
+            current_size = float(bitget_pos.get('total', 0))
             
-            if self.telegram_bot:
-                await self.telegram_bot.send_message("🔄 미러 트레이딩 클라이언트 재연결 완료")
+            # 새로운 포지션
+            if pos_id not in self.mirrored_positions:
+                self.logger.info(f"🆕 새로운 포지션 감지: {pos_id}")
+                result = await self._mirror_new_position(bitget_pos)
                 
-        except Exception as e:
-            self.logger.error(f"클라이언트 재연결 실패: {e}")
-            if self.telegram_bot:
-                await self.telegram_bot.send_message(f"❌ 미러 트레이딩 재연결 실패: {str(e)[:100]}")
-    
-    async def _daily_report_scheduler(self):
-        """일일 리포트 스케줄러"""
-        while self.is_running:
-            try:
-                now = datetime.now(self.kst)
-                
-                # 오후 9시 계산
-                target_time = now.replace(hour=21, minute=0, second=0, microsecond=0)
-                if now >= target_time:
-                    # 이미 9시가 지났으면 다음날 9시
-                    target_time += timedelta(days=1)
-                
-                # 대기 시간 계산
-                wait_seconds = (target_time - now).total_seconds()
-                
-                self.logger.info(f"📅 다음 일일 리포트: {target_time.strftime('%Y-%m-%d %H:%M')} ({wait_seconds/3600:.1f}시간 후)")
-                
-                await asyncio.sleep(wait_seconds)
-                
-                # 리포트 생성 및 전송
-                await self._send_daily_report()
-                
-                # 통계 리셋
-                self.daily_stats = {
-                    'mirror_entries': 0,
-                    'partial_closes': 0,
-                    'full_closes': 0,
-                    'errors': 0,
-                    'successful_mirrors': 0,
-                    'failed_mirrors': 0
-                }
-                
-            except Exception as e:
-                self.logger.error(f"일일 리포트 스케줄러 오류: {e}")
-                await asyncio.sleep(3600)  # 오류 시 1시간 후 재시도
-    
-    def stop(self):
-        """미러링 중지"""
-        self.is_running = False
-        self.logger.info("🛑 미러 트레이딩 모니터링 중지")
-    
-    async def _initial_position_scan(self):
-        """초기 포지션 스캔"""
-        try:
-            self.logger.info("📋 초기 포지션 스캔 시작...")
-            
-            # 비트겟 현재 포지션 확인
-            bitget_positions = await self.bitget_client.get_positions('BTCUSDT')
-            
-            for pos in bitget_positions:
-                if float(pos.get('total', 0)) > 0:
-                    symbol = pos.get('symbol', 'BTCUSDT')
-                    side = 'long' if pos.get('holdSide', '').lower() in ['long', 'buy'] else 'short'
-                    cTime = pos.get('cTime', '')  # 포지션 생성 시간
-                    
-                    # 포지션의 고유 ID 생성 (심볼 + 방향 + 생성시간)
-                    position_id = f"{symbol}_{side}_{cTime}"
-                    self.initial_positions.add(position_id)
-                    
-                    # 추적은 하지만 미러링 여부는 설정에 따름
-                    self.tracked_positions[symbol] = {
-                        'side': side,
-                        'entry_time': datetime.now(),
-                        'margin_ratio': 0,
-                        'position_id': position_id,
-                        'cTime': cTime,
-                        'is_initial': True  # 초기 포지션 표시
-                    }
-                    
-                    # 기존 TP/SL 추적
-                    tp_price = float(pos.get('takeProfitPrice', 0) or pos.get('takeProfit', 0) or 0)
-                    sl_price = float(pos.get('stopLossPrice', 0) or pos.get('stopLoss', 0) or 0)
-                    
-                    if tp_price > 0 or sl_price > 0:
-                        self.tracked_orders[symbol] = {
-                            'tp_price': tp_price,
-                            'sl_price': sl_price,
-                            'tp_order_id': None,
-                            'sl_order_id': None
-                        }
-                    
-                    self.logger.info(f"📌 초기 포지션 발견: {symbol} {side} (ID: {position_id})")
-                    
-                    # 초기 포지션도 미러링하는 경우
-                    if self.mirror_initial_positions:
-                        self.logger.info(f"🔄 초기 포지션 미러링 시작: {symbol} {side}")
-                        # 계정 정보 조회
-                        bitget_account = await self.bitget_client.get_account_info()
-                        bitget_total_equity = float(bitget_account.get('accountEquity', 0))
-                        
-                        gateio_account = await self.gateio_client.get_futures_account()
-                        gateio_total_equity = float(gateio_account.get('total', 0))
-                        
-                        # 마진 비율 계산
-                        margin = float(pos.get('marginSize', 0))
-                        margin_ratio = margin / bitget_total_equity if bitget_total_equity > 0 else 0
-                        
-                        # 미러링 실행
-                        success = await self._mirror_new_position_with_retry(pos, margin_ratio, gateio_total_equity)
-                        
-                        if success:
-                            self.daily_stats['mirror_entries'] += 1
-                            self.daily_stats['successful_mirrors'] += 1
-                        else:
-                            self.daily_stats['failed_mirrors'] += 1
-            
-            self.initial_scan_done = True
-            self.logger.info(f"✅ 초기 포지션 스캔 완료 - {len(self.initial_positions)}개 포지션 발견")
-            
-        except Exception as e:
-            self.logger.error(f"초기 포지션 스캔 실패: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-    
-    async def _check_and_mirror(self):
-        """포지션 체크 및 미러링"""
-        try:
-            # 1. 비트겟 포지션 확인
-            bitget_positions = await self.bitget_client.get_positions('BTCUSDT')
-            bitget_account = await self.bitget_client.get_account_info()
-            bitget_total_equity = float(bitget_account.get('accountEquity', 0))
-            
-            # 2. 게이트 계정 정보
-            gateio_account = await self.gateio_client.get_futures_account()
-            gateio_total_equity = float(gateio_account.get('total', 0))
-            
-            self.logger.debug(f"💰 계정 잔고 - Bitget: ${bitget_total_equity:.2f}, Gate.io: ${gateio_total_equity:.2f}")
-            
-            # 3. 활성 포지션 처리
-            active_symbols = set()
-            
-            for pos in bitget_positions:
-                if float(pos.get('total', 0)) > 0:
-                    symbol = pos.get('symbol', 'BTCUSDT')
-                    active_symbols.add(symbol)
-                    
-                    await self._process_position(pos, bitget_total_equity, gateio_total_equity)
-                    
-                    # TP/SL 수정 체크
-                    await self._check_order_modifications(symbol, pos)
-            
-            # 4. 종료된 포지션 처리
-            closed_symbols = set(self.tracked_positions.keys()) - active_symbols
-            for symbol in closed_symbols:
-                await self._handle_position_close(symbol)
-            
-            # 5. 포지션 일치성 체크
-            await self._check_position_consistency()
-            
-        except Exception as e:
-            self.logger.error(f"미러링 체크 실패: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-    
-    async def _process_position(self, bitget_pos: Dict, bitget_equity: float, gateio_equity: float):
-        """개별 포지션 처리"""
-        try:
-            symbol = bitget_pos.get('symbol', 'BTCUSDT')
-            side = 'long' if bitget_pos.get('holdSide', '').lower() in ['long', 'buy'] else 'short'
-            cTime = bitget_pos.get('cTime', '')
-            
-            # 포지션의 고유 ID 생성
-            position_id = f"{symbol}_{side}_{cTime}"
-            
-            # 마진 계산 (USDT 기준)
-            margin = float(bitget_pos.get('marginSize', 0))
-            margin_ratio = margin / bitget_equity if bitget_equity > 0 else 0
-            
-            # 신규 포지션 감지
-            if symbol not in self.tracked_positions:
-                self.logger.info(f"🆕 신규 포지션 감지: {symbol} {side} (Margin: ${margin:.2f}, 비율: {margin_ratio:.2%})")
-                
-                # 포지션 추적 시작
-                self.tracked_positions[symbol] = {
-                    'side': side,
-                    'entry_time': datetime.now(),
-                    'margin_ratio': margin_ratio,
-                    'position_id': position_id,
-                    'cTime': cTime,
-                    'is_initial': False  # 신규 포지션
-                }
-                
-                # 미러링 실행
-                self.logger.info(f"🔄 신규 포지션 미러링 시작: {symbol} {side}")
-                success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
-                
-                if success:
-                    self.daily_stats['mirror_entries'] += 1
+                if result.success:
+                    self.mirrored_positions[pos_id] = await self._create_position_info(bitget_pos)
+                    self.position_sizes[pos_id] = current_size
                     self.daily_stats['successful_mirrors'] += 1
+                    
+                    await self.telegram.send_message(
+                        f"✅ 포지션 미러링 성공\n"
+                        f"방향: {bitget_pos.get('holdSide', '')}\n"
+                        f"진입가: ${float(bitget_pos.get('openPriceAvg', 0)):,.2f}\n"
+                        f"마진: ${result.gate_data.get('margin', 0):,.2f}"
+                    )
                 else:
+                    self.failed_mirrors.append(result)
                     self.daily_stats['failed_mirrors'] += 1
+                    
+                    await self.telegram.send_message(
+                        f"❌ 포지션 미러링 실패\n"
+                        f"오류: {result.error}"
+                    )
                 
+                self.daily_stats['total_mirrored'] += 1
+                
+            # 기존 포지션 업데이트 확인
             else:
-                # 기존 포지션 업데이트 체크
-                tracked = self.tracked_positions[symbol]
+                last_size = self.position_sizes.get(pos_id, 0)
                 
-                # 포지션 ID가 변경되었는지 확인 (같은 심볼이지만 다른 포지션)
-                if tracked.get('position_id') != position_id:
-                    self.logger.info(f"🔄 포지션 ID 변경 감지 - 새로운 포지션: {symbol} {side}")
+                # 부분 청산 감지
+                if current_size < last_size * 0.95:  # 5% 이상 감소
+                    reduction_ratio = 1 - (current_size / last_size)
+                    self.logger.info(f"📉 부분 청산 감지: {reduction_ratio*100:.1f}% 감소")
                     
-                    # 이전 포지션 정보 업데이트
-                    self.tracked_positions[symbol] = {
-                        'side': side,
-                        'entry_time': datetime.now(),
-                        'margin_ratio': margin_ratio,
-                        'position_id': position_id,
-                        'cTime': cTime,
-                        'is_initial': False
-                    }
-                    
-                    # 미러링
-                    success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
-                    
-                    if success:
-                        self.daily_stats['mirror_entries'] += 1
-                        self.daily_stats['successful_mirrors'] += 1
-                    else:
-                        self.daily_stats['failed_mirrors'] += 1
-                else:
-                    # 부분 청산 체크
-                    current_margin_ratio = margin / bitget_equity if bitget_equity > 0 else 0
-                    if abs(current_margin_ratio - tracked['margin_ratio']) > 0.01:  # 1% 이상 변화
-                        await self._handle_partial_close(symbol, bitget_pos, current_margin_ratio, gateio_equity)
-                        tracked['margin_ratio'] = current_margin_ratio
-                        self.daily_stats['partial_closes'] += 1
-            
+                    await self._handle_partial_close(pos_id, bitget_pos, reduction_ratio)
+                    self.position_sizes[pos_id] = current_size
+                    self.daily_stats['partial_closes'] += 1
+                
+                # TP/SL 업데이트 확인
+                await self._check_tp_sl_updates(pos_id, bitget_pos)
+                
         except Exception as e:
-            self.logger.error(f"포지션 처리 실패: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            self.logger.error(f"포지션 처리 중 오류: {e}")
+            self.daily_stats['errors'].append({
+                'time': datetime.now().isoformat(),
+                'error': str(e),
+                'position': self._generate_position_id(bitget_pos)
+            })
     
-    async def _mirror_new_position_with_retry(self, bitget_pos: Dict, margin_ratio: float, gateio_equity: float) -> bool:
-        """신규 포지션 미러링 (재시도 포함)"""
-        action_key = f"mirror_entry_{bitget_pos.get('symbol')}_{datetime.now().strftime('%Y%m%d%H')}"
+    async def _mirror_new_position(self, bitget_pos: Dict) -> MirrorResult:
+        """새로운 포지션 미러링"""
+        retry_count = 0
         
-        for attempt in range(self.max_retries):
+        while retry_count < self.MAX_RETRIES:
             try:
-                await self._mirror_new_position(bitget_pos, margin_ratio, gateio_equity)
-                self.retry_count.pop(action_key, None)  # 성공 시 카운트 제거
-                return True
+                # 1. 자산 비율 계산
+                margin_ratio = await self._calculate_margin_ratio(bitget_pos)
+                
+                if margin_ratio is None:
+                    return MirrorResult(
+                        success=False,
+                        action="new_position",
+                        bitget_data=bitget_pos,
+                        error="마진 비율 계산 실패"
+                    )
+                
+                # 2. 게이트 진입 금액 계산
+                gate_account = await self.gate.get_account_balance()
+                gate_available = float(gate_account.get('available', 0))
+                gate_margin = gate_available * margin_ratio
+                
+                # 최소 마진 체크
+                if gate_margin < self.MIN_MARGIN:
+                    return MirrorResult(
+                        success=False,
+                        action="new_position",
+                        bitget_data=bitget_pos,
+                        error=f"게이트 마진 부족: ${gate_margin:.2f} < ${self.MIN_MARGIN}"
+                    )
+                
+                self.logger.info(
+                    f"💰 게이트 진입 계산\n"
+                    f"비율: {margin_ratio:.4f}\n"
+                    f"가용자산: ${gate_available:.2f}\n"
+                    f"진입마진: ${gate_margin:.2f}"
+                )
+                
+                # 3. 레버리지 설정
+                leverage = int(float(bitget_pos.get('leverage', 1)))
+                await self.gate.set_leverage(self.GATE_CONTRACT, leverage)
+                
+                # 4. 포지션 방향 및 수량 계산
+                side = bitget_pos.get('holdSide', '').lower()
+                current_price = float(bitget_pos.get('markPrice', bitget_pos.get('openPriceAvg', 0)))
+                
+                # 계약 정보 조회
+                contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
+                quanto_multiplier = float(contract_info.get('quanto_multiplier', 0.0001))
+                
+                # 계약 수 계산
+                notional_value = gate_margin * leverage
+                gate_size = int(notional_value / (current_price * quanto_multiplier))
+                
+                if side == 'short':
+                    gate_size = -gate_size
+                
+                self.logger.info(
+                    f"📊 주문 계산\n"
+                    f"방향: {side}\n"
+                    f"레버리지: {leverage}x\n"
+                    f"계약수: {gate_size}"
+                )
+                
+                # 5. 진입 주문 (시장가)
+                order_result = await self.gate.place_order(
+                    contract=self.GATE_CONTRACT,
+                    size=gate_size,
+                    price=None,  # 시장가
+                    reduce_only=False
+                )
+                
+                self.logger.info(f"✅ 게이트 진입 성공: {order_result}")
+                
+                # 6. TP/SL 설정 (잠시 대기 후)
+                await asyncio.sleep(1)
+                tp_sl_result = await self._set_gate_tp_sl(bitget_pos, gate_size)
+                
+                # 7. 통계 업데이트
+                self.daily_stats['total_volume'] += abs(notional_value)
+                
+                return MirrorResult(
+                    success=True,
+                    action="new_position",
+                    bitget_data=bitget_pos,
+                    gate_data={
+                        'order': order_result,
+                        'size': gate_size,
+                        'margin': gate_margin,
+                        'tp_sl': tp_sl_result
+                    }
+                )
                 
             except Exception as e:
-                self.logger.error(f"미러 주문 실패 (시도 {attempt + 1}/{self.max_retries}): {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
+                retry_count += 1
+                self.logger.error(f"포지션 미러링 시도 {retry_count}/{self.MAX_RETRIES} 실패: {e}")
                 
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay * (attempt + 1))
+                if retry_count < self.MAX_RETRIES:
+                    await asyncio.sleep(2 ** retry_count)  # 지수 백오프
                 else:
-                    # 최종 실패 시 알림
-                    if self.telegram_bot:
-                        await self.telegram_bot.send_message(
-                            f"❌ 미러링 실패 알림\n\n"
-                            f"심볼: {bitget_pos.get('symbol')}\n"
-                            f"방향: {bitget_pos.get('holdSide')}\n"
-                            f"마진: ${float(bitget_pos.get('marginSize', 0)):.2f}\n"
-                            f"오류: {str(e)[:100]}"
-                        )
-        
-        return False
+                    return MirrorResult(
+                        success=False,
+                        action="new_position",
+                        bitget_data=bitget_pos,
+                        error=f"최대 재시도 횟수 초과: {str(e)}"
+                    )
     
-    async def _mirror_new_position(self, bitget_pos: Dict, margin_ratio: float, gateio_equity: float):
-        """신규 포지션 미러링"""
+    async def _calculate_margin_ratio(self, bitget_pos: Dict) -> Optional[float]:
+        """비트겟 포지션의 마진 비율 계산"""
         try:
-            # 게이트 진입 마진 계산
-            gateio_margin = gateio_equity * margin_ratio
+            # 비트겟 계정 정보
+            bitget_account = await self.bitget.get_account_info()
             
-            # 최소 주문 금액 체크
-            if gateio_margin < 10:  # 최소 10 USDT
-                self.logger.warning(f"⚠️ 게이트 자산 부족으로 미러링 불가 (필요: ${gateio_margin:.2f})")
-                self._log_order({
-                    'action': 'mirror_failed',
-                    'reason': 'insufficient_balance',
-                    'required_margin': gateio_margin,
-                    'gateio_equity': gateio_equity
-                })
-                return
+            # 총 자산 (USDT)
+            total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
             
-            # 비트겟 포지션 정보
-            side = bitget_pos.get('holdSide', '').lower()
-            leverage = int(float(bitget_pos.get('leverage', 1)))
+            # 포지션 마진 (USDT)
+            position_margin = float(bitget_pos.get('marginSize', bitget_pos.get('margin', 0)))
+            
+            if total_equity <= 0 or position_margin <= 0:
+                self.logger.warning(f"잘못된 마진 데이터: 총자산={total_equity}, 마진={position_margin}")
+                return None
+            
+            # 마진 비율
+            margin_ratio = position_margin / total_equity
+            
+            # 비율 제한 (최대 50%)
+            margin_ratio = min(margin_ratio, 0.5)
+            
+            self.logger.info(
+                f"📊 마진 비율 계산\n"
+                f"비트겟 총자산: ${total_equity:,.2f}\n"
+                f"포지션 마진: ${position_margin:,.2f}\n"
+                f"비율: {margin_ratio:.4f} ({margin_ratio*100:.2f}%)"
+            )
+            
+            return margin_ratio
+            
+        except Exception as e:
+            self.logger.error(f"마진 비율 계산 실패: {e}")
+            return None
+    
+    async def _set_gate_tp_sl(self, bitget_pos: Dict, gate_size: int) -> Dict:
+        """게이트에 TP/SL 설정"""
+        try:
+            pos_id = self._generate_position_id(bitget_pos)
             entry_price = float(bitget_pos.get('openPriceAvg', 0))
+            side = bitget_pos.get('holdSide', '').lower()
             
-            # 현재가 조회 (진입가가 0인 경우 대비)
-            if entry_price == 0:
-                ticker = await self.bitget_client.get_ticker('BTCUSDT')
-                entry_price = float(ticker.get('last', 0))
+            tp_orders = []
+            sl_orders = []
             
-            # 게이트 주문 크기 계산 (USDT 기준)
-            # Gate.io는 계약 단위로 거래하므로 변환 필요
-            # 1 계약 = 0.0001 BTC
-            btc_value = gateio_margin * leverage / entry_price
-            contract_size = int(btc_value / 0.0001)
-            
-            if contract_size < 1:
-                self.logger.warning(f"⚠️ 계약 크기가 너무 작음: {contract_size}")
-                return
-            
-            # 현재가로 주문 (시장가 효과)
-            current_ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
-            current_price = float(current_ticker.get('last', entry_price))
-            
-            # 슬리피지 고려한 가격 설정 (시장가 효과를 위해)
-            if side in ['long', 'buy']:
-                order_price = current_price * 1.001  # 0.1% 위
+            # 기본 TP/SL 설정 (실제로는 비트겟 API에서 가져와야 함)
+            if side == 'long':
+                # 롱 포지션
+                tp_prices = [
+                    entry_price * 1.01,  # 1% TP
+                    entry_price * 1.02,  # 2% TP
+                    entry_price * 1.03   # 3% TP
+                ]
+                sl_price = entry_price * 0.98  # 2% SL
+                
+                # TP 주문들 (분할 익절)
+                remaining_size = abs(gate_size)
+                for i, tp_price in enumerate(tp_prices):
+                    tp_size = int(remaining_size * 0.33)  # 33%씩
+                    if i == len(tp_prices) - 1:  # 마지막은 남은 전체
+                        tp_size = remaining_size
+                    
+                    tp_order = await self.gate.create_price_triggered_order(
+                        trigger_type="ge",
+                        trigger_price=str(tp_price),
+                        order_type="limit",
+                        contract=self.GATE_CONTRACT,
+                        size=-tp_size,
+                        price=str(tp_price)
+                    )
+                    tp_orders.append(tp_order)
+                    remaining_size -= tp_size
+                
+                # SL 주문 (전체)
+                sl_order = await self.gate.create_price_triggered_order(
+                    trigger_type="le",
+                    trigger_price=str(sl_price),
+                    order_type="market",
+                    contract=self.GATE_CONTRACT,
+                    size=-abs(gate_size)
+                )
+                sl_orders.append(sl_order)
+                
             else:
-                order_price = current_price * 0.999  # 0.1% 아래
+                # 숏 포지션
+                tp_prices = [
+                    entry_price * 0.99,  # 1% TP
+                    entry_price * 0.98,  # 2% TP
+                    entry_price * 0.97   # 3% TP
+                ]
+                sl_price = entry_price * 1.02  # 2% SL
+                
+                # TP 주문들
+                remaining_size = abs(gate_size)
+                for i, tp_price in enumerate(tp_prices):
+                    tp_size = int(remaining_size * 0.33)
+                    if i == len(tp_prices) - 1:
+                        tp_size = remaining_size
+                    
+                    tp_order = await self.gate.create_price_triggered_order(
+                        trigger_type="le",
+                        trigger_price=str(tp_price),
+                        order_type="limit",
+                        contract=self.GATE_CONTRACT,
+                        size=tp_size,
+                        price=str(tp_price)
+                    )
+                    tp_orders.append(tp_order)
+                    remaining_size -= tp_size
+                
+                # SL 주문
+                sl_order = await self.gate.create_price_triggered_order(
+                    trigger_type="ge",
+                    trigger_price=str(sl_price),
+                    order_type="market",
+                    contract=self.GATE_CONTRACT,
+                    size=abs(gate_size)
+                )
+                sl_orders.append(sl_order)
             
-            # 게이트 주문 실행
-            order_params = {
-                'contract': 'BTC_USDT',
-                'size': contract_size if side in ['long', 'buy'] else -contract_size,
-                'price': str(order_price),
-                'tif': 'ioc',  # Immediate or Cancel
-                'reduce_only': False,
-                'text': f'mirror_from_bitget_{datetime.now().strftime("%Y%m%d%H%M%S")}'
+            # TP/SL 주문 ID 저장
+            self.tp_sl_orders[pos_id] = {
+                'tp': [order.get('id') for order in tp_orders],
+                'sl': [order.get('id') for order in sl_orders]
             }
             
-            self.logger.info(f"📤 게이트 미러 주문 시작:")
-            self.logger.info(f"   - 방향: {side}")
-            self.logger.info(f"   - 계약수: {contract_size}")
-            self.logger.info(f"   - 주문가격: ${order_price:.2f}")
-            self.logger.info(f"   - 현재가: ${current_price:.2f}")
-            self.logger.info(f"   - 마진: ${gateio_margin:.2f}")
-            self.logger.info(f"   - 레버리지: {leverage}x")
+            self.logger.info(
+                f"📍 TP/SL 설정 완료\n"
+                f"TP: {len(tp_orders)}개\n"
+                f"SL: {len(sl_orders)}개"
+            )
             
-            order_result = await self.gateio_client.create_futures_order(**order_params)
-            
-            self._log_order({
-                'action': 'mirror_entry',
-                'timestamp': datetime.now().isoformat(),
-                'bitget_margin': float(bitget_pos.get('marginSize', 0)),
-                'bitget_equity': gateio_equity / margin_ratio,  # 역산
-                'gateio_margin': gateio_margin,
-                'gateio_equity': gateio_equity,
-                'margin_ratio': margin_ratio,
-                'side': side,
-                'leverage': leverage,
-                'entry_price': entry_price,
-                'order_price': order_price,
-                'contract_size': contract_size,
-                'order_result': order_result
-            })
-            
-            self.logger.info(f"✅ 미러 주문 성공: {order_result.get('id')}")
-            
-            # 성공 알림
-            if self.telegram_bot:
-                await self.telegram_bot.send_message(
-                    f"✅ 미러 주문 성공\n\n"
-                    f"거래소: Gate.io\n"
-                    f"방향: {side.upper()}\n"
-                    f"계약수: {contract_size}\n"
-                    f"주문가: ${order_price:,.2f}\n"
-                    f"마진: ${gateio_margin:.2f}\n"
-                    f"레버리지: {leverage}x"
-                )
-            
-            # TP/SL 설정 미러링은 주문 체결 확인 후 진행
-            await asyncio.sleep(2)  # 체결 대기
-            
-            # 체결된 포지션 확인
-            gateio_positions = await self.gateio_client.get_positions('usdt')
-            position_found = False
-            
-            for pos in gateio_positions:
-                if pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0:
-                    position_found = True
-                    actual_size = abs(float(pos.get('size', 0)))
-                    self.logger.info(f"✅ 포지션 체결 확인: {actual_size}계약")
-                    
-                    # TP/SL 설정 미러링
-                    await self._mirror_tp_sl(bitget_pos, int(actual_size), side)
-                    break
-            
-            if not position_found:
-                self.logger.warning("⚠️ 주문 후 포지션을 찾을 수 없음")
-            
-        except Exception as e:
-            self.logger.error(f"미러 주문 실패: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            self._log_order({
-                'action': 'mirror_error',
-                'error': str(e),
-                'timestamp': datetime.now().isoformat()
-            })
-            raise
-    
-    async def _mirror_tp_sl(self, bitget_pos: Dict, contract_size: int, side: str):
-        """TP/SL 설정 미러링"""
-        try:
-            symbol = bitget_pos.get('symbol', 'BTCUSDT')
-            tp_price = float(bitget_pos.get('takeProfitPrice', 0) or bitget_pos.get('takeProfit', 0) or 0)
-            sl_price = float(bitget_pos.get('stopLossPrice', 0) or bitget_pos.get('stopLoss', 0) or 0)
-            
-            tp_order_id = None
-            sl_order_id = None
-            
-            # TP 설정
-            if tp_price > 0:
-                tp_order_params = {
-                    'contract': 'BTC_USDT',
-                    'size': -contract_size if side in ['long', 'buy'] else contract_size,
-                    'price': str(tp_price),
-                    'tif': 'gtc',
-                    'reduce_only': True,
-                    'text': 'tp_order'
-                }
-                
-                try:
-                    tp_result = await self.gateio_client.create_futures_order(**tp_order_params)
-                    tp_order_id = tp_result.get('id')
-                    self.logger.info(f"✅ TP 설정: ${tp_price} (ID: {tp_order_id})")
-                except Exception as e:
-                    self.logger.error(f"TP 설정 실패: {e}")
-            
-            # SL 설정 (지정가로만)
-            if sl_price > 0:
-                sl_order_params = {
-                    'contract': 'BTC_USDT',
-                    'size': -contract_size if side in ['long', 'buy'] else contract_size,
-                    'price': str(sl_price),
-                    'tif': 'gtc',
-                    'reduce_only': True,
-                    'text': 'sl_order'
-                }
-                
-                try:
-                    sl_result = await self.gateio_client.create_futures_order(**sl_order_params)
-                    sl_order_id = sl_result.get('id')
-                    self.logger.info(f"✅ SL 설정: ${sl_price} (ID: {sl_order_id})")
-                except Exception as e:
-                    self.logger.error(f"SL 설정 실패: {e}")
-            
-            # 주문 추적
-            self.tracked_orders[symbol] = {
-                'tp_price': tp_price,
-                'sl_price': sl_price,
-                'tp_order_id': tp_order_id,
-                'sl_order_id': sl_order_id
+            return {
+                'tp_orders': tp_orders,
+                'sl_orders': sl_orders
             }
             
         except Exception as e:
             self.logger.error(f"TP/SL 설정 실패: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            return {'tp_orders': [], 'sl_orders': []}
     
-    async def _check_order_modifications(self, symbol: str, bitget_pos: Dict):
-        """주문 수정 체크"""
-        try:
-            if symbol not in self.tracked_orders:
-                return
-            
-            tracked = self.tracked_orders[symbol]
-            current_tp = float(bitget_pos.get('takeProfitPrice', 0) or bitget_pos.get('takeProfit', 0) or 0)
-            current_sl = float(bitget_pos.get('stopLossPrice', 0) or bitget_pos.get('stopLoss', 0) or 0)
-            
-            # TP 수정 체크
-            if abs(current_tp - tracked['tp_price']) > 0.01:  # 가격 변경
-                self.logger.info(f"📝 TP 수정 감지: ${tracked['tp_price']} → ${current_tp}")
-                
-                # 기존 주문 취소
-                if tracked['tp_order_id']:
-                    try:
-                        await self.gateio_client.cancel_order('usdt', tracked['tp_order_id'])
-                    except:
-                        pass
-                
-                # 새 주문 생성
-                if current_tp > 0:
-                    # 현재 게이트 포지션 확인
-                    gateio_positions = await self.gateio_client.get_positions('usdt')
-                    for pos in gateio_positions:
-                        if pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0:
-                            size = float(pos.get('size', 0))
-                            
-                            tp_params = {
-                                'contract': 'BTC_USDT',
-                                'size': -size,
-                                'price': str(current_tp),
-                                'tif': 'gtc',
-                                'reduce_only': True,
-                                'text': 'tp_order_modified'
-                            }
-                            
-                            result = await self.gateio_client.create_futures_order(**tp_params)
-                            tracked['tp_order_id'] = result.get('id')
-                            tracked['tp_price'] = current_tp
-                            break
-            
-            # SL 수정 체크
-            if abs(current_sl - tracked['sl_price']) > 0.01:  # 가격 변경
-                self.logger.info(f"📝 SL 수정 감지: ${tracked['sl_price']} → ${current_sl}")
-                
-                # 기존 주문 취소
-                if tracked['sl_order_id']:
-                    try:
-                        await self.gateio_client.cancel_order('usdt', tracked['sl_order_id'])
-                    except:
-                        pass
-                
-                # 새 주문 생성
-                if current_sl > 0:
-                    # 현재 게이트 포지션 확인
-                    gateio_positions = await self.gateio_client.get_positions('usdt')
-                    for pos in gateio_positions:
-                        if pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0:
-                            size = float(pos.get('size', 0))
-                            
-                            sl_params = {
-                                'contract': 'BTC_USDT',
-                                'size': -size,
-                                'price': str(current_sl),
-                                'tif': 'gtc',
-                                'reduce_only': True,
-                                'text': 'sl_order_modified'
-                            }
-                            
-                            result = await self.gateio_client.create_futures_order(**sl_params)
-                            tracked['sl_order_id'] = result.get('id')
-                            tracked['sl_price'] = current_sl
-                            break
-            
-        except Exception as e:
-            self.logger.error(f"주문 수정 체크 실패: {e}")
-    
-    async def _handle_partial_close(self, symbol: str, bitget_pos: Dict, new_margin_ratio: float, gateio_equity: float):
+    async def _handle_partial_close(self, pos_id: str, bitget_pos: Dict, reduction_ratio: float):
         """부분 청산 처리"""
         try:
-            tracked = self.tracked_positions[symbol]
-            old_ratio = tracked['margin_ratio']
+            # 게이트 포지션 조회
+            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
             
-            # 청산 비율 계산
-            close_ratio = 1 - (new_margin_ratio / old_ratio) if old_ratio > 0 else 0
+            if not gate_positions or gate_positions[0].get('size', 0) == 0:
+                self.logger.warning(f"게이트 포지션을 찾을 수 없습니다: {pos_id}")
+                return
             
-            if close_ratio > 0.05:  # 5% 이상 청산
-                self.logger.info(f"📉 부분 청산 감지: {symbol} {close_ratio:.1%}")
-                
-                # 게이트 현재 포지션 확인
-                gateio_positions = await self.gateio_client.get_positions('usdt')
-                
-                for pos in gateio_positions:
-                    if pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0:
-                        current_size = float(pos.get('size', 0))
-                        close_size = int(abs(current_size) * close_ratio)
-                        
-                        if close_size > 0:
-                            # 현재가 조회
-                            ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
-                            current_price = float(ticker.get('last', 0))
-                            
-                            # 슬리피지 고려한 가격
-                            if current_size > 0:  # 롱 포지션 청산
-                                close_price = current_price * 0.999
-                            else:  # 숏 포지션 청산
-                                close_price = current_price * 1.001
-                            
-                            # 부분 청산 주문
-                            close_order_params = {
-                                'contract': 'BTC_USDT',
-                                'size': -close_size if current_size > 0 else close_size,
-                                'price': str(close_price),
-                                'tif': 'ioc',
-                                'reduce_only': True,
-                                'text': 'partial_close'
-                            }
-                            
-                            result = await self.gateio_client.create_futures_order(**close_order_params)
-                            
-                            self.logger.info(f"✅ 부분 청산 완료: {close_size}계약")
-                            self._log_order({
-                                'action': 'partial_close',
-                                'symbol': symbol,
-                                'close_ratio': close_ratio,
-                                'close_size': close_size,
-                                'result': result
-                            })
-                        break
+            gate_pos = gate_positions[0]
+            current_gate_size = int(gate_pos['size'])
+            
+            # 청산할 수량 계산
+            close_size = int(abs(current_gate_size) * reduction_ratio)
+            
+            if close_size == 0:
+                return
+            
+            # 방향에 따라 부호 조정
+            if current_gate_size > 0:  # 롱
+                close_size = -close_size
+            else:  # 숏
+                close_size = close_size
+            
+            self.logger.info(f"부분 청산 실행: {close_size} 계약 ({reduction_ratio*100:.1f}%)")
+            
+            # 시장가로 부분 청산
+            result = await self.gate.place_order(
+                contract=self.GATE_CONTRACT,
+                size=close_size,
+                price=None,  # 시장가
+                reduce_only=True
+            )
+            
+            await self.telegram.send_message(
+                f"📉 부분 청산 완료\n"
+                f"비율: {reduction_ratio*100:.1f}%\n"
+                f"수량: {abs(close_size)} 계약"
+            )
             
         except Exception as e:
             self.logger.error(f"부분 청산 처리 실패: {e}")
+            await self.telegram.send_message(
+                f"❌ 부분 청산 실패\n"
+                f"포지션: {pos_id}\n"
+                f"오류: {str(e)[:200]}"
+            )
     
-    async def _handle_position_close(self, symbol: str):
-        """포지션 종료 처리 - 시장가 손절 포함"""
+    async def _handle_position_close(self, pos_id: str):
+        """포지션 종료 처리"""
         try:
-            self.logger.info(f"🔚 포지션 종료 감지: {symbol}")
+            self.logger.info(f"🔚 포지션 종료 감지: {pos_id}")
             
-            # 비트겟 최근 거래 체결 확인 (시장가 손절 감지)
-            is_market_stop = await self._check_market_stop_loss(symbol)
+            # 게이트 포지션 전체 종료
+            result = await self.gate.close_position(self.GATE_CONTRACT)
             
-            # 게이트 포지션 전량 청산
-            gateio_positions = await self.gateio_client.get_positions('usdt')
+            # TP/SL 주문 취소
+            if pos_id in self.tp_sl_orders:
+                orders = self.tp_sl_orders[pos_id]
+                
+                # TP 주문 취소
+                for order_id in orders.get('tp', []):
+                    try:
+                        await self.gate.cancel_price_triggered_order(order_id)
+                    except:
+                        pass
+                
+                # SL 주문 취소
+                for order_id in orders.get('sl', []):
+                    try:
+                        await self.gate.cancel_price_triggered_order(order_id)
+                    except:
+                        pass
+                
+                del self.tp_sl_orders[pos_id]
             
-            for pos in gateio_positions:
-                if pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0:
-                    current_size = float(pos.get('size', 0))
-                    
-                    # 현재가 조회
-                    ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
-                    current_price = float(ticker.get('last', 0))
-                    
-                    # 긴급 청산을 위한 가격 설정 (더 큰 슬리피지)
-                    if current_size > 0:  # 롱 포지션
-                        close_price = current_price * 0.995  # 0.5% 슬리피지
-                    else:  # 숏 포지션
-                        close_price = current_price * 1.005
-                    
-                    # 전량 청산 주문
-                    close_order_params = {
-                        'contract': 'BTC_USDT',
-                        'size': -current_size,
-                        'price': str(close_price),
-                        'tif': 'ioc',
-                        'reduce_only': True,
-                        'text': 'market_stop' if is_market_stop else 'full_close'
-                    }
-                    
-                    result = await self.gateio_client.create_futures_order(**close_order_params)
-                    
-                    close_type = "시장가 손절" if is_market_stop else "전량 청산"
-                    self.logger.info(f"✅ {close_type} 완료: {symbol}")
-                    
-                    self._log_order({
-                        'action': 'full_close',
-                        'symbol': symbol,
-                        'close_size': current_size,
-                        'close_type': close_type,
-                        'is_market_stop': is_market_stop,
-                        'result': result
-                    })
-                    
-                    self.daily_stats['full_closes'] += 1
-                    
-                    # 알림 전송
-                    if is_market_stop and self.telegram_bot:
-                        await self.telegram_bot.send_message(
-                            f"⚠️ 시장가 손절 동기화\n\n"
-                            f"심볼: {symbol}\n"
-                            f"타입: 시장가 손절\n"
-                            f"게이트 동기화 완료"
-                        )
-                    
-                    # 잔여 포지션 체크 및 강제 청산
-                    await asyncio.sleep(1)
-                    await self._cleanup_residual_position()
-                    break
+            # 상태 정리
+            if pos_id in self.mirrored_positions:
+                del self.mirrored_positions[pos_id]
+            if pos_id in self.position_sizes:
+                del self.position_sizes[pos_id]
             
-            # 추적에서 제거
-            del self.tracked_positions[symbol]
-            if symbol in self.tracked_orders:
-                del self.tracked_orders[symbol]
+            self.daily_stats['full_closes'] += 1
+            
+            await self.telegram.send_message(
+                f"✅ 포지션 종료 완료\n"
+                f"포지션 ID: {pos_id}"
+            )
             
         except Exception as e:
             self.logger.error(f"포지션 종료 처리 실패: {e}")
-    
-    async def _check_market_stop_loss(self, symbol: str) -> bool:
-        """시장가 손절 체크"""
-        try:
-            # 최근 1분 이내 거래 체결 조회
-            end_time = int(datetime.now().timestamp() * 1000)
-            start_time = end_time - (60 * 1000)  # 1분 전
-            
-            fills = await self.bitget_client.get_trade_fills(
-                symbol=symbol,
-                start_time=start_time,
-                end_time=end_time,
-                limit=10
+            await self.telegram.send_message(
+                f"❌ 포지션 종료 실패\n"
+                f"포지션: {pos_id}\n"
+                f"오류: {str(e)[:200]}"
             )
-            
-            # 손절 관련 체결 찾기
-            for fill in fills:
-                order_type = fill.get('orderType', '').lower()
-                trade_scope = fill.get('tradeScope', '').lower()
-                
-                # 시장가 손절 패턴 감지
-                if any(keyword in order_type for keyword in ['stop', 'market']):
-                    return True
-                if any(keyword in trade_scope for keyword in ['stop', 'loss']):
-                    return True
-            
-            return False
-            
-        except Exception as e:
-            self.logger.warning(f"시장가 손절 체크 실패: {e}")
-            return False
     
-    async def _cleanup_residual_position(self):
-        """잔여 포지션 정리"""
-        try:
-            gateio_positions = await self.gateio_client.get_positions('usdt')
-            
-            for pos in gateio_positions:
-                if pos.get('contract') == 'BTC_USDT':
-                    size = float(pos.get('size', 0))
+    async def _check_tp_sl_updates(self, pos_id: str, bitget_pos: Dict):
+        """TP/SL 업데이트 확인"""
+        # 실제 구현에서는 비트겟 API로 TP/SL 주문을 조회하고
+        # 변경사항이 있으면 게이트 주문도 업데이트해야 함
+        pass
+    
+    async def monitor_sync_status(self):
+        """포지션 동기화 상태 모니터링"""
+        while self.monitoring:
+            try:
+                await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
+                
+                # 비트겟 포지션
+                bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+                bitget_active = [
+                    pos for pos in bitget_positions 
+                    if float(pos.get('total', 0)) > 0
+                ]
+                
+                # 게이트 포지션
+                gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+                gate_active = [
+                    pos for pos in gate_positions 
+                    if pos.get('size', 0) != 0
+                ]
+                
+                # 포지션 수 비교
+                bitget_count = len(bitget_active)
+                gate_count = len(gate_active)
+                
+                # 미러링된 포지션만 카운트 (시작 시 존재했던 것 제외)
+                mirrored_bitget_count = sum(
+                    1 for pos in bitget_active 
+                    if self._generate_position_id(pos) not in self.startup_positions
+                )
+                
+                if mirrored_bitget_count != gate_count:
+                    self.logger.warning(
+                        f"⚠️ 포지션 불일치 감지\n"
+                        f"비트겟 (미러링 대상): {mirrored_bitget_count}\n"
+                        f"게이트: {gate_count}"
+                    )
                     
-                    # 극소량 잔여 포지션 감지 (0.0001 BTC = 1계약 미만)
-                    if 0 < abs(size) < 1:
-                        self.logger.warning(f"⚠️ 잔여 포지션 감지: {size}계약")
+                    # 상세 분석
+                    await self._analyze_sync_mismatch(bitget_active, gate_active)
+                else:
+                    self.logger.info(f"✅ 포지션 동기화 정상: {gate_count}개")
+                
+            except Exception as e:
+                self.logger.error(f"동기화 모니터링 오류: {e}")
+    
+    async def _analyze_sync_mismatch(self, bitget_positions: List[Dict], gate_positions: List[Dict]):
+        """동기화 불일치 분석"""
+        try:
+            # 비트겟에만 있는 포지션
+            for bitget_pos in bitget_positions:
+                pos_id = self._generate_position_id(bitget_pos)
+                
+                # 시작 시 존재했던 포지션은 제외
+                if pos_id in self.startup_positions:
+                    continue
+                
+                if pos_id not in self.mirrored_positions:
+                    self.logger.warning(f"비트겟에만 존재하는 포지션: {pos_id}")
+                    
+                    # 자동 미러링 시도
+                    result = await self._mirror_new_position(bitget_pos)
+                    if result.success:
+                        self.logger.info(f"동기화 복구 성공: {pos_id}")
+                    else:
+                        await self.telegram.send_message(
+                            f"⚠️ 동기화 문제\n"
+                            f"비트겟 포지션이 게이트에 없습니다\n"
+                            f"포지션: {pos_id}\n"
+                            f"자동 복구 실패: {result.error}"
+                        )
+            
+            # 게이트에만 있는 포지션
+            if len(gate_positions) > 0 and len(self.mirrored_positions) == 0:
+                self.logger.warning("게이트에 추적되지 않는 포지션 존재")
+                
+                # 자동 정리
+                for gate_pos in gate_positions:
+                    if gate_pos.get('size', 0) != 0:
+                        self.logger.info("추적되지 않는 게이트 포지션 종료")
+                        await self.gate.close_position(self.GATE_CONTRACT)
                         
-                        # 강제 청산
-                        cleanup_params = {
-                            'contract': 'BTC_USDT',
-                            'size': -size,
-                            'price': '0',
-                            'tif': 'ioc',
-                            'reduce_only': True,
-                            'text': 'cleanup_residual'
-                        }
-                        
-                        await self.gateio_client.create_futures_order(**cleanup_params)
-                        self.logger.info("✅ 잔여 포지션 정리 완료")
+                        await self.telegram.send_message(
+                            f"🔄 게이트 단독 포지션 정리\n"
+                            f"대응하는 비트겟 포지션이 없어 종료했습니다"
+                        )
             
         except Exception as e:
-            self.logger.error(f"잔여 포지션 정리 실패: {e}")
+            self.logger.error(f"동기화 분석 중 오류: {e}")
     
-    async def _check_position_consistency(self):
-        """포지션 일치성 체크"""
-        try:
-            # 비트겟 포지션
-            bitget_positions = await self.bitget_client.get_positions('BTCUSDT')
-            bitget_has_position = any(float(pos.get('total', 0)) > 0 for pos in bitget_positions)
-            
-            # 게이트 포지션
-            gateio_positions = await self.gateio_client.get_positions('usdt')
-            gateio_has_position = any(
-                pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0 
-                for pos in gateio_positions
-            )
-            
-            # 불일치 감지
-            if bitget_has_position != gateio_has_position:
-                symbol = 'BTCUSDT'
-                
-                # 쿨다운 체크
-                last_alert = self.position_mismatch_alerts.get(symbol)
+    async def generate_daily_reports(self):
+        """일일 리포트 생성"""
+        while self.monitoring:
+            try:
                 now = datetime.now()
                 
-                if not last_alert or (now - last_alert) > self.alert_cooldown:
-                    self.logger.warning(f"⚠️ 포지션 불일치 감지!")
+                # 매일 지정된 시간에 리포트 생성
+                if now.hour == self.DAILY_REPORT_HOUR and now > self.last_report_time + timedelta(hours=23):
+                    report = await self._create_daily_report()
+                    await self.telegram.send_message(report)
                     
-                    # 상세 정보 로깅
-                    self.logger.info(f"Bitget 포지션: {bitget_positions}")
-                    self.logger.info(f"Gate.io 포지션: {gateio_positions}")
-                    
-                    if self.telegram_bot:
-                        await self.telegram_bot.send_message(
-                            f"⚠️ 미러링 포지션 불일치\n\n"
-                            f"Bitget: {'포지션 있음' if bitget_has_position else '포지션 없음'}\n"
-                            f"Gate.io: {'포지션 있음' if gateio_has_position else '포지션 없음'}\n\n"
-                            f"수동 확인이 필요합니다."
-                        )
-                    
-                    self.position_mismatch_alerts[symbol] = now
-            
-        except Exception as e:
-            self.logger.error(f"포지션 일치성 체크 실패: {e}")
+                    # 통계 초기화
+                    self._reset_daily_stats()
+                    self.last_report_time = now
+                
+                await asyncio.sleep(3600)  # 1시간마다 체크
+                
+            except Exception as e:
+                self.logger.error(f"일일 리포트 생성 오류: {e}")
+                await asyncio.sleep(3600)
     
-    async def _send_daily_report(self):
-        """일일 성과 리포트 전송"""
+    async def _create_daily_report(self) -> str:
+        """일일 리포트 생성"""
         try:
-            now = datetime.now(self.kst)
+            # 계정 정보 조회
+            bitget_account = await self.bitget.get_account_info()
+            gate_account = await self.gate.get_account_balance()
             
-            # 성과 요약
-            total_actions = (self.daily_stats['mirror_entries'] + 
-                           self.daily_stats['partial_closes'] + 
-                           self.daily_stats['full_closes'])
+            bitget_equity = float(bitget_account.get('accountEquity', 0))
+            gate_equity = float(gate_account.get('total', 0))
             
+            # 성공률 계산
             success_rate = 0
-            if self.daily_stats['successful_mirrors'] + self.daily_stats['failed_mirrors'] > 0:
+            if self.daily_stats['total_mirrored'] > 0:
                 success_rate = (self.daily_stats['successful_mirrors'] / 
-                              (self.daily_stats['successful_mirrors'] + self.daily_stats['failed_mirrors'])) * 100
+                              self.daily_stats['total_mirrored']) * 100
             
-            report = f"""📊 **미러 트레이딩 일일 리포트**
-📅 {now.strftime('%Y-%m-%d')} 21:00 기준
+            report = f"""📊 일일 미러 트레이딩 리포트
+📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
-📈 **오늘의 활동**
-- 신규 미러링: {self.daily_stats['mirror_entries']}건
-- 부분 청산: {self.daily_stats['partial_closes']}건
-- 전량 청산: {self.daily_stats['full_closes']}건
-- 총 작업: {total_actions}건
-
-📊 **성공률**
-- 성공: {self.daily_stats['successful_mirrors']}건
-- 실패: {self.daily_stats['failed_mirrors']}건
+📈 미러링 통계
+- 총 시도: {self.daily_stats['total_mirrored']}회
+- 성공: {self.daily_stats['successful_mirrors']}회
+- 실패: {self.daily_stats['failed_mirrors']}회
 - 성공률: {success_rate:.1f}%
 
-⚠️ **오류 현황**
-- 오류 발생: {self.daily_stats['errors']}회
+📉 포지션 관리
+- 부분 청산: {self.daily_stats['partial_closes']}회
+- 전체 청산: {self.daily_stats['full_closes']}회
+- 총 거래량: ${self.daily_stats['total_volume']:,.2f}
 
-💡 **시스템 상태**
-- 추적중인 포지션: {len(self.tracked_positions)}개
-- 주문 로그: {len(self.order_logs)}개
+💰 계정 잔고
+- 비트겟: ${bitget_equity:,.2f}
+- 게이트: ${gate_equity:,.2f}
 
-━━━━━━━━━━━━━━━━━━━
-💪 내일도 안정적인 미러링을 위해 노력하겠습니다!"""
+🔄 현재 미러링 포지션
+- 활성: {len(self.mirrored_positions)}개
+- 실패 기록: {len(self.failed_mirrors)}건
+
+"""
             
-            if self.telegram_bot:
-                await self.telegram_bot.send_message(report, parse_mode='Markdown')
+            # 오류가 있었다면 추가
+            if self.daily_stats['errors']:
+                report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건\n"
+                for i, error in enumerate(self.daily_stats['errors'][-3:], 1):  # 최근 3개만
+                    report += f"{i}. {error['error'][:50]}...\n"
             
-            self.logger.info(f"📊 일일 리포트 전송 완료")
+            report += "\n━━━━━━━━━━━━━━━━━━━"
+            
+            return report
             
         except Exception as e:
-            self.logger.error(f"일일 리포트 전송 실패: {e}")
+            self.logger.error(f"리포트 생성 실패: {e}")
+            return f"📊 일일 리포트 생성 실패\n오류: {str(e)}"
     
-    def _log_order(self, log_data: Dict):
-        """주문 로그 저장"""
-        log_entry = {
-            'timestamp': datetime.now().isoformat(),
-            **log_data
+    def _reset_daily_stats(self):
+        """일일 통계 초기화"""
+        self.daily_stats = {
+            'total_mirrored': 0,
+            'successful_mirrors': 0,
+            'failed_mirrors': 0,
+            'partial_closes': 0,
+            'full_closes': 0,
+            'total_volume': 0.0,
+            'errors': []
         }
-        
-        self.order_logs.append(log_entry)
-        
-        # 로그 파일로 저장 (선택사항)
-        self.logger.info(f"📝 주문 로그: {json.dumps(log_entry, ensure_ascii=False, indent=2)}")
-        
-        # 메모리 관리 - 최대 1000개 로그 유지
-        if len(self.order_logs) > 1000:
-            self.order_logs = self.order_logs[-500:]
+        self.failed_mirrors.clear()
     
-    def get_status(self) -> Dict:
-        """미러링 상태 조회"""
-        return {
-            'is_running': self.is_running,
-            'tracked_positions': self.tracked_positions,
-            'tracked_orders': self.tracked_orders,
-            'order_logs_count': len(self.order_logs),
-            'last_orders': self.order_logs[-10:],  # 최근 10개
-            'daily_stats': self.daily_stats,
-            'retry_counts': self.retry_count,
-            'initial_positions_count': len(self.initial_positions),
-            'mirror_initial_positions': self.mirror_initial_positions
-        }
+    def _generate_position_id(self, pos: Dict) -> str:
+        """포지션 고유 ID 생성"""
+        symbol = pos.get('symbol', self.SYMBOL)
+        side = pos.get('holdSide', '')
+        entry_price = pos.get('openPriceAvg', '')
+        return f"{symbol}_{side}_{entry_price}"
+    
+    async def _create_position_info(self, bitget_pos: Dict) -> PositionInfo:
+        """포지션 정보 객체 생성"""
+        return PositionInfo(
+            symbol=bitget_pos.get('symbol', self.SYMBOL),
+            side=bitget_pos.get('holdSide', '').lower(),
+            size=float(bitget_pos.get('total', 0)),
+            entry_price=float(bitget_pos.get('openPriceAvg', 0)),
+            margin=float(bitget_pos.get('marginSize', 0)),
+            leverage=int(float(bitget_pos.get('leverage', 1))),
+            mode='cross' if bitget_pos.get('marginMode') == 'crossed' else 'isolated',
+            unrealized_pnl=float(bitget_pos.get('unrealizedPL', 0))
+        )
+    
+    async def stop(self):
+        """미러 트레이딩 중지"""
+        self.monitoring = False
+        
+        # 최종 리포트 생성
+        try:
+            final_report = await self._create_daily_report()
+            await self.telegram.send_message(
+                f"🛑 미러 트레이딩 종료\n\n{final_report}"
+            )
+        except:
+            pass
+        
+        self.logger.info("미러 트레이딩 시스템 중지")
