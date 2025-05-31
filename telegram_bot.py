@@ -84,8 +84,8 @@ class TelegramBot:
         except Exception as e:
             self.logger.error(f"텔레그램 봇 정지 실패: {str(e)}")
     
-    async def send_message(self, text: str, chat_id: str = None, parse_mode: str = None):
-        """메시지 전송"""
+    async def send_message(self, text: str, chat_id: str = None, parse_mode: str = 'HTML'):
+        """메시지 전송 - 기본 HTML 모드"""
         try:
             if chat_id is None:
                 chat_id = self.config.TELEGRAM_CHAT_ID
@@ -103,4 +103,16 @@ class TelegramBot:
             
         except Exception as e:
             self.logger.error(f"메시지 전송 실패: {str(e)}")
-            raise
+            # HTML 파싱 오류인 경우 parse_mode 없이 재시도
+            if "can't parse entities" in str(e).lower():
+                try:
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text
+                    )
+                    self.logger.info("parse_mode 없이 메시지 재전송 성공")
+                except Exception as retry_error:
+                    self.logger.error(f"재전송도 실패: {str(retry_error)}")
+                    raise retry_error
+            else:
+                raise
