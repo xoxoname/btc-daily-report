@@ -15,7 +15,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         # 초기 자산 설정 (실제 초기 투자금으로 설정 필요)
         self.BITGET_INITIAL_CAPITAL = 4000.0  # 초기 자산 $4000 가정
-        self.GATE_INITIAL_CAPITAL = 700.0     # 초기 자산 $700 가정
+        self.GATE_INITIAL_CAPITAL = 700.0     # 기본값, 실제는 dnw에서 가져옴
     
     def set_gateio_client(self, gateio_client):
         """Gate.io 클라이언트 설정"""
@@ -201,9 +201,12 @@ class ProfitReportGenerator(BaseReportGenerator):
             # Gate 손익 데이터 조회 (개선된 메서드 사용)
             gate_profit_data = await self.gateio_client.get_profit_history_since_may()
             
-            # 실제 수익 사용 (계정 history의 PnL 기반)
+            # 실제 초기 자본 (dnw 기반)
+            actual_initial = gate_profit_data.get('initial_capital', self.GATE_INITIAL_CAPITAL)
+            
+            # 누적 수익 사용
             cumulative_profit = gate_profit_data.get('total', 0)
-            cumulative_roi = (cumulative_profit / self.GATE_INITIAL_CAPITAL * 100) if self.GATE_INITIAL_CAPITAL > 0 else 0
+            cumulative_roi = (cumulative_profit / actual_initial * 100) if actual_initial > 0 else 0
             
             # Gate 7일 손익
             weekly_profit = gate_profit_data.get('weekly', {'total': 0, 'average': 0})
@@ -213,9 +216,9 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             # 실제 수익 (현재 잔고 - 초기 자본)
             actual_profit = gate_profit_data.get('actual_profit', 0)
-            actual_initial = gate_profit_data.get('initial_capital', self.GATE_INITIAL_CAPITAL)
             
             self.logger.info(f"Gate 손익 데이터: 누적={cumulative_profit:.2f}, 7일={weekly_profit['total']:.2f}, 오늘={today_pnl:.2f}")
+            self.logger.info(f"Gate 초기 자본: ${actual_initial:.2f}")
             
             return {
                 'exchange': 'Gate',
@@ -622,7 +625,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                     {"role": "system", "content": "당신은 트레이더의 현재 상황에 맞는 심리적 조언을 제공하는 전문가입니다. 인사말이나 격려보다는 구체적인 상황 분석과 행동 지침을 제공하세요. 레버리지 관련 언급은 피하세요."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=300,  # 충분한 토큰 할당
+                max_tokens=350,  # 더 충분한 토큰 할당
                 temperature=0.8
             )
             
