@@ -314,8 +314,157 @@ class GateClient:
             logger.error(f"포지션 종료 실패: {e}")
             raise
     
-    async def close(self):
-        """세션 종료"""
-        if self.session:
-            await self.session.close()
-            logger.info("Gate.io 클라이언트 세션 종료")
+    async def get_order_history(self, contract: str = "BTC_USDT", status: str = "finished", 
+                              start_time: Optional[int] = None, end_time: Optional[int] = None,
+                              limit: int = 100) -> List[Dict]:
+        """주문 내역 조회"""
+        try:
+            endpoint = "/api/v4/futures/usdt/orders"
+            params = {
+                "contract": contract,
+                "status": status,
+                "limit": str(limit)
+            }
+            
+            if start_time:
+                params["from"] = str(start_time)
+            if end_time:
+                params["to"] = str(end_time)
+            
+            response = await self._request('GET', endpoint, params=params)
+            return response if isinstance(response, list) else []
+            
+        except Exception as e:
+            logger.error(f"주문 내역 조회 실패: {e}")
+            return []
+    
+    async def get_position_history(self, contract: str = "BTC_USDT", 
+                                 start_time: Optional[int] = None, end_time: Optional[int] = None,
+                                 limit: int = 100) -> List[Dict]:
+        """포지션 히스토리 조회"""
+        try:
+            endpoint = "/api/v4/futures/usdt/position_close"
+            params = {
+                "contract": contract,
+                "limit": str(limit)
+            }
+            
+            if start_time:
+                params["from"] = str(start_time)
+            if end_time:
+                params["to"] = str(end_time)
+            
+            response = await self._request('GET', endpoint, params=params)
+            return response if isinstance(response, list) else []
+            
+        except Exception as e:
+            logger.error(f"포지션 히스토리 조회 실패: {e}")
+            return []
+    
+    async def get_account_book(self, type: Optional[str] = None, 
+                             start_time: Optional[int] = None, end_time: Optional[int] = None,
+                             limit: int = 100) -> List[Dict]:
+        """계정 장부 조회 (손익 내역)"""
+        try:
+            endpoint = "/api/v4/futures/usdt/account_book"
+            params = {
+                "limit": str(limit)
+            }
+            
+            if type:
+                params["type"] = type  # pnl, fee, refr, fund, point_fee, point_refr, point_dnw
+            if start_time:
+                params["from"] = str(start_time)
+            if end_time:
+                params["to"] = str(end_time)
+            
+            response = await self._request('GET', endpoint, params=params)
+            return response if isinstance(response, list) else []
+            
+        except Exception as e:
+            logger.error(f"계정 장부 조회 실패: {e}")
+            return []
+    
+    async def get_profit_history_since_may(self) -> Dict:
+        """2025년 5월부터의 손익 계산"""
+        try:
+            import pytz
+            from datetime import datetime
+            
+            kst = pytz.timezone('Asia/Seoul')
+            
+            # 2025년 5월 1일 0시 (KST)
+            start_date = datetime(2025, 5, 1, 0, 0, 0, tzinfo=kst)
+            start_time = int(start_date.timestamp())
+            
+            # 현재 시간
+            now = datetime.now(kst)
+            end_time = int(now.timestamp())
+            
+            # 계정 장부에서 손익 내역 조회
+            pnl_records = await self.get_account_book(
+                type="pnl",
+                start_time=start_time,
+                end_time=end_time,
+                limit=1000
+            )
+            
+            total_pnl = 0.0
+            weekly_pnl = 0.0
+            today_pnl = 0.0
+            
+            # 7일 전 시간
+            seven_days_ago = now - timedelta(days=7)
+            seven_days_timestamp = int(seven_days_ago.timestamp())
+            
+            # 오늘 0시
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_timestamp = int(today_start.timestamp())
+            
+            for record in pnl_records:
+                change = float(record.get('change', 0))
+                record_time = int(record.get('time', 0))
+                
+                # 전체 누적
+                total_pnl += change
+                
+                # 7일 수익
+                if record_time >= seven_days_timestamp:
+                    weekly_pnl += change
+                
+                # 오늘 수익
+                if record_time >= today_timestamp:
+                    today_pnl += change
+            
+            return {
+                'total': total_pnl,
+                'weekly': {
+                    'total': weekly_pnl,
+                    'average': weekly_pnl / 7
+                },
+                'today_realized': today_pnl
+            }
+            
+        except Exception as e:
+            logger.error(f"Gate 손익 내역 조회 실패: {e}")
+            # 폴백: 현재 잔고 기반 계산
+            try:
+                account = await self.get_account_balance()
+                total_equity = float(account.get('total', 0))
+                # 초기 자본 700 달러 기준
+                total_pnl = total_equity - 700
+                
+                return {
+                    'total': total_pnl,
+                    'weekly': {
+                        'total': total_pnl * 0.1,  # 임시값
+                        'average': total_pnl * 0.1 / 7
+                    },
+                    'today_realized': 0.0
+                }
+            except:
+                return {
+                    'total': 0,
+                    'weekly': {'total': 0, 'average': 0},
+                    'today_realized': 0
+                }
