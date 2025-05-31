@@ -23,11 +23,14 @@ class MirrorTradingSystem:
         self.check_interval = config.MIRROR_CHECK_INTERVAL  # 초
         self.kst = pytz.timezone('Asia/Seoul')
         
-        # 포지션 추적 (신규 진입만 미러링하기 위함)
+        # 포지션 추적
         self.tracked_positions = {}  # {symbol: {'side': 'long/short', 'entry_time': datetime, 'margin_ratio': float}}
         self.initial_scan_done = False  # 첫 스캔 완료 플래그
         
-        # 초기 포지션 스냅샷 (시스템 시작 시점의 포지션만 제외)
+        # 초기 포지션 미러링 옵션 (True로 변경하면 초기 포지션도 미러링)
+        self.mirror_initial_positions = True  # 이 값을 True로 변경
+        
+        # 초기 포지션 스냅샷
         self.initial_positions = set()  # 초기 포지션의 고유 ID 저장
         
         # 주문 추적 (TP/SL 수정 감지용)
@@ -56,6 +59,7 @@ class MirrorTradingSystem:
         }
         
         self.logger.info(f"🔄 미러 트레이딩 시스템 초기화 (체크 간격: {self.check_interval}초)")
+        self.logger.info(f"🔄 초기 포지션 미러링: {'활성화' if self.mirror_initial_positions else '비활성화'}")
     
     async def start_monitoring(self):
         """미러링 모니터링 시작"""
@@ -163,7 +167,7 @@ class MirrorTradingSystem:
         self.logger.info("🛑 미러 트레이딩 모니터링 중지")
     
     async def _initial_position_scan(self):
-        """초기 포지션 스캔 - 기존 포지션의 고유 ID만 저장"""
+        """초기 포지션 스캔"""
         try:
             self.logger.info("📋 초기 포지션 스캔 시작...")
             
@@ -180,13 +184,14 @@ class MirrorTradingSystem:
                     position_id = f"{symbol}_{side}_{cTime}"
                     self.initial_positions.add(position_id)
                     
-                    # 추적은 하지만 미러링은 하지 않을 것임을 표시
+                    # 추적은 하지만 미러링 여부는 설정에 따름
                     self.tracked_positions[symbol] = {
                         'side': side,
                         'entry_time': datetime.now(),
                         'margin_ratio': 0,
                         'position_id': position_id,
-                        'cTime': cTime
+                        'cTime': cTime,
+                        'is_initial': True  # 초기 포지션 표시
                     }
                     
                     # 기존 TP/SL 추적
@@ -202,12 +207,37 @@ class MirrorTradingSystem:
                         }
                     
                     self.logger.info(f"📌 초기 포지션 발견: {symbol} {side} (ID: {position_id})")
+                    
+                    # 초기 포지션도 미러링하는 경우
+                    if self.mirror_initial_positions:
+                        self.logger.info(f"🔄 초기 포지션 미러링 시작: {symbol} {side}")
+                        # 계정 정보 조회
+                        bitget_account = await self.bitget_client.get_account_info()
+                        bitget_total_equity = float(bitget_account.get('accountEquity', 0))
+                        
+                        gateio_account = await self.gateio_client.get_futures_account()
+                        gateio_total_equity = float(gateio_account.get('total', 0))
+                        
+                        # 마진 비율 계산
+                        margin = float(pos.get('marginSize', 0))
+                        margin_ratio = margin / bitget_total_equity if bitget_total_equity > 0 else 0
+                        
+                        # 미러링 실행
+                        success = await self._mirror_new_position_with_retry(pos, margin_ratio, gateio_total_equity)
+                        
+                        if success:
+                            self.daily_stats['mirror_entries'] += 1
+                            self.daily_stats['successful_mirrors'] += 1
+                        else:
+                            self.daily_stats['failed_mirrors'] += 1
             
             self.initial_scan_done = True
             self.logger.info(f"✅ 초기 포지션 스캔 완료 - {len(self.initial_positions)}개 포지션 발견")
             
         except Exception as e:
             self.logger.error(f"초기 포지션 스캔 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
     
     async def _check_and_mirror(self):
         """포지션 체크 및 미러링"""
@@ -246,6 +276,8 @@ class MirrorTradingSystem:
             
         except Exception as e:
             self.logger.error(f"미러링 체크 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
     
     async def _process_position(self, bitget_pos: Dict, bitget_equity: float, gateio_equity: float):
         """개별 포지션 처리"""
@@ -271,22 +303,19 @@ class MirrorTradingSystem:
                     'entry_time': datetime.now(),
                     'margin_ratio': margin_ratio,
                     'position_id': position_id,
-                    'cTime': cTime
+                    'cTime': cTime,
+                    'is_initial': False  # 신규 포지션
                 }
                 
-                # 초기 스캔에서 발견된 포지션이 아닌 경우만 미러링
-                if position_id not in self.initial_positions:
-                    self.logger.info(f"🔄 신규 포지션 미러링 시작: {symbol} {side}")
-                    # 게이트에 미러링
-                    success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
-                    
-                    if success:
-                        self.daily_stats['mirror_entries'] += 1
-                        self.daily_stats['successful_mirrors'] += 1
-                    else:
-                        self.daily_stats['failed_mirrors'] += 1
+                # 미러링 실행
+                self.logger.info(f"🔄 신규 포지션 미러링 시작: {symbol} {side}")
+                success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
+                
+                if success:
+                    self.daily_stats['mirror_entries'] += 1
+                    self.daily_stats['successful_mirrors'] += 1
                 else:
-                    self.logger.info(f"⏭️ 초기 포지션이므로 미러링 스킵: {symbol} {side}")
+                    self.daily_stats['failed_mirrors'] += 1
                 
             else:
                 # 기존 포지션 업데이트 체크
@@ -302,18 +331,18 @@ class MirrorTradingSystem:
                         'entry_time': datetime.now(),
                         'margin_ratio': margin_ratio,
                         'position_id': position_id,
-                        'cTime': cTime
+                        'cTime': cTime,
+                        'is_initial': False
                     }
                     
-                    # 초기 포지션이 아니면 미러링
-                    if position_id not in self.initial_positions:
-                        success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
-                        
-                        if success:
-                            self.daily_stats['mirror_entries'] += 1
-                            self.daily_stats['successful_mirrors'] += 1
-                        else:
-                            self.daily_stats['failed_mirrors'] += 1
+                    # 미러링
+                    success = await self._mirror_new_position_with_retry(bitget_pos, margin_ratio, gateio_equity)
+                    
+                    if success:
+                        self.daily_stats['mirror_entries'] += 1
+                        self.daily_stats['successful_mirrors'] += 1
+                    else:
+                        self.daily_stats['failed_mirrors'] += 1
                 else:
                     # 부분 청산 체크
                     current_margin_ratio = margin / bitget_equity if bitget_equity > 0 else 0
@@ -324,6 +353,8 @@ class MirrorTradingSystem:
             
         except Exception as e:
             self.logger.error(f"포지션 처리 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
     
     async def _mirror_new_position_with_retry(self, bitget_pos: Dict, margin_ratio: float, gateio_equity: float) -> bool:
         """신규 포지션 미러링 (재시도 포함)"""
@@ -337,6 +368,8 @@ class MirrorTradingSystem:
                 
             except Exception as e:
                 self.logger.error(f"미러 주문 실패 (시도 {attempt + 1}/{self.max_retries}): {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
                 
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
@@ -390,11 +423,21 @@ class MirrorTradingSystem:
                 self.logger.warning(f"⚠️ 계약 크기가 너무 작음: {contract_size}")
                 return
             
+            # 현재가로 주문 (시장가 효과)
+            current_ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
+            current_price = float(current_ticker.get('last', entry_price))
+            
+            # 슬리피지 고려한 가격 설정 (시장가 효과를 위해)
+            if side in ['long', 'buy']:
+                order_price = current_price * 1.001  # 0.1% 위
+            else:
+                order_price = current_price * 0.999  # 0.1% 아래
+            
             # 게이트 주문 실행
             order_params = {
                 'contract': 'BTC_USDT',
                 'size': contract_size if side in ['long', 'buy'] else -contract_size,
-                'price': str(entry_price),
+                'price': str(order_price),
                 'tif': 'ioc',  # Immediate or Cancel
                 'reduce_only': False,
                 'text': f'mirror_from_bitget_{datetime.now().strftime("%Y%m%d%H%M%S")}'
@@ -403,7 +446,8 @@ class MirrorTradingSystem:
             self.logger.info(f"📤 게이트 미러 주문 시작:")
             self.logger.info(f"   - 방향: {side}")
             self.logger.info(f"   - 계약수: {contract_size}")
-            self.logger.info(f"   - 가격: ${entry_price}")
+            self.logger.info(f"   - 주문가격: ${order_price:.2f}")
+            self.logger.info(f"   - 현재가: ${current_price:.2f}")
             self.logger.info(f"   - 마진: ${gateio_margin:.2f}")
             self.logger.info(f"   - 레버리지: {leverage}x")
             
@@ -420,6 +464,7 @@ class MirrorTradingSystem:
                 'side': side,
                 'leverage': leverage,
                 'entry_price': entry_price,
+                'order_price': order_price,
                 'contract_size': contract_size,
                 'order_result': order_result
             })
@@ -433,16 +478,35 @@ class MirrorTradingSystem:
                     f"거래소: Gate.io\n"
                     f"방향: {side.upper()}\n"
                     f"계약수: {contract_size}\n"
-                    f"진입가: ${entry_price:,.2f}\n"
+                    f"주문가: ${order_price:,.2f}\n"
                     f"마진: ${gateio_margin:.2f}\n"
                     f"레버리지: {leverage}x"
                 )
             
-            # TP/SL 설정 미러링
-            await self._mirror_tp_sl(bitget_pos, contract_size, side)
+            # TP/SL 설정 미러링은 주문 체결 확인 후 진행
+            await asyncio.sleep(2)  # 체결 대기
+            
+            # 체결된 포지션 확인
+            gateio_positions = await self.gateio_client.get_positions('usdt')
+            position_found = False
+            
+            for pos in gateio_positions:
+                if pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0:
+                    position_found = True
+                    actual_size = abs(float(pos.get('size', 0)))
+                    self.logger.info(f"✅ 포지션 체결 확인: {actual_size}계약")
+                    
+                    # TP/SL 설정 미러링
+                    await self._mirror_tp_sl(bitget_pos, int(actual_size), side)
+                    break
+            
+            if not position_found:
+                self.logger.warning("⚠️ 주문 후 포지션을 찾을 수 없음")
             
         except Exception as e:
             self.logger.error(f"미러 주문 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             self._log_order({
                 'action': 'mirror_error',
                 'error': str(e),
@@ -471,9 +535,12 @@ class MirrorTradingSystem:
                     'text': 'tp_order'
                 }
                 
-                tp_result = await self.gateio_client.create_futures_order(**tp_order_params)
-                tp_order_id = tp_result.get('id')
-                self.logger.info(f"✅ TP 설정: ${tp_price} (ID: {tp_order_id})")
+                try:
+                    tp_result = await self.gateio_client.create_futures_order(**tp_order_params)
+                    tp_order_id = tp_result.get('id')
+                    self.logger.info(f"✅ TP 설정: ${tp_price} (ID: {tp_order_id})")
+                except Exception as e:
+                    self.logger.error(f"TP 설정 실패: {e}")
             
             # SL 설정 (지정가로만)
             if sl_price > 0:
@@ -486,9 +553,12 @@ class MirrorTradingSystem:
                     'text': 'sl_order'
                 }
                 
-                sl_result = await self.gateio_client.create_futures_order(**sl_order_params)
-                sl_order_id = sl_result.get('id')
-                self.logger.info(f"✅ SL 설정: ${sl_price} (ID: {sl_order_id})")
+                try:
+                    sl_result = await self.gateio_client.create_futures_order(**sl_order_params)
+                    sl_order_id = sl_result.get('id')
+                    self.logger.info(f"✅ SL 설정: ${sl_price} (ID: {sl_order_id})")
+                except Exception as e:
+                    self.logger.error(f"SL 설정 실패: {e}")
             
             # 주문 추적
             self.tracked_orders[symbol] = {
@@ -500,6 +570,8 @@ class MirrorTradingSystem:
             
         except Exception as e:
             self.logger.error(f"TP/SL 설정 실패: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
     
     async def _check_order_modifications(self, symbol: str, bitget_pos: Dict):
         """주문 수정 체크"""
@@ -601,11 +673,21 @@ class MirrorTradingSystem:
                         close_size = int(abs(current_size) * close_ratio)
                         
                         if close_size > 0:
+                            # 현재가 조회
+                            ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
+                            current_price = float(ticker.get('last', 0))
+                            
+                            # 슬리피지 고려한 가격
+                            if current_size > 0:  # 롱 포지션 청산
+                                close_price = current_price * 0.999
+                            else:  # 숏 포지션 청산
+                                close_price = current_price * 1.001
+                            
                             # 부분 청산 주문
                             close_order_params = {
                                 'contract': 'BTC_USDT',
                                 'size': -close_size if current_size > 0 else close_size,
-                                'price': '0',  # 시장가
+                                'price': str(close_price),
                                 'tif': 'ioc',
                                 'reduce_only': True,
                                 'text': 'partial_close'
@@ -641,11 +723,21 @@ class MirrorTradingSystem:
                 if pos.get('contract') == 'BTC_USDT' and float(pos.get('size', 0)) != 0:
                     current_size = float(pos.get('size', 0))
                     
+                    # 현재가 조회
+                    ticker = await self.gateio_client.get_ticker('usdt', 'BTC_USDT')
+                    current_price = float(ticker.get('last', 0))
+                    
+                    # 긴급 청산을 위한 가격 설정 (더 큰 슬리피지)
+                    if current_size > 0:  # 롱 포지션
+                        close_price = current_price * 0.995  # 0.5% 슬리피지
+                    else:  # 숏 포지션
+                        close_price = current_price * 1.005
+                    
                     # 전량 청산 주문
                     close_order_params = {
                         'contract': 'BTC_USDT',
                         'size': -current_size,
-                        'price': '0',  # 시장가
+                        'price': str(close_price),
                         'tif': 'ioc',
                         'reduce_only': True,
                         'text': 'market_stop' if is_market_stop else 'full_close'
@@ -774,6 +866,10 @@ class MirrorTradingSystem:
                 if not last_alert or (now - last_alert) > self.alert_cooldown:
                     self.logger.warning(f"⚠️ 포지션 불일치 감지!")
                     
+                    # 상세 정보 로깅
+                    self.logger.info(f"Bitget 포지션: {bitget_positions}")
+                    self.logger.info(f"Gate.io 포지션: {gateio_positions}")
+                    
                     if self.telegram_bot:
                         await self.telegram_bot.send_message(
                             f"⚠️ 미러링 포지션 불일치\n\n"
@@ -861,5 +957,6 @@ class MirrorTradingSystem:
             'last_orders': self.order_logs[-10:],  # 최근 10개
             'daily_stats': self.daily_stats,
             'retry_counts': self.retry_count,
-            'initial_positions_count': len(self.initial_positions)
+            'initial_positions_count': len(self.initial_positions),
+            'mirror_initial_positions': self.mirror_initial_positions
         }
