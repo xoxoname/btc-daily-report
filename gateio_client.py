@@ -387,7 +387,7 @@ class GateClient:
             return []
     
     async def get_profit_history_since_may(self) -> Dict:
-        """2025년 5월부터의 손익 계산 (더 정확한 방법)"""
+        """2025년 5월부터의 손익 계산"""
         try:
             import pytz
             from datetime import datetime
@@ -401,29 +401,45 @@ class GateClient:
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             today_timestamp = int(today_start.timestamp())
             
-            # 7일 전
-            seven_days_ago = now - timedelta(days=7)
+            # 7일 전 0시 (KST)
+            seven_days_ago = today_start - timedelta(days=6)
             seven_days_timestamp = int(seven_days_ago.timestamp())
             
-            # 계정 정보에서 누적 손익 가져오기
+            # 2025년 5월 1일 0시 (KST)
+            may_start = datetime(2025, 5, 1, 0, 0, 0, tzinfo=kst)
+            may_timestamp = int(may_start.timestamp())
+            
+            # 계정 정보에서 history 필드로 전체 누적 계산
             account = await self.get_account_balance()
-            
-            # Gate.io history 필드에서 누적 손익 정보 추출
             history = account.get('history', {})
-            total_pnl = float(history.get('pnl', 0))  # 실현 손익
-            total_fee = abs(float(history.get('fee', 0)))  # 수수료
-            total_fund = float(history.get('fund', 0))  # 펀딩비
             
-            # 실제 순수익 = 실현손익 - 수수료 - 펀딩비
-            net_profit = total_pnl - total_fee + total_fund
+            # Gate.io history 필드 설명:
+            # - dnw: 입출금 (음수가 입금)
+            # - pnl: 실현 손익
+            # - fee: 거래 수수료 (음수)
+            # - fund: 펀딩비 (음수면 지불, 양수면 수령)
             
-            logger.info(f"Gate.io 누적 통계 - PnL: ${total_pnl:.2f}, Fee: ${total_fee:.2f}, Fund: ${total_fund:.2f}, Net: ${net_profit:.2f}")
+            # 입출금 확인 (음수가 입금이므로 절대값)
+            dnw = float(history.get('dnw', 0))
+            initial_capital = abs(dnw) if dnw != 0 else 700.0  # 입금액이 있으면 그것을 초기 자본으로
             
-            # 7일간 손익 계산
+            # 전체 누적 손익 (history에서)
+            total_pnl = float(history.get('pnl', 0))
+            total_fee = abs(float(history.get('fee', 0)))
+            total_fund = float(history.get('fund', 0))
+            
+            # 순수익 = 실현손익 - 수수료 + 펀딩비
+            cumulative_net_profit = total_pnl - total_fee + total_fund
+            
+            logger.info(f"Gate.io 전체 누적 - PnL: ${total_pnl:.2f}, Fee: ${total_fee:.2f}, Fund: ${total_fund:.2f}, Net: ${cumulative_net_profit:.2f}")
+            logger.info(f"Gate.io 초기 자본: ${initial_capital:.2f} (dnw: {dnw})")
+            
+            # 7일간 손익 계산 (account_book에서)
             weekly_pnl = 0.0
             today_pnl = 0.0
+            weekly_fee = 0.0
             
-            # 최근 7일 account_book 조회
+            # PnL 조회
             pnl_records = await self.get_account_book(
                 type="pnl",
                 start_time=seven_days_timestamp,
@@ -440,51 +456,40 @@ class GateClient:
                 if record_time >= today_timestamp:
                     today_pnl += change
             
-            # 7일간 수수료 조회
+            # 수수료 조회
             fee_records = await self.get_account_book(
                 type="fee",
                 start_time=seven_days_timestamp,
                 limit=1000
             )
             
-            weekly_fee = 0.0
             for record in fee_records:
                 weekly_fee += abs(float(record.get('change', 0)))
             
-            # 7일간 순수익
+            # 7일 순수익
             weekly_net = weekly_pnl - weekly_fee
             
             logger.info(f"Gate.io 7일 손익 - PnL: ${weekly_pnl:.2f}, Fee: ${weekly_fee:.2f}, Net: ${weekly_net:.2f}")
             logger.info(f"Gate.io 오늘 실현 손익: ${today_pnl:.2f}")
             
-            # 현재 잔고와 초기 자본을 이용한 실제 수익 계산
+            # 현재 잔고
             current_balance = float(account.get('total', 0))
-            initial_capital = 700.0  # 초기 자본
             
-            # 입출금 내역 고려
-            dnw = abs(float(history.get('dnw', 0)))  # 입출금 (음수면 입금)
+            # 실제 수익 = 현재 잔고 - 초기 자본
+            actual_profit = current_balance - initial_capital
             
-            # 실제 초기 자본 (입금액 기준)
-            if dnw > 0:
-                actual_initial = dnw
-            else:
-                actual_initial = initial_capital
-            
-            # 현재 잔고 기반 실제 수익
-            actual_profit = current_balance - actual_initial
-            
-            logger.info(f"Gate.io 실제 수익 계산 - 현재잔고: ${current_balance:.2f}, 초기자본: ${actual_initial:.2f}, 실제수익: ${actual_profit:.2f}")
+            logger.info(f"Gate.io 실제 수익 - 현재잔고: ${current_balance:.2f}, 초기자본: ${initial_capital:.2f}, 실제수익: ${actual_profit:.2f}")
             
             return {
-                'total': net_profit,  # 누적 순수익 (실현손익 - 수수료 - 펀딩비)
+                'total': cumulative_net_profit,  # history 기반 누적 순수익
                 'weekly': {
                     'total': weekly_net,
                     'average': weekly_net / 7 if weekly_net else 0
                 },
                 'today_realized': today_pnl,
                 'current_balance': current_balance,
-                'initial_capital': actual_initial,
-                'actual_profit': actual_profit
+                'initial_capital': initial_capital,
+                'actual_profit': actual_profit  # 실제 수익 (현재잔고 - 초기자본)
             }
             
         except Exception as e:
