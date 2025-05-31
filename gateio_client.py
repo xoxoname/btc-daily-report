@@ -409,37 +409,73 @@ class GateClient:
             may_start = datetime(2025, 5, 1, 0, 0, 0, tzinfo=kst)
             may_timestamp = int(may_start.timestamp())
             
-            # 계정 정보에서 history 필드로 전체 누적 계산
+            # 계정 정보
             account = await self.get_account_balance()
-            history = account.get('history', {})
+            current_balance = float(account.get('total', 0))
             
-            # Gate.io history 필드 설명:
-            # - dnw: 입출금 (음수가 입금)
-            # - pnl: 실현 손익
-            # - fee: 거래 수수료 (음수)
-            # - fund: 펀딩비 (음수면 지불, 양수면 수령)
+            # 초기 자본 설정 (2025년 5월 초 잔고 추정)
+            initial_capital = 700.0  # 기본값
             
-            # 입출금 확인 (음수가 입금이므로 절대값)
-            dnw = float(history.get('dnw', 0))
-            initial_capital = abs(dnw) if dnw != 0 else 700.0  # 입금액이 있으면 그것을 초기 자본으로
+            # 2025년 5월 1일부터 현재까지의 손익 계산
+            may_pnl = 0.0
+            may_fee = 0.0
+            may_fund = 0.0
             
-            # 전체 누적 손익 (history에서)
-            total_pnl = float(history.get('pnl', 0))
-            total_fee = abs(float(history.get('fee', 0)))
-            total_fund = float(history.get('fund', 0))
+            # PnL 조회 (2025년 5월 1일부터)
+            try:
+                pnl_records = await self.get_account_book(
+                    type="pnl",
+                    start_time=may_timestamp,
+                    limit=1000
+                )
+                
+                for record in pnl_records:
+                    change = float(record.get('change', 0))
+                    may_pnl += change
+                    
+                logger.info(f"Gate.io 2025년 5월부터 PnL: ${may_pnl:.2f}")
+            except Exception as e:
+                logger.error(f"PnL 조회 실패: {e}")
             
-            # 순수익 = 실현손익 - 수수료 + 펀딩비
-            cumulative_net_profit = total_pnl - total_fee + total_fund
+            # 수수료 조회 (2025년 5월 1일부터)
+            try:
+                fee_records = await self.get_account_book(
+                    type="fee",
+                    start_time=may_timestamp,
+                    limit=1000
+                )
+                
+                for record in fee_records:
+                    may_fee += abs(float(record.get('change', 0)))
+                    
+                logger.info(f"Gate.io 2025년 5월부터 수수료: ${may_fee:.2f}")
+            except Exception as e:
+                logger.error(f"수수료 조회 실패: {e}")
             
-            logger.info(f"Gate.io 전체 누적 - PnL: ${total_pnl:.2f}, Fee: ${total_fee:.2f}, Fund: ${total_fund:.2f}, Net: ${cumulative_net_profit:.2f}")
-            logger.info(f"Gate.io 초기 자본: ${initial_capital:.2f} (dnw: {dnw})")
+            # 펀딩비 조회 (2025년 5월 1일부터)
+            try:
+                fund_records = await self.get_account_book(
+                    type="fund",
+                    start_time=may_timestamp,
+                    limit=1000
+                )
+                
+                for record in fund_records:
+                    may_fund += float(record.get('change', 0))
+                    
+                logger.info(f"Gate.io 2025년 5월부터 펀딩비: ${may_fund:.2f}")
+            except Exception as e:
+                logger.error(f"펀딩비 조회 실패: {e}")
             
-            # 7일간 손익 계산 (account_book에서)
+            # 5월부터의 순수익 = 실현손익 - 수수료 + 펀딩비
+            cumulative_net_profit = may_pnl - may_fee + may_fund
+            
+            # 7일간 손익 계산
             weekly_pnl = 0.0
             today_pnl = 0.0
             weekly_fee = 0.0
             
-            # PnL 조회
+            # PnL 조회 (7일)
             pnl_records = await self.get_account_book(
                 type="pnl",
                 start_time=seven_days_timestamp,
@@ -456,7 +492,7 @@ class GateClient:
                 if record_time >= today_timestamp:
                     today_pnl += change
             
-            # 수수료 조회
+            # 수수료 조회 (7일)
             fee_records = await self.get_account_book(
                 type="fee",
                 start_time=seven_days_timestamp,
@@ -472,16 +508,11 @@ class GateClient:
             logger.info(f"Gate.io 7일 손익 - PnL: ${weekly_pnl:.2f}, Fee: ${weekly_fee:.2f}, Net: ${weekly_net:.2f}")
             logger.info(f"Gate.io 오늘 실현 손익: ${today_pnl:.2f}")
             
-            # 현재 잔고
-            current_balance = float(account.get('total', 0))
-            
             # 실제 수익 = 현재 잔고 - 초기 자본
             actual_profit = current_balance - initial_capital
             
-            logger.info(f"Gate.io 실제 수익 - 현재잔고: ${current_balance:.2f}, 초기자본: ${initial_capital:.2f}, 실제수익: ${actual_profit:.2f}")
-            
             return {
-                'total': cumulative_net_profit,  # history 기반 누적 순수익
+                'total': cumulative_net_profit,  # 2025년 5월부터의 순수익
                 'weekly': {
                     'total': weekly_net,
                     'average': weekly_net / 7 if weekly_net else 0
