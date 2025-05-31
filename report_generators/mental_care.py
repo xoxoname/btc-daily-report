@@ -57,21 +57,31 @@ class MentalCareGenerator:
 - 구체적인 수익 금액과 자산을 언급
 - 따뜻하고 격려하는 톤
 - 2-3문장, 한국어
-- 이모티콘 1개 포함
+- 반드시 이모티콘 1개 포함 (마지막에)
 - "오늘 ~을 벌었군요!" 같은 자연스러운 표현 사용
+- 친근하면서도 전문적인 조언
 """
         
         response = await self.openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "당신은 따뜻하고 현실적인 트레이딩 멘토입니다."},
+                {"role": "system", "content": "당신은 따뜻하고 현실적인 트레이딩 멘토입니다. 친근하면서도 전문적인 조언을 제공하세요."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=300,
+            max_tokens=350,
             temperature=0.8
         )
         
-        return f'"{response.choices[0].message.content.strip()}"'
+        message = response.choices[0].message.content.strip()
+        
+        # 이모티콘 확인 및 추가
+        emoji_list = ['🎯', '💪', '🚀', '✨', '🌟', '😊', '👍', '🔥', '💎', '🏆']
+        has_emoji = any(emoji in message for emoji in emoji_list)
+        
+        if not has_emoji:
+            message += f" {random.choice(emoji_list)}"
+        
+        return f'"{message}"'
     
     def _generate_pattern_mental_care(self, total_equity: float, today_pnl: float,
                                     unrealized_pnl: float, weekly_total: float,
