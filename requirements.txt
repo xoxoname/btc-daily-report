@@ -25,6 +25,9 @@ asyncio-throttle==1.0.2
 scipy==1.11.4
 ta==0.10.2  # Technical Analysis library
 
+# System monitoring
+psutil==5.9.6
+
 # Logging & monitoring
 coloredlogs==15.0.1
 python-json-logger==2.0.7
