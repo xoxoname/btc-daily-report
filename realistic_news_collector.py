@@ -122,7 +122,6 @@ class RealisticNewsCollector:
             {'url': 'https://rss.cnn.com/rss/edition.rss', 'source': 'CNN World', 'weight': 8, 'category': 'news'},
             {'url': 'http://feeds.bbci.co.uk/news/business/rss.xml', 'source': 'BBC Business', 'weight': 8, 'category': 'finance'},
             {'url': 'https://feeds.npr.org/1001/rss.xml', 'source': 'NPR News', 'weight': 7, 'category': 'news'},
-            {'url': 'https://feeds.washingtonpost.com/rss/business', 'source': 'Washington Post Business', 'weight': 7, 'category': 'finance'},
             
             # 테크/비즈니스
             {'url': 'https://techcrunch.com/feed/', 'source': 'TechCrunch', 'weight': 7, 'category': 'tech'},
