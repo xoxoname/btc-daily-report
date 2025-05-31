@@ -199,11 +199,11 @@ class BitcoinPredictionSystem:
             )
             self.logger.info(f"📅 정기 리포트 스케줄 등록: {hour:02d}:{minute:02d}")
         
-        # 예외 감지 (5분마다)
+        # 예외 감지 (3분마다로 단축)
         self.scheduler.add_job(
             func=self.check_exceptions,
             trigger="interval",
-            minutes=5,
+            minutes=3,
             timezone=timezone,
             id="exception_check",
             replace_existing=True
@@ -565,7 +565,7 @@ class BitcoinPredictionSystem:
             else:
                 additional_info += f"내일 09:00\n"
             
-            additional_info += f"• 예외 감지: 5분마다 자동 실행\n"
+            additional_info += f"• 예외 감지: 3분마다 자동 실행\n"
             additional_info += f"• 시스템 상태 체크: 30분마다"
             
             full_report = schedule_report + additional_info
@@ -578,7 +578,7 @@ class BitcoinPredictionSystem:
             await update.message.reply_text("❌ 일정 조회 중 오류가 발생했습니다.", parse_mode='HTML')
     
     async def check_exceptions(self):
-        """예외 상황 감지"""
+        """예외 상황 감지 - 더 이해하기 쉬운 설명 추가"""
         try:
             self.logger.debug("예외 상황 체크 시작")
             
@@ -586,7 +586,12 @@ class BitcoinPredictionSystem:
             anomalies = await self.exception_detector.detect_all_anomalies()
             
             for anomaly in anomalies:
-                self.logger.warning(f"이상 징후 감지: {anomaly}")
+                # 이벤트 타입별 한글 설명 추가
+                event_description = self._get_event_description(anomaly)
+                if event_description:
+                    anomaly['description_ko'] = event_description
+                
+                self.logger.warning(f"이상 징후 감지: {event_description or anomaly}")
                 await self.exception_detector.send_alert(anomaly)
             
             # 데이터 수집기의 이벤트 확인
@@ -599,6 +604,12 @@ class BitcoinPredictionSystem:
                     severity = event.get('severity')
                 
                 if severity in ['high', 'critical']:
+                    # 이벤트 설명 추가
+                    if isinstance(event, dict):
+                        event_description = self._get_event_description(event)
+                        if event_description:
+                            event['description_ko'] = event_description
+                    
                     critical_events.append(event)
             
             # 중요 이벤트 처리
@@ -612,7 +623,7 @@ class BitcoinPredictionSystem:
                     report = await self.report_manager.generate_exception_report(event_data)
                     await self.telegram_bot.send_message(report, parse_mode='HTML')
                     
-                    self.logger.info(f"긴급 알림 전송: {event_data.get('title', 'Unknown')}")
+                    self.logger.info(f"긴급 알림 전송: {event_data.get('title', event_data.get('description_ko', 'Unknown'))}")
                     
                 except Exception as e:
                     self.logger.error(f"예외 리포트 생성 실패: {e}")
@@ -627,6 +638,44 @@ class BitcoinPredictionSystem:
         except Exception as e:
             self.logger.error(f"예외 감지 실패: {str(e)}")
             self.logger.debug(traceback.format_exc())
+    
+    def _get_event_description(self, event: Dict) -> str:
+        """이벤트를 한글로 이해하기 쉽게 설명"""
+        event_type = event.get('type', 'unknown')
+        
+        if event_type == 'volume_anomaly':
+            volume = event.get('volume_24h', 0)
+            ratio = event.get('ratio', 0)
+            return f"거래량이 평균보다 {ratio:.1f}배 증가했습니다. 현재 24시간 거래량: {volume:,.0f} BTC. 대규모 거래가 일어나고 있어 가격 변동이 예상됩니다."
+        
+        elif event_type == 'price_anomaly':
+            change = event.get('change_24h', 0) * 100
+            price = event.get('current_price', 0)
+            direction = "상승" if change > 0 else "하락"
+            return f"비트코인 가격이 급격히 {direction}했습니다. 24시간 변동률: {change:+.1f}%, 현재가: ${price:,.0f}"
+        
+        elif event_type == 'funding_rate_anomaly':
+            rate = event.get('funding_rate', 0)
+            annual = event.get('annual_rate', 0) * 100
+            position = "롱(매수)" if rate > 0 else "숏(매도)"
+            return f"펀딩비가 비정상적으로 {'높습니다' if rate > 0 else '낮습니다'}. 현재 {rate:.4f}% (연환산 {annual:+.1f}%). {position} 포지션이 과열 상태입니다."
+        
+        elif event_type == 'liquidation_alert':
+            amount = event.get('liquidation_amount', 0)
+            side = event.get('side', '')
+            return f"대량 청산 발생! {'롱' if side == 'long' else '숏'} 포지션 ${amount:,.0f} 청산. 추가 청산 가능성 주의."
+        
+        elif event_type == 'whale_alert':
+            amount = event.get('amount', 0)
+            from_addr = event.get('from', 'unknown')
+            to_addr = event.get('to', 'unknown')
+            return f"고래 움직임 포착! {amount:,.0f} BTC가 이동했습니다. 대규모 매수/매도 가능성."
+        
+        elif event_type == 'critical_news':
+            return event.get('description', '중요한 뉴스가 발생했습니다.')
+        
+        else:
+            return event.get('description', f"{event_type} 유형의 이상 징후가 감지되었습니다.")
     
     async def _check_mirror_health(self):
         """미러 트레이딩 건강 상태 체크"""
@@ -841,7 +890,7 @@ class BitcoinPredictionSystem:
             welcome_message += """
 <b>🔔 자동 기능:</b>
 - 정기 리포트: 09:00, 13:00, 18:00, 22:00
-- 예외 감지: 5분마다
+- 예외 감지: 3분마다
 - 시스템 체크: 30분마다
 - 일일 통계: 매일 자정
 
