@@ -1,20 +1,22 @@
 import asyncio
+import aiohttp
 import hmac
 import hashlib
 import time
 import json
 import logging
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
-from typing import Dict, List, Optional
-import aiohttp
 
 logger = logging.getLogger(__name__)
 
-class GateioClient:
+class GateClient:
     def __init__(self, config):
         self.config = config
-        self.session = None
+        self.api_key = config.GATE_API_KEY
+        self.api_secret = config.GATE_API_SECRET
         self.base_url = "https://api.gateio.ws"
+        self.session = None
         self._initialize_session()
         
     def _initialize_session(self):
@@ -28,153 +30,283 @@ class GateioClient:
         self._initialize_session()
         logger.info("Gate.io 클라이언트 초기화 완료")
     
-    def _generate_signature(self, method: str, url: str, query_string: str = "", 
-                          payload_string: str = "", timestamp: str = "") -> str:
-        """API 서명 생성"""
-        hashed_payload = hashlib.sha512(payload_string.encode('utf-8')).hexdigest()
-        s = f'{method}\n{url}\n{query_string}\n{hashed_payload}\n{timestamp}'
-        h = hmac.new(self.config.gateio_api_secret.encode('utf-8'), 
-                     s.encode('utf-8'), hashlib.sha512)
-        return h.hexdigest()
-    
-    def _get_headers(self, method: str, url: str, query_string: str = "", 
-                    payload_string: str = "") -> Dict[str, str]:
-        """API 헤더 생성"""
+    def _generate_signature(self, method: str, url: str, query_string: str = "", payload: str = "") -> Dict[str, str]:
+        """Gate.io API 서명 생성"""
         timestamp = str(int(time.time()))
-        signature = self._generate_signature(method, url, query_string, payload_string, timestamp)
+        
+        # 서명 메시지 생성
+        hashed_payload = hashlib.sha512(payload.encode('utf-8')).hexdigest()
+        s = f"{method}\n{url}\n{query_string}\n{hashed_payload}\n{timestamp}"
+        
+        # HMAC-SHA512 서명
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            s.encode('utf-8'),
+            hashlib.sha512
+        ).hexdigest()
         
         return {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'KEY': self.config.gateio_api_key,
+            'KEY': self.api_key,
             'Timestamp': timestamp,
-            'SIGN': signature
+            'SIGN': signature,
+            'Content-Type': 'application/json'
         }
     
-    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, 
-                      data: Optional[Dict] = None) -> Dict:
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None) -> Dict:
         """API 요청"""
         if not self.session:
             self._initialize_session()
         
         url = f"{self.base_url}{endpoint}"
-        
         query_string = ""
+        payload = ""
+        
         if params:
-            query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             url += f"?{query_string}"
         
-        payload_string = json.dumps(data) if data else ""
-        headers = self._get_headers(method, endpoint, query_string, payload_string)
+        if data:
+            payload = json.dumps(data)
+        
+        headers = self._generate_signature(method, endpoint, query_string, payload)
         
         try:
             logger.info(f"Gate.io API 요청: {method} {url}")
             
-            kwargs = {'headers': headers}
-            if method == 'GET' and params:
-                kwargs['params'] = params
-            elif data:
-                kwargs['data'] = payload_string
-            
-            async with self.session.request(method, url, **kwargs) as response:
+            async with self.session.request(method, url, headers=headers, data=payload) as response:
                 response_text = await response.text()
-                logger.info(f"Gate.io API 응답 상태: {response.status}")
-                
-                response_data = json.loads(response_text)
+                logger.debug(f"Gate.io 응답: {response_text[:500]}")
                 
                 if response.status != 200:
-                    logger.error(f"Gate.io API 요청 실패: {response.status} - {response_data}")
-                    raise Exception(f"API 요청 실패: {response_data}")
+                    logger.error(f"Gate.io API 오류: {response.status} - {response_text}")
+                    raise Exception(f"Gate.io API 오류: {response_text}")
                 
-                return response_data
+                return json.loads(response_text) if response_text else {}
                 
         except Exception as e:
             logger.error(f"Gate.io API 요청 중 오류: {e}")
             raise
     
-    async def get_account_info(self) -> Dict:
-        """계정 정보 조회"""
-        endpoint = "/api/v4/spot/accounts"
+    async def get_account_balance(self) -> Dict:
+        """계정 잔고 조회"""
         try:
+            endpoint = "/api/v4/futures/usdt/accounts"
             response = await self._request('GET', endpoint)
             return response
         except Exception as e:
-            logger.error(f"계정 정보 조회 실패: {e}")
+            logger.error(f"계정 잔고 조회 실패: {e}")
             raise
     
-    async def get_futures_account(self) -> Dict:
-        """선물 계정 정보 조회"""
-        endpoint = "/api/v4/futures/usdt/accounts"
-        try:
-            response = await self._request('GET', endpoint)
-            return response
-        except Exception as e:
-            logger.error(f"선물 계정 정보 조회 실패: {e}")
-            raise
-    
-    async def get_positions(self, settle: str = "usdt") -> List[Dict]:
+    async def get_positions(self, contract: str = "BTC_USDT") -> List[Dict]:
         """포지션 조회"""
-        endpoint = f"/api/v4/futures/{settle}/positions"
         try:
+            endpoint = f"/api/v4/futures/usdt/positions/{contract}"
             response = await self._request('GET', endpoint)
+            
+            # 단일 포지션이면 리스트로 변환
+            if isinstance(response, dict):
+                return [response] if response.get('size', 0) != 0 else []
             return response
+            
         except Exception as e:
             logger.error(f"포지션 조회 실패: {e}")
-            raise
+            return []
     
-    async def create_futures_order(self, settle: str = "usdt", **order_params) -> Dict:
-        """선물 주문 생성"""
-        endpoint = f"/api/v4/futures/{settle}/orders"
+    async def place_order(self, contract: str, size: int, price: Optional[float] = None, 
+                         reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
+        """선물 주문 생성
+        
+        Args:
+            contract: 계약명 (예: BTC_USDT)
+            size: 주문 수량 (양수=롱, 음수=숏)
+            price: 지정가 (None이면 시장가)
+            reduce_only: 포지션 감소 전용
+            tif: Time in Force (gtc, ioc, poc)
+            iceberg: 빙산 주문 수량
+        """
         try:
-            # 필수 파라미터 검증
-            required = ['contract', 'size', 'price']
-            for param in required:
-                if param not in order_params:
-                    raise ValueError(f"필수 파라미터 누락: {param}")
+            endpoint = "/api/v4/futures/usdt/orders"
             
-            # 기본값 설정
-            order_data = {
-                'contract': order_params['contract'],  # 예: BTC_USDT
-                'size': order_params['size'],  # 양수: 롱, 음수: 숏
-                'price': str(order_params['price']),
-                'tif': order_params.get('tif', 'gtc'),  # good till cancelled
-                'reduce_only': order_params.get('reduce_only', False),
-                'close': order_params.get('close', False),
-                'auto_size': order_params.get('auto_size', None)
+            data = {
+                "contract": contract,
+                "size": size,
+                "reduce_only": reduce_only,
+                "tif": tif
             }
             
-            # None 값 제거
-            order_data = {k: v for k, v in order_data.items() if v is not None}
+            if price:
+                data["price"] = str(price)
+            else:
+                data["tif"] = "ioc"  # 시장가는 IOC로 설정
             
-            response = await self._request('POST', endpoint, data=order_data)
-            logger.info(f"주문 생성 완료: {response}")
+            if iceberg > 0:
+                data["iceberg"] = iceberg
+            
+            logger.info(f"Gate.io 주문 생성: {data}")
+            response = await self._request('POST', endpoint, data=data)
             return response
             
         except Exception as e:
             logger.error(f"주문 생성 실패: {e}")
             raise
     
-    async def get_contract_info(self, settle: str = "usdt", contract: str = "BTC_USDT") -> Dict:
-        """계약 정보 조회"""
-        endpoint = f"/api/v4/futures/{settle}/contracts/{contract}"
+    async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0) -> Dict:
+        """레버리지 설정"""
         try:
+            endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
+            
+            params = {
+                "leverage": str(leverage)
+            }
+            
+            if cross_leverage_limit > 0:
+                params["cross_leverage_limit"] = str(cross_leverage_limit)
+            
+            response = await self._request('POST', endpoint, params=params)
+            logger.info(f"레버리지 설정 완료: {contract} - {leverage}x")
+            return response
+            
+        except Exception as e:
+            logger.error(f"레버리지 설정 실패: {e}")
+            raise
+    
+    async def set_position_mode(self, contract: str, mode: str = "dual_long") -> Dict:
+        """포지션 모드 설정 (dual_long, dual_short, single)"""
+        try:
+            endpoint = f"/api/v4/futures/usdt/positions/{contract}/margin"
+            
+            data = {
+                "change": "0",  # 마진 변경 없음
+                "mode": mode
+            }
+            
+            response = await self._request('POST', endpoint, data=data)
+            return response
+            
+        except Exception as e:
+            logger.error(f"포지션 모드 설정 실패: {e}")
+            raise
+    
+    async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
+                                         order_type: str, contract: str, size: int, 
+                                         price: Optional[str] = None) -> Dict:
+        """가격 트리거 주문 생성 (TP/SL)
+        
+        Args:
+            trigger_type: 트리거 타입 (ge=이상, le=이하)
+            trigger_price: 트리거 가격
+            order_type: 주문 타입 (limit, market)
+            contract: 계약명
+            size: 수량
+            price: 지정가 (시장가면 None)
+        """
+        try:
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            
+            initial_data = {
+                "type": order_type,
+                "side": "long" if size > 0 else "short",
+                "size": str(abs(size))
+            }
+            
+            if order_type == "limit" and price:
+                initial_data["price"] = str(price)
+            
+            data = {
+                "initial": initial_data,
+                "trigger": {
+                    "strategy_type": "0",  # 가격 트리거
+                    "price_type": "0",     # 최종가격
+                    "price": trigger_price,
+                    "rule": trigger_type   # ge(>=) 또는 le(<=)
+                },
+                "contract": contract
+            }
+            
+            logger.info(f"Gate.io 가격 트리거 주문: {data}")
+            response = await self._request('POST', endpoint, data=data)
+            return response
+            
+        except Exception as e:
+            logger.error(f"가격 트리거 주문 생성 실패: {e}")
+            raise
+    
+    async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
+        """가격 트리거 주문 조회"""
+        try:
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            params = {
+                "contract": contract,
+                "status": status
+            }
+            
+            response = await self._request('GET', endpoint, params=params)
+            return response if isinstance(response, list) else []
+            
+        except Exception as e:
+            logger.error(f"가격 트리거 주문 조회 실패: {e}")
+            return []
+    
+    async def cancel_price_triggered_order(self, order_id: str) -> Dict:
+        """가격 트리거 주문 취소"""
+        try:
+            endpoint = f"/api/v4/futures/usdt/price_orders/{order_id}"
+            response = await self._request('DELETE', endpoint)
+            return response
+            
+        except Exception as e:
+            logger.error(f"가격 트리거 주문 취소 실패: {e}")
+            raise
+    
+    async def get_contract_info(self, contract: str = "BTC_USDT") -> Dict:
+        """계약 정보 조회"""
+        try:
+            endpoint = f"/api/v4/futures/usdt/contracts/{contract}"
             response = await self._request('GET', endpoint)
             return response
+            
         except Exception as e:
             logger.error(f"계약 정보 조회 실패: {e}")
             raise
     
-    async def get_ticker(self, settle: str = "usdt", contract: str = "BTC_USDT") -> Dict:
-        """현재가 조회"""
-        endpoint = f"/api/v4/futures/{settle}/tickers"
-        params = {'contract': contract}
+    async def close_position(self, contract: str, size: Optional[int] = None) -> Dict:
+        """포지션 종료
+        
+        Args:
+            contract: 계약명
+            size: 종료할 수량 (None이면 전체 종료)
+        """
         try:
-            response = await self._request('GET', endpoint, params=params)
-            if isinstance(response, list) and len(response) > 0:
-                return response[0]
-            return response
+            # 현재 포지션 조회
+            positions = await self.get_positions(contract)
+            
+            if not positions or positions[0].get('size', 0) == 0:
+                logger.warning(f"종료할 포지션이 없습니다: {contract}")
+                return {"status": "no_position"}
+            
+            position = positions[0]
+            position_size = int(position['size'])
+            
+            # 종료할 수량 계산
+            if size is None:
+                close_size = -position_size  # 전체 종료
+            else:
+                # 부분 종료
+                if position_size > 0:  # 롱 포지션
+                    close_size = -min(abs(size), position_size)
+                else:  # 숏 포지션
+                    close_size = min(abs(size), abs(position_size))
+            
+            # 시장가로 포지션 종료
+            return await self.place_order(
+                contract=contract,
+                size=close_size,
+                reduce_only=True,
+                tif="ioc"  # 즉시 체결
+            )
+            
         except Exception as e:
-            logger.error(f"현재가 조회 실패: {e}")
+            logger.error(f"포지션 종료 실패: {e}")
             raise
     
     async def close(self):
