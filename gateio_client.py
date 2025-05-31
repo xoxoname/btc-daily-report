@@ -88,14 +88,19 @@ class GateClient:
             raise
     
     async def get_account_balance(self) -> Dict:
-        """계정 잔고 조회"""
+        """계정 잔고 조회 - 선물 계정"""
         try:
             endpoint = "/api/v4/futures/usdt/accounts"
             response = await self._request('GET', endpoint)
+            logger.info(f"Gate.io 계정 잔고 응답: {response}")
             return response
         except Exception as e:
             logger.error(f"계정 잔고 조회 실패: {e}")
             raise
+    
+    async def get_futures_account(self) -> Dict:
+        """선물 계정 정보 조회 (get_account_balance와 동일)"""
+        return await self.get_account_balance()
     
     async def get_positions(self, contract: str = "BTC_USDT") -> List[Dict]:
         """포지션 조회"""
