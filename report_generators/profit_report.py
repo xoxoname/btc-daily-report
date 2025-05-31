@@ -15,7 +15,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         # 초기 자산 설정 (실제 초기 투자금으로 설정 필요)
         self.BITGET_INITIAL_CAPITAL = 4000.0  # 초기 자산 $4000 가정
-        self.GATE_INITIAL_CAPITAL = 700.0     # 기본값, 실제는 dnw에서 가져옴
+        self.GATE_INITIAL_CAPITAL = 700.0     # Gate.io 2025년 5월 초기 자본
     
     def set_gateio_client(self, gateio_client):
         """Gate.io 클라이언트 설정"""
@@ -67,7 +67,7 @@ class ProfitReportGenerator(BaseReportGenerator):
 📌 <b>포지션</b>
 {positions_text}
 
-💸 <b>손익</b>
+💸 <b>금일 손익</b>
 {profit_detail}
 
 💼 <b>자산 상세</b>
@@ -175,6 +175,9 @@ class ProfitReportGenerator(BaseReportGenerator):
                         btc_size = abs(size) * 0.0001
                         margin_used = btc_size * entry_price / leverage
                         
+                        # 포지션 수익률 계산
+                        pnl_rate = (pos_unrealized_pnl / margin_used) * 100 if margin_used > 0 else 0
+                        
                         position_info = {
                             'has_position': True,
                             'symbol': 'BTC_USDT',
@@ -185,7 +188,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                             'entry_price': entry_price,
                             'current_price': mark_price,
                             'unrealized_pnl': pos_unrealized_pnl,
-                            'pnl_rate': (pos_unrealized_pnl / margin_used) * 100 if margin_used > 0 else 0,
+                            'pnl_rate': pnl_rate,
                             'contract_size': abs(size),
                             'leverage': leverage,
                             'margin': margin_used,
@@ -198,13 +201,13 @@ class ProfitReportGenerator(BaseReportGenerator):
             # 사용 증거금 계산
             used_margin = position_info.get('margin', 0) if position_info['has_position'] else 0
             
-            # Gate 손익 데이터 조회 (개선된 메서드 사용)
+            # Gate 손익 데이터 조회 (2025년 5월부터)
             gate_profit_data = await self.gateio_client.get_profit_history_since_may()
             
-            # 실제 초기 자본 (dnw 기반)
+            # 실제 초기 자본
             actual_initial = gate_profit_data.get('initial_capital', self.GATE_INITIAL_CAPITAL)
             
-            # 누적 수익 사용
+            # 누적 수익 사용 (2025년 5월부터)
             cumulative_profit = gate_profit_data.get('total', 0)
             cumulative_roi = (cumulative_profit / actual_initial * 100) if actual_initial > 0 else 0
             
@@ -218,7 +221,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             actual_profit = gate_profit_data.get('actual_profit', 0)
             
             self.logger.info(f"Gate 손익 데이터: 누적={cumulative_profit:.2f}, 7일={weekly_profit['total']:.2f}, 오늘={today_pnl:.2f}")
-            self.logger.info(f"Gate 초기 자본: ${actual_initial:.2f}")
             
             return {
                 'exchange': 'Gate',
@@ -393,7 +395,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             'cumulative_roi': cumulative_roi,
             'bitget_equity': bitget_data['total_equity'],
             'gateio_equity': gateio_data['total_equity'],
-            'gateio_has_account': gateio_data.get('has_account', False)
+            'gateio_has_account': gateio_data.get('has_account', False),
+            'total_initial': total_initial
         }
     
     def _format_asset_summary(self, combined_data: dict) -> str:
@@ -425,7 +428,12 @@ class ProfitReportGenerator(BaseReportGenerator):
         if bitget_pos.get('has_position'):
             has_any_position = True
             lines.append("━━━ <b>Bitget</b> ━━━")
-            lines.append(f"• BTCUSDT {bitget_pos.get('side')} | 진입: ${bitget_pos.get('entry_price', 0):,.2f}")
+            
+            # 포지션 수익률 계산
+            pnl_rate = bitget_pos.get('pnl_rate', 0)
+            pnl_sign = "+" if pnl_rate >= 0 else ""
+            
+            lines.append(f"• BTC {bitget_pos.get('side')} | 진입: ${bitget_pos.get('entry_price', 0):,.2f} ({pnl_sign}{pnl_rate:.1f}%)")
             lines.append(f"• 현재가: ${bitget_pos.get('current_price', 0):,.2f} | 증거금: ${bitget_pos.get('margin', 0):.2f}")
             
             # 청산가
@@ -447,7 +455,12 @@ class ProfitReportGenerator(BaseReportGenerator):
                 if lines:
                     lines.append("")
                 lines.append("━━━ <b>Gate</b> ━━━")
-                lines.append(f"• BTC_USDT {gateio_pos.get('side')} | 진입: ${gateio_pos.get('entry_price', 0):,.2f}")
+                
+                # 포지션 수익률
+                pnl_rate = gateio_pos.get('pnl_rate', 0)
+                pnl_sign = "+" if pnl_rate >= 0 else ""
+                
+                lines.append(f"• BTC {gateio_pos.get('side')} | 진입: ${gateio_pos.get('entry_price', 0):,.2f} ({pnl_sign}{pnl_rate:.1f}%)")
                 lines.append(f"• 현재가: ${gateio_pos.get('current_price', 0):,.2f} | 증거금: ${gateio_pos.get('margin', 0):.2f}")
                 lines.append(f"• 계약: {int(gateio_pos.get('contract_size', 0))}개 ({gateio_pos.get('btc_size', 0):.4f} BTC)")
                 
@@ -472,7 +485,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         lines = []
         
         # 통합 손익 요약
-        lines.append(f"• <b>금일 수익</b>: {self._format_currency_compact(combined_data['today_total'], combined_data['today_roi'])}")
+        lines.append(f"• <b>수익</b>: {self._format_currency_compact(combined_data['today_total'], combined_data['today_roi'])}")
         
         # Bitget 상세
         bitget_unrealized = bitget_data['account_info'].get('unrealized_pnl', 0)
@@ -516,7 +529,10 @@ class ProfitReportGenerator(BaseReportGenerator):
         # 거래소별 상세
         if gateio_data.get('has_account', False) and gateio_data['total_equity'] > 0:
             lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
-            lines.append(f"  └ Gate: {self._format_currency_html(gateio_data['cumulative_profit'], False)} ({gateio_data['cumulative_roi']:+.0f}%)")
+            
+            # Gate.io는 2025년 5월부터 표시
+            gate_roi = gateio_data['cumulative_roi']
+            lines.append(f"  └ Gate (5월~): {self._format_currency_html(gateio_data['cumulative_profit'], False)} ({gate_roi:+.0f}%)")
         else:
             lines.append(f"  └ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
         
@@ -596,11 +612,13 @@ class ProfitReportGenerator(BaseReportGenerator):
             situation_summary = f"""
 현재 트레이더 상황:
 - 총 자산: ${combined_data['total_equity']:,.0f}
+- 초기 자본: ${combined_data['total_initial']:,.0f}
 - 금일 수익: ${combined_data['today_total']:+,.0f} ({combined_data['today_roi']:+.1f}%)
 - 7일 수익: ${combined_data['weekly_total']:+,.0f} ({combined_data['weekly_roi']:+.1f}%)
-- 누적 수익률: {combined_data['cumulative_roi']:+.1f}%
+- 누적 수익: ${combined_data['cumulative_profit']:+,.0f} ({combined_data['cumulative_roi']:+.1f}%)
 - 사용 증거금: ${combined_data['total_used_margin']:,.0f}
 - 가용 자산: ${combined_data['total_available']:,.0f}
+- 가용 비율: {(combined_data['total_available'] / combined_data['total_equity'] * 100):.0f}%
 """
             
             prompt = f"""당신은 전문 트레이딩 심리 코치입니다. 
@@ -612,20 +630,21 @@ class ProfitReportGenerator(BaseReportGenerator):
 1. 구체적인 숫자(자산, 수익률)를 언급하며 개인화된 메시지
 2. 현재 수익 상황에 맞는 조언 (높은 수익률이면 과욕 경계, 손실 중이면 회복 시도 차단)
 3. 2-3문장으로 간결하게
-4. 따뜻하지만 전문적인 톤
-5. 이모티콘 1개 포함
+4. 따뜻하고 친근한 톤으로, 너무 딱딱하지 않게
+5. 반드시 이모티콘 1개 포함 (마지막에)
 6. "반갑습니다", "Bitget에서의", "화이팅하세요" 같은 표현 금지
-7. 통합 자산과 전체 수익을 기준으로 분석
-8. 레버리지 관련 조언은 하지 않음
-9. 메시지를 항상 완전한 문장으로 마무리"""
+7. 금일 수익률과 7일 수익률을 비교할 때 논리적으로 정확하게 분석
+8. 가용 자산이 많은 것은 좋은 것이므로 긍정적으로 표현
+9. 충동적 매매를 자제하도록 부드럽게 권유
+10. 메시지를 항상 완전한 문장으로 마무리"""
             
             response = await self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "당신은 트레이더의 현재 상황에 맞는 심리적 조언을 제공하는 전문가입니다. 인사말이나 격려보다는 구체적인 상황 분석과 행동 지침을 제공하세요. 레버리지 관련 언급은 피하세요."},
+                    {"role": "system", "content": "당신은 트레이더의 현재 상황에 맞는 심리적 조언을 제공하는 따뜻한 멘토입니다. 논리적으로 정확하고 친근한 조언을 제공하세요."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=350,  # 더 충분한 토큰 할당
+                max_tokens=350,
                 temperature=0.8
             )
             
@@ -638,14 +657,20 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             gpt_message = gpt_message.strip()
             
+            # 이모티콘이 없으면 추가
+            emoji_list = ['🎯', '💪', '🚀', '✨', '🌟', '😊', '👍', '🔥', '💎', '🏆']
+            has_emoji = any(emoji in gpt_message for emoji in emoji_list)
+            
+            if not has_emoji:
+                import random
+                gpt_message += f" {random.choice(emoji_list)}"
+            
             # 메시지가 완전히 끝났는지 확인
-            if not gpt_message.endswith(('.', '!', '?', ')', '"')):
+            if not gpt_message.endswith(('.', '!', '?', ')', '"')) and not has_emoji:
                 # 미완성 문장 처리
                 if '.' in gpt_message:
                     # 마지막 완전한 문장까지만 사용
                     gpt_message = gpt_message[:gpt_message.rfind('.')+1]
-                else:
-                    # 기본 이모티콘 추가
                     gpt_message += " 🎯"
             
             # 따옴표로 감싸기
