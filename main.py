@@ -23,7 +23,7 @@ from report_generators import ReportGeneratorManager
 
 # 미러 트레이딩 관련 임포트
 try:
-    from gate_client import GateClient
+    from gateio_client import GateClient
     from mirror_trading import MirrorTradingSystem
     MIRROR_TRADING_AVAILABLE = True
 except ImportError:
@@ -149,6 +149,12 @@ class BitcoinPredictionSystem:
                 self.indicator_system
             )
             self.report_manager.set_bitget_client(self.bitget_client)
+            
+            # Gate.io 클라이언트 설정 (미러 모드일 때만)
+            if self.mirror_mode and self.gate_client:
+                self.report_manager.set_gateio_client(self.gate_client)
+                self.logger.info("✅ ReportManager에 Gate.io 클라이언트 설정 완료")
+            
             self.logger.info("✅ 리포트 생성기 초기화 완료")
             
             # 분석 엔진
@@ -274,13 +280,13 @@ class BitcoinPredictionSystem:
             else:
                 # 기본 응답
                 response = self._generate_default_response(message)
-                await update.message.reply_text(response)
+                await update.message.reply_text(response, parse_mode='HTML')
                 
         except Exception as e:
             self.command_stats['errors'] += 1
             self.logger.error(f"자연어 처리 실패: {str(e)}")
             self.logger.debug(traceback.format_exc())
-            await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.")
+            await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.", parse_mode='HTML')
     
     def _generate_default_response(self, message: str) -> str:
         """기본 응답 생성"""
@@ -307,11 +313,12 @@ class BitcoinPredictionSystem:
                     "활성화 방법:\n"
                     "1. .env 파일에 MIRROR_TRADING_MODE=true 추가\n"
                     "2. Gate.io API 키 설정\n"
-                    "3. 시스템 재시작"
+                    "3. 시스템 재시작",
+                    parse_mode='HTML'
                 )
                 return
             
-            await update.message.reply_text("🔄 미러 트레이딩 상태를 조회중입니다...")
+            await update.message.reply_text("🔄 미러 트레이딩 상태를 조회중입니다...", parse_mode='HTML')
             
             # 미러링 상태 정보
             active_mirrors = len(self.mirror_trading.mirrored_positions)
@@ -337,20 +344,20 @@ class BitcoinPredictionSystem:
                 success_rate = (self.mirror_trading.daily_stats['successful_mirrors'] / 
                               self.mirror_trading.daily_stats['total_mirrored']) * 100
             
-            status_msg = f"""🔄 미러 트레이딩 상태
+            status_msg = f"""🔄 <b>미러 트레이딩 상태</b>
 
-💰 계정 잔고:
+<b>💰 계정 잔고:</b>
 - 비트겟: ${bitget_equity:,.2f}
 - 게이트: ${gate_equity:,.2f}
 - 잔고 비율: {(gate_equity/bitget_equity*100):.1f}%
 
-📊 포지션 현황:
+<b>📊 포지션 현황:</b>
 - 비트겟: {bitget_pos_count}개
 - 게이트: {gate_pos_count}개
 - 활성 미러: {active_mirrors}개
 - 제외된 기존 포지션: {len(self.mirror_trading.startup_positions)}개
 
-📈 오늘 통계:
+<b>📈 오늘 통계:</b>
 - 시도: {self.mirror_trading.daily_stats['total_mirrored']}회
 - 성공: {self.mirror_trading.daily_stats['successful_mirrors']}회
 - 실패: {self.mirror_trading.daily_stats['failed_mirrors']}회
@@ -359,7 +366,7 @@ class BitcoinPredictionSystem:
 - 전체청산: {self.mirror_trading.daily_stats['full_closes']}회
 - 총 거래량: ${self.mirror_trading.daily_stats['total_volume']:,.2f}
 
-⚠️ 최근 오류:
+<b>⚠️ 최근 오류:</b>
 - 실패 기록: {failed_count}건"""
             
             # 최근 실패 내역 추가
@@ -375,7 +382,7 @@ class BitcoinPredictionSystem:
             minutes = int((uptime.total_seconds() % 3600) // 60)
             status_msg += f"\n⏱️ 가동 시간: {hours}시간 {minutes}분"
             
-            await update.message.reply_text(status_msg)
+            await update.message.reply_text(status_msg, parse_mode='HTML')
             
         except Exception as e:
             self.command_stats['errors'] += 1
@@ -383,7 +390,8 @@ class BitcoinPredictionSystem:
             self.logger.debug(traceback.format_exc())
             await update.message.reply_text(
                 f"❌ 미러 트레이딩 상태 조회 중 오류가 발생했습니다.\n"
-                f"오류: {str(e)[:100]}"
+                f"오류: {str(e)[:100]}",
+                parse_mode='HTML'
             )
     
     async def handle_report_command(self, update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
@@ -395,10 +403,10 @@ class BitcoinPredictionSystem:
                 user_id = update.effective_user.id
                 username = update.effective_user.username or "Unknown"
                 self.logger.info(f"리포트 요청 - User: {username}({user_id})")
-                await update.message.reply_text("📊 비트코인 분석 리포트를 생성중입니다...")
+                await update.message.reply_text("📊 비트코인 분석 리포트를 생성중입니다...", parse_mode='HTML')
             else:
                 self.logger.info("정기 리포트 생성 시작")
-                await self.telegram_bot.send_message("📊 정기 비트코인 분석 리포트를 생성중입니다...")
+                await self.telegram_bot.send_message("📊 정기 비트코인 분석 리포트를 생성중입니다...", parse_mode='HTML')
             
             # 리포트 생성 시간 측정
             start_time = datetime.now()
@@ -415,16 +423,16 @@ class BitcoinPredictionSystem:
                 parts = self._split_message(report, 4000)
                 for i, part in enumerate(parts):
                     if update:
-                        await update.message.reply_text(part)
+                        await update.message.reply_text(part, parse_mode='HTML')
                     else:
-                        await self.telegram_bot.send_message(part)
+                        await self.telegram_bot.send_message(part, parse_mode='HTML')
                     if i < len(parts) - 1:
                         await asyncio.sleep(0.5)  # 연속 전송 방지
             else:
                 if update:
-                    await update.message.reply_text(report)
+                    await update.message.reply_text(report, parse_mode='HTML')
                 else:
-                    await self.telegram_bot.send_message(report)
+                    await self.telegram_bot.send_message(report, parse_mode='HTML')
             
             self.logger.info("리포트 전송 완료")
             
@@ -436,9 +444,9 @@ class BitcoinPredictionSystem:
             
             try:
                 if update:
-                    await update.message.reply_text(error_message)
+                    await update.message.reply_text(error_message, parse_mode='HTML')
                 else:
-                    await self.telegram_bot.send_message(error_message)
+                    await self.telegram_bot.send_message(error_message, parse_mode='HTML')
             except Exception as send_error:
                 self.logger.error(f"오류 메시지 전송 실패: {str(send_error)}")
     
@@ -450,12 +458,12 @@ class BitcoinPredictionSystem:
             username = update.effective_user.username or "Unknown"
             self.logger.info(f"예측 요청 - User: {username}({user_id})")
             
-            await update.message.reply_text("🔮 단기 예측 분석 중...")
+            await update.message.reply_text("🔮 단기 예측 분석 중...", parse_mode='HTML')
             
             # 새로운 예측 리포트 생성기 사용
             report = await self.report_manager.generate_forecast_report()
             
-            await update.message.reply_text(report)
+            await update.message.reply_text(report, parse_mode='HTML')
             
             # 추가 정보 제공
             current_data = await self.bitget_client.get_ticker(self.config.symbol)
@@ -464,10 +472,11 @@ class BitcoinPredictionSystem:
                 change_24h = float(current_data.get('changeUtc', 0)) * 100
                 
                 await update.message.reply_text(
-                    f"📊 현재 상태 요약\n"
+                    f"<b>📊 현재 상태 요약</b>\n"
                     f"• 현재가: ${current_price:,.0f}\n"
                     f"• 24시간 변동: {change_24h:+.2f}%\n"
-                    f"• 다음 업데이트: 3시간 후"
+                    f"• 다음 업데이트: 3시간 후",
+                    parse_mode='HTML'
                 )
             
         except Exception as e:
@@ -476,7 +485,8 @@ class BitcoinPredictionSystem:
             self.logger.debug(traceback.format_exc())
             await update.message.reply_text(
                 f"❌ 예측 분석 중 오류가 발생했습니다.\n"
-                f"잠시 후 다시 시도해주세요."
+                f"잠시 후 다시 시도해주세요.",
+                parse_mode='HTML'
             )
     
     async def handle_profit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -487,12 +497,12 @@ class BitcoinPredictionSystem:
             username = update.effective_user.username or "Unknown"
             self.logger.info(f"수익 조회 요청 - User: {username}({user_id})")
             
-            await update.message.reply_text("💰 실시간 수익 현황을 조회중입니다...")
+            await update.message.reply_text("💰 실시간 수익 현황을 조회중입니다...", parse_mode='HTML')
             
             # 새로운 수익 리포트 생성기 사용
             profit_report = await self.report_manager.generate_profit_report()
             
-            await update.message.reply_text(profit_report)
+            await update.message.reply_text(profit_report, parse_mode='HTML')
             
             # 미러 트레이딩 수익 정보 추가 (활성화된 경우)
             if self.mirror_mode and self.mirror_trading:
@@ -505,11 +515,11 @@ class BitcoinPredictionSystem:
                         for pos in gate_positions:
                             gate_unrealized += float(pos.get('unrealised_pnl', 0))
                     
-                    mirror_msg = f"\n\n🔄 게이트 미러 계정:\n"
+                    mirror_msg = f"\n\n<b>🔄 게이트 미러 계정:</b>\n"
                     mirror_msg += f"• 총 자산: ${float(gate_account.get('total', 0)):,.2f}\n"
                     mirror_msg += f"• 미실현 손익: ${gate_unrealized:+,.2f}"
                     
-                    await update.message.reply_text(mirror_msg)
+                    await update.message.reply_text(mirror_msg, parse_mode='HTML')
                 except:
                     pass
             
@@ -519,7 +529,8 @@ class BitcoinPredictionSystem:
             self.logger.debug(f"수익 조회 오류 상세: {traceback.format_exc()}")
             await update.message.reply_text(
                 "❌ 수익 조회 중 오류가 발생했습니다.\n"
-                "잠시 후 다시 시도해주세요."
+                "잠시 후 다시 시도해주세요.",
+                parse_mode='HTML'
             )
     
     async def handle_schedule_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -537,7 +548,7 @@ class BitcoinPredictionSystem:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
             
-            additional_info = f"\n\n📅 추가 일정 정보:\n"
+            additional_info = f"\n\n<b>📅 추가 일정 정보:</b>\n"
             additional_info += f"• 현재 시각: {now.strftime('%Y-%m-%d %H:%M')} KST\n"
             additional_info += f"• 다음 정기 리포트: "
             
@@ -559,12 +570,12 @@ class BitcoinPredictionSystem:
             
             full_report = schedule_report + additional_info
             
-            await update.message.reply_text(full_report)
+            await update.message.reply_text(full_report, parse_mode='HTML')
             
         except Exception as e:
             self.command_stats['errors'] += 1
             self.logger.error(f"일정 명령 처리 실패: {str(e)}")
-            await update.message.reply_text("❌ 일정 조회 중 오류가 발생했습니다.")
+            await update.message.reply_text("❌ 일정 조회 중 오류가 발생했습니다.", parse_mode='HTML')
     
     async def check_exceptions(self):
         """예외 상황 감지"""
@@ -599,7 +610,7 @@ class BitcoinPredictionSystem:
                         event_data = event
                     
                     report = await self.report_manager.generate_exception_report(event_data)
-                    await self.telegram_bot.send_message(report)
+                    await self.telegram_bot.send_message(report, parse_mode='HTML')
                     
                     self.logger.info(f"긴급 알림 전송: {event_data.get('title', 'Unknown')}")
                     
@@ -627,9 +638,10 @@ class BitcoinPredictionSystem:
                 
                 if fail_rate > 0.3:  # 30% 이상 실패
                     await self.telegram_bot.send_message(
-                        f"⚠️ 미러 트레이딩 경고\n"
+                        f"<b>⚠️ 미러 트레이딩 경고</b>\n"
                         f"높은 실패율 감지: {fail_rate*100:.1f}%\n"
-                        f"시스템 점검이 필요할 수 있습니다."
+                        f"시스템 점검이 필요할 수 있습니다.",
+                        parse_mode='HTML'
                     )
             
             # 동기화 불일치 체크
@@ -694,12 +706,12 @@ class BitcoinPredictionSystem:
             
             # 문제가 있으면 알림
             if health_status['errors']:
-                error_msg = "⚠️ 시스템 건강 체크 경고\n"
+                error_msg = "<b>⚠️ 시스템 건강 체크 경고</b>\n"
                 for error in health_status['errors']:
                     error_msg += f"• {error}\n"
                 error_msg += f"\n메모리 사용: {health_status['memory_mb']:.1f} MB"
                 
-                await self.telegram_bot.send_message(error_msg)
+                await self.telegram_bot.send_message(error_msg, parse_mode='HTML')
             
             # 로그 기록
             self.logger.info(f"시스템 건강 체크 완료: {json.dumps(health_status, indent=2)}")
@@ -717,13 +729,13 @@ class BitcoinPredictionSystem:
             days = uptime.days
             hours = int((uptime.total_seconds() % 86400) // 3600)
             
-            report = f"""📊 일일 시스템 통계 리포트
+            report = f"""<b>📊 일일 시스템 통계 리포트</b>
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
-⏱️ 시스템 가동 시간: {days}일 {hours}시간
+<b>⏱️ 시스템 가동 시간:</b> {days}일 {hours}시간
 
-📈 명령어 사용 통계:
+<b>📈 명령어 사용 통계:</b>
 - 리포트: {self.command_stats['report']}회
 - 예측: {self.command_stats['forecast']}회
 - 수익 조회: {self.command_stats['profit']}회
@@ -736,7 +748,7 @@ class BitcoinPredictionSystem:
 - 자연어 입력: {self.command_stats['natural_language']}회
 - 오류 발생: {self.command_stats['errors']}회
 
-💾 메모리 사용량: """
+<b>💾 메모리 사용량:</b> """
             
             try:
                 import psutil
@@ -751,7 +763,7 @@ class BitcoinPredictionSystem:
                 mirror_stats = self.mirror_trading.daily_stats
                 report += f"""
 
-🔄 미러 트레이딩 통계:
+<b>🔄 미러 트레이딩 통계:</b>
 - 총 시도: {mirror_stats['total_mirrored']}회
 - 성공: {mirror_stats['successful_mirrors']}회
 - 실패: {mirror_stats['failed_mirrors']}회
@@ -761,7 +773,7 @@ class BitcoinPredictionSystem:
             
             report += "\n━━━━━━━━━━━━━━━━━━━"
             
-            await self.telegram_bot.send_message(report)
+            await self.telegram_bot.send_message(report, parse_mode='HTML')
             
             # 통계 초기화
             self.command_stats = {k: 0 if k != 'errors' else v for k, v in self.command_stats.items()}
@@ -800,12 +812,12 @@ class BitcoinPredictionSystem:
             
             mode_text = "🔄 미러 트레이딩 모드" if self.mirror_mode else "📊 분석 전용 모드"
             
-            welcome_message = f"""🚀 비트코인 예측 시스템에 오신 것을 환영합니다!
+            welcome_message = f"""<b>🚀 비트코인 예측 시스템에 오신 것을 환영합니다!</b>
 
 현재 모드: {mode_text}
 시스템 버전: 2.0
 
-📊 슬래시 명령어:
+<b>📊 슬래시 명령어:</b>
 - /report - 전체 분석 리포트
 - /forecast - 단기 예측 요약
 - /profit - 실시간 수익 현황
@@ -816,7 +828,7 @@ class BitcoinPredictionSystem:
             
             welcome_message += """
 
-💬 자연어 질문 예시:
+<b>💬 자연어 질문 예시:</b>
 - "오늘 수익은?"
 - "지금 매수해도 돼?"
 - "시장 상황 어때?"
@@ -827,13 +839,13 @@ class BitcoinPredictionSystem:
                 welcome_message += '• "미러 트레이딩 상태는?"\n'
             
             welcome_message += """
-🔔 자동 기능:
+<b>🔔 자동 기능:</b>
 - 정기 리포트: 09:00, 13:00, 18:00, 22:00
 - 예외 감지: 5분마다
 - 시스템 체크: 30분마다
 - 일일 통계: 매일 자정
 
-⚡ 실시간 알림:
+<b>⚡ 실시간 알림:</b>
 - 가격 급변동 (1% 이상)
 - 중요 뉴스 발생
 - 펀딩비 이상
@@ -842,7 +854,7 @@ class BitcoinPredictionSystem:
             
             if self.mirror_mode:
                 welcome_message += """
-🔄 미러 트레이딩:
+<b>🔄 미러 트레이딩:</b>
 - 비트겟 → 게이트 자동 복제
 - 마진 비율 기반 진입
 - TP/SL 자동 동기화
@@ -855,7 +867,7 @@ class BitcoinPredictionSystem:
             minutes = int((uptime.total_seconds() % 3600) // 60)
             
             welcome_message += f"""
-📊 시스템 상태:
+<b>📊 시스템 상태:</b>
 - 가동 시간: {hours}시간 {minutes}분
 - 오늘 명령 처리: {sum(self.command_stats.values())}건
 - 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}
@@ -864,11 +876,11 @@ class BitcoinPredictionSystem:
 
 도움이 필요하시면 언제든 질문해주세요! 😊"""
             
-            await update.message.reply_text(welcome_message)
+            await update.message.reply_text(welcome_message, parse_mode='HTML')
             
         except Exception as e:
             self.logger.error(f"시작 명령 처리 실패: {e}")
-            await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.")
+            await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
     
     async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """미러 트레이딩 상태 명령"""
@@ -928,22 +940,22 @@ class BitcoinPredictionSystem:
             self.logger.info(f"✅ 비트코인 예측 시스템 시작 완료 (모드: {mode_text})")
             
             # 시작 메시지 전송
-            startup_msg = f"""🚀 비트코인 예측 시스템이 시작되었습니다!
+            startup_msg = f"""<b>🚀 비트코인 예측 시스템이 시작되었습니다!</b>
 
-📊 운영 모드: {mode_text}
-🕐 시작 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+<b>📊 운영 모드:</b> {mode_text}
+<b>🕐 시작 시각:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
             
             if self.mirror_mode:
                 startup_msg += """
-🔄 미러 트레이딩 활성화:
+<b>🔄 미러 트레이딩 활성화:</b>
 - 비트겟 → 게이트 자동 복제
 - 기존 포지션은 복제 제외
 - 신규 진입만 미러링
 """
             
             startup_msg += """
-📌 활성 기능:
+<b>📌 활성 기능:</b>
 - 실시간 가격 모니터링
 - 뉴스 및 이벤트 추적
 - 기술적 분석
@@ -953,7 +965,7 @@ class BitcoinPredictionSystem:
 명령어를 입력하거나 자연어로 질문해보세요.
 예: '오늘 수익은?' 또는 /help"""
             
-            await self.telegram_bot.send_message(startup_msg)
+            await self.telegram_bot.send_message(startup_msg, parse_mode='HTML')
             
             # 초기 시스템 상태 체크
             await asyncio.sleep(5)
@@ -974,9 +986,10 @@ class BitcoinPredictionSystem:
             # 오류 메시지 전송 시도
             try:
                 await self.telegram_bot.send_message(
-                    f"❌ 시스템 시작 실패\n"
+                    f"<b>❌ 시스템 시작 실패</b>\n"
                     f"오류: {str(e)[:200]}\n"
-                    f"로그를 확인해주세요."
+                    f"로그를 확인해주세요.",
+                    parse_mode='HTML'
                 )
             except:
                 pass
@@ -998,15 +1011,15 @@ class BitcoinPredictionSystem:
                 hours = int(uptime.total_seconds() // 3600)
                 minutes = int((uptime.total_seconds() % 3600) // 60)
                 
-                shutdown_msg = f"""🛑 시스템 종료 중...
+                shutdown_msg = f"""<b>🛑 시스템 종료 중...</b>
 
-⏱️ 총 가동 시간: {hours}시간 {minutes}분
-📊 처리된 명령: {sum(self.command_stats.values())}건
-❌ 발생한 오류: {self.command_stats['errors']}건
+<b>⏱️ 총 가동 시간:</b> {hours}시간 {minutes}분
+<b>📊 처리된 명령:</b> {sum(self.command_stats.values())}건
+<b>❌ 발생한 오류:</b> {self.command_stats['errors']}건
 
 시스템이 안전하게 종료됩니다."""
                 
-                await self.telegram_bot.send_message(shutdown_msg)
+                await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
             except:
                 pass
             
