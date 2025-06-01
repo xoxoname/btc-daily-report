@@ -442,35 +442,39 @@ class RealisticNewsCollector:
                 await asyncio.sleep(60)
     
     def _estimate_price_impact(self, article: Dict) -> str:
-        """뉴스의 예상 가격 영향 추정"""
+        """뉴스의 예상 가격 영향 추정 - 더 현실적으로"""
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         impact = article.get('impact', '')
         
-        # 키워드별 예상 변동률
+        # 비트코인 우세/도미넌스 관련
+        if any(word in content for word in ['dominance', '우세', '점유율']):
+            return '±0.5%'  # 이미 반영된 움직임
+        
+        # 키워드별 예상 변동률 (더 현실적으로)
         strong_bullish_keywords = {
-            'etf approved': '+5~10%',
-            'bought bitcoin': '+2~5%',
-            'bitcoin purchase': '+2~5%',
-            'adoption': '+3~7%',
-            'all-time high': '+5~15%',
-            'institutional': '+2~4%'
+            'etf approved': '+2~4%',  # 기존 +5~10%에서 하향
+            'bought bitcoin': '+0.5~1.5%',  # 기존 +2~5%에서 하향
+            'bitcoin purchase': '+0.5~1.5%',
+            'adoption': '+1~2%',  # 기존 +3~7%에서 하향
+            'all-time high': '+2~5%',  # 기존 +5~15%에서 하향
+            'institutional': '+0.5~1%'  # 기존 +2~4%에서 하향
         }
         
         strong_bearish_keywords = {
-            'ban': '-5~10%',
-            'lawsuit': '-3~7%',
-            'hack': '-5~8%',
-            'crash': '-10~20%',
-            'reject': '-3~5%',
-            'crackdown': '-5~10%'
+            'ban': '-2~5%',  # 기존 -5~10%에서 하향
+            'lawsuit': '-1~3%',  # 기존 -3~7%에서 하향
+            'hack': '-2~4%',  # 기존 -5~8%에서 하향
+            'crash': '-5~10%',  # 기존 -10~20%에서 하향
+            'reject': '-1~2%',  # 기존 -3~5%에서 하향
+            'crackdown': '-2~4%'  # 기존 -5~10%에서 하향
         }
         
         moderate_keywords = {
-            'concern': '±1~3%',
-            'uncertainty': '±2~4%',
-            'volatility': '±3~5%',
-            'meeting': '±1~2%',
-            'discussion': '±1~2%'
+            'concern': '±0.5~1%',  # 기존 ±1~3%에서 하향
+            'uncertainty': '±1~2%',  # 기존 ±2~4%에서 하향
+            'volatility': '±1~3%',  # 기존 ±3~5%에서 하향
+            'meeting': '±0.3~0.5%',  # 기존 ±1~2%에서 하향
+            'discussion': '±0.3~0.5%'  # 기존 ±1~2%에서 하향
         }
         
         # 예상 변동률 결정
@@ -486,13 +490,13 @@ class RealisticNewsCollector:
             if keyword in content:
                 return change
         
-        # 기본값
+        # 기본값 (더 보수적으로)
         if '호재' in impact:
-            return '+1~3%'
+            return '+0.3~1%'  # 기존 +1~3%에서 하향
         elif '악재' in impact:
-            return '-1~3%'
+            return '-0.3~1%'  # 기존 -1~3%에서 하향
         else:
-            return '±1~2%'
+            return '±0.3%'  # 기존 ±1~2%에서 하향
     
     async def monitor_reddit(self):
         """Reddit 모니터링"""
@@ -967,7 +971,7 @@ class RealisticNewsCollector:
                 'timestamp': datetime.now(),
                 'severity': 'critical',
                 'impact': self._determine_impact(article),
-                'expected_change': article.get('expected_change', '±1~2%'),
+                'expected_change': article.get('expected_change', '±0.3%'),
                 'weight': article.get('weight', 5),
                 'category': article.get('category', 'unknown'),
                 'published_at': article.get('published_at', ''),
@@ -1052,35 +1056,43 @@ class RealisticNewsCollector:
             logger.error(f"뉴스 버퍼 추가 오류: {e}")
     
     def _determine_impact(self, article: Dict) -> str:
-        """뉴스 영향도 판단 - 더 세밀한 분석"""
+        """뉴스 영향도 판단 - 더 현실적인 분석"""
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
-        # 기업 비트코인 구매는 강한 호재
+        # 비트코인 우세/도미넌스 관련 - 중립으로 처리
+        if any(word in content for word in ['dominance', '우세', '점유율', 'market share']):
+            return "⚠️ 중립 (이미 반영)"
+        
+        # 기업 비트코인 구매는 약한 호재로 조정
         for company in self.important_companies:
             if company.lower() in content and any(word in content for word in ['bought', 'purchased', 'buys', 'bitcoin', '비트코인 구매', '매입']):
-                return "📈 강한 호재"
+                # 금액에 따라 다르게 평가
+                if any(word in content for word in ['billion', '억 달러', '십억']):
+                    return "📈 중간 호재"
+                else:
+                    return "📈 약한 호재"
         
-        # 트럼프 관련
+        # 트럼프 관련 - 보수적 평가
         if 'trump' in content:
             if any(word in content for word in ['tariff', 'ban', 'restrict', 'court blocks', '관세', '금지']):
-                return "📉 악재 예상"  # 트럼프 정책 차단은 일반적으로 시장에 부정적
+                return "📉 약한 악재"
             elif any(word in content for word in ['approve', 'support', 'bitcoin reserve', '지지', '승인']):
-                return "📈 호재 예상"
+                return "📈 약한 호재"
         
-        # 강한 악재 (즉시 매도 신호)
+        # 강한 악재 (즉시 영향)
         strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked', '금지', '규제', '소송', '폭락', '해킹']
-        # 강한 호재 (즉시 매수 신호)
-        strong_bullish = ['approval', 'approved', 'adoption', 'breakthrough', 'all-time high', 'ath', 'pump', '승인', '채택', '신고가', 'bought bitcoin', 'purchased bitcoin']
+        # 강한 호재 (즉시 영향)
+        strong_bullish = ['approval', 'approved', 'adoption', 'breakthrough', 'all-time high', 'ath', '승인', '채택', '신고가']
         # 일반 악재
         bearish = ['concern', 'worry', 'decline', 'fall', 'drop', 'uncertainty', 'regulation', 'fine', '우려', '하락', '불확실']
         # 일반 호재
         bullish = ['growth', 'rise', 'increase', 'positive', 'rally', 'surge', 'investment', 'institutional', '상승', '증가', '긍정적', '투자']
         
-        # 가중치 계산
-        strong_bearish_count = sum(2 for word in strong_bearish if word in content)  # 가중치 2
-        strong_bullish_count = sum(2 for word in strong_bullish if word in content)  # 가중치 2
-        bearish_count = sum(1 for word in bearish if word in content)
-        bullish_count = sum(1 for word in bullish if word in content)
+        # 가중치 계산 (더 보수적으로)
+        strong_bearish_count = sum(1.5 for word in strong_bearish if word in content)  # 가중치 1.5로 하향
+        strong_bullish_count = sum(1.5 for word in strong_bullish if word in content)  # 가중치 1.5로 하향
+        bearish_count = sum(0.5 for word in bearish if word in content)  # 가중치 0.5로 하향
+        bullish_count = sum(0.5 for word in bullish if word in content)  # 가중치 0.5로 하향
         
         bearish_total = strong_bearish_count + bearish_count
         bullish_total = strong_bullish_count + bullish_count
@@ -1088,19 +1100,19 @@ class RealisticNewsCollector:
         # 센티먼트 점수가 있는 경우 (Alpha Vantage)
         sentiment = article.get('sentiment', '').lower()
         if 'bearish' in sentiment:
-            bearish_total += 1
+            bearish_total += 0.5
         elif 'bullish' in sentiment:
-            bullish_total += 1
+            bullish_total += 0.5
         
-        # 최종 판단
-        if strong_bearish_count > 0:
-            return "📉 강한 악재"
-        elif strong_bullish_count > 0:
-            return "📈 강한 호재"
+        # 최종 판단 (더 보수적으로)
+        if strong_bearish_count >= 1.5:
+            return "📉 중간 악재"
+        elif strong_bullish_count >= 1.5:
+            return "📈 중간 호재"
         elif bearish_total > bullish_total + 1:  # 명확한 차이
-            return "📉 악재 예상"
+            return "📉 약한 악재"
         elif bullish_total > bearish_total + 1:  # 명확한 차이
-            return "📈 호재 예상"
+            return "📈 약한 호재"
         else:
             return "⚠️ 중립"
     
