@@ -20,6 +20,9 @@ class GateClient:
         self.session = None
         self._initialize_session()
         
+        # Gate.io 거래 시작일 설정 (2025년 5월 29일)
+        self.GATE_START_DATE = datetime(2025, 5, 29, 0, 0, 0, tzinfo=pytz.timezone('Asia/Seoul'))
+        
     def _initialize_session(self):
         """세션 초기화"""
         if not self.session:
@@ -387,7 +390,7 @@ class GateClient:
             return []
     
     async def get_profit_history_since_may(self) -> Dict:
-        """2025년 5월부터의 손익 계산"""
+        """2025년 5월 29일부터의 손익 계산"""
         try:
             import pytz
             from datetime import datetime
@@ -405,80 +408,82 @@ class GateClient:
             seven_days_ago = today_start - timedelta(days=6)
             seven_days_timestamp = int(seven_days_ago.timestamp())
             
-            # 2025년 5월 1일 0시 (KST)
-            may_start = datetime(2025, 5, 1, 0, 0, 0, tzinfo=kst)
-            may_timestamp = int(may_start.timestamp())
+            # 2025년 5월 29일 0시 (KST) - 실제 거래 시작일
+            start_timestamp = int(self.GATE_START_DATE.timestamp())
             
             # 계정 정보
             account = await self.get_account_balance()
             current_balance = float(account.get('total', 0))
             
-            # 초기 자본 설정 (2025년 5월 초 잔고 추정)
+            # 초기 자본 설정
             initial_capital = 700.0  # 기본값
             
-            # 2025년 5월 1일부터 현재까지의 손익 계산
-            may_pnl = 0.0
-            may_fee = 0.0
-            may_fund = 0.0
+            # 5월 29일부터 현재까지의 손익 계산
+            total_pnl = 0.0
+            total_fee = 0.0
+            total_fund = 0.0
             
-            # PnL 조회 (2025년 5월 1일부터)
+            # PnL 조회 (5월 29일부터)
             try:
                 pnl_records = await self.get_account_book(
                     type="pnl",
-                    start_time=may_timestamp,
+                    start_time=start_timestamp,
                     limit=1000
                 )
                 
                 for record in pnl_records:
                     change = float(record.get('change', 0))
-                    may_pnl += change
+                    total_pnl += change
                     
-                logger.info(f"Gate.io 2025년 5월부터 PnL: ${may_pnl:.2f}")
+                logger.info(f"Gate.io 5월 29일부터 PnL: ${total_pnl:.2f}")
             except Exception as e:
                 logger.error(f"PnL 조회 실패: {e}")
             
-            # 수수료 조회 (2025년 5월 1일부터)
+            # 수수료 조회 (5월 29일부터)
             try:
                 fee_records = await self.get_account_book(
                     type="fee",
-                    start_time=may_timestamp,
+                    start_time=start_timestamp,
                     limit=1000
                 )
                 
                 for record in fee_records:
-                    may_fee += abs(float(record.get('change', 0)))
+                    total_fee += abs(float(record.get('change', 0)))
                     
-                logger.info(f"Gate.io 2025년 5월부터 수수료: ${may_fee:.2f}")
+                logger.info(f"Gate.io 5월 29일부터 수수료: ${total_fee:.2f}")
             except Exception as e:
                 logger.error(f"수수료 조회 실패: {e}")
             
-            # 펀딩비 조회 (2025년 5월 1일부터)
+            # 펀딩비 조회 (5월 29일부터)
             try:
                 fund_records = await self.get_account_book(
                     type="fund",
-                    start_time=may_timestamp,
+                    start_time=start_timestamp,
                     limit=1000
                 )
                 
                 for record in fund_records:
-                    may_fund += float(record.get('change', 0))
+                    total_fund += float(record.get('change', 0))
                     
-                logger.info(f"Gate.io 2025년 5월부터 펀딩비: ${may_fund:.2f}")
+                logger.info(f"Gate.io 5월 29일부터 펀딩비: ${total_fund:.2f}")
             except Exception as e:
                 logger.error(f"펀딩비 조회 실패: {e}")
             
-            # 5월부터의 순수익 = 실현손익 - 수수료 + 펀딩비
-            cumulative_net_profit = may_pnl - may_fee + may_fund
+            # 5월 29일부터의 순수익 = 실현손익 - 수수료 + 펀딩비
+            cumulative_net_profit = total_pnl - total_fee + total_fund
             
             # 7일간 손익 계산
             weekly_pnl = 0.0
             today_pnl = 0.0
             weekly_fee = 0.0
             
-            # PnL 조회 (7일)
+            # 현재가 거래 시작일로부터 7일이 안 되었을 경우
+            actual_start_timestamp = max(seven_days_timestamp, start_timestamp)
+            
+            # PnL 조회 (최근 7일 또는 거래 시작일부터)
             pnl_records = await self.get_account_book(
                 type="pnl",
-                start_time=seven_days_timestamp,
+                start_time=actual_start_timestamp,
                 limit=1000
             )
             
@@ -492,10 +497,10 @@ class GateClient:
                 if record_time >= today_timestamp:
                     today_pnl += change
             
-            # 수수료 조회 (7일)
+            # 수수료 조회 (최근 7일 또는 거래 시작일부터)
             fee_records = await self.get_account_book(
                 type="fee",
-                start_time=seven_days_timestamp,
+                start_time=actual_start_timestamp,
                 limit=1000
             )
             
@@ -505,6 +510,10 @@ class GateClient:
             # 7일 순수익
             weekly_net = weekly_pnl - weekly_fee
             
+            # 실제 거래 일수 계산
+            days_traded = min(7, (now - self.GATE_START_DATE).days + 1)
+            
+            logger.info(f"Gate.io 거래 일수: {days_traded}일")
             logger.info(f"Gate.io 7일 손익 - PnL: ${weekly_pnl:.2f}, Fee: ${weekly_fee:.2f}, Net: ${weekly_net:.2f}")
             logger.info(f"Gate.io 오늘 실현 손익: ${today_pnl:.2f}")
             
@@ -512,15 +521,16 @@ class GateClient:
             actual_profit = current_balance - initial_capital
             
             return {
-                'total': cumulative_net_profit,  # 2025년 5월부터의 순수익
+                'total': cumulative_net_profit,  # 5월 29일부터의 순수익
                 'weekly': {
                     'total': weekly_net,
-                    'average': weekly_net / 7 if weekly_net else 0
+                    'average': weekly_net / days_traded if days_traded > 0 else 0
                 },
                 'today_realized': today_pnl,
                 'current_balance': current_balance,
                 'initial_capital': initial_capital,
-                'actual_profit': actual_profit  # 실제 수익 (현재잔고 - 초기자본)
+                'actual_profit': actual_profit,  # 실제 수익 (현재잔고 - 초기자본)
+                'days_traded': days_traded  # 실제 거래 일수
             }
             
         except Exception as e:
