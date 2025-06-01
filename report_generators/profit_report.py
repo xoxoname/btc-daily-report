@@ -101,50 +101,35 @@ class ProfitReportGenerator(BaseReportGenerator):
             # KST 0시 기준 오늘 실현 손익
             today_pnl = await self._get_today_realized_pnl_kst()
             
-            # 오늘 포함 7일 수익 - 여러 방법 시도
+            # 개선된 7일 손익 조회 - achievedProfits vs 실제 거래내역 비교
+            self.logger.info("=== Bitget 7일 손익 조회 시작 ===")
             weekly_profit = await self.bitget_client.get_simple_weekly_profit(days=7)
             
-            # source 확인
-            if weekly_profit.get('source') == 'achievedProfits':
-                self.logger.info(f"포지션 achievedProfits 기반 7일 수익 사용: ${weekly_profit.get('total_pnl', 0):.2f}")
-            else:
-                # 기존 방식 결과
-                original_weekly = await self.bitget_client.get_profit_loss_history(days=7)
-                if original_weekly.get('total_pnl', 0) != weekly_profit.get('total_pnl', 0):
-                    self.logger.warning(f"7일 손익 차이 - achievedProfits: ${weekly_profit.get('total_pnl', 0):.2f}, 계산: ${original_weekly.get('total_pnl', 0):.2f}")
-                    # 더 큰 값 사용
-                    if original_weekly.get('total_pnl', 0) > weekly_profit.get('total_pnl', 0):
-                        weekly_profit = original_weekly
+            # 결과 로깅
+            source = weekly_profit.get('source', 'unknown')
+            total_pnl = weekly_profit.get('total_pnl', 0)
             
-            # 디버깅 로그 추가
-            self.logger.info(f"Bitget 7일 손익 조회 결과:")
-            self.logger.info(f"  - total_pnl: ${weekly_profit.get('total_pnl', 0):.2f}")
-            self.logger.info(f"  - daily_pnl: {weekly_profit.get('daily_pnl', {})}")
-            self.logger.info(f"  - trade_count: {weekly_profit.get('trade_count', 0)}")
+            self.logger.info(f"Bitget 7일 손익 최종 결과:")
+            self.logger.info(f"  - 총 손익: ${total_pnl:.2f}")
+            self.logger.info(f"  - 데이터 소스: {source}")
+            self.logger.info(f"  - 거래 건수: {weekly_profit.get('trade_count', 0)}")
+            
+            if source == 'achievedProfits':
+                position_days = weekly_profit.get('position_days', 0)
+                self.logger.info(f"  - achievedProfits 사용됨 (포지션 기간: {position_days}일)")
+            elif source == 'achievedProfits_only':
+                self.logger.info(f"  - achievedProfits만 사용됨 (거래내역 없음)")
+            else:
+                self.logger.info(f"  - 실제 거래내역 사용됨")
             
             # 전체 기간 손익 조회 (30일)
             all_time_profit = await self.bitget_client.get_profit_loss_history(days=30)
-            
-            # 계정 정보에서 achievedProfits 확인 (포지션에서)
-            achieved_profits = 0
-            if position_info.get('has_position'):
-                # 포지션에서 실현 수익 확인
-                positions = await self.bitget_client.get_positions(self.config.symbol)
-                for pos in positions:
-                    achieved = float(pos.get('achievedProfits', 0))
-                    if achieved != 0:
-                        self.logger.info(f"포지션 achievedProfits: ${achieved:.2f}")
-                        achieved_profits = achieved
             
             total_equity = account_info.get('total_equity', 0)
             
             # 실제 누적 수익 계산
             cumulative_profit = total_equity - self.BITGET_INITIAL_CAPITAL
             cumulative_roi = (cumulative_profit / self.BITGET_INITIAL_CAPITAL) * 100
-            
-            # achievedProfits가 더 정확한 경우 사용
-            if achieved_profits > 0 and achieved_profits > weekly_profit.get('total_pnl', 0):
-                self.logger.warning(f"achievedProfits(${achieved_profits:.2f})가 계산된 7일 손익(${weekly_profit.get('total_pnl', 0):.2f})보다 큽니다. 데이터 확인 필요.")
             
             result = {
                 'exchange': 'Bitget',
@@ -155,21 +140,21 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'weekly_profit': {
                     'total': weekly_profit.get('total_pnl', 0),
                     'average': weekly_profit.get('average_daily', 0),
-                    'daily_pnl': weekly_profit.get('daily_pnl', {})
+                    'daily_pnl': weekly_profit.get('daily_pnl', {}),
+                    'source': source  # 데이터 소스 추가
                 },
                 'cumulative_profit': cumulative_profit,
                 'cumulative_roi': cumulative_roi,
                 'total_equity': total_equity,
                 'initial_capital': self.BITGET_INITIAL_CAPITAL,
                 'available': account_info.get('available', 0),
-                'used_margin': account_info.get('used_margin', 0),
-                'achieved_profits': achieved_profits  # 포지션의 실현 수익 추가
+                'used_margin': account_info.get('used_margin', 0)
             }
             
-            self.logger.info(f"Bitget 데이터 최종 결과:")
-            self.logger.info(f"  - weekly_profit.total: ${result['weekly_profit']['total']:.2f}")
-            self.logger.info(f"  - today_pnl: ${result['today_pnl']:.2f}")
-            self.logger.info(f"  - achieved_profits: ${achieved_profits:.2f}")
+            self.logger.info(f"Bitget 데이터 구성 완료:")
+            self.logger.info(f"  - 7일 손익: ${result['weekly_profit']['total']:.2f} (소스: {source})")
+            self.logger.info(f"  - 오늘 실현손익: ${result['today_pnl']:.2f}")
+            self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f} ({cumulative_roi:+.1f}%)")
             
             return result
         except Exception as e:
@@ -641,23 +626,45 @@ class ProfitReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     def _format_recent_flow(self, combined_data: dict, bitget_data: dict, gateio_data: dict) -> str:
-        """최근 수익 흐름 - 통합"""
+        """최근 수익 흐름 - 통합 + 데이터 소스 표시"""
         lines = []
         
         # 통합 7일 수익
         lines.append(f"• <b>7일 수익</b>: {self._format_currency_compact(combined_data['weekly_total'], combined_data['weekly_roi'])}")
         
-        # 거래소별 7일 수익
+        # 거래소별 7일 수익 + 데이터 소스
         if gateio_data.get('has_account', False) and gateio_data['total_equity'] > 0:
             bitget_weekly = bitget_data['weekly_profit']['total']
             gate_weekly = gateio_data['weekly_profit']['total']
-            lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_weekly, False)}")
+            
+            # Bitget 데이터 소스 표시
+            source = bitget_data['weekly_profit'].get('source', 'unknown')
+            source_text = ""
+            if source == 'achievedProfits':
+                source_text = " (포지션)"
+            elif source == 'achievedProfits_only':
+                source_text = " (포지션만)"
+            else:
+                source_text = " (거래내역)"
+            
+            lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_weekly, False)}{source_text}")
             lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)}")
+        else:
+            # Bitget만 있는 경우
+            bitget_weekly = bitget_data['weekly_profit']['total']
+            source = bitget_data['weekly_profit'].get('source', 'unknown')
+            source_text = ""
+            if source == 'achievedProfits':
+                source_text = " (포지션 실현수익)"
+            elif source == 'achievedProfits_only':
+                source_text = " (포지션 실현수익만)"
+            else:
+                source_text = " (거래내역 계산)"
+            
+            lines.append(f"  └ Bitget: {self._format_currency_html(bitget_weekly, False)}{source_text}")
         
         # 일평균
         lines.append(f"• <b>일평균</b>: {self._format_currency_compact_daily(combined_data['weekly_avg'])}")
-        
-        # 기간 표시 제거
         
         return '\n'.join(lines)
     
