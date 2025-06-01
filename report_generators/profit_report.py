@@ -113,11 +113,26 @@ class ProfitReportGenerator(BaseReportGenerator):
             # 전체 기간 손익 조회 (30일)
             all_time_profit = await self.bitget_client.get_profit_loss_history(days=30)
             
+            # 계정 정보에서 achievedProfits 확인 (포지션에서)
+            achieved_profits = 0
+            if position_info.get('has_position'):
+                # 포지션에서 실현 수익 확인
+                positions = await self.bitget_client.get_positions(self.config.symbol)
+                for pos in positions:
+                    achieved = float(pos.get('achievedProfits', 0))
+                    if achieved != 0:
+                        self.logger.info(f"포지션 achievedProfits: ${achieved:.2f}")
+                        achieved_profits = achieved
+            
             total_equity = account_info.get('total_equity', 0)
             
             # 실제 누적 수익 계산
             cumulative_profit = total_equity - self.BITGET_INITIAL_CAPITAL
             cumulative_roi = (cumulative_profit / self.BITGET_INITIAL_CAPITAL) * 100
+            
+            # achievedProfits가 더 정확한 경우 사용
+            if achieved_profits > 0 and achieved_profits > weekly_profit.get('total_pnl', 0):
+                self.logger.warning(f"achievedProfits(${achieved_profits:.2f})가 계산된 7일 손익(${weekly_profit.get('total_pnl', 0):.2f})보다 큽니다. 데이터 확인 필요.")
             
             result = {
                 'exchange': 'Bitget',
@@ -135,12 +150,14 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'total_equity': total_equity,
                 'initial_capital': self.BITGET_INITIAL_CAPITAL,
                 'available': account_info.get('available', 0),
-                'used_margin': account_info.get('used_margin', 0)
+                'used_margin': account_info.get('used_margin', 0),
+                'achieved_profits': achieved_profits  # 포지션의 실현 수익 추가
             }
             
             self.logger.info(f"Bitget 데이터 최종 결과:")
             self.logger.info(f"  - weekly_profit.total: ${result['weekly_profit']['total']:.2f}")
             self.logger.info(f"  - today_pnl: ${result['today_pnl']:.2f}")
+            self.logger.info(f"  - achieved_profits: ${achieved_profits:.2f}")
             
             return result
         except Exception as e:
