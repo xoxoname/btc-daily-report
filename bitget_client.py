@@ -342,6 +342,12 @@ class BitgetClient:
             actual_days = (period_end - period_start).days + 1
             logger.info(f"실제 조회 일수: {actual_days}일")
             
+            # 예상 날짜 목록 출력
+            logger.info("예상 거래일 목록:")
+            for i in range(days):
+                date = period_start + timedelta(days=i)
+                logger.info(f"  - {date.strftime('%Y-%m-%d')}")
+            
             total_pnl = 0.0
             daily_pnl = {}
             total_fees = 0.0
@@ -370,6 +376,7 @@ class BitgetClient:
                     await asyncio.sleep(0.2)  # API 요청 간격
             else:
                 # 7일 이하는 페이징 처리로 모든 거래 조회
+                logger.info(f"페이징 처리로 {days}일 거래 내역 조회 시작")
                 all_fills = await self._get_all_fills_for_period(symbol, start_time, end_time)
             
             logger.info(f"총 조회된 거래 수: {len(all_fills)}건")
@@ -448,6 +455,13 @@ class BitgetClient:
             else:
                 logger.warning("조회된 손익 내역이 없습니다")
             
+            # 누락된 날짜 확인
+            logger.info("누락된 거래일 확인:")
+            for i in range(days):
+                date = (period_start + timedelta(days=i)).strftime('%Y-%m-%d')
+                if date not in daily_pnl:
+                    logger.warning(f"  - {date}: 거래 없음")
+            
             logger.info(f"=== {days}일 총 손익: ${total_pnl:,.2f} (거래 {trade_count}건, 수수료 ${total_fees:.2f}) ===")
             
             return {
@@ -478,6 +492,12 @@ class BitgetClient:
         last_id = None
         page = 0
         
+        # 날짜 로깅
+        kst = pytz.timezone('Asia/Seoul')
+        start_kst = datetime.fromtimestamp(start_time/1000, tz=kst)
+        end_kst = datetime.fromtimestamp(end_time/1000, tz=kst)
+        logger.info(f"기간별 전체 거래 조회: {start_kst.strftime('%Y-%m-%d %H:%M')} ~ {end_kst.strftime('%Y-%m-%d %H:%M')}")
+        
         while page < 50:  # 최대 50페이지까지
             try:
                 endpoint = "/api/v2/mix/order/fill-history"
@@ -492,7 +512,7 @@ class BitgetClient:
                 if last_id:
                     params['lastEndId'] = str(last_id)
                 
-                logger.info(f"페이지 {page + 1} 조회 중...")
+                logger.info(f"페이지 {page + 1} 조회 중... (lastId: {last_id})")
                 response = await self._request('GET', endpoint, params=params)
                 
                 fills = []
@@ -508,8 +528,33 @@ class BitgetClient:
                     logger.info(f"페이지 {page + 1}: 더 이상 데이터가 없습니다")
                     break
                 
-                all_fills.extend(fills)
-                logger.info(f"페이지 {page + 1}: {len(fills)}건 조회 (누적 {len(all_fills)}건)")
+                # 중복 제거를 위해 ID 기록
+                new_fills_count = 0
+                for fill in fills:
+                    fill_id = None
+                    for field in ['fillId', 'id', 'orderId', 'tradeId']:
+                        if field in fill and fill[field]:
+                            fill_id = str(fill[field])
+                            break
+                    
+                    # 중복 체크
+                    is_duplicate = False
+                    if fill_id:
+                        for existing_fill in all_fills:
+                            existing_id = None
+                            for field in ['fillId', 'id', 'orderId', 'tradeId']:
+                                if field in existing_fill and existing_fill[field]:
+                                    existing_id = str(existing_fill[field])
+                                    break
+                            if existing_id == fill_id:
+                                is_duplicate = True
+                                break
+                    
+                    if not is_duplicate:
+                        all_fills.append(fill)
+                        new_fills_count += 1
+                
+                logger.info(f"페이지 {page + 1}: {len(fills)}건 조회, {new_fills_count}건 추가 (누적 {len(all_fills)}건)")
                 
                 # 500건 미만이면 마지막 페이지
                 if len(fills) < 500:
@@ -523,6 +568,7 @@ class BitgetClient:
                 for field in ['fillId', 'id', 'orderId', 'tradeId']:
                     if field in last_fill and last_fill[field]:
                         new_last_id = str(last_fill[field])
+                        logger.debug(f"다음 페이지 ID 필드: {field} = {new_last_id}")
                         break
                 
                 if not new_last_id or new_last_id == last_id:
@@ -539,6 +585,7 @@ class BitgetClient:
                 logger.error(f"페이지 {page + 1} 조회 오류: {e}")
                 break
         
+        logger.info(f"기간별 조회 완료: 총 {len(all_fills)}건")
         return all_fills
     
     async def get_funding_rate(self, symbol: str = None) -> Dict:
