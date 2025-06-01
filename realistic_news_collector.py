@@ -213,7 +213,7 @@ class RealisticNewsCollector:
             response = await self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a professional translator. Translate the following text to Korean concisely and accurately. Keep it under 80 characters."},
+                    {"role": "system", "content": "You are a professional translator. Translate the following text to Korean in a natural and easy-to-understand way. Keep it concise and under 80 characters. If it's about cryptocurrency scams or hacks, make sure to clearly distinguish between 'losses decreasing' (positive) and 'scam amounts' (negative)."},
                     {"role": "user", "content": text}
                 ],
                 max_tokens=150,
@@ -449,6 +449,13 @@ class RealisticNewsCollector:
         # 비트코인 우세/도미넌스 관련
         if any(word in content for word in ['dominance', '우세', '점유율']):
             return '±0.5%'  # 이미 반영된 움직임
+        
+        # 사기/해킹 관련
+        if any(word in content for word in ['scam', 'fraud', 'hack', '사기', '해킹']):
+            if 'decrease' in content or '감소' in content:
+                return '±0.3%'  # 보안 개선은 간접적 호재
+            else:
+                return '-0.3~0.5%'  # 투자 심리 위축
         
         # 키워드별 예상 변동률 (더 현실적으로)
         strong_bullish_keywords = {
@@ -1062,6 +1069,13 @@ class RealisticNewsCollector:
         # 비트코인 우세/도미넌스 관련 - 중립으로 처리
         if any(word in content for word in ['dominance', '우세', '점유율', 'market share']):
             return "⚠️ 중립 (이미 반영)"
+        
+        # 사기/해킹 관련 - 구분해서 처리
+        if any(word in content for word in ['scam', 'fraud', 'hack', '사기', '해킹']):
+            if any(word in content for word in ['decrease', 'down', '감소', '줄어']):
+                return "📈 약한 호재"  # 보안 개선
+            else:
+                return "📉 약한 악재"  # 사기 피해
         
         # 기업 비트코인 구매는 약한 호재로 조정
         for company in self.important_companies:
