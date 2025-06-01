@@ -317,24 +317,30 @@ class BitgetClient:
         try:
             symbol = symbol or self.config.symbol
             
-            # KST 기준
+            # KST 기준 현재 시간
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
             
-            # 오늘 0시부터 현재까지 + 이전 (days-1)일
+            # 조회 기간 설정
+            # days = 7이면: 오늘 포함 7일 (6일 전 0시부터 현재까지)
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             period_start = today_start - timedelta(days=days-1)
+            period_end = now
             
             # UTC로 변환하여 타임스탬프 생성
             start_time_utc = period_start.astimezone(pytz.UTC)
-            end_time_utc = now.astimezone(pytz.UTC)
+            end_time_utc = period_end.astimezone(pytz.UTC)
             
             start_time = int(start_time_utc.timestamp() * 1000)
             end_time = int(end_time_utc.timestamp() * 1000)
             
             logger.info(f"=== {days}일 손익 조회 ===")
-            logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {now.strftime('%Y-%m-%d %H:%M')} (KST)")
+            logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
             logger.info(f"타임스탬프: {start_time} ~ {end_time}")
+            
+            # 디버깅용: 실제 날짜 범위 확인
+            actual_days = (period_end - period_start).days + 1
+            logger.info(f"실제 조회 일수: {actual_days}일")
             
             total_pnl = 0.0
             daily_pnl = {}
@@ -349,7 +355,10 @@ class BitgetClient:
                 while current_start < end_time:
                     current_end = min(current_start + (7 * 24 * 60 * 60 * 1000), end_time)
                     
-                    logger.info(f"부분 조회: {datetime.fromtimestamp(current_start/1000, tz=kst).strftime('%Y-%m-%d')} ~ {datetime.fromtimestamp(current_end/1000, tz=kst).strftime('%Y-%m-%d')}")
+                    # KST로 변환하여 로깅
+                    start_kst = datetime.fromtimestamp(current_start/1000, tz=kst)
+                    end_kst = datetime.fromtimestamp(current_end/1000, tz=kst)
+                    logger.info(f"부분 조회: {start_kst.strftime('%Y-%m-%d')} ~ {end_kst.strftime('%Y-%m-%d')}")
                     
                     try:
                         endpoint = "/api/v2/mix/order/fill-history"
@@ -363,13 +372,18 @@ class BitgetClient:
                         response = await self._request('GET', endpoint, params=params)
                         
                         fills = []
-                        if isinstance(response, dict):
+                        if response is None:
+                            logger.warning("응답이 None입니다")
+                        elif isinstance(response, dict):
                             fills = response.get('fillList', response.get('list', []))
                         elif isinstance(response, list):
                             fills = response
                         
-                        all_fills.extend(fills)
-                        logger.info(f"부분 조회 결과: {len(fills)}건")
+                        if fills:
+                            all_fills.extend(fills)
+                            logger.info(f"부분 조회 결과: {len(fills)}건")
+                        else:
+                            logger.info("부분 조회 결과: 0건")
                         
                     except Exception as e:
                         logger.error(f"부분 조회 실패: {e}")
@@ -392,7 +406,9 @@ class BitgetClient:
                     response = await self._request('GET', endpoint, params=params)
                     
                     fills = []
-                    if isinstance(response, dict):
+                    if response is None:
+                        logger.warning("응답이 None입니다")
+                    elif isinstance(response, dict):
                         fills = response.get('fillList', response.get('list', []))
                     elif isinstance(response, list):
                         fills = response
@@ -419,6 +435,11 @@ class BitgetClient:
                     # KST 기준 날짜
                     trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
                     trade_date_str = trade_date_kst.strftime('%Y-%m-%d')
+                    
+                    # 조회 기간 내의 거래만 처리
+                    if trade_date_kst < period_start or trade_date_kst > period_end:
+                        logger.debug(f"기간 외 거래 제외: {trade_date_str}")
+                        continue
                     
                     # 손익 필드 찾기
                     profit = 0.0
@@ -469,6 +490,8 @@ class BitgetClient:
                 logger.info("=== 일별 손익 내역 ===")
                 for date, pnl in sorted(daily_pnl.items()):
                     logger.info(f"  {date}: ${pnl:,.2f}")
+            else:
+                logger.warning("조회된 손익 내역이 없습니다")
             
             logger.info(f"=== {days}일 총 손익: ${total_pnl:,.2f} (거래 {trade_count}건, 수수료 ${total_fees:.2f}) ===")
             
