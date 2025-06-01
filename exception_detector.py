@@ -435,10 +435,26 @@ class ExceptionDetector:
         return None
     
     async def send_alert(self, anomaly: Dict) -> bool:
-        """이상 징후 알림 전송 - 강화된 중복 체크"""
+        """이상 징후 알림 전송 - 비트코인 관련성 필터링 강화"""
         try:
             if not self.telegram_bot:
                 return False
+            
+            # 비트코인 관련성 체크 - 뉴스 타입만
+            if anomaly.get('type') == 'critical_news':
+                title = anomaly.get('title', '')
+                impact = anomaly.get('impact', '')
+                
+                # 비트코인과 무관한 뉴스는 알림 생략
+                if '비트코인 무관' in impact or '알트코인 (BTC 무관)' in impact:
+                    self.logger.info(f"🔄 비트코인 무관 뉴스 알림 생략: {title[:30]}...")
+                    return False
+                
+                # 트럼프 뉴스 중 비트코인 관련성 없는 것 생략
+                if 'trump' in title.lower() or '트럼프' in title:
+                    if '비트코인 무관' in impact:
+                        self.logger.info(f"🔄 트럼프 비관련 뉴스 알림 생략: {title[:30]}...")
+                        return False
             
             # 예외 해시 생성
             exception_hash = self._generate_exception_hash(anomaly)
@@ -510,7 +526,29 @@ class ExceptionDetector:
             anomaly_type = anomaly.get('type', 'unknown')
             
             # 타입별 메시지 생성
-            if anomaly_type == 'short_term_volatility':
+            if anomaly_type == 'critical_news':
+                impact = anomaly.get('impact', '')
+                title = anomaly.get('title', '')
+                
+                # 비트코인 관련성 표시
+                bitcoin_relevance = ""
+                if '비트코인 무관' in impact:
+                    bitcoin_relevance = " (BTC 무관)"
+                elif '알트코인' in impact:
+                    bitcoin_relevance = " (알트코인)"
+                elif any(word in title.lower() for word in ['bitcoin', 'btc', '비트코인']):
+                    bitcoin_relevance = " (BTC 직접)"
+                else:
+                    bitcoin_relevance = " (간접 영향)"
+                
+                message = f"{emoji} <b>중요 뉴스{bitcoin_relevance}</b>\n\n"
+                message += f"📰 제목: {title[:80]}{'...' if len(title) > 80 else ''}\n"
+                message += f"📊 영향: {impact}\n"
+                message += f"📈 예상 변동: {anomaly.get('expected_change', '±0.3%')}\n"
+                message += f"📍 출처: {anomaly.get('source', 'Unknown')[:30]}\n"
+                message += f"⏰ 시간: {anomaly.get('timestamp', datetime.now()).strftime('%H:%M:%S')}"
+                
+            elif anomaly_type == 'short_term_volatility':
                 message = f"{emoji} <b>단기 급변동 감지</b>\n\n"
                 message += f"📊 {anomaly.get('timeframe', '')} 내 <b>{anomaly.get('change_percent', 0):.1f}%</b> 변동\n"
                 message += f"💰 현재가: <b>${anomaly.get('current_price', 0):,.0f}</b>\n"
