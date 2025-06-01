@@ -5,7 +5,7 @@ import base64
 import json
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 import aiohttp
 import pytz
@@ -325,142 +325,144 @@ class BitgetClient:
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             period_start = today_start - timedelta(days=days-1)
             
-            start_time = int(period_start.timestamp() * 1000)
-            end_time = int(now.timestamp() * 1000)
+            # UTC로 변환하여 타임스탬프 생성
+            start_time_utc = period_start.astimezone(pytz.UTC)
+            end_time_utc = now.astimezone(pytz.UTC)
+            
+            start_time = int(start_time_utc.timestamp() * 1000)
+            end_time = int(end_time_utc.timestamp() * 1000)
             
             logger.info(f"=== {days}일 손익 조회 ===")
-            logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {now.strftime('%Y-%m-%d %H:%M')}")
+            logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {now.strftime('%Y-%m-%d %H:%M')} (KST)")
+            logger.info(f"타임스탬프: {start_time} ~ {end_time}")
             
             total_pnl = 0.0
             daily_pnl = {}
             total_fees = 0.0
             trade_count = 0
             
-            # 전체 기간을 한 번에 조회 (더 효율적)
-            try:
-                endpoint = "/api/v2/mix/order/fill-history"
-                params = {
-                    'symbol': symbol,
-                    'productType': 'USDT-FUTURES',
-                    'startTime': str(start_time),
-                    'endTime': str(end_time),
-                    'limit': '500'  # 한 번에 더 많이 가져오기
-                }
-                response = await self._request('GET', endpoint, params=params)
+            # days가 7일을 초과하는 경우 7일씩 나눠서 조회
+            if days > 7:
+                current_start = start_time
+                all_fills = []
                 
-                fills = []
-                if isinstance(response, dict):
-                    fills = response.get('fillList', response.get('list', []))
-                elif isinstance(response, list):
-                    fills = response
-                
-                logger.info(f"조회된 거래 수: {len(fills)}건")
-                
-                # 거래 처리
-                for trade in fills:
+                while current_start < end_time:
+                    current_end = min(current_start + (7 * 24 * 60 * 60 * 1000), end_time)
+                    
+                    logger.info(f"부분 조회: {datetime.fromtimestamp(current_start/1000, tz=kst).strftime('%Y-%m-%d')} ~ {datetime.fromtimestamp(current_end/1000, tz=kst).strftime('%Y-%m-%d')}")
+                    
                     try:
-                        # 시간 필드 찾기
-                        trade_time = None
-                        for time_field in ['cTime', 'createdTime', 'createTime', 'time']:
-                            if time_field in trade:
-                                trade_time = int(trade[time_field])
-                                break
+                        endpoint = "/api/v2/mix/order/fill-history"
+                        params = {
+                            'symbol': symbol,
+                            'productType': 'USDT-FUTURES',
+                            'startTime': str(current_start),
+                            'endTime': str(current_end),
+                            'limit': '500'
+                        }
+                        response = await self._request('GET', endpoint, params=params)
                         
-                        if not trade_time:
-                            continue
+                        fills = []
+                        if isinstance(response, dict):
+                            fills = response.get('fillList', response.get('list', []))
+                        elif isinstance(response, list):
+                            fills = response
                         
-                        # KST 기준 날짜
-                        trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
-                        trade_date_str = trade_date_kst.strftime('%Y-%m-%d')
-                        
-                        # 손익 필드 찾기
-                        profit = 0.0
-                        for profit_field in ['profit', 'realizedPL', 'realizedPnl', 'pnl']:
-                            if profit_field in trade:
-                                val = trade[profit_field]
-                                if val and str(val).replace('.', '').replace('-', '').isdigit():
-                                    profit = float(val)
-                                    break
-                        
-                        # 수수료 계산
-                        fee = 0.0
-                        
-                        # feeDetail 확인
-                        fee_detail = trade.get('feeDetail', [])
-                        if isinstance(fee_detail, list):
-                            for fee_info in fee_detail:
-                                if isinstance(fee_info, dict):
-                                    fee += abs(float(fee_info.get('totalFee', 0)))
-                        
-                        # fee 필드 확인
-                        if fee == 0 and 'fee' in trade:
-                            fee = abs(float(trade.get('fee', 0)))
-                        
-                        # fees 필드 확인
-                        if fee == 0 and 'fees' in trade:
-                            fee = abs(float(trade.get('fees', 0)))
-                        
-                        # 실현 손익 = profit - 수수료
-                        if profit != 0 or fee != 0:
-                            realized_pnl = profit - fee
-                            total_pnl += realized_pnl
-                            total_fees += fee
-                            trade_count += 1
-                            
-                            if trade_date_str not in daily_pnl:
-                                daily_pnl[trade_date_str] = 0
-                            daily_pnl[trade_date_str] += realized_pnl
-                            
-                            logger.debug(f"거래: {trade_date_str} profit={profit:.2f}, fee={fee:.2f}, pnl={realized_pnl:.2f}")
+                        all_fills.extend(fills)
+                        logger.info(f"부분 조회 결과: {len(fills)}건")
                         
                     except Exception as e:
-                        logger.warning(f"거래 파싱 오류: {e}")
-                        continue
-                        
-            except Exception as e:
-                logger.error(f"fill-history 조회 실패: {e}")
-                # 폴백: account/bill 시도
+                        logger.error(f"부분 조회 실패: {e}")
+                    
+                    current_start = current_end
+                    await asyncio.sleep(0.2)  # API 요청 간격
+                
+                fills = all_fills
+            else:
+                # 7일 이하는 한 번에 조회
                 try:
-                    endpoint = "/api/v2/mix/account/bill"
+                    endpoint = "/api/v2/mix/order/fill-history"
                     params = {
                         'symbol': symbol,
                         'productType': 'USDT-FUTURES',
-                        'marginCoin': 'USDT',
                         'startTime': str(start_time),
                         'endTime': str(end_time),
                         'limit': '500'
                     }
                     response = await self._request('GET', endpoint, params=params)
                     
-                    bills = []
+                    fills = []
                     if isinstance(response, dict):
-                        bills = response.get('billList', response.get('list', []))
+                        fills = response.get('fillList', response.get('list', []))
                     elif isinstance(response, list):
-                        bills = response
+                        fills = response
                     
-                    logger.info(f"account/bill 조회: {len(bills)}건")
+                except Exception as e:
+                    logger.error(f"fill-history 조회 실패: {e}")
+                    fills = []
+            
+            logger.info(f"조회된 거래 수: {len(fills)}건")
+            
+            # 거래 처리
+            for trade in fills:
+                try:
+                    # 시간 필드 찾기
+                    trade_time = None
+                    for time_field in ['cTime', 'createdTime', 'createTime', 'time']:
+                        if time_field in trade:
+                            trade_time = int(trade[time_field])
+                            break
                     
-                    for bill in bills:
-                        if bill.get('businessType') in ['close_long', 'close_short', 'burst_long', 'burst_short']:
-                            trade_time = int(bill.get('cTime', 0))
-                            if trade_time:
-                                trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
-                                trade_date_str = trade_date_kst.strftime('%Y-%m-%d')
-                                
-                                amount = float(bill.get('amount', 0))
-                                fee = abs(float(bill.get('fee', 0)))
-                                
-                                realized_pnl = amount - fee
-                                total_pnl += realized_pnl
-                                total_fees += fee
-                                trade_count += 1
-                                
-                                if trade_date_str not in daily_pnl:
-                                    daily_pnl[trade_date_str] = 0
-                                daily_pnl[trade_date_str] += realized_pnl
-                
-                except Exception as e2:
-                    logger.error(f"account/bill도 실패: {e2}")
+                    if not trade_time:
+                        continue
+                    
+                    # KST 기준 날짜
+                    trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
+                    trade_date_str = trade_date_kst.strftime('%Y-%m-%d')
+                    
+                    # 손익 필드 찾기
+                    profit = 0.0
+                    for profit_field in ['profit', 'realizedPL', 'realizedPnl', 'pnl']:
+                        if profit_field in trade:
+                            val = trade[profit_field]
+                            if val and str(val).replace('.', '').replace('-', '').isdigit():
+                                profit = float(val)
+                                break
+                    
+                    # 수수료 계산
+                    fee = 0.0
+                    
+                    # feeDetail 확인
+                    fee_detail = trade.get('feeDetail', [])
+                    if isinstance(fee_detail, list):
+                        for fee_info in fee_detail:
+                            if isinstance(fee_info, dict):
+                                fee += abs(float(fee_info.get('totalFee', 0)))
+                    
+                    # fee 필드 확인
+                    if fee == 0 and 'fee' in trade:
+                        fee = abs(float(trade.get('fee', 0)))
+                    
+                    # fees 필드 확인
+                    if fee == 0 and 'fees' in trade:
+                        fee = abs(float(trade.get('fees', 0)))
+                    
+                    # 실현 손익 = profit - 수수료
+                    if profit != 0 or fee != 0:
+                        realized_pnl = profit - fee
+                        total_pnl += realized_pnl
+                        total_fees += fee
+                        trade_count += 1
+                        
+                        if trade_date_str not in daily_pnl:
+                            daily_pnl[trade_date_str] = 0
+                        daily_pnl[trade_date_str] += realized_pnl
+                        
+                        logger.debug(f"거래: {trade_date_str} profit={profit:.2f}, fee={fee:.2f}, pnl={realized_pnl:.2f}")
+                    
+                except Exception as e:
+                    logger.warning(f"거래 파싱 오류: {e}")
+                    continue
             
             # 결과 로그
             if daily_pnl:
