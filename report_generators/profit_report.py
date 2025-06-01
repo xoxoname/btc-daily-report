@@ -104,6 +104,12 @@ class ProfitReportGenerator(BaseReportGenerator):
             # 오늘 포함 7일 수익 - get_profit_loss_history 사용
             weekly_profit = await self.bitget_client.get_profit_loss_history(days=7)
             
+            # 디버깅 로그 추가
+            self.logger.info(f"Bitget 7일 손익 조회 결과:")
+            self.logger.info(f"  - total_pnl: ${weekly_profit.get('total_pnl', 0):.2f}")
+            self.logger.info(f"  - daily_pnl: {weekly_profit.get('daily_pnl', {})}")
+            self.logger.info(f"  - trade_count: {weekly_profit.get('trade_count', 0)}")
+            
             # 전체 기간 손익 조회 (30일)
             all_time_profit = await self.bitget_client.get_profit_loss_history(days=30)
             
@@ -113,7 +119,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             cumulative_profit = total_equity - self.BITGET_INITIAL_CAPITAL
             cumulative_roi = (cumulative_profit / self.BITGET_INITIAL_CAPITAL) * 100
             
-            return {
+            result = {
                 'exchange': 'Bitget',
                 'market_data': market_data,
                 'position_info': position_info,
@@ -131,6 +137,12 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'available': account_info.get('available', 0),
                 'used_margin': account_info.get('used_margin', 0)
             }
+            
+            self.logger.info(f"Bitget 데이터 최종 결과:")
+            self.logger.info(f"  - weekly_profit.total: ${result['weekly_profit']['total']:.2f}")
+            self.logger.info(f"  - today_pnl: ${result['today_pnl']:.2f}")
+            
+            return result
         except Exception as e:
             self.logger.error(f"Bitget 데이터 조회 실패: {e}")
             return self._get_empty_exchange_data('Bitget')
@@ -354,19 +366,20 @@ class ProfitReportGenerator(BaseReportGenerator):
             start_time = int(today_start.timestamp() * 1000)
             end_time = int(now.timestamp() * 1000)
             
-            trades = await self.bitget_client.get_trade_fills(
-                symbol=self.config.symbol,
-                start_time=start_time,
-                end_time=end_time,
-                limit=100
+            # 모든 거래 조회 (페이징 처리)
+            all_fills = await self.bitget_client._get_period_fills_with_paging(
+                self.config.symbol,
+                start_time,
+                end_time
             )
             
             realized_pnl = 0
-            for trade in trades:
+            for trade in all_fills:
                 profit = float(trade.get('profit', 0))
                 if profit != 0:
                     realized_pnl += profit
             
+            self.logger.info(f"오늘 실현 손익: ${realized_pnl:.2f} ({len(all_fills)}건)")
             return realized_pnl
             
         except Exception as e:
