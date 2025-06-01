@@ -85,6 +85,13 @@ class ReportGeneratorManager:
         # profit_generator에 Gate.io 클라이언트 설정
         if hasattr(self.profit_generator, 'set_gateio_client'):
             self.profit_generator.set_gateio_client(gateio_client)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("✅ ProfitReportGenerator에 Gate.io 클라이언트 설정 완료")
+        else:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("⚠️ ProfitReportGenerator에 set_gateio_client 메서드가 없음")
     
     async def generate_regular_report(self) -> str:
         """🧾 정기 리포트 생성 (/report)"""
