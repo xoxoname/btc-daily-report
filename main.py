@@ -103,7 +103,7 @@ class BitcoinPredictionSystem:
             'errors': 0
         }
         
-        # 예외 감지 통계 - 신규 추가
+        # 예외 감지 통계 - 신규 추가 (datetime 객체를 문자열로 저장)
         self.exception_stats = {
             'total_detected': 0,
             'news_alerts': 0,
@@ -111,7 +111,7 @@ class BitcoinPredictionSystem:
             'volume_alerts': 0,
             'funding_alerts': 0,
             'short_term_alerts': 0,
-            'last_reset': datetime.now()
+            'last_reset': datetime.now().isoformat()  # ISO 형식 문자열로 저장
         }
         
         # 클라이언트 초기화
@@ -426,7 +426,8 @@ class BitcoinPredictionSystem:
         """예외 감지 통계 리포트 - 신규 추가"""
         try:
             current_time = datetime.now()
-            time_since_reset = current_time - self.exception_stats['last_reset']
+            last_reset = datetime.fromisoformat(self.exception_stats['last_reset'])
+            time_since_reset = current_time - last_reset
             hours_since_reset = time_since_reset.total_seconds() / 3600
             
             if hours_since_reset < 1:  # 1시간 미만이면 리포트 생략
@@ -464,7 +465,7 @@ class BitcoinPredictionSystem:
                 'volume_alerts': 0,
                 'funding_alerts': 0,
                 'short_term_alerts': 0,
-                'last_reset': current_time
+                'last_reset': current_time.isoformat()  # ISO 형식 문자열로 저장
             }
             
             self.logger.info(f"예외 감지 통계 리포트 전송 완료 - 총 {total}건 감지")
@@ -539,7 +540,8 @@ class BitcoinPredictionSystem:
             minutes = int((uptime.total_seconds() % 3600) // 60)
             
             # 예외 감지 통계
-            stats_time = current_time - self.exception_stats['last_reset']
+            last_reset = datetime.fromisoformat(self.exception_stats['last_reset'])
+            stats_time = current_time - last_reset
             stats_hours = stats_time.total_seconds() / 3600
             
             total_exceptions = self.exception_stats['total_detected']
@@ -1025,7 +1027,17 @@ class BitcoinPredictionSystem:
             
             # 예외 감지기 상태 추가
             health_status['services']['exception_detector'] = 'OK'
-            health_status['exception_stats'] = self.exception_stats.copy()
+            
+            # exception_stats 복사 시 datetime 객체를 문자열로 변환
+            health_status['exception_stats'] = {
+                'total_detected': self.exception_stats['total_detected'],
+                'news_alerts': self.exception_stats['news_alerts'],
+                'price_alerts': self.exception_stats['price_alerts'],
+                'volume_alerts': self.exception_stats['volume_alerts'],
+                'funding_alerts': self.exception_stats['funding_alerts'],
+                'short_term_alerts': self.exception_stats['short_term_alerts'],
+                'last_reset': self.exception_stats['last_reset']  # 이미 ISO 문자열이므로 그대로 사용
+            }
             
             # 메모리 사용량 체크
             import psutil
@@ -1045,7 +1057,7 @@ class BitcoinPredictionSystem:
                 
                 await self.telegram_bot.send_message(error_msg, parse_mode='HTML')
             
-            # 로그 기록
+            # 로그 기록 (JSON 직렬화 가능한 형태로)
             self.logger.info(f"시스템 건강 체크 완료: {json.dumps(health_status, indent=2)}")
             
         except Exception as e:
@@ -1158,7 +1170,7 @@ class BitcoinPredictionSystem:
                 'volume_alerts': 0,
                 'funding_alerts': 0,
                 'short_term_alerts': 0,
-                'last_reset': datetime.now()
+                'last_reset': datetime.now().isoformat()  # ISO 형식 문자열로 저장
             }
             
         except Exception as e:
