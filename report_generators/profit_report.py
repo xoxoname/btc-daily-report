@@ -175,8 +175,8 @@ class ProfitReportGenerator(BaseReportGenerator):
                         btc_size = abs(size) * 0.0001
                         margin_used = btc_size * entry_price / leverage
                         
-                        # 포지션 수익률 계산
-                        pnl_rate = (pos_unrealized_pnl / margin_used) * 100 if margin_used > 0 else 0
+                        # ROE (Return on Equity) 계산 - 증거금 대비 수익률
+                        roe = (pos_unrealized_pnl / margin_used) * 100 if margin_used > 0 else 0
                         
                         position_info = {
                             'has_position': True,
@@ -188,7 +188,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                             'entry_price': entry_price,
                             'current_price': mark_price,
                             'unrealized_pnl': pos_unrealized_pnl,
-                            'pnl_rate': pnl_rate,
+                            'roe': roe,  # pnl_rate 대신 roe로 변경
                             'contract_size': abs(size),
                             'leverage': leverage,
                             'margin': margin_used,
@@ -247,6 +247,59 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"Gate 데이터 조회 실패: {e}")
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return self._get_empty_exchange_data('Gate')
+    
+    async def _get_position_info(self) -> dict:
+        """포지션 정보 조회 (Bitget)"""
+        try:
+            positions = await self.bitget_client.get_positions(self.config.symbol)
+            
+            if not positions:
+                return {'has_position': False}
+            
+            # 활성 포지션 찾기
+            for position in positions:
+                total_size = float(position.get('total', 0))
+                if total_size > 0:
+                    hold_side = position.get('holdSide', '')
+                    side = '롱' if hold_side == 'long' else '숏'
+                    
+                    # 필요한 값들 추출
+                    entry_price = float(position.get('openPriceAvg', 0))
+                    mark_price = float(position.get('markPrice', 0))
+                    margin_mode = position.get('marginMode', '')
+                    margin = float(position.get('margin', 0))
+                    unrealized_pnl = float(position.get('unrealizedPL', 0))
+                    
+                    # ROE 계산 (증거금 대비 수익률)
+                    roe = (unrealized_pnl / margin) * 100 if margin > 0 else 0
+                    
+                    # 청산가 필드 확인
+                    liquidation_price = 0
+                    for field in ['liquidationPrice', 'liqPrice', 'estimatedLiqPrice']:
+                        if field in position and position[field]:
+                            liquidation_price = float(position[field])
+                            break
+                    
+                    return {
+                        'has_position': True,
+                        'symbol': self.config.symbol,
+                        'side': side,
+                        'side_en': hold_side,
+                        'size': total_size,
+                        'entry_price': entry_price,
+                        'current_price': mark_price,
+                        'margin_mode': margin_mode,
+                        'margin': margin,
+                        'unrealized_pnl': unrealized_pnl,
+                        'roe': roe,  # ROE 추가
+                        'liquidation_price': liquidation_price
+                    }
+            
+            return {'has_position': False}
+            
+        except Exception as e:
+            self.logger.error(f"포지션 정보 조회 실패: {e}")
+            return {'has_position': False}
     
     async def _get_today_realized_pnl_kst(self) -> float:
         """KST 0시 기준 오늘 실현 손익 조회"""
@@ -429,11 +482,11 @@ class ProfitReportGenerator(BaseReportGenerator):
             has_any_position = True
             lines.append("━━━ <b>Bitget</b> ━━━")
             
-            # 포지션 수익률 계산
-            pnl_rate = bitget_pos.get('pnl_rate', 0)
-            pnl_sign = "+" if pnl_rate >= 0 else ""
+            # ROE (포지션 수익률) 사용
+            roe = bitget_pos.get('roe', 0)
+            roe_sign = "+" if roe >= 0 else ""
             
-            lines.append(f"• BTC {bitget_pos.get('side')} | 진입: ${bitget_pos.get('entry_price', 0):,.2f} ({pnl_sign}{pnl_rate:.1f}%)")
+            lines.append(f"• BTC {bitget_pos.get('side')} | 진입: ${bitget_pos.get('entry_price', 0):,.2f} ({roe_sign}{roe:.1f}%)")
             lines.append(f"• 현재가: ${bitget_pos.get('current_price', 0):,.2f} | 증거금: ${bitget_pos.get('margin', 0):.2f}")
             
             # 청산가
@@ -456,11 +509,11 @@ class ProfitReportGenerator(BaseReportGenerator):
                     lines.append("")
                 lines.append("━━━ <b>Gate</b> ━━━")
                 
-                # 포지션 수익률
-                pnl_rate = gateio_pos.get('pnl_rate', 0)
-                pnl_sign = "+" if pnl_rate >= 0 else ""
+                # ROE (포지션 수익률)
+                roe = gateio_pos.get('roe', 0)
+                roe_sign = "+" if roe >= 0 else ""
                 
-                lines.append(f"• BTC {gateio_pos.get('side')} | 진입: ${gateio_pos.get('entry_price', 0):,.2f} ({pnl_sign}{pnl_rate:.1f}%)")
+                lines.append(f"• BTC {gateio_pos.get('side')} | 진입: ${gateio_pos.get('entry_price', 0):,.2f} ({roe_sign}{roe:.1f}%)")
                 lines.append(f"• 현재가: ${gateio_pos.get('current_price', 0):,.2f} | 증거금: ${gateio_pos.get('margin', 0):.2f}")
                 lines.append(f"• 계약: {int(gateio_pos.get('contract_size', 0))}개 ({gateio_pos.get('btc_size', 0):.4f} BTC)")
                 
@@ -484,7 +537,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         """손익 정보 - 통합 요약 + 거래소별 상세"""
         lines = []
         
-        # 통합 손익 요약
+        # 통합 손익 요약 - 소수점 1자리까지 표시
         lines.append(f"• <b>수익</b>: {self._format_currency_compact(combined_data['today_total'], combined_data['today_roi'])}")
         
         # Bitget 상세
@@ -532,7 +585,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             # Gate.io는 2025년 5월부터 표시
             gate_roi = gateio_data['cumulative_roi']
-            lines.append(f"  └ Gate (5월~): {self._format_currency_html(gateio_data['cumulative_profit'], False)} ({gate_roi:+.0f}%)")
+            lines.append(f"  └ Gate: {self._format_currency_html(gateio_data['cumulative_profit'], False)} ({gate_roi:+.0f}%)")
         else:
             lines.append(f"  └ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
         
@@ -555,11 +608,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         # 일평균
         lines.append(f"• <b>일평균</b>: {self._format_currency_compact_daily(combined_data['weekly_avg'])}")
         
-        # 기간 표시 (Bitget 데이터 기준)
-        if 'start_date' in bitget_data.get('weekly_profit', {}):
-            start_date = bitget_data['weekly_profit']['start_date']
-            end_date = bitget_data['weekly_profit']['end_date']
-            lines.append(f"• <b>기간</b>: {start_date} ~ {end_date}")
+        # 기간 표시 제거
         
         return '\n'.join(lines)
     
@@ -581,10 +630,10 @@ class ProfitReportGenerator(BaseReportGenerator):
         return usd_text
     
     def _format_currency_compact(self, amount: float, roi: float) -> str:
-        """컴팩트한 통화+수익률 포맷"""
+        """컴팩트한 통화+수익률 포맷 - 수익률 소수점 1자리"""
         sign = "+" if amount >= 0 else ""
         krw = int(abs(amount) * 1350 / 10000)
-        return f"{sign}${abs(amount):,.2f} ({sign}{krw}만원/{sign}{int(roi)}%)"
+        return f"{sign}${abs(amount):,.2f} ({sign}{krw}만원/{sign}{roi:.1f}%)"
     
     def _format_currency_compact_daily(self, amount: float) -> str:
         """일평균용 컴팩트 포맷"""
