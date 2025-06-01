@@ -101,11 +101,11 @@ class ProfitReportGenerator(BaseReportGenerator):
             # KST 0시 기준 오늘 실현 손익
             today_pnl = await self._get_today_realized_pnl_kst()
             
-            # 오늘 포함 7일 수익
-            weekly_profit = await self._get_weekly_profit_accurate()
+            # 오늘 포함 7일 수익 - get_profit_loss_history 사용
+            weekly_profit = await self.bitget_client.get_profit_loss_history(days=7)
             
             # 전체 기간 손익 조회 (30일)
-            all_time_profit = await self._get_all_time_profit()
+            all_time_profit = await self.bitget_client.get_profit_loss_history(days=30)
             
             total_equity = account_info.get('total_equity', 0)
             
@@ -119,7 +119,11 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'position_info': position_info,
                 'account_info': account_info,
                 'today_pnl': today_pnl,
-                'weekly_profit': weekly_profit,
+                'weekly_profit': {
+                    'total': weekly_profit.get('total_pnl', 0),
+                    'average': weekly_profit.get('average_daily', 0),
+                    'daily_pnl': weekly_profit.get('daily_pnl', {})
+                },
                 'cumulative_profit': cumulative_profit,
                 'cumulative_roi': cumulative_roi,
                 'total_equity': total_equity,
@@ -369,45 +373,10 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"오늘 실현 손익 조회 실패: {e}")
             return 0.0
     
-    async def _get_weekly_profit_accurate(self) -> dict:
-        """정확한 7일 수익 조회 (오늘 포함)"""
-        try:
-            kst = pytz.timezone('Asia/Seoul')
-            now = datetime.now(kst)
-            
-            # 오늘부터 7일 전까지
-            end_date = now
-            start_date = now - timedelta(days=6)
-            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            # 날짜 범위 로깅
-            self.logger.info(f"7일 수익 조회 기간: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
-            
-            # 수익 조회
-            result = await self.bitget_client.get_profit_loss_history(days=7)
-            
-            return {
-                'total': result.get('total_pnl', 0),
-                'average': result.get('total_pnl', 0) / 7,
-                'start_date': start_date.strftime('%Y-%m-%d'),
-                'end_date': end_date.strftime('%Y-%m-%d')
-            }
-            
-        except Exception as e:
-            self.logger.error(f"7일 수익 조회 실패: {e}")
-            return {'total': 0, 'average': 0}
-    
     async def _get_all_time_profit(self) -> dict:
         """전체 기간 손익 조회 (30일)"""
         try:
-            kst = pytz.timezone('Asia/Seoul')
-            now = datetime.now(kst)
-            start_date = now - timedelta(days=30)
-            
-            start_time = int(start_date.timestamp() * 1000)
-            end_time = int(now.timestamp() * 1000)
-            
-            # 30일 손익 조회
+            # get_profit_loss_history 사용하여 30일 조회
             result = await self.bitget_client.get_profit_loss_history(days=30)
             
             return {
