@@ -313,7 +313,7 @@ class BitgetClient:
         return all_fills
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - 정확히 지정된 기간만 조회"""
+        """손익 내역 조회 - 페이징 처리 추가"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -347,10 +347,12 @@ class BitgetClient:
             total_fees = 0.0
             trade_count = 0
             
+            # 모든 거래 내역 조회 (페이징 처리)
+            all_fills = []
+            
             # days가 7일을 초과하는 경우 7일씩 나눠서 조회
             if days > 7:
                 current_start = start_time
-                all_fills = []
                 
                 while current_start < end_time:
                     current_end = min(current_start + (7 * 24 * 60 * 60 * 1000), end_time)
@@ -360,67 +362,20 @@ class BitgetClient:
                     end_kst = datetime.fromtimestamp(current_end/1000, tz=kst)
                     logger.info(f"부분 조회: {start_kst.strftime('%Y-%m-%d')} ~ {end_kst.strftime('%Y-%m-%d')}")
                     
-                    try:
-                        endpoint = "/api/v2/mix/order/fill-history"
-                        params = {
-                            'symbol': symbol,
-                            'productType': 'USDT-FUTURES',
-                            'startTime': str(current_start),
-                            'endTime': str(current_end),
-                            'limit': '500'
-                        }
-                        response = await self._request('GET', endpoint, params=params)
-                        
-                        fills = []
-                        if response is None:
-                            logger.warning("응답이 None입니다")
-                        elif isinstance(response, dict):
-                            fills = response.get('fillList', response.get('list', []))
-                        elif isinstance(response, list):
-                            fills = response
-                        
-                        if fills:
-                            all_fills.extend(fills)
-                            logger.info(f"부분 조회 결과: {len(fills)}건")
-                        else:
-                            logger.info("부분 조회 결과: 0건")
-                        
-                    except Exception as e:
-                        logger.error(f"부분 조회 실패: {e}")
+                    # 해당 기간의 모든 거래 조회 (페이징 처리)
+                    period_fills = await self._get_all_fills_for_period(symbol, current_start, current_end)
+                    all_fills.extend(period_fills)
                     
                     current_start = current_end
                     await asyncio.sleep(0.2)  # API 요청 간격
-                
-                fills = all_fills
             else:
-                # 7일 이하는 한 번에 조회
-                try:
-                    endpoint = "/api/v2/mix/order/fill-history"
-                    params = {
-                        'symbol': symbol,
-                        'productType': 'USDT-FUTURES',
-                        'startTime': str(start_time),
-                        'endTime': str(end_time),
-                        'limit': '500'
-                    }
-                    response = await self._request('GET', endpoint, params=params)
-                    
-                    fills = []
-                    if response is None:
-                        logger.warning("응답이 None입니다")
-                    elif isinstance(response, dict):
-                        fills = response.get('fillList', response.get('list', []))
-                    elif isinstance(response, list):
-                        fills = response
-                    
-                except Exception as e:
-                    logger.error(f"fill-history 조회 실패: {e}")
-                    fills = []
+                # 7일 이하는 페이징 처리로 모든 거래 조회
+                all_fills = await self._get_all_fills_for_period(symbol, start_time, end_time)
             
-            logger.info(f"조회된 거래 수: {len(fills)}건")
+            logger.info(f"총 조회된 거래 수: {len(all_fills)}건")
             
             # 거래 처리
-            for trade in fills:
+            for trade in all_fills:
                 try:
                     # 시간 필드 찾기
                     trade_time = None
@@ -516,6 +471,75 @@ class BitgetClient:
                 'total_fees': 0,
                 'error': str(e)
             }
+    
+    async def _get_all_fills_for_period(self, symbol: str, start_time: int, end_time: int) -> List[Dict]:
+        """특정 기간의 모든 거래 내역 조회 (페이징 처리)"""
+        all_fills = []
+        last_id = None
+        page = 0
+        
+        while page < 50:  # 최대 50페이지까지
+            try:
+                endpoint = "/api/v2/mix/order/fill-history"
+                params = {
+                    'symbol': symbol,
+                    'productType': 'USDT-FUTURES',
+                    'startTime': str(start_time),
+                    'endTime': str(end_time),
+                    'limit': '500'  # 최대 한도
+                }
+                
+                if last_id:
+                    params['lastEndId'] = str(last_id)
+                
+                logger.info(f"페이지 {page + 1} 조회 중...")
+                response = await self._request('GET', endpoint, params=params)
+                
+                fills = []
+                if response is None:
+                    logger.warning("응답이 None입니다")
+                    break
+                elif isinstance(response, dict):
+                    fills = response.get('fillList', response.get('list', []))
+                elif isinstance(response, list):
+                    fills = response
+                
+                if not fills:
+                    logger.info(f"페이지 {page + 1}: 더 이상 데이터가 없습니다")
+                    break
+                
+                all_fills.extend(fills)
+                logger.info(f"페이지 {page + 1}: {len(fills)}건 조회 (누적 {len(all_fills)}건)")
+                
+                # 500건 미만이면 마지막 페이지
+                if len(fills) < 500:
+                    logger.info("마지막 페이지 도달")
+                    break
+                
+                # 다음 페이지를 위한 lastId 찾기
+                last_fill = fills[-1]
+                new_last_id = None
+                
+                for field in ['fillId', 'id', 'orderId', 'tradeId']:
+                    if field in last_fill and last_fill[field]:
+                        new_last_id = str(last_fill[field])
+                        break
+                
+                if not new_last_id or new_last_id == last_id:
+                    logger.warning("다음 페이지 ID를 찾을 수 없음")
+                    break
+                
+                last_id = new_last_id
+                page += 1
+                
+                # API 요청 간격
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"페이지 {page + 1} 조회 오류: {e}")
+                break
+        
+        return all_fills
     
     async def get_funding_rate(self, symbol: str = None) -> Dict:
         """펀딩비 조회 (V2 API)"""
