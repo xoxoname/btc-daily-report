@@ -106,7 +106,6 @@ class ExceptionReportGenerator(BaseReportGenerator):
             title = event.get('title', '')
             impact = event.get('impact', '')
             description = event.get('description', '')
-            source = event.get('source', '')
             
             # 한글 제목 우선 사용
             if 'title_ko' in event:
@@ -124,8 +123,10 @@ class ExceptionReportGenerator(BaseReportGenerator):
             # 상세 뉴스 내용 분석
             detailed_summary = await self._extract_detailed_news_info(title, description, impact)
             
-            return f"""• {time_str} - {impact_emoji} <b>{title}</b>
-• 출처: {source}
+            # 뉴스 내용 요약
+            news_summary = await self._summarize_news_content(title, description)
+            
+            return f"""• {time_str} - {impact_emoji} {news_summary}
 {detailed_summary}
 • 영향: {impact}"""
         
@@ -166,6 +167,60 @@ class ExceptionReportGenerator(BaseReportGenerator):
             return f"""• {time_str} - <b>{event.get('description', '이상 징후 감지')}</b>
 • {event.get('details', '세부 정보 분석 중')}
 • {event.get('impact', '시장 영향 평가 중')}"""
+    
+    async def _summarize_news_content(self, title: str, description: str) -> str:
+        """뉴스 내용을 간단히 요약"""
+        content = title + ' ' + description
+        
+        # 암호화폐 사기 관련
+        if any(word in content.lower() for word in ['scammer', 'fraud', 'scam', '사기']):
+            # 금액 추출
+            import re
+            amount_match = re.search(r'\$?([\d,]+(?:\.\d+)?)\s*(million|billion|백만|억)', content)
+            if amount_match:
+                amount = amount_match.group(1).replace(',', '')
+                unit = amount_match.group(2)
+                
+                # 해킹 손실 감소 여부 확인
+                if 'decrease' in content or 'down' in content or '감소' in content or '줄어' in content:
+                    return f"암호화폐 사기 피해 ${amount}{unit}, 해킹 손실은 감소 (보안 개선)"
+                else:
+                    return f"사기꾼들이 ${amount}{unit} 규모 암호화폐 사기 시도"
+            else:
+                return "암호화폐 사기 사건 발생"
+        
+        # 기업 비트코인 구매
+        elif any(word in content.lower() for word in ['bought', 'purchase', 'buys', '구매', '매입']):
+            # 회사명 추출
+            companies = ['tesla', 'microstrategy', 'gamestop', 'metaplanet', '테슬라', '마이크로스트래티지', '게임스탑', '메타플래닛']
+            for company in companies:
+                if company.lower() in content.lower():
+                    # 금액 추출
+                    amount_match = re.search(r'\$?([\d,]+(?:\.\d+)?)\s*(million|billion|백만|억)', content)
+                    if amount_match:
+                        amount = amount_match.group(1).replace(',', '')
+                        unit = amount_match.group(2)
+                        return f"{company.title()}이 ${amount}{unit} 규모 비트코인 구매"
+                    else:
+                        return f"{company.title()}이 비트코인 추가 구매"
+            return "기업의 비트코인 구매 소식"
+        
+        # 규제 관련
+        elif any(word in content.lower() for word in ['regulation', 'sec', 'government', '규제', '정부']):
+            if 'approve' in content or '승인' in content:
+                return "규제 당국의 승인 소식"
+            elif 'reject' in content or 'ban' in content or '거부' in content or '금지' in content:
+                return "규제 당국의 제한 조치"
+            else:
+                return "규제 관련 소식"
+        
+        # 기본 요약
+        else:
+            # 제목이 너무 길면 축약
+            if len(title) > 50:
+                return title[:47] + "..."
+            else:
+                return title
     
     async def _extract_detailed_news_info(self, title: str, description: str, impact: str) -> str:
         """뉴스에서 상세 정보 추출"""
@@ -269,7 +324,43 @@ class ExceptionReportGenerator(BaseReportGenerator):
             else:
                 details.append("• 📊 예상: 하락 압력")
         
+        # 7. 예상 시나리오 추가
+        expected_scenario = self._generate_expected_scenario(content, impact)
+        if expected_scenario:
+            details.append(f"• 📊 예상: {expected_scenario}")
+        
         return '\n'.join(details) if details else "• 📋 추가 세부사항 분석 중"
+    
+    def _generate_expected_scenario(self, content: str, impact: str) -> str:
+        """예상 시나리오 생성"""
+        content_lower = content.lower()
+        
+        # 사기/해킹 관련
+        if any(word in content_lower for word in ['scam', 'fraud', 'hack', '사기', '해킹']):
+            if 'decrease' in content_lower or '감소' in content_lower:
+                return "보안 개선으로 투자 심리 회복, 단기 횡보 후 상승 가능"
+            else:
+                return "투자 심리 위축, 1-2일 내 -0.3~0.5% 하락 후 회복"
+        
+        # 기업 구매
+        elif any(word in content_lower for word in ['bought', 'purchase', '구매']):
+            return "기관 매수세 유입, 2-4시간 내 +0.5~1.5% 상승"
+        
+        # 규제 승인
+        elif 'approve' in content_lower or '승인' in content_lower:
+            return "규제 불확실성 해소, 점진적 상승세 지속"
+        
+        # 규제 거부/금지
+        elif any(word in content_lower for word in ['reject', 'ban', '거부', '금지']):
+            return "규제 리스크 확대, 단기 조정 후 바닥 확인"
+        
+        # 기본
+        elif '호재' in impact:
+            return "긍정적 모멘텀 형성, 단기 상승 가능"
+        elif '악재' in impact:
+            return "부정적 압력 증가, 지지선 테스트 예상"
+        else:
+            return "시장 관망세, 추가 재료 대기"
     
     async def _generate_ml_analysis(self, event: Dict) -> str:
         """ML 기반 예측 분석"""
@@ -380,11 +471,11 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 )
                 
                 if not is_bitcoin_related and event_info['type'] != 'critical_news':
-                    return """• <b>뉴스 요약</b>: 비트코인과 간접적 관련
+                    return """• <b>뉴스 해석</b>: 비트코인과 간접적 관련
 • <b>시장 영향력</b>: <b>5%</b> 미만
 • <b>예상 변동률</b>: <b>무영향</b>
 • <b>추천 포지션</b>: <b>기존 전략 유지</b>
-• <b>예상 시간대</b>: 영향 없음"""
+• <b>예상 시나리오</b>: 영향 없음"""
                 
                 prompt = f"""
 비트코인 시장에서 다음 예외 상황이 발생했습니다:
@@ -396,23 +487,24 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 다음 형식으로 현실적이고 정확한 분석을 제공하세요:
 
-1. 뉴스 요약: (핵심 내용을 30자 이내로)
-2. 시장 영향력: X% (이 뉴스가 비트코인 가격에 미칠 영향을 0-100%로 평가)
-3. 예상 변동률: ±X% (실제 예상되는 가격 변동 범위)
-4. 추천 포지션: 롱/숏/관망 (명확한 근거와 함께)
-5. 예상 시간대: (영향이 나타날 시간대)
+뉴스 해석: (핵심 내용을 한국인이 이해하기 쉽게 30자 이내로 설명)
+시장 영향력: X% (이 뉴스가 비트코인 가격에 미칠 영향을 0-100%로 평가)
+예상 변동률: ±X% (실제 예상되는 가격 변동 범위)
+추천 포지션: 롱/숏/관망 (명확한 근거와 함께)
+예상 시나리오: (구체적인 시간대와 함께 예상되는 시장 움직임 설명)
 
 중요: 
 - 이미 시장에 반영된 뉴스인지 확인
 - 과장하지 말고 현실적으로 평가
 - "비트코인 우세"같은 경우는 이미 진행중인 상황이므로 추가 상승 여력은 제한적
 - 시장 영향력은 대부분 20% 미만이며, 50%를 넘는 경우는 극히 드물다
+- 암호화폐 사기나 해킹 관련 뉴스는 정확히 해석하여 설명
 """
                 
                 response = await self.openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "당신은 보수적이고 현실적인 암호화폐 분석가입니다. 과장하지 않고 정확한 분석을 제공합니다."},
+                        {"role": "system", "content": "당신은 보수적이고 현실적인 암호화폐 분석가입니다. 과장하지 않고 정확한 분석을 제공합니다. 한국인이 이해하기 쉽게 설명합니다."},
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=400,
@@ -436,7 +528,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
                             if '%' in value:
                                 # 퍼센트 값 찾기
                                 import re
-                                match = re.search(r'([\d.]+%)', value)
+                                match = re.search(r'([\d.±-]+%)', value)
                                 if match:
                                     value = value.replace(match.group(1), f"<b>{match.group(1)}</b>")
                             elif any(pos in value for pos in ['롱', '숏', '관망']):
@@ -463,40 +555,55 @@ class ExceptionReportGenerator(BaseReportGenerator):
         
         # 비트코인 우세 관련
         if '우세' in title or 'dominance' in title.lower():
-            return """• <b>뉴스 요약</b>: BTC 시장 점유율 상승 지속
+            return """• <b>뉴스 해석</b>: BTC 시장 점유율 상승 지속
 • <b>시장 영향력</b>: <b>15%</b> (단기 모멘텀 강화)
 • <b>예상 변동률</b>: <b>±0.5%</b> 내외
 • <b>추천 포지션</b>: <b>관망</b> (이미 반영된 움직임)
-• <b>예상 시간대</b>: 4-6시간 내 횡보"""
+• <b>예상 시나리오</b>: 4-6시간 내 횡보 후 방향 결정"""
+        
+        # 사기/해킹 관련
+        if any(word in title.lower() for word in ['scam', 'fraud', 'hack', '사기', '해킹']):
+            if 'decrease' in title.lower() or '감소' in title:
+                return """• <b>뉴스 해석</b>: 암호화폐 보안 개선 신호
+• <b>시장 영향력</b>: <b>10%</b> (간접적 호재)
+• <b>예상 변동률</b>: <b>±0.3%</b> 내외
+• <b>추천 포지션</b>: <b>기존 유지</b>
+• <b>예상 시나리오</b>: 투자 심리 점진적 회복"""
+            else:
+                return """• <b>뉴스 해석</b>: 암호화폐 사기 피해 발생
+• <b>시장 영향력</b>: <b>15%</b> (투자 심리 위축)
+• <b>예상 변동률</b>: <b>-0.3~0.5%</b>
+• <b>추천 포지션</b>: <b>관망</b> (과도한 공포 시 매수 고려)
+• <b>예상 시나리오</b>: 단기 매도압력 후 1-2일 내 회복"""
         
         # 기업 매수 뉴스
         if any(word in title.lower() for word in ['bought', 'purchase', '구매', '매입']):
-            return """• <b>뉴스 요약</b>: 기업의 BTC 추가 매입
+            return """• <b>뉴스 해석</b>: 기업의 BTC 추가 매입
 • <b>시장 영향력</b>: <b>25%</b> (긍정적 신호)
 • <b>예상 변동률</b>: <b>+0.5~1.5%</b>
 • <b>추천 포지션</b>: <b>소량 롱</b> (단기 상승 가능)
-• <b>예상 시간대</b>: 1-2시간 내 반응"""
+• <b>예상 시나리오</b>: 1-2시간 내 반응, 기관 매수세 유입"""
         
         # 일반적인 경우
         if event_type == 'critical_news':
             if '호재' in impact:
-                return """• <b>뉴스 요약</b>: 긍정적 시장 소식
+                return """• <b>뉴스 해석</b>: 긍정적 시장 소식
 • <b>시장 영향력</b>: <b>20%</b>
 • <b>예상 변동률</b>: <b>+0.3~1%</b>
 • <b>추천 포지션</b>: <b>소량 롱</b> 고려
-• <b>예상 시간대</b>: 2-4시간 내 반응"""
+• <b>예상 시나리오</b>: 2-4시간 내 점진적 상승"""
             elif '악재' in impact:
-                return """• <b>뉴스 요약</b>: 부정적 시장 소식
+                return """• <b>뉴스 해석</b>: 부정적 시장 소식
 • <b>시장 영향력</b>: <b>25%</b>
 • <b>예상 변동률</b>: <b>-0.5~1.5%</b>
 • <b>추천 포지션</b>: <b>리스크 관리</b> 우선
-• <b>예상 시간대</b>: 즉시~2시간"""
+• <b>예상 시나리오</b>: 즉시~2시간 내 하락 압력"""
             else:
-                return """• <b>뉴스 요약</b>: 중립적 시장 소식
+                return """• <b>뉴스 해석</b>: 중립적 시장 소식
 • <b>시장 영향력</b>: <b>10%</b> 미만
 • <b>예상 변동률</b>: <b>±0.3%</b> 내외
 • <b>추천 포지션</b>: <b>관망</b>
-• <b>예상 시간대</b>: 불확실"""
+• <b>예상 시나리오</b>: 추가 재료 대기"""
         
         elif event_type == 'price_anomaly':
             change = event.get('change_24h', 0)
@@ -505,20 +612,20 @@ class ExceptionReportGenerator(BaseReportGenerator):
 • <b>시장 영향력</b>: <b>이미 100% 반영</b>
 • <b>예상 변동률</b>: <b>{'+0.5~1%' if change > 0 else '-0.5~1%'}</b> 추가
 • <b>추천 포지션</b>: <b>{'역추세 숏' if change > 0 else '반등 롱'}</b> 준비
-• <b>예상 시간대</b>: 30분~1시간 내 조정"""
+• <b>예상 시나리오</b>: 30분~1시간 내 조정"""
             else:
                 return f"""• <b>가격 변동</b>: {change*100:+.1f}% 변동
 • <b>시장 영향력</b>: <b>50% 반영</b>
 • <b>예상 변동률</b>: <b>±0.5%</b> 내외
 • <b>추천 포지션</b>: <b>관망</b>
-• <b>예상 시간대</b>: 1-2시간 관찰"""
+• <b>예상 시나리오</b>: 1-2시간 관찰 필요"""
         
         else:
             return """• <b>이벤트 유형</b>: 일반 시장 변동
 • <b>시장 영향력</b>: <b>15%</b> 미만
 • <b>예상 변동률</b>: <b>±0.3%</b> 내외
 • <b>추천 포지션</b>: <b>기존 전략 유지</b>
-• <b>예상 시간대</b>: 점진적 반영"""
+• <b>예상 시나리오</b>: 점진적 반영"""
     
     async def _format_dynamic_risk_strategy(self, event: Dict) -> str:
         """동적 리스크 전략 생성"""
