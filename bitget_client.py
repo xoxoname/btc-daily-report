@@ -164,6 +164,163 @@ class BitgetClient:
             logger.error(f"계정 정보 조회 실패: {e}")
             raise
     
+    async def get_account_bills(self, start_time: int = None, end_time: int = None, 
+                               business_type: str = None, limit: int = 100,
+                               next_id: str = None) -> List[Dict]:
+        """계정 거래 내역 조회 (Account Bills)"""
+        endpoint = "/api/v2/mix/account/bills"
+        params = {
+            'productType': 'USDT-FUTURES',
+            'marginCoin': 'USDT'
+        }
+        
+        if start_time:
+            params['startTime'] = str(start_time)
+        if end_time:
+            params['endTime'] = str(end_time)
+        if business_type:
+            params['businessType'] = business_type  # 'contract_settle' for realized PnL
+        if limit:
+            params['limit'] = str(min(limit, 100))
+        if next_id:
+            params['startId'] = str(next_id)
+        
+        try:
+            response = await self._request('GET', endpoint, params=params)
+            
+            if isinstance(response, list):
+                return response
+            elif isinstance(response, dict):
+                # 페이징 정보가 있는 경우
+                return response.get('billsList', response.get('bills', []))
+            return []
+            
+        except Exception as e:
+            logger.error(f"계정 내역 조회 실패: {e}")
+            return []
+    
+    async def get_profit_loss_history_v2(self, symbol: str = None, days: int = 7) -> Dict:
+        """손익 내역 조회 - Account Bills 사용"""
+        try:
+            symbol = symbol or self.config.symbol
+            
+            # KST 기준 현재 시간
+            kst = pytz.timezone('Asia/Seoul')
+            now = datetime.now(kst)
+            
+            # 조회 기간 설정
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            period_start = today_start - timedelta(days=days-1)
+            period_end = now
+            
+            # UTC로 변환
+            start_time_utc = period_start.astimezone(pytz.UTC)
+            end_time_utc = period_end.astimezone(pytz.UTC)
+            
+            start_time = int(start_time_utc.timestamp() * 1000)
+            end_time = int(end_time_utc.timestamp() * 1000)
+            
+            logger.info(f"=== {days}일 손익 조회 (Account Bills) ===")
+            logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
+            
+            # 모든 계정 내역 조회
+            all_bills = []
+            next_id = None
+            page = 0
+            
+            while page < 50:  # 최대 50페이지
+                bills = await self.get_account_bills(
+                    start_time=start_time,
+                    end_time=end_time,
+                    business_type='contract_settle',  # 실현 손익만
+                    limit=100,
+                    next_id=next_id
+                )
+                
+                if not bills:
+                    break
+                
+                all_bills.extend(bills)
+                logger.info(f"페이지 {page + 1}: {len(bills)}건 조회 (누적 {len(all_bills)}건)")
+                
+                if len(bills) < 100:
+                    break
+                
+                # 다음 페이지
+                last_bill = bills[-1]
+                next_id = last_bill.get('billId', last_bill.get('id'))
+                if not next_id:
+                    break
+                    
+                page += 1
+                await asyncio.sleep(0.1)
+            
+            # 날짜별 손익 계산
+            daily_pnl = {}
+            total_pnl = 0.0
+            total_fees = 0.0
+            trade_count = 0
+            
+            for bill in all_bills:
+                try:
+                    # 시간
+                    bill_time = int(bill.get('cTime', 0))
+                    if not bill_time:
+                        continue
+                    
+                    bill_date_kst = datetime.fromtimestamp(bill_time / 1000, tz=kst)
+                    bill_date_str = bill_date_kst.strftime('%Y-%m-%d')
+                    
+                    # 금액
+                    amount = float(bill.get('amount', 0))
+                    
+                    # 손익인 경우만 처리
+                    business_type = bill.get('businessType', '')
+                    if business_type == 'contract_settle' and amount != 0:
+                        if bill_date_str not in daily_pnl:
+                            daily_pnl[bill_date_str] = 0
+                        
+                        daily_pnl[bill_date_str] += amount
+                        total_pnl += amount
+                        trade_count += 1
+                        
+                        logger.debug(f"손익: {bill_date_str} - ${amount:.2f}")
+                    
+                except Exception as e:
+                    logger.warning(f"계정 내역 파싱 오류: {e}")
+                    continue
+            
+            # 수수료는 별도 조회 필요 (trade fills에서)
+            # 여기서는 손익만 계산
+            
+            logger.info(f"\n=== 일별 손익 내역 (Account Bills) ===")
+            for date, pnl in sorted(daily_pnl.items()):
+                logger.info(f"{date}: ${pnl:,.2f}")
+            
+            logger.info(f"\n=== {days}일 총 손익: ${total_pnl:,.2f} (거래 {trade_count}건) ===")
+            
+            return {
+                'total_pnl': total_pnl,
+                'daily_pnl': daily_pnl,
+                'days': days,
+                'average_daily': total_pnl / days if days > 0 else 0,
+                'trade_count': trade_count,
+                'total_fees': 0  # 수수료는 별도 계산 필요
+            }
+            
+        except Exception as e:
+            logger.error(f"손익 내역 조회 실패: {e}")
+            logger.error(f"상세 오류: {traceback.format_exc()}")
+            return {
+                'total_pnl': 0,
+                'daily_pnl': {},
+                'days': days,
+                'average_daily': 0,
+                'trade_count': 0,
+                'total_fees': 0,
+                'error': str(e)
+            }
+    
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
         """거래 체결 내역 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
@@ -225,7 +382,25 @@ class BitgetClient:
         return []
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - 30일 조회 후 필요한 기간만 추출"""
+        """손익 내역 조회 - 우선 Account Bills 시도, 실패시 기존 방식"""
+        try:
+            # 먼저 Account Bills 방식 시도
+            result = await self.get_profit_loss_history_v2(symbol, days)
+            
+            # 결과가 있으면 반환
+            if result.get('total_pnl', 0) != 0 or result.get('trade_count', 0) > 0:
+                return result
+            
+            # Account Bills에서 데이터가 없으면 기존 방식으로 폴백
+            logger.info("Account Bills에 데이터가 없어 기존 방식으로 전환")
+            return await self._get_profit_loss_history_original(symbol, days)
+            
+        except Exception as e:
+            logger.error(f"Account Bills 조회 실패, 기존 방식으로 전환: {e}")
+            return await self._get_profit_loss_history_original(symbol, days)
+    
+    async def _get_profit_loss_history_original(self, symbol: str = None, days: int = 7) -> Dict:
+        """손익 내역 조회 - 기존 방식 (30일 조회 후 필터링)"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -238,7 +413,7 @@ class BitgetClient:
             period_start = today_start - timedelta(days=days-1)
             period_end = now
             
-            logger.info(f"=== {days}일 손익 조회 ===")
+            logger.info(f"=== {days}일 손익 조회 (기존 방식) ===")
             logger.info(f"실제 필요 기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
             
             # 30일 데이터 조회 (안정적인 데이터 확보를 위해)
