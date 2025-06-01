@@ -5,6 +5,7 @@ import traceback
 from datetime import datetime, timedelta
 import json
 import pytz
+import os
 
 class RegularReportGenerator(BaseReportGenerator):
     """정기 리포트 - 선물 롱/숏 판단 특화"""
@@ -13,6 +14,32 @@ class RegularReportGenerator(BaseReportGenerator):
         super().__init__(config, data_collector, indicator_system, bitget_client)
         self.mental_care = MentalCareGenerator(self.openai_client)
         self.last_prediction = None
+        self.prediction_history_file = 'prediction_history.json'
+        self._load_prediction_history()
+    
+    def _load_prediction_history(self):
+        """예측 기록 로드"""
+        try:
+            if os.path.exists(self.prediction_history_file):
+                with open(self.prediction_history_file, 'r') as f:
+                    self.prediction_history = json.load(f)
+            else:
+                self.prediction_history = []
+        except Exception as e:
+            self.logger.error(f"예측 기록 로드 실패: {e}")
+            self.prediction_history = []
+    
+    def _save_prediction_history(self):
+        """예측 기록 저장"""
+        try:
+            # 최근 100개만 유지
+            if len(self.prediction_history) > 100:
+                self.prediction_history = self.prediction_history[-100:]
+            
+            with open(self.prediction_history_file, 'w') as f:
+                json.dump(self.prediction_history, f)
+        except Exception as e:
+            self.logger.error(f"예측 기록 저장 실패: {e}")
     
     async def generate_report(self) -> str:
         """🧾 선물 롱/숏 판단 종합 리포트"""
@@ -36,19 +63,29 @@ class RegularReportGenerator(BaseReportGenerator):
             
             # 확장된 기술적 지표 분석 (백그라운드)
             extended_indicators = await self._calculate_extended_indicators(market_data)
-            indicators.update(extended_indicators)
+            indicators['extended_indicators'] = extended_indicators
+            
+            # 이전 예측 검증
+            validation_text = await self._validate_last_prediction(market_data)
             
             # 섹션별 생성
+            events_text = await self._format_market_events(market_data)
             market_summary = await self._format_market_summary(market_data)
             signal_summary = await self._format_signal_summary(indicators)
             strategy_text = await self._format_trading_strategy(market_data, indicators)
-            prediction_text = await self._format_ai_prediction(market_data, indicators)
+            prediction_text = await self._format_enhanced_ai_prediction(market_data, indicators)
             pnl_text = await self._format_integrated_pnl()
             mental_text = await self._generate_mental_care(market_data, indicators)
+            
+            # 현재 예측 저장
+            self._save_current_prediction(market_data, indicators)
             
             report = f"""<b>🧾 비트코인 선물 매매 예측 리포트</b>
 <b>📅 {current_time}</b>
 ━━━━━━━━━━━━━━━━━━━
+
+<b>📌 최근 시장 이벤트</b>
+{events_text}
 
 <b>📊 현재 시장 상황</b>
 {market_summary}
@@ -59,8 +96,11 @@ class RegularReportGenerator(BaseReportGenerator):
 <b>💡 매매 전략</b>
 {strategy_text}
 
-<b>🔮 AI 예측 (12시간)</b>
+<b>🔮 AI 정밀 예측 (12시간)</b>
 {prediction_text}
+
+<b>📊 이전 예측 검증</b>
+{validation_text}
 
 <b>💰 통합 손익 현황</b>
 {pnl_text}
@@ -74,6 +114,26 @@ class RegularReportGenerator(BaseReportGenerator):
             self.logger.error(f"정기 리포트 생성 실패: {str(e)}")
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return f"❌ 리포트 생성 중 오류가 발생했습니다: {str(e)}"
+    
+    async def _format_market_events(self, market_data: dict) -> str:
+        """시장 이벤트 - 최근 뉴스 포맷"""
+        try:
+            recent_news = await self._get_recent_news(hours=6)
+            
+            if not recent_news:
+                return "• 특이 뉴스 없음 (최근 6시간)"
+            
+            # 중요도 순으로 정렬하고 상위 3개만
+            formatted_news = await self.format_news_with_time(recent_news[:3], max_items=3)
+            
+            if formatted_news:
+                return '\n'.join(formatted_news)
+            else:
+                return "• 시장 영향 뉴스 없음"
+                
+        except Exception as e:
+            self.logger.error(f"뉴스 포맷팅 오류: {e}")
+            return "• 뉴스 데이터 수집 중"
     
     async def _calculate_extended_indicators(self, market_data: dict) -> dict:
         """확장된 기술적 지표 계산 (백그라운드)"""
@@ -158,8 +218,27 @@ class RegularReportGenerator(BaseReportGenerator):
                         highs, lows, closes, extended['atr']
                     )
                     
+                    # 추가 지표들
+                    # 페어차일드 지표
+                    extended['fractal_adaptive_ma'] = self._calculate_frama(closes)
+                    
+                    # 디마크 지표
+                    extended['demark_indicator'] = self._calculate_demark(highs, lows, closes)
+                    
+                    # 엘더레이 지표
+                    extended['elder_ray'] = self._calculate_elder_ray(highs, lows, closes)
+                    
+                    # 코포크 커브
+                    extended['coppock_curve'] = self._calculate_coppock(closes)
+                    
+                    # 차이킨 머니 플로우
+                    extended['chaikin_mf'] = self._calculate_chaikin_mf(highs, lows, closes, volumes)
+                    
                     # 지표 스코어링 (중요도 계산)
                     extended['indicator_scores'] = self._score_indicators(extended, closes[-1])
+                    
+                    # 종합 분석
+                    extended['comprehensive_analysis'] = self._analyze_all_indicators(extended, market_data)
             
             return extended
             
@@ -190,12 +269,16 @@ class RegularReportGenerator(BaseReportGenerator):
         
         change_emoji = "📈" if change_24h > 0 else "📉" if change_24h < 0 else "➖"
         
+        # 펀딩비 추가
+        funding = market_data.get('funding_rate', 0)
+        funding_text = f"\n• 펀딩비: {funding:+.4f}% (8시간)"
+        
         return f"""• BTC: ${current_price:,.0f} {change_emoji} ({change_24h:+.1%})
 - 24H 거래량: {volume_24h:,.0f} BTC
-- 변동성: {volatility:.1f}% ({vol_level}) {vol_emoji}"""
+- 변동성: {volatility:.1f}% ({vol_level}) {vol_emoji}{funding_text}"""
     
     async def _format_signal_summary(self, indicators: dict) -> str:
-        """핵심 매매 신호 요약 - 시각적 개선"""
+        """핵심 매매 신호 요약 - 백그라운드 분석 요약"""
         composite = indicators.get('composite_signal', {})
         total_score = composite.get('total_score', 0)
         confidence = composite.get('confidence', 50)
@@ -232,30 +315,68 @@ class RegularReportGenerator(BaseReportGenerator):
             direction = "⚪ 중립"
             signal_color = "⚪"
         
-        # 중요 지표 선별 (백그라운드에서 분석한 것 중 상위 3개)
+        # 백그라운드 분석 요약
         extended = indicators.get('extended_indicators', {})
-        top_indicators = []
+        comprehensive = extended.get('comprehensive_analysis', {})
         
-        if 'indicator_scores' in extended:
-            sorted_indicators = sorted(
-                extended['indicator_scores'].items(),
-                key=lambda x: abs(x[1]),
-                reverse=True
-            )[:3]
+        # 주요 신호 추출
+        key_signals = []
+        
+        # 추세 신호
+        if comprehensive.get('trend_strength', '') == 'strong_bullish':
+            key_signals.append("• 강한 상승 추세 확인")
+        elif comprehensive.get('trend_strength', '') == 'strong_bearish':
+            key_signals.append("• 강한 하락 추세 확인")
+        
+        # 모멘텀 신호
+        if comprehensive.get('momentum_signal'):
+            key_signals.append(f"• {comprehensive['momentum_signal']}")
+        
+        # 거래량 신호
+        if comprehensive.get('volume_signal'):
+            key_signals.append(f"• {comprehensive['volume_signal']}")
+        
+        # 변동성 신호
+        if comprehensive.get('volatility_signal'):
+            key_signals.append(f"• {comprehensive['volatility_signal']}")
+        
+        # 지지/저항
+        if comprehensive.get('key_levels'):
+            key_signals.append(f"• {comprehensive['key_levels']}")
+        
+        # 신호가 없으면 기본 분석 제공
+        if not key_signals:
+            # 기본 기술적 분석 제공
+            rsi = indicators.get('technical', {}).get('rsi', {}).get('value', 50)
+            macd = extended.get('macd_histogram', 0)
             
-            for ind_name, score in sorted_indicators:
-                if score > 0:
-                    top_indicators.append(f"• {ind_name}: 매수 신호")
-                elif score < 0:
-                    top_indicators.append(f"• {ind_name}: 매도 신호")
+            if rsi > 70:
+                key_signals.append("• RSI 과매수 구간 (조정 가능)")
+            elif rsi < 30:
+                key_signals.append("• RSI 과매도 구간 (반등 가능)")
+            else:
+                key_signals.append(f"• RSI {rsi:.0f} (중립 구간)")
+            
+            if macd > 0:
+                key_signals.append("• MACD 상승 신호")
+            else:
+                key_signals.append("• MACD 하락 신호")
+            
+            # 이동평균 위치
+            if 'ma_7' in extended and 'ma_25' in extended:
+                current_price = indicators.get('current_price', 0)
+                if current_price > extended['ma_7'] > extended['ma_25']:
+                    key_signals.append("• 단기>중기 이평선 (상승)")
+                elif current_price < extended['ma_7'] < extended['ma_25']:
+                    key_signals.append("• 단기<중기 이평선 (하락)")
         
-        key_indicators = "\n".join(top_indicators) if top_indicators else "• 특이 신호 없음"
+        key_indicators = "\n".join(key_signals[:5])  # 최대 5개
         
         return f"""【강도】 {strength_bar} ({strength}/5)
 【방향】 {direction}
 【신뢰도】 {confidence:.0f}%
 
-<b>핵심 지표 요약:</b>
+<b>백그라운드 분석 요약:</b>
 {key_indicators}"""
     
     async def _format_trading_strategy(self, market_data: dict, indicators: dict) -> str:
@@ -320,16 +441,17 @@ class RegularReportGenerator(BaseReportGenerator):
         # RSI 체크
         rsi = indicators.get('technical', {}).get('rsi', {}).get('value', 50)
         if rsi > 70 and total_score > 0:
-            warning = "\n⚠️ 과매수 구간 - 조정 가능성"
+            warning = "\n⚠️ 과매수 구간 - 분할 진입 권장"
         elif rsi < 30 and total_score < 0:
-            warning = "\n⚠️ 과매도 구간 - 반등 가능성"
+            warning = "\n⚠️ 과매도 구간 - 분할 진입 권장"
         
         # 볼륨 분석
         volume_analysis = indicators.get('volume_delta', {})
-        if volume_analysis.get('smart_money', {}).get('signal') == '스마트머니 매수 진입':
-            warning += "\n✅ 고래 매집 확인 - 상승 준비"
-        elif volume_analysis.get('smart_money', {}).get('signal') == '스마트머니 매도 진행':
-            warning += "\n⚠️ 고래 매도 확인 - 하락 주의"
+        smart_money = indicators.get('smart_money', {})
+        if smart_money.get('net_flow', 0) > 10:
+            warning += "\n✅ 고래 대량 매집 - 상승 신호"
+        elif smart_money.get('net_flow', 0) < -10:
+            warning += "\n⚠️ 고래 대량 매도 - 하락 신호"
         
         if stop_loss > 0:
             return f"""• 액션: {emoji} {action}
@@ -343,112 +465,346 @@ class RegularReportGenerator(BaseReportGenerator):
 - 하방 이탈: ${entry_low:,.0f} 이하 시 숏
 - 대기 구간: ${entry_low:,.0f} ~ ${entry_high:,.0f}{warning}"""
     
-    async def _format_ai_prediction(self, market_data: dict, indicators: dict) -> str:
-        """AI 예측 - 더 정확하고 명확한"""
+    async def _format_enhanced_ai_prediction(self, market_data: dict, indicators: dict) -> str:
+        """향상된 AI 예측 - 정확하고 구체적인"""
         composite = indicators.get('composite_signal', {})
         total_score = composite.get('total_score', 0)
         current_price = market_data.get('current_price', 0)
+        extended = indicators.get('extended_indicators', {})
         
-        # 기본 확률
+        # 기본 확률 설정
         up_prob = 33
         sideways_prob = 34
         down_prob = 33
         
-        # 지표 기반 확률 조정
-        # 1. 종합 점수
+        # 1. 종합 점수 기반 조정 (가중치 증가)
         if total_score > 0:
-            up_bonus = min(total_score * 6, 30)
+            up_bonus = min(total_score * 8, 35)
             up_prob += up_bonus
-            down_prob -= up_bonus * 0.7
-            sideways_prob -= up_bonus * 0.3
+            down_prob -= up_bonus * 0.6
+            sideways_prob -= up_bonus * 0.4
         elif total_score < 0:
-            down_bonus = min(abs(total_score) * 6, 30)
+            down_bonus = min(abs(total_score) * 8, 35)
             down_prob += down_bonus
-            up_prob -= down_bonus * 0.7
-            sideways_prob -= down_bonus * 0.3
+            up_prob -= down_bonus * 0.6
+            sideways_prob -= down_bonus * 0.4
         
-        # 2. 펀딩비 조정
-        funding = indicators.get('funding_analysis', {})
-        funding_rate = funding.get('current_rate', 0)
-        if funding_rate > 0.001:  # 과열
-            down_prob += 8
-            up_prob -= 8
-        elif funding_rate < -0.001:  # 과매도
-            up_prob += 8
-            down_prob -= 8
-        
-        # 3. RSI 조정
+        # 2. 기술적 지표 조정
+        # RSI
         rsi = indicators.get('technical', {}).get('rsi', {}).get('value', 50)
-        if rsi > 70:
-            down_prob += 10
-            up_prob -= 10
-        elif rsi < 30:
-            up_prob += 10
-            down_prob -= 10
+        if rsi > 75:
+            down_prob += 12
+            up_prob -= 8
+            sideways_prob -= 4
+        elif rsi < 25:
+            up_prob += 12
+            down_prob -= 8
+            sideways_prob -= 4
+        elif rsi > 65:
+            down_prob += 6
+            up_prob -= 4
+            sideways_prob -= 2
+        elif rsi < 35:
+            up_prob += 6
+            down_prob -= 4
+            sideways_prob -= 2
         
-        # 4. 거래량 분석
+        # 3. MACD 신호
+        if 'macd_histogram' in extended:
+            macd_hist = extended['macd_histogram']
+            if macd_hist > 0:
+                up_prob += 5
+                down_prob -= 5
+            else:
+                down_prob += 5
+                up_prob -= 5
+        
+        # 4. 이동평균 배열
+        if all(k in extended for k in ['ma_7', 'ma_25', 'ma_99']):
+            if extended['ma_7'] > extended['ma_25'] > extended['ma_99']:
+                up_prob += 8
+                down_prob -= 8
+            elif extended['ma_7'] < extended['ma_25'] < extended['ma_99']:
+                down_prob += 8
+                up_prob -= 8
+        
+        # 5. 볼린저 밴드 위치
+        if 'bb_upper' in extended and 'bb_lower' in extended:
+            bb_position = (current_price - extended['bb_lower']) / (extended['bb_upper'] - extended['bb_lower'])
+            if bb_position > 0.9:
+                down_prob += 7
+                up_prob -= 7
+            elif bb_position < 0.1:
+                up_prob += 7
+                down_prob -= 7
+        
+        # 6. 거래량 분석
         volume_signal = indicators.get('volume_delta', {}).get('signal', '')
         if '매수 우세' in volume_signal:
+            up_prob += 6
+            down_prob -= 6
+        elif '매도 우세' in volume_signal:
+            down_prob += 6
+            up_prob -= 6
+        
+        # 7. 스마트머니 플로우
+        smart_money = indicators.get('smart_money', {})
+        net_flow = smart_money.get('net_flow', 0)
+        if net_flow > 10:
+            up_prob += 10
+            down_prob -= 10
+        elif net_flow > 5:
             up_prob += 5
             down_prob -= 5
-        elif '매도 우세' in volume_signal:
+        elif net_flow < -10:
+            down_prob += 10
+            up_prob -= 10
+        elif net_flow < -5:
             down_prob += 5
             up_prob -= 5
         
-        # 5. 스마트머니 플로우
-        smart_money = indicators.get('smart_money', {})
-        if smart_money.get('net_flow', 0) > 5:
-            up_prob += 7
-            down_prob -= 7
-        elif smart_money.get('net_flow', 0) < -5:
-            down_prob += 7
-            up_prob -= 7
+        # 8. 펀딩비 조정
+        funding = indicators.get('funding_analysis', {})
+        funding_rate = funding.get('current_rate', 0)
+        if funding_rate > 0.002:  # 과열
+            down_prob += 8
+            up_prob -= 8
+        elif funding_rate < -0.002:  # 과매도
+            up_prob += 8
+            down_prob -= 8
         
-        # 정규화
+        # 9. 변동성 조정
+        volatility = market_data.get('volatility', 2)
+        if volatility > 4:
+            sideways_prob -= 10
+            up_prob += 5
+            down_prob += 5
+        elif volatility < 1:
+            sideways_prob += 10
+            up_prob -= 5
+            down_prob -= 5
+        
+        # 정규화 및 최소값 보장
+        up_prob = max(5, up_prob)
+        down_prob = max(5, down_prob)
+        sideways_prob = max(5, sideways_prob)
+        
         total = up_prob + sideways_prob + down_prob
         up_prob = int(up_prob / total * 100)
         down_prob = int(down_prob / total * 100)
         sideways_prob = 100 - up_prob - down_prob
         
-        # 예상 가격 범위
-        volatility = market_data.get('volatility', 2)
-        expected_move = volatility * 0.5  # 12시간 예상 변동률
+        # 예상 가격 범위 (더 정확하게)
+        # ATR 기반 변동성
+        atr = extended.get('atr', current_price * 0.015)
+        expected_move_12h = atr * 0.8  # 12시간 예상 변동
         
+        # 방향성에 따른 범위 조정
         if up_prob > down_prob + 20:
-            min_price = current_price * (1 + expected_move * 0.3)
-            max_price = current_price * (1 + expected_move * 1.2)
-            trend = "상승 돌파"
+            # 강한 상승
+            min_price = current_price
+            max_price = current_price + expected_move_12h * 1.5
+            center_price = current_price + expected_move_12h * 0.8
+            trend = "강한 상승"
+            emoji = "🚀"
+        elif up_prob > down_prob + 10:
+            # 약한 상승
+            min_price = current_price - expected_move_12h * 0.3
+            max_price = current_price + expected_move_12h * 1.2
+            center_price = current_price + expected_move_12h * 0.5
+            trend = "완만한 상승"
             emoji = "📈"
         elif down_prob > up_prob + 20:
-            min_price = current_price * (1 - expected_move * 1.2)
-            max_price = current_price * (1 - expected_move * 0.3)
-            trend = "하락 이탈"
+            # 강한 하락
+            min_price = current_price - expected_move_12h * 1.5
+            max_price = current_price
+            center_price = current_price - expected_move_12h * 0.8
+            trend = "강한 하락"
+            emoji = "🔻"
+        elif down_prob > up_prob + 10:
+            # 약한 하락
+            min_price = current_price - expected_move_12h * 1.2
+            max_price = current_price + expected_move_12h * 0.3
+            center_price = current_price - expected_move_12h * 0.5
+            trend = "완만한 하락"
             emoji = "📉"
         else:
-            min_price = current_price * (1 - expected_move * 0.5)
-            max_price = current_price * (1 + expected_move * 0.5)
-            trend = "횡보 지속"
+            # 횡보
+            min_price = current_price - expected_move_12h * 0.5
+            max_price = current_price + expected_move_12h * 0.5
+            center_price = current_price
+            trend = "박스권 횡보"
             emoji = "➡️"
         
-        # 주요 이벤트 체크
-        events = []
+        # 주요 판단 근거
+        reasons = []
+        
         if up_prob > 60:
-            events.append("• 강한 상승 모멘텀 형성")
+            reasons.append("• 강한 매수 신호 다수 확인")
+        elif up_prob > 50:
+            reasons.append("• 매수 우위 시장")
+        
         if down_prob > 60:
-            events.append("• 하락 압력 증가")
-        if abs(up_prob - down_prob) < 10:
-            events.append("• 방향성 결정 대기")
+            reasons.append("• 강한 매도 신호 다수 확인")
+        elif down_prob > 50:
+            reasons.append("• 매도 우위 시장")
         
-        events_text = "\n".join(events) if events else ""
+        if abs(rsi - 50) > 20:
+            if rsi > 70:
+                reasons.append("• RSI 과매수 - 조정 주의")
+            elif rsi < 30:
+                reasons.append("• RSI 과매도 - 반등 가능")
         
-        return f"""▲ 상승 {up_prob}% {"(우세)" if up_prob > max(sideways_prob, down_prob) else ""}
-━ 횡보 {sideways_prob}%
-▼ 하락 {down_prob}% {"(우세)" if down_prob > max(up_prob, sideways_prob) else ""}
+        if net_flow > 5:
+            reasons.append("• 스마트머니 매집 진행")
+        elif net_flow < -5:
+            reasons.append("• 스마트머니 매도 진행")
+        
+        # 주요 저항/지지
+        pivot = extended.get('pivot_points', {})
+        if pivot:
+            if up_prob > down_prob:
+                reasons.append(f"• 목표 저항: ${pivot.get('r1', current_price * 1.01):,.0f}")
+            else:
+                reasons.append(f"• 주요 지지: ${pivot.get('s1', current_price * 0.99):,.0f}")
+        
+        reasons_text = "\n".join(reasons[:4])  # 최대 4개
+        
+        # 확률 차이가 명확하게 나타나도록
+        prob_display = []
+        if up_prob >= 50:
+            prob_display.append(f"▲ 상승 {up_prob}% <b>(우세)</b>")
+        else:
+            prob_display.append(f"▲ 상승 {up_prob}%")
+        
+        prob_display.append(f"━ 횡보 {sideways_prob}%")
+        
+        if down_prob >= 50:
+            prob_display.append(f"▼ 하락 {down_prob}% <b>(우세)</b>")
+        else:
+            prob_display.append(f"▼ 하락 {down_prob}%")
+        
+        return f"""{' '.join(prob_display)}
 
 → 예상 범위: ${min_price:,.0f} ~ ${max_price:,.0f}
+→ 중심 예상가: ${center_price:,.0f}
 → 예상 추세: {emoji} {trend}
 
-{events_text}"""
+<b>판단 근거:</b>
+{reasons_text}"""
+    
+    async def _validate_last_prediction(self, market_data: dict) -> str:
+        """이전 예측 검증"""
+        try:
+            if not self.prediction_history:
+                return "• 이전 예측 기록 없음"
+            
+            # 12시간 전 예측 찾기
+            current_time = datetime.now()
+            twelve_hours_ago = current_time - timedelta(hours=12)
+            
+            last_prediction = None
+            for pred in reversed(self.prediction_history):
+                pred_time = datetime.fromisoformat(pred['timestamp'])
+                if pred_time <= twelve_hours_ago:
+                    last_prediction = pred
+                    break
+            
+            if not last_prediction:
+                # 가장 최근 예측 사용
+                last_prediction = self.prediction_history[-1]
+            
+            # 실제 결과 계산
+            current_price = market_data.get('current_price', 0)
+            pred_price = last_prediction.get('price', current_price)
+            actual_change = ((current_price - pred_price) / pred_price) * 100
+            
+            # 예측 방향 확인
+            pred_direction = last_prediction.get('predicted_direction', 'neutral')
+            pred_range_min = last_prediction.get('predicted_min', pred_price * 0.99)
+            pred_range_max = last_prediction.get('predicted_max', pred_price * 1.01)
+            
+            # 적중 여부 판단
+            hit = False
+            accuracy_text = ""
+            
+            if pred_direction == 'up' and actual_change > 0:
+                hit = True
+                accuracy_text = "✅ 방향 적중"
+            elif pred_direction == 'down' and actual_change < 0:
+                hit = True
+                accuracy_text = "✅ 방향 적중"
+            elif pred_direction == 'sideways' and abs(actual_change) < 1:
+                hit = True
+                accuracy_text = "✅ 횡보 적중"
+            else:
+                accuracy_text = "❌ 예측 실패"
+            
+            # 가격 범위 적중
+            if pred_range_min <= current_price <= pred_range_max:
+                accuracy_text += " (범위 적중)"
+            
+            # 정확도 통계 업데이트
+            recent_predictions = self.prediction_history[-20:]  # 최근 20개
+            hits = sum(1 for p in recent_predictions if p.get('hit', False))
+            accuracy_rate = (hits / len(recent_predictions)) * 100 if recent_predictions else 0
+            
+            pred_time_str = datetime.fromisoformat(last_prediction['timestamp']).strftime('%m-%d %H:%M')
+            
+            return f"""• {pred_time_str} 예측: {pred_direction.upper()} ${pred_range_min:,.0f}~${pred_range_max:,.0f}
+- 실제: ${current_price:,.0f} ({actual_change:+.1f}%)
+- 결과: {accuracy_text}
+- 최근 정확도: {accuracy_rate:.0f}% ({hits}/20)"""
+            
+        except Exception as e:
+            self.logger.error(f"예측 검증 실패: {e}")
+            return "• 예측 검증 오류"
+    
+    def _save_current_prediction(self, market_data: dict, indicators: dict):
+        """현재 예측 저장"""
+        try:
+            current_price = market_data.get('current_price', 0)
+            composite = indicators.get('composite_signal', {})
+            total_score = composite.get('total_score', 0)
+            
+            # 예측 방향 결정
+            if total_score >= 2:
+                direction = 'up'
+            elif total_score <= -2:
+                direction = 'down'
+            else:
+                direction = 'sideways'
+            
+            # 예상 범위 계산 (12시간 기준)
+            volatility = market_data.get('volatility', 2)
+            expected_move = volatility * 0.5
+            
+            if direction == 'up':
+                pred_min = current_price
+                pred_max = current_price * (1 + expected_move / 100)
+            elif direction == 'down':
+                pred_min = current_price * (1 - expected_move / 100)
+                pred_max = current_price
+            else:
+                pred_min = current_price * (1 - expected_move / 200)
+                pred_max = current_price * (1 + expected_move / 200)
+            
+            prediction = {
+                'timestamp': datetime.now().isoformat(),
+                'price': current_price,
+                'predicted_direction': direction,
+                'predicted_min': pred_min,
+                'predicted_max': pred_max,
+                'score': total_score,
+                'confidence': composite.get('confidence', 50),
+                'volatility': volatility
+            }
+            
+            self.prediction_history.append(prediction)
+            self._save_prediction_history()
+            
+        except Exception as e:
+            self.logger.error(f"예측 저장 실패: {e}")
     
     async def _format_integrated_pnl(self) -> str:
         """통합 손익 현황 - Bitget + Gate.io"""
@@ -500,14 +856,6 @@ class RegularReportGenerator(BaseReportGenerator):
                 unrealized = bitget_position.get('unrealized_pnl', 0)
                 
                 lines.append(f"• 포지션: {side} (진입 ${entry:,.0f}, {pnl_rate:+.1f}%)")
-                
-                # 승률 계산 (간단 버전)
-                if hasattr(self, 'trade_history'):
-                    wins = len([t for t in self.trade_history if t['pnl'] > 0])
-                    total_trades = len(self.trade_history)
-                    if total_trades > 0:
-                        win_rate = wins / total_trades * 100
-                        lines.append(f"• 승률: {win_rate:.0f}% ({wins}승 {total_trades-wins}패)")
             else:
                 lines.append("• 포지션: 없음")
             
@@ -545,7 +893,152 @@ class RegularReportGenerator(BaseReportGenerator):
             self.logger.error(f"멘탈 케어 생성 실패: {e}")
             return '"시장은 기회로 가득합니다. 차분하게 기다리세요. 📊"'
     
-    # 보조 계산 함수들
+    def _analyze_all_indicators(self, extended: dict, market_data: dict) -> dict:
+        """모든 지표 종합 분석"""
+        analysis = {
+            'trend_strength': '',
+            'momentum_signal': '',
+            'volume_signal': '',
+            'volatility_signal': '',
+            'key_levels': ''
+        }
+        
+        current_price = market_data.get('current_price', 0)
+        
+        # 추세 분석
+        trend_signals = 0
+        if 'ma_7' in extended and 'ma_25' in extended and 'ma_99' in extended:
+            if extended['ma_7'] > extended['ma_25'] > extended['ma_99']:
+                trend_signals += 2
+            elif extended['ma_7'] < extended['ma_25'] < extended['ma_99']:
+                trend_signals -= 2
+        
+        if 'adx' in extended and extended['adx'] > 25:
+            if trend_signals > 0:
+                analysis['trend_strength'] = 'strong_bullish'
+            elif trend_signals < 0:
+                analysis['trend_strength'] = 'strong_bearish'
+        
+        # 모멘텀 분석
+        momentum_signals = []
+        if 'macd_histogram' in extended:
+            if extended['macd_histogram'] > 0:
+                momentum_signals.append("MACD 상승")
+            else:
+                momentum_signals.append("MACD 하락")
+        
+        if 'stoch_k' in extended:
+            if extended['stoch_k'] < 20:
+                momentum_signals.append("스토캐스틱 과매도")
+            elif extended['stoch_k'] > 80:
+                momentum_signals.append("스토캐스틱 과매수")
+        
+        if momentum_signals:
+            analysis['momentum_signal'] = ', '.join(momentum_signals)
+        
+        # 거래량 분석
+        if 'obv' in extended and 'mfi' in extended:
+            if extended['mfi'] > 70:
+                analysis['volume_signal'] = "거래량 과열 (매도 압력)"
+            elif extended['mfi'] < 30:
+                analysis['volume_signal'] = "거래량 침체 (매수 기회)"
+            else:
+                analysis['volume_signal'] = "거래량 정상"
+        
+        # 변동성 분석
+        if 'bb_width' in extended:
+            if extended['bb_width'] > 0.05:
+                analysis['volatility_signal'] = "높은 변동성 (리스크 주의)"
+            elif extended['bb_width'] < 0.02:
+                analysis['volatility_signal'] = "낮은 변동성 (돌파 대기)"
+        
+        # 주요 가격대
+        if 'pivot_points' in extended:
+            pivot = extended['pivot_points']
+            if current_price > pivot['pivot']:
+                analysis['key_levels'] = f"피봇 상단, 저항 ${pivot['r1']:,.0f}"
+            else:
+                analysis['key_levels'] = f"피봇 하단, 지지 ${pivot['s1']:,.0f}"
+        
+        return analysis
+    
+    # 추가 지표 계산 함수들
+    def _calculate_frama(self, prices: list, period: int = 16) -> float:
+        """프랙탈 적응형 이동평균"""
+        if len(prices) < period:
+            return prices[-1]
+        
+        # 간단한 구현
+        return sum(prices[-period:]) / period
+    
+    def _calculate_demark(self, highs: list, lows: list, closes: list) -> dict:
+        """디마크 지표"""
+        if len(closes) < 2:
+            return {'td_sequential': 0}
+        
+        # TD Sequential 카운트 (간단 버전)
+        count = 0
+        for i in range(1, min(9, len(closes))):
+            if closes[-i] < closes[-i-1]:
+                count += 1
+            else:
+                break
+        
+        return {'td_sequential': count}
+    
+    def _calculate_elder_ray(self, highs: list, lows: list, closes: list, period: int = 13) -> dict:
+        """엘더레이 지표"""
+        if len(closes) < period:
+            return {'bull_power': 0, 'bear_power': 0}
+        
+        ema = self._calculate_ema(closes, period)
+        bull_power = highs[-1] - ema
+        bear_power = lows[-1] - ema
+        
+        return {
+            'bull_power': bull_power,
+            'bear_power': bear_power
+        }
+    
+    def _calculate_coppock(self, closes: list) -> float:
+        """코포크 커브"""
+        if len(closes) < 15:
+            return 0
+        
+        # ROC 11 + ROC 14의 10일 WMA
+        roc11 = ((closes[-1] - closes[-11]) / closes[-11]) * 100
+        roc14 = ((closes[-1] - closes[-14]) / closes[-14]) * 100
+        
+        return (roc11 + roc14) / 2
+    
+    def _calculate_chaikin_mf(self, highs: list, lows: list, closes: list, volumes: list, period: int = 20) -> float:
+        """차이킨 머니 플로우"""
+        if len(closes) < period:
+            return 0
+        
+        mf_multiplier = []
+        mf_volume = []
+        
+        for i in range(period):
+            idx = -(i + 1)
+            close = closes[idx]
+            high = highs[idx]
+            low = lows[idx]
+            
+            if high != low:
+                multiplier = ((close - low) - (high - close)) / (high - low)
+            else:
+                multiplier = 0
+            
+            mf_multiplier.append(multiplier)
+            mf_volume.append(multiplier * volumes[idx])
+        
+        if sum(volumes[-period:]) == 0:
+            return 0
+        
+        return sum(mf_volume) / sum(volumes[-period:])
+    
+    # 기존 보조 함수들은 그대로 유지
     def _calculate_ema(self, prices: list, period: int) -> float:
         """지수이동평균 계산"""
         if len(prices) < period:
@@ -912,14 +1405,3 @@ class RegularReportGenerator(BaseReportGenerator):
             scores['슈퍼트렌드'] = extended['supertrend']['trend']
         
         return scores
-    
-    def _save_prediction(self, indicators: dict):
-        """예측 저장"""
-        composite = indicators.get('composite_signal', {})
-        self.last_prediction = {
-            'time': datetime.now().strftime('%m-%d %H:%M'),
-            'signal': composite.get('signal', '중립'),
-            'score': composite.get('total_score', 0),
-            'confidence': composite.get('confidence', 50),
-            'action': composite.get('action', '관망')
-        }
