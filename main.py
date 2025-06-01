@@ -30,6 +30,14 @@ except ImportError:
     MIRROR_TRADING_AVAILABLE = False
     print("⚠️ 미러 트레이딩 모듈을 찾을 수 없습니다. 분석 전용 모드로 실행됩니다.")
 
+# ML 예측기 임포트
+try:
+    from ml_predictor import MLPredictor
+    ML_PREDICTOR_AVAILABLE = True
+except ImportError:
+    ML_PREDICTOR_AVAILABLE = False
+    print("⚠️ ML 예측기 모듈을 찾을 수 없습니다. 기본 분석을 사용합니다.")
+
 # 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +76,20 @@ class BitcoinPredictionSystem:
         self.mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'true').lower() == 'true'
         self.logger.info(f"미러 트레이딩 모드: {'활성화' if self.mirror_mode else '비활성화'}")
         
+        # ML 예측기 모드 확인
+        self.ml_mode = ML_PREDICTOR_AVAILABLE
+        self.logger.info(f"ML 예측기 모드: {'활성화' if self.ml_mode else '비활성화'}")
+        
+        # ML 예측기 초기화
+        self.ml_predictor = None
+        if self.ml_mode:
+            try:
+                self.ml_predictor = MLPredictor()
+                self.logger.info(f"✅ ML 예측기 초기화 완료 - 정확도: {self.ml_predictor.direction_accuracy:.1%}")
+            except Exception as e:
+                self.logger.error(f"ML 예측기 초기화 실패: {e}")
+                self.ml_mode = False
+        
         # 시스템 상태 관리
         self.is_running = False
         self.startup_time = datetime.now()
@@ -95,7 +117,7 @@ class BitcoinPredictionSystem:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
-        self.logger.info(f"시스템 초기화 완료 (미러 트레이딩: {'활성' if self.mirror_mode else '비활성'})")
+        self.logger.info(f"시스템 초기화 완료 (미러 트레이딩: {'활성' if self.mirror_mode else '비활성'}, ML: {'활성' if self.ml_mode else '비활성'})")
     
     def _initialize_clients(self):
         """클라이언트 초기화"""
@@ -218,6 +240,18 @@ class BitcoinPredictionSystem:
             id="health_check",
             replace_existing=True
         )
+        
+        # ML 예측 검증 (30분마다) - ML 모드일 때만
+        if self.ml_mode and self.ml_predictor:
+            self.scheduler.add_job(
+                func=self.verify_ml_predictions,
+                trigger="interval",
+                minutes=30,
+                timezone=timezone,
+                id="ml_verification",
+                replace_existing=True
+            )
+            self.logger.info("📅 ML 예측 검증 스케줄 등록: 30분마다")
         
         # 일일 통계 리포트 (매일 자정)
         self.scheduler.add_job(
@@ -549,6 +583,9 @@ class BitcoinPredictionSystem:
             additional_info += f"• 예외 감지: 5분마다 자동 실행\n"
             additional_info += f"• 시스템 상태 체크: 30분마다"
             
+            if self.ml_mode:
+                additional_info += f"\n• ML 예측 검증: 30분마다"
+            
             full_report = schedule_report + additional_info
             
             await update.message.reply_text(full_report, parse_mode='HTML')
@@ -590,6 +627,30 @@ class BitcoinPredictionSystem:
                     else:
                         event_data = event
                     
+                    # ML 예측 기록 (ML 모드일 때만)
+                    if self.ml_mode and self.ml_predictor:
+                        try:
+                            # 현재 가격 기록
+                            ticker = await self.bitget_client.get_ticker('BTCUSDT')
+                            if ticker:
+                                current_price = float(ticker.get('last', 0))
+                                
+                                # 예측 생성 및 기록
+                                market_data = await self._get_market_data_for_ml()
+                                prediction = await self.ml_predictor.predict_impact(event_data, market_data)
+                                
+                                # 예측 기록
+                                await self.ml_predictor.record_prediction(
+                                    event_data,
+                                    prediction,
+                                    current_price
+                                )
+                                
+                                self.logger.info(f"ML 예측 기록: {event_data.get('title', 'Unknown')[:30]}... - 예상: {prediction['magnitude']:.1f}%")
+                        except Exception as e:
+                            self.logger.error(f"ML 예측 기록 실패: {e}")
+                    
+                    # 예외 리포트 생성 및 전송
                     report = await self.report_manager.generate_exception_report(event_data)
                     await self.telegram_bot.send_message(report, parse_mode='HTML')
                     
@@ -608,6 +669,82 @@ class BitcoinPredictionSystem:
         except Exception as e:
             self.logger.error(f"예외 감지 실패: {str(e)}")
             self.logger.debug(traceback.format_exc())
+    
+    async def _get_market_data_for_ml(self) -> Dict:
+        """ML을 위한 시장 데이터 수집"""
+        market_data = {
+            'trend': 'neutral',
+            'volatility': 0.02,
+            'volume_ratio': 1.0,
+            'rsi': 50,
+            'fear_greed': 50,
+            'btc_dominance': 50
+        }
+        
+        try:
+            # 현재 가격 정보
+            if self.bitget_client:
+                ticker = await self.bitget_client.get_ticker('BTCUSDT')
+                if ticker:
+                    # 24시간 변화율로 트렌드 판단
+                    change_24h = float(ticker.get('changeUtc', 0))
+                    if change_24h > 0.02:
+                        market_data['trend'] = 'bullish'
+                    elif change_24h < -0.02:
+                        market_data['trend'] = 'bearish'
+                    
+                    # 거래량 비율 (평균 대비)
+                    volume = float(ticker.get('baseVolume', 0))
+                    market_data['volume_ratio'] = volume / 50000 if volume > 0 else 1.0
+            
+            # 기술 지표는 실제 구현 필요
+            # 여기서는 기본값 사용
+            
+        except Exception as e:
+            self.logger.error(f"시장 데이터 수집 실패: {e}")
+        
+        return market_data
+    
+    async def verify_ml_predictions(self):
+        """ML 예측 검증"""
+        if not self.ml_mode or not self.ml_predictor:
+            return
+        
+        try:
+            self.logger.info("ML 예측 검증 시작")
+            
+            # 예측 검증
+            verifications = await self.ml_predictor.verify_predictions()
+            
+            # 중요한 검증 결과만 알림
+            for verification in verifications:
+                if abs(verification['accuracy']) < 50:  # 정확도가 50% 미만인 경우
+                    msg = f"""<b>🤖 AI 예측 검증 결과</b>
+
+<b>📰 이벤트:</b> {verification['event']['title'][:50]}...
+<b>⏰ 예측 시간:</b> {verification['prediction_time']}
+
+<b>📊 예측 vs 실제:</b>
+• 예측 변동률: <b>{verification['predicted_change']:.1f}%</b>
+• 실제 변동률: <b>{verification['actual_change']:.1f}%</b>
+• 초기가: ${verification['initial_price']:,.0f}
+• 현재가: ${verification['current_price']:,.0f}
+
+<b>✅ 정확도:</b>
+• 방향: {"✅ 맞음" if verification['direction_correct'] else "❌ 틀림"}
+• 크기 정확도: <b>{verification['accuracy']:.1f}%</b>
+
+<b>📈 전체 AI 성능:</b>
+• 누적 정확도: {self.ml_predictor.direction_accuracy:.1%}"""
+                    
+                    await self.telegram_bot.send_message(msg, parse_mode='HTML')
+            
+            # 통계 업데이트
+            stats = self.ml_predictor.get_stats()
+            self.logger.info(f"ML 예측 검증 완료 - 방향 정확도: {stats['direction_accuracy']}, 크기 정확도: {stats['magnitude_accuracy']}")
+            
+        except Exception as e:
+            self.logger.error(f"ML 예측 검증 실패: {e}")
     
     async def _check_mirror_health(self):
         """미러 트레이딩 건강 상태 체크"""
@@ -676,6 +813,11 @@ class BitcoinPredictionSystem:
             else:
                 health_status['services']['data_collector'] = 'ERROR'
             
+            # ML 예측기 상태 (ML 모드일 때만)
+            if self.ml_mode and self.ml_predictor:
+                health_status['services']['ml_predictor'] = 'OK'
+                health_status['ml_stats'] = self.ml_predictor.get_stats()
+            
             # 메모리 사용량 체크
             import psutil
             process = psutil.Process(os.getpid())
@@ -739,6 +881,25 @@ class BitcoinPredictionSystem:
             except:
                 report += "측정 불가"
             
+            # ML 예측 통계 추가
+            if self.ml_mode and self.ml_predictor:
+                stats = self.ml_predictor.get_stats()
+                report += f"""
+
+<b>🤖 AI 예측 성능:</b>
+- 총 예측: {stats['total_predictions']}건
+- 검증 완료: {stats['verified_predictions']}건
+- 방향 정확도: {stats['direction_accuracy']}
+- 크기 정확도: {stats['magnitude_accuracy']}
+
+<b>📊 카테고리별 정확도:</b>"""
+                
+                for category in ['etf_approval', 'company_purchase', 'regulatory_action', 
+                               'security_breach', 'funding_rate', 'security_improvement', 'fraud_scam']:
+                    if category in stats['category_accuracy']:
+                        acc = stats['category_accuracy'][category]
+                        report += f"\n• {category.replace('_', ' ').title()}: {acc:.1f}%"
+            
             # 미러 트레이딩 통계 추가
             if self.mirror_mode and self.mirror_trading:
                 mirror_stats = self.mirror_trading.daily_stats
@@ -792,6 +953,8 @@ class BitcoinPredictionSystem:
             self.logger.info(f"시작 명령 - User: {username}({user_id})")
             
             mode_text = "🔄 미러 트레이딩 모드" if self.mirror_mode else "📊 분석 전용 모드"
+            if self.ml_mode:
+                mode_text += " + 🤖 ML 예측"
             
             welcome_message = f"""<b>🚀 비트코인 예측 시스템에 오신 것을 환영합니다!</b>
 
@@ -823,7 +986,12 @@ class BitcoinPredictionSystem:
 <b>🔔 자동 기능:</b>
 - 정기 리포트: 09:00, 13:00, 18:00, 23:00
 - 예외 감지: 5분마다
-- 시스템 체크: 30분마다
+- 시스템 체크: 30분마다"""
+            
+            if self.ml_mode:
+                welcome_message += "\n• ML 예측 검증: 30분마다"
+            
+            welcome_message += """
 - 일일 통계: 매일 자정
 
 <b>⚡ 실시간 알림:</b>
@@ -842,6 +1010,15 @@ class BitcoinPredictionSystem:
 - 부분/전체 청산 미러링
 """
             
+            if self.ml_mode:
+                welcome_message += f"""
+<b>🤖 ML 예측 시스템:</b>
+- 과거 데이터 학습
+- 실시간 예측 정확도: {self.ml_predictor.direction_accuracy:.1%}
+- 카테고리별 최적화
+- 자동 성능 개선
+"""
+            
             # 시스템 상태 추가
             uptime = datetime.now() - self.startup_time
             hours = int(uptime.total_seconds() // 3600)
@@ -851,7 +1028,7 @@ class BitcoinPredictionSystem:
 <b>📊 시스템 상태:</b>
 - 가동 시간: {hours}시간 {minutes}분
 - 오늘 명령 처리: {sum(self.command_stats.values())}건
-- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}
+- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
 
 📈 GPT 기반 정확한 비트코인 분석을 제공합니다.
 
@@ -918,6 +1095,9 @@ class BitcoinPredictionSystem:
             await self.telegram_bot.start()
             
             mode_text = "미러 트레이딩" if self.mirror_mode else "분석 전용"
+            if self.ml_mode:
+                mode_text += " + ML 예측"
+            
             self.logger.info(f"✅ 비트코인 예측 시스템 시작 완료 (모드: {mode_text})")
             
             # 시작 메시지 전송
@@ -933,6 +1113,14 @@ class BitcoinPredictionSystem:
 - 비트겟 → 게이트 자동 복제
 - 기존 포지션은 복제 제외
 - 신규 진입만 미러링
+"""
+            
+            if self.ml_mode:
+                startup_msg += f"""
+<b>🤖 ML 예측 시스템 활성화:</b>
+- 현재 정확도: {self.ml_predictor.direction_accuracy:.1%}
+- 자동 학습 및 개선
+- 카테고리별 최적화
 """
             
             startup_msg += """
@@ -996,9 +1184,16 @@ class BitcoinPredictionSystem:
 
 <b>⏱️ 총 가동 시간:</b> {hours}시간 {minutes}분
 <b>📊 처리된 명령:</b> {sum(self.command_stats.values())}건
-<b>❌ 발생한 오류:</b> {self.command_stats['errors']}건
-
-시스템이 안전하게 종료됩니다."""
+<b>❌ 발생한 오류:</b> {self.command_stats['errors']}건"""
+                
+                if self.ml_mode and self.ml_predictor:
+                    stats = self.ml_predictor.get_stats()
+                    shutdown_msg += f"""
+<b>🤖 ML 예측 성능:</b>
+- 총 예측: {stats['total_predictions']}건
+- 정확도: {stats['direction_accuracy']}"""
+                
+                shutdown_msg += "\n\n시스템이 안전하게 종료됩니다."
                 
                 await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
             except:
@@ -1031,6 +1226,11 @@ class BitcoinPredictionSystem:
             if self.gate_client and self.gate_client.session:
                 self.logger.info("Gate.io 클라이언트 종료 중...")
                 await self.gate_client.close()
+            
+            # ML 예측기 데이터 저장
+            if self.ml_mode and self.ml_predictor:
+                self.logger.info("ML 예측 데이터 저장 중...")
+                self.ml_predictor.save_predictions()
             
             self.logger.info("=" * 50)
             self.logger.info("✅ 시스템이 안전하게 종료되었습니다")
