@@ -179,12 +179,12 @@ class BitcoinPredictionSystem:
         """스케줄러 작업 설정"""
         timezone = pytz.timezone('Asia/Seoul')
         
-        # 정기 리포트 스케줄
+        # 정기 리포트 스케줄 (9시, 13시, 18시, 23시)
         report_times = [
             (9, 0, "morning_report"),
             (13, 0, "lunch_report"),
             (18, 0, "evening_report"),
-            (22, 0, "night_report")
+            (23, 0, "night_report")  # 22시에서 23시로 변경
         ]
         
         for hour, minute, job_id in report_times:
@@ -533,8 +533,8 @@ class BitcoinPredictionSystem:
             additional_info += f"• 현재 시각: {now.strftime('%Y-%m-%d %H:%M')} KST\n"
             additional_info += f"• 다음 정기 리포트: "
             
-            # 다음 리포트 시간 계산
-            report_hours = [9, 13, 18, 22]
+            # 다음 리포트 시간 계산 (9시, 13시, 18시, 23시)
+            report_hours = [9, 13, 18, 23]
             next_report_hour = None
             for hour in report_hours:
                 if now.hour < hour:
@@ -821,7 +821,7 @@ class BitcoinPredictionSystem:
             
             welcome_message += """
 <b>🔔 자동 기능:</b>
-- 정기 리포트: 09:00, 13:00, 18:00, 22:00
+- 정기 리포트: 09:00, 13:00, 18:00, 23:00
 - 예외 감지: 5분마다
 - 시스템 체크: 30분마다
 - 일일 통계: 매일 자정
@@ -939,9 +939,9 @@ class BitcoinPredictionSystem:
 <b>📌 활성 기능:</b>
 - 실시간 가격 모니터링
 - 뉴스 및 이벤트 추적
-- 기술적 분석
+- 기술적 분석 (20개 이상 지표)
 - GPT 기반 예측
-- 자동 리포트 생성
+- 자동 리포트 생성 (9시, 13시, 18시, 23시)
 
 명령어를 입력하거나 자연어로 질문해보세요.
 예: '오늘 수익은?' 또는 /help"""
