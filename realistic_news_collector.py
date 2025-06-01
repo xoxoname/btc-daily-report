@@ -28,8 +28,8 @@ class RealisticNewsCollector:
         self.translation_cache = {}  # 번역 캐시
         self.translation_count = 0  # 번역 횟수 추적
         self.last_translation_reset = datetime.now()
-        self.max_translations_per_30min = 200  # 30분당 최대 번역 수 (기존 50/시간 → 200/30분)
-        self.translation_reset_interval = 1800  # 30분 (기존 3600초 → 1800초)
+        self.max_translations_per_15min = 150  # 15분당 최대 번역 수 (대폭 증가)
+        self.translation_reset_interval = 900  # 15분 (기존 30분에서 단축)
         
         # OpenAI 클라이언트 초기화 (번역용)
         self.openai_client = None
@@ -41,67 +41,120 @@ class RealisticNewsCollector:
         self.newsdata_key = getattr(config, 'NEWSDATA_KEY', None)
         self.alpha_vantage_key = getattr(config, 'ALPHA_VANTAGE_KEY', None)
         
-        # 크리티컬 키워드 (즉시 알림용) - 강화
+        # 크리티컬 키워드 (즉시 알림용) - 대폭 확장
         self.critical_keywords = [
-            # 정부/정치 관련 - 트럼프 추가
-            'trump bitcoin', 'trump crypto', 'trump ban', 'trump announces', 'trump says bitcoin',
-            'trump tariff', 'trump executive order', 'trump policy', 'trump federal',
-            '트럼프 비트코인', '트럼프 암호화폐', '트럼프 규제', '트럼프 관세', '트럼프 정책',
-            # 연준/금리 관련
+            # 트럼프 관련 - 대폭 확장
+            'trump', 'donald trump', 'president trump', 'trump administration', 'trump says', 'trump announces', 
+            'trump declares', 'trump signs', 'trump executive order', 'trump policy', 'trump statement', 
+            'trump twitter', 'trump social media', 'trump interview', 'trump speech', 'trump meeting',
+            'trump china', 'trump tariff', 'trump trade', 'trump federal', 'trump bitcoin', 'trump crypto',
+            '트럼프', '트럼프 대통령', '트럼프 정부', '트럼프 발언', '트럼프 정책', '트럼프 행정명령',
+            
+            # 미중 무역/관계 - 신규 추가
+            'us china trade', 'china trade war', 'trade talks', 'trade deal', 'trade agreement',
+            'china tariff', 'tariff war', 'xi jinping', 'biden china', 'us china relations',
+            'trade dispute', 'trade negotiations', 'china exports', 'china imports',
+            '미중 무역', '무역 전쟁', '무역 협상', '관세', '시진핑', '중국 무역',
+            
+            # 연준/금리 관련 - 확장
             'fed rate decision', 'fed raises', 'fed cuts', 'powell says', 'fomc decides', 'fed meeting',
-            'interest rate hike', 'interest rate cut', 'monetary policy',
-            '연준 금리', 'FOMC 결정', '파월 발언', '금리 인상', '금리 인하',
-            # SEC 관련
+            'interest rate hike', 'interest rate cut', 'monetary policy', 'federal reserve',
+            'jerome powell', 'fed chair', 'fed statement', 'fed minutes', 'fed policy',
+            'rate decision', 'rate hike', 'rate cut', 'inflation data', 'cpi data', 'ppi data',
+            '연준', '연방준비제도', 'FOMC', '파월', '제롬 파월', '금리 인상', '금리 인하', '금리 결정',
+            
+            # 경제 지표 - 신규 추가
+            'gdp growth', 'unemployment rate', 'jobs report', 'nonfarm payrolls', 'retail sales',
+            'consumer confidence', 'manufacturing pmi', 'inflation rate', 'consumer price index',
+            'producer price index', 'housing data', 'durable goods', 'trade balance',
+            
+            # SEC/규제 관련 - 확장
             'sec lawsuit bitcoin', 'sec sues', 'sec enforcement', 'sec charges bitcoin',
-            'sec approves', 'sec rejects', 'sec bitcoin etf',
-            'SEC 소송', 'SEC 규제', 'SEC 비트코인', 'SEC 승인', 'SEC 거부',
-            # 규제/금지 관련
+            'sec approves', 'sec rejects', 'sec bitcoin etf', 'gary gensler', 'sec chair',
+            'cftc bitcoin', 'cftc crypto', 'regulatory approval', 'regulatory rejection',
+            'SEC', 'CFTC', '게리 겐슬러', 'SEC 소송', 'SEC 규제', 'SEC 비트코인', 'SEC 승인', 'SEC 거부',
+            
+            # 규제/금지 관련 - 확장
             'china bans bitcoin', 'china crypto ban', 'government bans crypto', 'regulatory ban',
-            'court blocks', 'federal court', 'supreme court crypto',
-            '중국 비트코인 금지', '정부 규제', '암호화폐 금지', '법원 판결',
-            # 시장 급변동
+            'court blocks', 'federal court', 'supreme court crypto', 'legal ruling',
+            'regulatory crackdown', 'crypto regulation', 'digital asset regulation',
+            '중국 비트코인 금지', '정부 규제', '암호화폐 금지', '법원 판결', '규제 당국',
+            
+            # 시장 급변동 - 확장
             'bitcoin crash', 'crypto crash', 'market crash', 'flash crash', 'bitcoin plunge',
-            'bitcoin surge', 'bitcoin rally', 'bitcoin breaks',
-            '비트코인 폭락', '암호화폐 급락', '시장 붕괴', '비트코인 급등',
-            # ETF 관련
+            'bitcoin surge', 'bitcoin rally', 'bitcoin breaks', 'bitcoin soars', 'bitcoin tumbles',
+            'market meltdown', 'sell-off', 'massive liquidation', 'whale move', 'whale alert',
+            '비트코인 폭락', '암호화폐 급락', '시장 붕괴', '비트코인 급등', '대량 청산',
+            
+            # ETF 관련 - 확장  
             'bitcoin etf approved', 'bitcoin etf rejected', 'etf decision', 'etf filing',
-            'ETF 승인', 'ETF 거부', 'ETF 결정',
-            # 기업 비트코인 구매
+            'spot bitcoin etf', 'bitcoin etf launch', 'etf flows', 'etf inflows', 'etf outflows',
+            'blackrock etf', 'fidelity etf', 'grayscale etf', 'ark etf',
+            'ETF 승인', 'ETF 거부', 'ETF 결정', '현물 ETF', '비트코인 ETF',
+            
+            # 기업 비트코인 구매 - 확장
             'bought bitcoin', 'buys bitcoin', 'purchased bitcoin', 'bitcoin purchase', 'bitcoin acquisition',
             'tesla bitcoin', 'microstrategy bitcoin', 'square bitcoin', 'paypal bitcoin',
-            'gamestop bitcoin', 'gme bitcoin', '$gme bitcoin',
-            '비트코인 구매', '비트코인 매입', '비트코인 투자', '비트코인 보유',
-            # 대량 거래/이동
+            'gamestop bitcoin', 'gme bitcoin', '$gme bitcoin', 'metaplanet bitcoin',
+            'corporate bitcoin', 'institutional bitcoin', 'treasury bitcoin',
+            '비트코인 구매', '비트코인 매입', '비트코인 투자', '비트코인 보유', '기업 비트코인',
+            
+            # 대량 거래/이동 - 확장
             'whale alert', 'large bitcoin transfer', 'bitcoin moved', 'btc transferred',
-            'exchange inflow', 'exchange outflow',
-            '고래 이동', '대량 이체', '비트코인 이동', '거래소 유입', '거래소 유출',
-            # 해킹/보안
+            'exchange inflow', 'exchange outflow', 'massive transfer', 'billion dollar move',
+            'cold wallet', 'hot wallet', 'wallet movement', 'address activity',
+            '고래 이동', '대량 이체', '비트코인 이동', '거래소 유입', '거래소 유출', '지갑 이동',
+            
+            # 해킹/보안 - 확장
             'exchange hacked', 'bitcoin stolen', 'crypto hack', 'security breach',
-            '거래소 해킹', '비트코인 도난', '보안 사고'
+            'wallet compromised', 'private key stolen', 'smart contract exploit',
+            'defi hack', 'bridge hack', 'cross-chain hack',
+            '거래소 해킹', '비트코인 도난', '보안 사고', '지갑 해킹', '스마트 컨트랙트 해킹',
+            
+            # 글로벌 경제/정치 - 신규 대폭 추가
+            'war', 'military action', 'geopolitical', 'sanctions', 'embargo',
+            'energy crisis', 'oil price surge', 'oil price crash', 'opec decision',
+            'bank crisis', 'banking system', 'financial crisis', 'recession warning',
+            'stock market crash', 'dow jones crash', 'nasdaq crash', 's&p 500 crash',
+            'dollar strength', 'dollar weakness', 'currency crisis', 'inflation shock',
+            '전쟁', '지정학적', '제재', '유가', '오일쇼크', '금융위기', '경기침체', '달러',
+            
+            # 중앙은행 디지털화폐 - 신규 추가
+            'cbdc', 'digital dollar', 'digital yuan', 'central bank digital currency',
+            'fed digital currency', 'china digital currency', 'digital currency pilot',
+            '중앙은행 디지털화폐', '디지털 달러', '디지털 위안',
+            
+            # 기술/채굴 관련 - 확장
+            'bitcoin mining ban', 'mining crackdown', 'hash rate', 'mining difficulty',
+            'energy consumption', 'carbon footprint', 'proof of stake', 'ethereum merge',
+            '비트코인 채굴', '채굴 금지', '해시레이트', '에너지 소비',
         ]
         
-        # 제외 키워드 (비트코인과 직접 관련 없는 것들)
+        # 제외 키워드 (비트코인과 직접 관련 없는 것들) - 축소하여 더 많은 뉴스 포함
         self.exclude_keywords = [
-            'gold price', 'gold rises', 'gold falls', 'gold market',
-            'oil price', 'oil market', 'commodity',
-            'stock market', 'nasdaq', 's&p 500', 'dow jones',
-            '금 가격', '금값', '원유', '주식시장',
-            'mining at home', '집에서 채굴', 'how to mine',
-            'crypto news today', '오늘의 암호화폐 소식',
-            'price prediction', '가격 예측'
+            'how to mine', '집에서 채굴', 'mining at home',
+            'price prediction tutorial', '가격 예측 방법'
         ]
         
-        # 중요 기업 리스트
+        # 중요 기업 리스트 - 확장
         self.important_companies = [
             'tesla', 'microstrategy', 'square', 'block', 'paypal', 'mastercard', 'visa',
             'apple', 'google', 'amazon', 'meta', 'facebook', 'microsoft', 'netflix',
             'gamestop', 'gme', 'amc', 'blackrock', 'fidelity', 'jpmorgan', 'goldman',
+            'morgan stanley', 'bank of america', 'wells fargo', 'citigroup',
             'samsung', 'lg', 'sk', 'kakao', 'naver', '삼성', '카카오', '네이버',
-            'metaplanet', '메타플래닛'
+            'metaplanet', '메타플래닛', 'coinbase', 'binance', 'ftx', 'kraken'
         ]
         
-        # RSS 피드
+        # RSS 피드 - 더 빠른 소스 추가
         self.rss_feeds = [
+            # 실시간 뉴스 (최우선) - 신규 추가
+            {'url': 'https://feeds.reuters.com/reuters/businessNews', 'source': 'Reuters Business', 'weight': 10, 'category': 'news'},
+            {'url': 'https://feeds.reuters.com/Reuters/worldNews', 'source': 'Reuters World', 'weight': 10, 'category': 'news'},
+            {'url': 'http://feeds.feedburner.com/ap/business', 'source': 'AP Business', 'weight': 10, 'category': 'news'},
+            {'url': 'https://feeds.bloomberg.com/politics/news.rss', 'source': 'Bloomberg Politics', 'weight': 10, 'category': 'news'},
+            {'url': 'https://feeds.bloomberg.com/economics/news.rss', 'source': 'Bloomberg Economics', 'weight': 10, 'category': 'news'},
+            
             # 암호화폐 전문 (최우선)
             {'url': 'https://cointelegraph.com/rss', 'source': 'Cointelegraph', 'weight': 10, 'category': 'crypto'},
             {'url': 'https://www.coindesk.com/arc/outboundfeeds/rss/', 'source': 'CoinDesk', 'weight': 10, 'category': 'crypto'},
@@ -111,12 +164,20 @@ class RealisticNewsCollector:
             # 새로운 암호화폐 소스
             {'url': 'https://ambcrypto.com/feed/', 'source': 'AMBCrypto', 'weight': 8, 'category': 'crypto'},
             {'url': 'https://cryptopotato.com/feed/', 'source': 'CryptoPotato', 'weight': 8, 'category': 'crypto'},
+            {'url': 'https://u.today/rss', 'source': 'U.Today', 'weight': 8, 'category': 'crypto'},
+            {'url': 'https://cryptonews.com/news/feed/', 'source': 'Cryptonews', 'weight': 8, 'category': 'crypto'},
             
-            # 일반 금융
+            # 일반 금융 - 빠른 소스 우선
+            {'url': 'https://feeds.bloomberg.com/markets/news.rss', 'source': 'Bloomberg Markets', 'weight': 9, 'category': 'finance'},
             {'url': 'https://www.marketwatch.com/rss/topstories', 'source': 'MarketWatch', 'weight': 8, 'category': 'finance'},
             {'url': 'https://seekingalpha.com/feed.xml', 'source': 'Seeking Alpha', 'weight': 8, 'category': 'finance'},
             {'url': 'https://feeds.feedburner.com/InvestingcomAnalysis', 'source': 'Investing.com', 'weight': 8, 'category': 'finance'},
             {'url': 'https://www.fool.com/feeds/index.aspx', 'source': 'Motley Fool', 'weight': 7, 'category': 'finance'},
+            
+            # 정치/정책 뉴스 - 신규 추가
+            {'url': 'https://feeds.washingtonpost.com/rss/politics', 'source': 'Washington Post Politics', 'weight': 9, 'category': 'politics'},
+            {'url': 'https://feeds.npr.org/1014/rss.xml', 'source': 'NPR Politics', 'weight': 8, 'category': 'politics'},
+            {'url': 'https://feeds.cnn.com/rss/edition_politics.rss', 'source': 'CNN Politics', 'weight': 8, 'category': 'politics'},
             
             # 일반 뉴스 (확실한 것들)
             {'url': 'https://rss.cnn.com/rss/edition.rss', 'source': 'CNN World', 'weight': 8, 'category': 'news'},
@@ -127,12 +188,9 @@ class RealisticNewsCollector:
             {'url': 'https://techcrunch.com/feed/', 'source': 'TechCrunch', 'weight': 7, 'category': 'tech'},
             {'url': 'https://www.wired.com/feed/rss', 'source': 'Wired', 'weight': 6, 'category': 'tech'},
             {'url': 'https://feeds.feedburner.com/venturebeat/SZYF', 'source': 'VentureBeat', 'weight': 7, 'category': 'tech'},
-            
-            # 추가 신뢰할만한 금융 소스
-            {'url': 'https://feeds.bloomberg.com/markets/news.rss', 'source': 'Bloomberg Markets', 'weight': 9, 'category': 'finance'},
         ]
         
-        # API 사용량 추적
+        # API 사용량 추적 - 더 자주 사용
         self.api_usage = {
             'newsapi_today': 0,
             'newsdata_today': 0,
@@ -140,26 +198,27 @@ class RealisticNewsCollector:
             'last_reset': datetime.now().date()
         }
         
-        # API 일일 한도
+        # API 일일 한도 - 증가
         self.api_limits = {
-            'newsapi': 15,
-            'newsdata': 8,
-            'alpha_vantage': 1
+            'newsapi': 25,  # 15 → 25
+            'newsdata': 15,  # 8 → 15
+            'alpha_vantage': 3  # 1 → 3
         }
         
         logger.info(f"뉴스 수집기 초기화 완료 - API 키 상태: NewsAPI={bool(self.newsapi_key)}, NewsData={bool(self.newsdata_key)}, AlphaVantage={bool(self.alpha_vantage_key)}")
+        logger.info(f"📊 개선된 설정: RSS 15초 체크, 번역 15분당 {self.max_translations_per_15min}개, 크리티컬 키워드 {len(self.critical_keywords)}개")
     
     def _reset_translation_count_if_needed(self):
-        """필요시 번역 카운트 리셋 - 30분마다"""
+        """필요시 번역 카운트 리셋 - 15분마다"""
         now = datetime.now()
         if (now - self.last_translation_reset).total_seconds() > self.translation_reset_interval:
             old_count = self.translation_count
             self.translation_count = 0
             self.last_translation_reset = now
-            logger.info(f"번역 카운트 리셋: {old_count} → 0 (30분 경과)")
+            logger.info(f"번역 카운트 리셋: {old_count} → 0 (15분 경과)")
     
     def _should_translate(self, article: Dict) -> bool:
-        """뉴스를 번역해야 하는지 결정하는 함수"""
+        """뉴스를 번역해야 하는지 결정하는 함수 - 우선순위 조정"""
         # 이미 한글 제목이 있으면 번역 불필요
         if article.get('title_ko') and article['title_ko'] != article.get('title', ''):
             return False
@@ -172,15 +231,19 @@ class RealisticNewsCollector:
         if self._is_critical_news(article):
             return True
         
-        # 2순위: 중요 뉴스 + 높은 가중치
+        # 2순위: 정치/뉴스 카테고리 + 높은 가중치 (트럼프, 미중 무역 등)
+        if category in ['politics', 'news'] and weight >= 8:
+            return True
+        
+        # 3순위: 중요 뉴스 + 높은 가중치
         if self._is_important_news(article) and weight >= 8:
             return True
         
-        # 3순위: 암호화폐 카테고리 + 중요 뉴스
+        # 4순위: 암호화폐 카테고리 + 중요 뉴스
         if category == 'crypto' and self._is_important_news(article):
             return True
         
-        # 4순위: API 뉴스 (NewsAPI, NewsData 등)
+        # 5순위: API 뉴스 (NewsAPI, NewsData 등)
         if category == 'api' and weight >= 9:
             return True
         
@@ -201,8 +264,8 @@ class RealisticNewsCollector:
             return self.translation_cache[cache_key]
         
         # Rate limit 체크
-        if self.translation_count >= self.max_translations_per_30min:
-            logger.warning(f"번역 한도 초과: {self.translation_count}/{self.max_translations_per_30min} (30분)")
+        if self.translation_count >= self.max_translations_per_15min:
+            logger.warning(f"번역 한도 초과: {self.translation_count}/{self.max_translations_per_15min} (15분)")
             return text[:max_length] + "..." if len(text) > max_length else text
         
         try:
@@ -240,7 +303,7 @@ class RealisticNewsCollector:
             
         except openai.RateLimitError as e:
             logger.warning(f"OpenAI Rate limit 오류: {str(e)}")
-            self.translation_count = self.max_translations_per_30min  # 더 이상 시도하지 않도록
+            self.translation_count = self.max_translations_per_15min  # 더 이상 시도하지 않도록
             return text[:80] + "..." if len(text) > 80 else text
         except Exception as e:
             logger.warning(f"번역 실패: {str(e)[:50]}")
@@ -261,7 +324,7 @@ class RealisticNewsCollector:
                 companies.append(company.lower())
         
         # 핵심 키워드 추출
-        key_terms = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', 'acquisition', '구매', '매입', 'first', '첫']
+        key_terms = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', 'acquisition', '구매', '매입', 'first', '첫', 'trump', 'china', 'trade']
         for term in key_terms:
             if term in clean_title.lower():
                 keywords.append(term)
@@ -276,8 +339,8 @@ class RealisticNewsCollector:
         
         return hashlib.md5(hash_content.encode()).hexdigest()
     
-    def _is_duplicate_emergency(self, article: Dict, time_window: int = 60) -> bool:
-        """긴급 알림이 중복인지 확인 (60분 이내 유사 내용)"""
+    def _is_duplicate_emergency(self, article: Dict, time_window: int = 30) -> bool:
+        """긴급 알림이 중복인지 확인 (30분 이내 유사 내용) - 시간 단축"""
         try:
             current_time = datetime.now()
             content_hash = self._generate_content_hash(
@@ -343,8 +406,8 @@ class RealisticNewsCollector:
         # 65% 이상 유사하면 중복으로 간주
         return similarity > 0.65
     
-    def _is_recent_news(self, article: Dict, hours: int = 2) -> bool:
-        """뉴스가 최근 것인지 확인 - 더 엄격한 시간 체크"""
+    def _is_recent_news(self, article: Dict, hours: int = 1) -> bool:
+        """뉴스가 최근 것인지 확인 - 1시간 내로 더 엄격"""
         try:
             pub_time_str = article.get('published_at', '')
             if not pub_time_str:
@@ -370,34 +433,35 @@ class RealisticNewsCollector:
             return True
     
     async def start_monitoring(self):
-        """뉴스 모니터링 시작"""
+        """뉴스 모니터링 시작 - 속도 최적화"""
         if not self.session:
             self.session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=15),
-                connector=aiohttp.TCPConnector(limit=100, limit_per_host=30)
+                timeout=aiohttp.ClientTimeout(total=10),  # 타임아웃 단축 15→10초
+                connector=aiohttp.TCPConnector(limit=150, limit_per_host=50)  # 연결수 증가
             )
         
-        logger.info("🔍 뉴스 모니터링 시작 - RSS 중심 + 스마트 API 사용")
-        logger.info(f"📊 번역 설정: 30분당 최대 {self.max_translations_per_30min}개")
+        logger.info("🔍 뉴스 모니터링 시작 - 초고속 RSS + 적극적 API 사용")
+        logger.info(f"📊 설정: RSS 15초 체크, 번역 15분당 최대 {self.max_translations_per_15min}개, 크리티컬 키워드 {len(self.critical_keywords)}개")
         
         # 회사별 뉴스 카운트 초기화
         self.company_news_count = {}
         
         tasks = [
-            self.monitor_rss_feeds(),      # 메인: RSS (30초마다로 단축)
+            self.monitor_rss_feeds(),      # 메인: RSS (15초마다)
             self.monitor_reddit(),         # 보조: Reddit (10분마다)
-            self.smart_api_rotation()      # 제한적: 3개 API 순환 사용
+            self.aggressive_api_rotation() # 적극적: API 순환 사용 (더 자주)
         ]
         
         await asyncio.gather(*tasks, return_exceptions=True)
     
     async def monitor_rss_feeds(self):
-        """RSS 피드 모니터링 - 메인 소스 - 더 빠른 체크"""
+        """RSS 피드 모니터링 - 15초마다 초고속 체크"""
         while True:
             try:
                 # 가중치가 높은 소스부터 처리
                 sorted_feeds = sorted(self.rss_feeds, key=lambda x: x['weight'], reverse=True)
                 successful_feeds = 0
+                processed_articles = 0
                 
                 for feed_info in sorted_feeds:
                     try:
@@ -407,50 +471,84 @@ class RealisticNewsCollector:
                             successful_feeds += 1
                             
                             for article in articles:
-                                # 최신 뉴스만 처리 (2시간 이내)
-                                if not self._is_recent_news(article, hours=2):
+                                # 최신 뉴스만 처리 (1시간 이내로 단축)
+                                if not self._is_recent_news(article, hours=1):
                                     continue
                                 
-                                # 번역 필요 여부 체크
+                                # 번역 필요 여부 체크 (우선순위 높은 것만)
                                 if self.openai_client and self._should_translate(article):
                                     article['title_ko'] = await self.translate_text(article['title'])
                                 else:
                                     article['title_ko'] = article.get('title', '')
                                 
-                                # 가중치 8 이상은 크리티컬 체크
-                                if feed_info['weight'] >= 8:
+                                # 가중치 8 이상이거나 정치/뉴스 카테고리는 크리티컬 체크
+                                if feed_info['weight'] >= 8 or feed_info['category'] in ['politics', 'news']:
                                     if self._is_critical_news(article):
                                         # 중복 체크 후 알림
                                         if not self._is_duplicate_emergency(article):
                                             # 변동 예상률 추가
                                             article['expected_change'] = self._estimate_price_impact(article)
                                             await self._trigger_emergency_alert(article)
+                                            processed_articles += 1
                                 
                                 # 모든 RSS는 중요 뉴스 체크
                                 if self._is_important_news(article):
                                     await self._add_to_news_buffer(article)
+                                    processed_articles += 1
                     
                     except Exception as e:
-                        logger.warning(f"RSS 피드 일시 오류 {feed_info['source']}: {str(e)[:100]}")
+                        logger.warning(f"RSS 피드 일시 오류 {feed_info['source']}: {str(e)[:50]}")
                         continue
                 
-                logger.info(f"📰 RSS 스캔 완료: {successful_feeds}/{len(sorted_feeds)} 피드 성공 (번역: {self.translation_count}/{self.max_translations_per_30min})")
-                await asyncio.sleep(30)  # 30초마다 전체 RSS 체크 (기존 45초에서 단축)
+                logger.info(f"📰 RSS 스캔 완료: {successful_feeds}/{len(sorted_feeds)} 피드 성공, {processed_articles}개 처리 (번역: {self.translation_count}/{self.max_translations_per_15min})")
+                await asyncio.sleep(15)  # 15초마다 전체 RSS 체크
                 
             except Exception as e:
                 logger.error(f"RSS 모니터링 전체 오류: {e}")
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)
     
     def _estimate_price_impact(self, article: Dict) -> str:
-        """뉴스의 예상 가격 영향 추정 - 더 현실적으로"""
+        """뉴스의 예상 가격 영향 추정 - 트럼프/정치 이벤트 강화"""
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         impact = article.get('impact', '')
         
-        # 비트코인 우세/도미넌스 관련
+        # 트럼프 관련 - 강화된 평가
+        if 'trump' in content:
+            if any(word in content for word in ['china', 'trade', 'tariff']):
+                return '±2~5%'  # 미중 무역 관련
+            elif any(word in content for word in ['bitcoin', 'crypto', 'digital asset']):
+                return '+1~3%'  # 비트코인 직접 언급
+            elif any(word in content for word in ['executive order', 'policy', 'announce']):
+                return '±1~3%'  # 정책 발표
+            else:
+                return '±0.5~2%'  # 일반 트럼프 뉴스
+        
+        # 미중 무역/관계 - 신규 추가
+        if any(word in content for word in ['us china trade', 'trade war', 'china tariff', 'xi jinping']):
+            return '±1~4%'
+        
+        # Fed/금리 관련 - 강화
+        if any(word in content for word in ['fed rate', 'powell', 'fomc', 'interest rate']):
+            if any(word in content for word in ['hike', 'raise', 'increase']):
+                return '-1~3%'  # 금리 인상
+            elif any(word in content for word in ['cut', 'lower', 'decrease']):
+                return '+2~5%'  # 금리 인하
+            else:
+                return '±1~2%'  # 일반 Fed 뉴스
+        
+        # 경제 지표 - 신규 추가
+        if any(word in content for word in ['gdp', 'unemployment', 'inflation', 'cpi', 'ppi']):
+            return '±0.5~2%'
+        
+        # 지정학적 리스크 - 신규 추가
+        if any(word in content for word in ['war', 'military', 'sanctions', 'geopolitical']):
+            return '±2~7%'  # 높은 변동성
+        
+        # 비트코인 우세/도미넌스 관련 - 중립으로 처리
         if any(word in content for word in ['dominance', '우세', '점유율']):
             return '±0.5%'  # 이미 반영된 움직임
         
-        # 사기/해킹 관련
+        # 사기/해킹 관련 - 구분해서 처리
         if any(word in content for word in ['scam', 'fraud', 'hack', '사기', '해킹']):
             if 'decrease' in content or '감소' in content:
                 return '±0.3%'  # 보안 개선은 간접적 호재
@@ -511,7 +609,9 @@ class RealisticNewsCollector:
             {'name': 'Bitcoin', 'threshold': 200, 'weight': 8},
             {'name': 'CryptoCurrency', 'threshold': 400, 'weight': 7},
             {'name': 'investing', 'threshold': 800, 'weight': 6},
-            {'name': 'wallstreetbets', 'threshold': 2000, 'weight': 5}
+            {'name': 'wallstreetbets', 'threshold': 2000, 'weight': 5},
+            {'name': 'politics', 'threshold': 1000, 'weight': 6},  # 신규 추가
+            {'name': 'worldnews', 'threshold': 1500, 'weight': 6}  # 신규 추가
         ]
         
         while True:
@@ -571,13 +671,13 @@ class RealisticNewsCollector:
                 logger.error(f"Reddit 모니터링 전체 오류: {e}")
                 await asyncio.sleep(900)
     
-    async def smart_api_rotation(self):
-        """3개 API 스마트 순환 사용"""
+    async def aggressive_api_rotation(self):
+        """적극적 API 순환 사용 - 더 자주 호출"""
         while True:
             try:
                 self._reset_daily_usage()
                 
-                # NewsAPI (30분마다)
+                # NewsAPI (15분마다로 단축)
                 if self.newsapi_key and self.api_usage['newsapi_today'] < self.api_limits['newsapi']:
                     try:
                         await self._call_newsapi()
@@ -586,9 +686,9 @@ class RealisticNewsCollector:
                     except Exception as e:
                         logger.error(f"NewsAPI 호출 실패: {str(e)[:100]}")
                 
-                await asyncio.sleep(1800)  # 30분 대기
+                await asyncio.sleep(900)  # 15분 대기 (기존 30분에서 단축)
                 
-                # NewsData API (1시간마다)
+                # NewsData API (30분마다로 단축)
                 if self.newsdata_key and self.api_usage['newsdata_today'] < self.api_limits['newsdata']:
                     try:
                         await self._call_newsdata()
@@ -597,9 +697,9 @@ class RealisticNewsCollector:
                     except Exception as e:
                         logger.error(f"NewsData API 호출 실패: {str(e)[:100]}")
                 
-                await asyncio.sleep(1800)  # 30분 대기
+                await asyncio.sleep(900)  # 15분 대기
                 
-                # Alpha Vantage (하루 1회)
+                # Alpha Vantage (하루 3회로 증가)
                 if self.alpha_vantage_key and self.api_usage['alpha_vantage_today'] < self.api_limits['alpha_vantage']:
                     try:
                         await self._call_alpha_vantage()
@@ -608,11 +708,11 @@ class RealisticNewsCollector:
                     except Exception as e:
                         logger.error(f"Alpha Vantage API 호출 실패: {str(e)[:100]}")
                 
-                await asyncio.sleep(3600)  # 1시간 대기
+                await asyncio.sleep(1800)  # 30분 대기
                 
             except Exception as e:
                 logger.error(f"API 순환 사용 오류: {e}")
-                await asyncio.sleep(3600)
+                await asyncio.sleep(1800)
     
     async def _parse_rss_feed(self, feed_info: Dict) -> List[Dict]:
         """RSS 피드 파싱 - 향상된 오류 처리"""
@@ -620,7 +720,7 @@ class RealisticNewsCollector:
         try:
             async with self.session.get(
                 feed_info['url'], 
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=8),  # 타임아웃 더 단축
                 headers={'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0)'}
             ) as response:
                 if response.status == 200:
@@ -631,7 +731,7 @@ class RealisticNewsCollector:
                     
                     if feed.entries:
                         # 가중치에 따라 처리할 기사 수 결정
-                        limit = min(15, max(5, feed_info['weight']))
+                        limit = min(20, max(5, feed_info['weight']))  # 기사 수 증가
                         
                         for entry in feed.entries[:limit]:
                             try:
@@ -687,17 +787,17 @@ class RealisticNewsCollector:
         return articles
     
     async def _call_newsapi(self):
-        """NewsAPI 호출 - 트럼프 및 정책 관련 키워드 추가"""
+        """NewsAPI 호출 - 트럼프 및 정책 관련 키워드 대폭 확장"""
         try:
-            # 검색어 강화
+            # 검색어 대폭 강화
             url = "https://newsapi.org/v2/everything"
             params = {
-                'q': '(bitcoin AND (bought OR purchased OR buys OR "buying bitcoin" OR acquisition)) OR (gamestop AND bitcoin) OR (tesla AND bitcoin) OR (microstrategy AND bitcoin) OR "whale alert" OR (trump AND (bitcoin OR crypto OR tariff OR policy)) OR (fed AND rate) OR (sec AND bitcoin) OR "bitcoin etf" OR (court AND bitcoin)',
+                'q': '(bitcoin AND (bought OR purchased OR buys OR "buying bitcoin" OR acquisition)) OR (gamestop AND bitcoin) OR (tesla AND bitcoin) OR (microstrategy AND bitcoin) OR "whale alert" OR (trump AND (bitcoin OR crypto OR tariff OR policy OR china OR trade)) OR (fed AND (rate OR powell OR fomc)) OR (sec AND bitcoin) OR "bitcoin etf" OR (court AND bitcoin) OR ("us china" AND trade) OR ("trade war") OR ("xi jinping") OR ("federal reserve") OR ("interest rate") OR ("monetary policy") OR ("inflation data") OR ("economic data")',
                 'language': 'en',
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
-                'pageSize': 20,
-                'from': (datetime.now() - timedelta(hours=2)).isoformat()
+                'pageSize': 25,  # 기사 수 증가
+                'from': (datetime.now() - timedelta(hours=1)).isoformat()  # 1시간 내로 단축
             }
             
             async with self.session.get(url, params=params) as response:
@@ -740,15 +840,15 @@ class RealisticNewsCollector:
             logger.error(f"NewsAPI 호출 오류: {e}")
     
     async def _call_newsdata(self):
-        """NewsData API 호출"""
+        """NewsData API 호출 - 키워드 확장"""
         try:
             url = "https://newsdata.io/api/1/news"
             params = {
                 'apikey': self.newsdata_key,
-                'q': 'bitcoin OR crypto OR "federal reserve" OR SEC OR gamestop OR tesla OR trump',
+                'q': 'bitcoin OR crypto OR "federal reserve" OR SEC OR gamestop OR tesla OR trump OR "us china trade" OR "trade war" OR tariff OR powell OR "interest rate"',
                 'language': 'en',
                 'category': 'business,politics,top',
-                'size': 10
+                'size': 15  # 기사 수 증가
             }
             
             async with self.session.get(url, params=params) as response:
@@ -791,16 +891,16 @@ class RealisticNewsCollector:
             logger.error(f"NewsData API 호출 오류: {e}")
     
     async def _call_alpha_vantage(self):
-        """Alpha Vantage API 호출"""
+        """Alpha Vantage API 호출 - 티커 확장"""
         try:
             url = "https://www.alphavantage.co/query"
             params = {
                 'function': 'NEWS_SENTIMENT',
-                'tickers': 'CRYPTO:BTC,COIN:MSTR,COIN:TSLA,COIN:GME',
-                'topics': 'financial_markets,economy_monetary,technology',
+                'tickers': 'CRYPTO:BTC,COIN:MSTR,COIN:TSLA,COIN:GME,FOREX:USD,SPY,QQQ',  # 티커 확장
+                'topics': 'financial_markets,economy_monetary,technology,earnings,mergers_and_acquisitions,ipo',  # 토픽 확장
                 'apikey': self.alpha_vantage_key,
                 'sort': 'LATEST',
-                'limit': 10
+                'limit': 15  # 기사 수 증가
             }
             
             async with self.session.get(url, params=params) as response:
@@ -861,22 +961,44 @@ class RealisticNewsCollector:
             self.last_translation_reset = datetime.now()
             # 최초 발견 시간 정리
             self.news_first_seen = {}
-            logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']}→0, NewsData {old_usage['newsdata_today']}→0")
+            logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']}→0, NewsData {old_usage['newsdata_today']}→0, AlphaVantage {old_usage['alpha_vantage_today']}→0")
     
     def _is_critical_news(self, article: Dict) -> bool:
-        """크리티컬 뉴스 판단 - 더 정확한 필터링"""
+        """크리티컬 뉴스 판단 - 트럼프/정치 이벤트 대폭 강화"""
         # 제목과 설명 모두 체크 (한글 제목도 포함)
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
-        # 제외 키워드 먼저 체크
+        # 제외 키워드 먼저 체크 (축소됨)
         for exclude in self.exclude_keywords:
             if exclude.lower() in content:
                 return False
         
-        # 비트코인 관련성 체크
+        # 트럼프 관련은 무조건 크리티컬 - 신규 추가
+        trump_keywords = ['trump', 'donald trump', 'president trump', '트럼프']
+        if any(keyword in content for keyword in trump_keywords):
+            # 신뢰할 만한 소스에서만 (가중치 7 이상)
+            if article.get('weight', 0) >= 7:
+                logger.warning(f"🚨 트럼프 관련 크리티컬 뉴스: {article.get('source', '')[:20]} - {article.get('title_ko', article.get('title', ''))[:50]}...")
+                return True
+        
+        # 미중 무역/관계 관련 - 신규 추가
+        trade_keywords = ['us china trade', 'china trade war', 'trade talks', 'xi jinping', '미중 무역', '시진핑']
+        if any(keyword in content for keyword in trade_keywords):
+            if article.get('weight', 0) >= 7:
+                logger.warning(f"🚨 미중 무역 크리티컬 뉴스: {article.get('source', '')[:20]} - {article.get('title_ko', article.get('title', ''))[:50]}...")
+                return True
+        
+        # Fed/금리 관련 - 강화
+        fed_keywords = ['fed rate decision', 'powell says', 'fomc decides', 'interest rate hike', 'interest rate cut', '연준 금리']
+        if any(keyword in content for keyword in fed_keywords):
+            if article.get('weight', 0) >= 7:
+                logger.warning(f"🚨 Fed 관련 크리티컬 뉴스: {article.get('source', '')[:20]} - {article.get('title_ko', article.get('title', ''))[:50]}...")
+                return True
+        
+        # 비트코인 관련성 체크 (기존 로직 유지)
         bitcoin_related = ['bitcoin', 'btc', 'crypto', '비트코인', '암호화폐']
         if not any(keyword in content for keyword in bitcoin_related):
-            # 비트코인 관련 언급이 없으면 크리티컬 아님
+            # 비트코인 관련 언급이 없으면서 트럼프/정치도 아니면 크리티컬 아님
             return False
         
         # 기업 비트코인 구매 감지
@@ -894,8 +1016,8 @@ class RealisticNewsCollector:
         # 기존 크리티컬 키워드 체크
         for keyword in self.critical_keywords:
             if keyword.lower() in content:
-                # 신뢰할 만한 소스에서만 (가중치 7 이상)
-                if article.get('weight', 0) >= 7:
+                # 신뢰할 만한 소스에서만 (가중치 6 이상으로 완화)
+                if article.get('weight', 0) >= 6:
                     # 추가 검증: 부정적 키워드 제외
                     negative_filters = ['fake', 'rumor', 'unconfirmed', 'alleged', 'speculation', '루머', '추측', '미확인']
                     if not any(neg in content for neg in negative_filters):
@@ -908,7 +1030,7 @@ class RealisticNewsCollector:
         """중요 뉴스 판단 - 향상된 로직"""
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
-        # 제외 키워드 체크
+        # 제외 키워드 체크 (축소됨)
         for exclude in self.exclude_keywords:
             if exclude.lower() in content:
                 return False
@@ -916,13 +1038,13 @@ class RealisticNewsCollector:
         # 키워드 그룹별 점수 시스템
         crypto_keywords = ['bitcoin', 'btc', 'crypto', 'cryptocurrency', 'digital asset', 'blockchain', '비트코인', '암호화폐', '블록체인']
         finance_keywords = ['fed', 'federal reserve', 'interest rate', 'inflation', 'sec', 'regulation', 'monetary policy', '연준', '금리', '인플레이션', '규제']
-        political_keywords = ['trump', 'biden', 'congress', 'government', 'policy', 'administration', 'white house', '트럼프', '바이든', '정부', '정책']
+        political_keywords = ['trump', 'biden', 'congress', 'government', 'policy', 'administration', 'white house', '트럼프', '바이든', '정부', '정책', 'china', 'trade']  # 확장
         market_keywords = ['market', 'trading', 'price', 'surge', 'crash', 'rally', 'dump', 'volatility', 'etf', '시장', '거래', '가격', '급등', '폭락', 'ETF']
         company_keywords = self.important_companies
         
         crypto_score = sum(1 for word in crypto_keywords if word in content)
         finance_score = sum(1 for word in finance_keywords if word in content)
-        political_score = sum(1 for word in political_keywords if word in content)
+        political_score = sum(1 for word in political_keywords if word in content)  # 새로 추가
         market_score = sum(1 for word in market_keywords if word in content)
         company_score = sum(1 for word in company_keywords if word.lower() in content)
         
@@ -930,16 +1052,18 @@ class RealisticNewsCollector:
         weight = article.get('weight', 0)
         category = article.get('category', '')
         
-        # 판단 조건들
+        # 판단 조건들 - 정치 관련 추가
         conditions = [
             crypto_score >= 2,  # 암호화폐 키워드 2개 이상
             crypto_score >= 1 and (finance_score >= 1 or political_score >= 1),  # 암호화폐 + 금융/정치
             crypto_score >= 1 and company_score >= 1,  # 암호화폐 + 기업
             weight >= 9 and total_score >= 2,  # 고가중치 소스 + 관련 키워드
             category == 'crypto' and market_score >= 1,  # 암호화폐 소스 + 시장 키워드
+            category in ['politics', 'news'] and political_score >= 1,  # 정치 카테고리 + 정치 키워드 - 신규
             crypto_score >= 1 and 'etf' in content,  # ETF 관련
-            finance_score >= 2 and weight >= 8,  # 금융 키워드 + 신뢰할만한 소스
+            finance_score >= 2 and weight >= 7,  # 금융 키워드 + 신뢰할만한 소스 (8→7로 완화)
             company_score >= 1 and ('bitcoin' in content or 'btc' in content),  # 기업 + 비트코인
+            political_score >= 2 and weight >= 7,  # 정치 키워드 + 신뢰할만한 소스 - 신규
         ]
         
         is_important = any(conditions)
@@ -1045,17 +1169,17 @@ class RealisticNewsCollector:
                             self.company_news_count[company.lower()] = self.company_news_count.get(company.lower(), 0) + 1
                             logger.debug(f"📊 {company} 비트코인 뉴스 카운트: {self.company_news_count[company.lower()]}")
                 
-                # 버퍼 관리: 가중치, 카테고리, 시간 기준으로 정렬 후 상위 50개만 유지
-                if len(self.news_buffer) > 50:
+                # 버퍼 관리: 가중치, 카테고리, 시간 기준으로 정렬 후 상위 60개만 유지 (기존 50개에서 증가)
+                if len(self.news_buffer) > 60:
                     def sort_key(x):
                         weight = x.get('weight', 0)
-                        category_priority = {'crypto': 4, 'api': 3, 'finance': 2, 'news': 1, 'tech': 1}
+                        category_priority = {'crypto': 5, 'api': 4, 'politics': 3, 'finance': 2, 'news': 2, 'tech': 1}  # 정치 카테고리 추가
                         cat_score = category_priority.get(x.get('category', ''), 0)
                         pub_time = x.get('published_at', '')
                         return (weight, cat_score, pub_time)
                     
                     self.news_buffer.sort(key=sort_key, reverse=True)
-                    self.news_buffer = self.news_buffer[:50]
+                    self.news_buffer = self.news_buffer[:60]
             else:
                 logger.debug(f"🔄 중복 뉴스 제외: {new_title_ko[:30] if new_title_ko else new_title[:30]}...")
         
@@ -1063,11 +1187,35 @@ class RealisticNewsCollector:
             logger.error(f"뉴스 버퍼 추가 오류: {e}")
     
     def _determine_impact(self, article: Dict) -> str:
-        """뉴스 영향도 판단 - 더 현실적인 분석"""
+        """뉴스 영향도 판단 - 트럼프/정치 이벤트 추가"""
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
+        # 트럼프 관련 - 신규 추가
+        if 'trump' in content:
+            if any(word in content for word in ['china', 'trade', 'tariff']):
+                return "📊 중간 변동성"  # 미중 무역
+            elif any(word in content for word in ['bitcoin', 'crypto']):
+                return "📈 약한 호재"  # 비트코인 언급
+            elif any(word in content for word in ['policy', 'executive order']):
+                return "⚠️ 정책 변화"  # 정책 발표
+            else:
+                return "📊 시장 관심"  # 일반 트럼프 뉴스
+        
+        # 미중 무역/관계 - 신규 추가
+        if any(word in content for word in ['us china trade', 'trade war', 'china tariff', 'xi jinping']):
+            return "📊 지정학적 리스크"
+        
+        # Fed/금리 관련 - 강화
+        if any(word in content for word in ['fed rate', 'powell', 'fomc']):
+            if any(word in content for word in ['hike', 'raise']):
+                return "📉 중간 악재"  # 금리 인상
+            elif any(word in content for word in ['cut', 'lower']):
+                return "📈 중간 호재"  # 금리 인하
+            else:
+                return "⚠️ 통화 정책"  # 일반 Fed 뉴스
+        
         # 비트코인 우세/도미넌스 관련 - 중립으로 처리
-        if any(word in content for word in ['dominance', '우세', '점유율', 'market share']):
+        if any(word in content for word in ['dominance', '우세', '점유율']):
             return "⚠️ 중립 (이미 반영)"
         
         # 사기/해킹 관련 - 구분해서 처리
@@ -1085,13 +1233,6 @@ class RealisticNewsCollector:
                     return "📈 중간 호재"
                 else:
                     return "📈 약한 호재"
-        
-        # 트럼프 관련 - 보수적 평가
-        if 'trump' in content:
-            if any(word in content for word in ['tariff', 'ban', 'restrict', 'court blocks', '관세', '금지']):
-                return "📉 약한 악재"
-            elif any(word in content for word in ['approve', 'support', 'bitcoin reserve', '지지', '승인']):
-                return "📈 약한 호재"
         
         # 강한 악재 (즉시 영향)
         strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked', '금지', '규제', '소송', '폭락', '해킹']
@@ -1201,16 +1342,17 @@ class RealisticNewsCollector:
             # 정렬 기준: 가중치 → 카테고리 → 시간
             def sort_key(x):
                 weight = x.get('weight', 0)
-                category_priority = {'crypto': 4, 'api': 3, 'finance': 2, 'news': 1, 'tech': 1}
+                category_priority = {'crypto': 5, 'api': 4, 'politics': 3, 'finance': 2, 'news': 2, 'tech': 1}  # 정치 카테고리 추가
                 cat_score = category_priority.get(x.get('category', ''), 0)
                 pub_time = x.get('published_at', '')
                 return (weight, cat_score, pub_time)
             
             final_news.sort(key=sort_key, reverse=True)
             
-            # 카테고리별 균형 조정 (암호화폐 뉴스 우선, 하지만 다양성 유지)
+            # 카테고리별 균형 조정 (정치/뉴스 카테고리 추가)
             balanced_news = []
             crypto_count = 0
+            politics_count = 0  # 신규 추가
             other_count = 0
             
             for article in final_news:
@@ -1218,15 +1360,18 @@ class RealisticNewsCollector:
                 if category == 'crypto' and crypto_count < 8:
                     balanced_news.append(article)
                     crypto_count += 1
-                elif category != 'crypto' and other_count < 4:
+                elif category in ['politics', 'news'] and politics_count < 4:  # 정치/뉴스 카테고리 추가
+                    balanced_news.append(article)
+                    politics_count += 1
+                elif category not in ['crypto', 'politics', 'news'] and other_count < 3:
                     balanced_news.append(article)
                     other_count += 1
-                elif len(balanced_news) < 10:  # 총 10개 미만이면 추가
+                elif len(balanced_news) < 12:  # 총 12개 미만이면 추가
                     balanced_news.append(article)
             
-            final_result = balanced_news[:12]  # 최대 12개
+            final_result = balanced_news[:15]  # 최대 15개로 증가
             
-            logger.info(f"📰 최근 {hours}시간 뉴스 반환: 총 {len(final_result)}건 (암호화폐: {crypto_count}, 기타: {other_count})")
+            logger.info(f"📰 최근 {hours}시간 뉴스 반환: 총 {len(final_result)}건 (암호화폐: {crypto_count}, 정치: {politics_count}, 기타: {other_count})")
             return final_result
             
         except Exception as e:
