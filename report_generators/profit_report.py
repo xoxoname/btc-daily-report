@@ -101,8 +101,20 @@ class ProfitReportGenerator(BaseReportGenerator):
             # KST 0시 기준 오늘 실현 손익
             today_pnl = await self._get_today_realized_pnl_kst()
             
-            # 오늘 포함 7일 수익 - get_profit_loss_history 사용
-            weekly_profit = await self.bitget_client.get_profit_loss_history(days=7)
+            # 오늘 포함 7일 수익 - 여러 방법 시도
+            weekly_profit = await self.bitget_client.get_simple_weekly_profit(days=7)
+            
+            # source 확인
+            if weekly_profit.get('source') == 'achievedProfits':
+                self.logger.info(f"포지션 achievedProfits 기반 7일 수익 사용: ${weekly_profit.get('total_pnl', 0):.2f}")
+            else:
+                # 기존 방식 결과
+                original_weekly = await self.bitget_client.get_profit_loss_history(days=7)
+                if original_weekly.get('total_pnl', 0) != weekly_profit.get('total_pnl', 0):
+                    self.logger.warning(f"7일 손익 차이 - achievedProfits: ${weekly_profit.get('total_pnl', 0):.2f}, 계산: ${original_weekly.get('total_pnl', 0):.2f}")
+                    # 더 큰 값 사용
+                    if original_weekly.get('total_pnl', 0) > weekly_profit.get('total_pnl', 0):
+                        weekly_profit = original_weekly
             
             # 디버깅 로그 추가
             self.logger.info(f"Bitget 7일 손익 조회 결과:")
