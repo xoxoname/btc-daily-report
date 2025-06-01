@@ -964,65 +964,501 @@ class RealisticNewsCollector:
             logger.info(f"🔄 API 일일 사용량 리셋: NewsAPI {old_usage['newsapi_today']}→0, NewsData {old_usage['newsdata_today']}→0, AlphaVantage {old_usage['alpha_vantage_today']}→0")
     
     def _is_critical_news(self, article: Dict) -> bool:
-        """크리티컬 뉴스 판단 - 트럼프/정치 이벤트 대폭 강화"""
+        """크리티컬 뉴스 판단 - 비트코인 직접 영향만 필터링"""
         # 제목과 설명 모두 체크 (한글 제목도 포함)
         content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
         
-        # 제외 키워드 먼저 체크 (축소됨)
+        # 제외 키워드 먼저 체크
         for exclude in self.exclude_keywords:
             if exclude.lower() in content:
                 return False
         
-        # 트럼프 관련은 무조건 크리티컬 - 신규 추가
+        # 비트코인 관련성 먼저 체크 - 더 엄격하게
+        bitcoin_related = ['bitcoin', 'btc', '비트코인']
+        crypto_general = ['crypto', 'cryptocurrency', '암호화폐']
+        
+        has_bitcoin = any(keyword in content for keyword in bitcoin_related)
+        has_crypto = any(keyword in content for keyword in crypto_general)
+        
+        # 1. 비트코인 직접 언급이 있는 경우만 우선 처리
+        if has_bitcoin:
+            # 비트코인 + 기업 구매
+            for company in self.important_companies:
+                if company.lower() in content:
+                    purchase_keywords = ['bought', 'buys', 'purchased', 'purchase', 'acquisition', '구매', '매입', '투자']
+                    if any(keyword in content for keyword in purchase_keywords):
+                        if any(char in content for char in ['
+    
+    def _is_important_news(self, article: Dict) -> bool:
+        """중요 뉴스 판단 - 비트코인 관련성 강화"""
+        content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
+        
+        # 제외 키워드 체크
+        for exclude in self.exclude_keywords:
+            if exclude.lower() in content:
+                return False
+        
+        # 키워드 그룹별 점수 시스템
+        bitcoin_keywords = ['bitcoin', 'btc', '비트코인']  # 비트코인 직접 언급
+        crypto_keywords = ['crypto', 'cryptocurrency', 'digital asset', 'blockchain', '암호화폐', '블록체인']  # 암호화폐 일반
+        finance_keywords = ['fed', 'federal reserve', 'interest rate', 'inflation', 'sec', 'regulation', 'monetary policy', '연준', '금리', '인플레이션', '규제']
+        political_keywords = ['trump', 'biden', 'congress', 'government', 'policy', 'administration', 'white house', '트럼프', '바이든', '정부', '정책', 'china', 'trade']
+        market_keywords = ['market', 'trading', 'price', 'surge', 'crash', 'rally', 'dump', 'volatility', 'etf', '시장', '거래', '가격', '급등', '폭락', 'ETF']
+        company_keywords = self.important_companies
+        
+        bitcoin_score = sum(1 for word in bitcoin_keywords if word in content)
+        crypto_score = sum(1 for word in crypto_keywords if word in content)
+        finance_score = sum(1 for word in finance_keywords if word in content)
+        political_score = sum(1 for word in political_keywords if word in content)
+        market_score = sum(1 for word in market_keywords if word in content)
+        company_score = sum(1 for word in company_keywords if word.lower() in content)
+        
+        total_score = bitcoin_score + crypto_score + finance_score + political_score + market_score + company_score
+        weight = article.get('weight', 0)
+        category = article.get('category', '')
+        
+        # 비트코인 직접 관련성 우선 - 더 엄격한 조건
+        conditions = [
+            # 비트코인 직접 언급 + 다른 요소
+            bitcoin_score >= 1 and (finance_score >= 1 or political_score >= 1 or company_score >= 1),
+            
+            # 비트코인 + ETF
+            bitcoin_score >= 1 and 'etf' in content,
+            
+            # 기업 + 비트코인 조합
+            company_score >= 1 and bitcoin_score >= 1,
+            
+            # 암호화폐 전문 소스 + 비트코인
+            category == 'crypto' and bitcoin_score >= 1 and weight >= 8,
+            
+            # 고가중치 소스 + 비트코인 언급
+            weight >= 9 and bitcoin_score >= 1,
+            
+            # Fed/금리 + 높은 가중치 (비트코인 언급 없어도 중요)
+            finance_score >= 2 and weight >= 8 and any(word in content for word in ['rate decision', 'fomc', 'powell', '금리 결정']),
+            
+            # 트럼프 + 경제/무역 관련 (비트코인 언급 없어도 시장 영향)
+            political_score >= 1 and weight >= 8 and any(word in content for word in ['trump', '트럼프']) and 
+            any(word in content for word in ['tariff', 'trade', 'china', 'economy', '관세', '무역', '중국', '경제']),
+            
+            # API 뉴스 + 비트코인/암호화폐
+            category == 'api' and weight >= 9 and (bitcoin_score >= 1 or crypto_score >= 1),
+        ]
+        
+        is_important = any(conditions)
+        
+        # 알트코인 단독 뉴스는 중요도 낮춤
+        altcoin_keywords = ['ethereum', 'eth', 'xrp', 'ripple', 'solana', 'sol', 'cardano', 'ada']
+        if any(alt in content for alt in altcoin_keywords) and bitcoin_score == 0:
+            # 알트코인 뉴스는 ETF나 대규모 이벤트가 아니면 제외
+            if not any(word in content for word in ['etf', 'billion', 'major', 'breakthrough', '십억', '대규모']):
+                is_important = False
+        
+        if is_important:
+            logger.debug(f"📋 중요 뉴스: {article.get('source', '')[:15]} - BTC:{bitcoin_score},C:{crypto_score},F:{finance_score},P:{political_score},M:{market_score},Co:{company_score}")
+        
+        return is_important
+    
+    async def _trigger_emergency_alert(self, article: Dict):
+        """긴급 알림 트리거 - 첫 발견 시간 추적"""
+        try:
+            # 이미 처리된 뉴스인지 확인
+            content_hash = self._generate_content_hash(article.get('title', ''), article.get('description', ''))
+            if content_hash in self.processed_news_hashes:
+                logger.info(f"🔄 이미 처리된 긴급 뉴스 스킵: {article.get('title', '')[:30]}...")
+                return
+            
+            # 처리된 뉴스로 기록
+            self.processed_news_hashes.add(content_hash)
+            
+            # 오래된 해시 정리 (1000개 초과시)
+            if len(self.processed_news_hashes) > 1000:
+                self.processed_news_hashes = set(list(self.processed_news_hashes)[-500:])
+            
+            # 최초 발견 시간 기록
+            if content_hash not in self.news_first_seen:
+                self.news_first_seen[content_hash] = datetime.now()
+            
+            event = {
+                'type': 'critical_news',
+                'title': article.get('title_ko', article.get('title', ''))[:100],
+                'description': article.get('description', '')[:250],
+                'source': article.get('source', ''),
+                'url': article.get('url', ''),
+                'timestamp': datetime.now(),
+                'severity': 'critical',
+                'impact': self._determine_impact(article),
+                'expected_change': article.get('expected_change', '±0.3%'),
+                'weight': article.get('weight', 5),
+                'category': article.get('category', 'unknown'),
+                'published_at': article.get('published_at', ''),
+                'first_seen': self.news_first_seen[content_hash]
+            }
+            
+            # 데이터 컬렉터에 전달
+            if hasattr(self, 'data_collector') and self.data_collector:
+                self.data_collector.events_buffer.append(event)
+            
+            logger.critical(f"🚨 긴급 뉴스 알림: {article.get('source', '')} - {article.get('title_ko', article.get('title', ''))[:60]} (예상: {event['expected_change']})")
+            
+        except Exception as e:
+            logger.error(f"긴급 알림 처리 오류: {e}")
+    
+    async def _add_to_news_buffer(self, article: Dict):
+        """뉴스 버퍼에 추가 - 회사별 카운트 제한"""
+        try:
+            # 제목 기반 중복 체크
+            new_title = article.get('title', '').lower()
+            new_title_ko = article.get('title_ko', '').lower()
+            new_source = article.get('source', '').lower()
+            
+            # 이미 처리된 뉴스인지 확인
+            content_hash = self._generate_content_hash(article.get('title', ''), article.get('description', ''))
+            if content_hash in self.processed_news_hashes:
+                logger.debug(f"🔄 이미 처리된 뉴스 스킵: {new_title[:30]}...")
+                return
+            
+            # 회사별 뉴스 카운트 확인
+            for company in self.important_companies:
+                if company.lower() in new_title or company.lower() in new_title_ko:
+                    # 비트코인 관련 뉴스인지 확인
+                    bitcoin_keywords = ['bitcoin', 'btc', '비트코인', 'purchase', 'bought', '구매', '매입']
+                    if any(keyword in new_title or keyword in new_title_ko for keyword in bitcoin_keywords):
+                        # 해당 회사의 비트코인 뉴스가 이미 1개 이상인지 확인
+                        if self.company_news_count.get(company.lower(), 0) >= 1:
+                            logger.debug(f"🔄 {company} 비트코인 뉴스 이미 있음, 스킵: {new_title[:30]}...")
+                            return
+            
+            # 버퍼에 있는 뉴스와 중복 체크
+            is_duplicate = False
+            for existing in self.news_buffer:
+                # 동일한 뉴스 체크
+                if self._is_similar_news(new_title, existing.get('title', '')):
+                    is_duplicate = True
+                    break
+                
+                # 한글 제목도 체크
+                if new_title_ko and existing.get('title_ko', ''):
+                    if self._is_similar_news(new_title_ko, existing.get('title_ko', '')):
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                self.news_buffer.append(article)
+                self.processed_news_hashes.add(content_hash)
+                
+                # 회사별 카운트 업데이트
+                for company in self.important_companies:
+                    if company.lower() in new_title or company.lower() in new_title_ko:
+                        bitcoin_keywords = ['bitcoin', 'btc', '비트코인', 'purchase', 'bought', '구매', '매입']
+                        if any(keyword in new_title or keyword in new_title_ko for keyword in bitcoin_keywords):
+                            self.company_news_count[company.lower()] = self.company_news_count.get(company.lower(), 0) + 1
+                            logger.debug(f"📊 {company} 비트코인 뉴스 카운트: {self.company_news_count[company.lower()]}")
+                
+                # 버퍼 관리: 가중치, 카테고리, 시간 기준으로 정렬 후 상위 60개만 유지 (기존 50개에서 증가)
+                if len(self.news_buffer) > 60:
+                    def sort_key(x):
+                        weight = x.get('weight', 0)
+                        category_priority = {'crypto': 5, 'api': 4, 'politics': 3, 'finance': 2, 'news': 2, 'tech': 1}  # 정치 카테고리 추가
+                        cat_score = category_priority.get(x.get('category', ''), 0)
+                        pub_time = x.get('published_at', '')
+                        return (weight, cat_score, pub_time)
+                    
+                    self.news_buffer.sort(key=sort_key, reverse=True)
+                    self.news_buffer = self.news_buffer[:60]
+            else:
+                logger.debug(f"🔄 중복 뉴스 제외: {new_title_ko[:30] if new_title_ko else new_title[:30]}...")
+        
+        except Exception as e:
+            logger.error(f"뉴스 버퍼 추가 오류: {e}")
+    
+    def _determine_impact(self, article: Dict) -> str:
+        """뉴스 영향도 판단 - 비트코인 중심으로 재조정"""
+        content = (article.get('title', '') + ' ' + article.get('description', '') + ' ' + article.get('title_ko', '')).lower()
+        
+        # 비트코인 직접 언급 확인
+        has_bitcoin = any(word in content for word in ['bitcoin', 'btc', '비트코인'])
+        
+        # 트럼프 관련 - 경제/암호화폐 관련만
+        if 'trump' in content:
+            if any(word in content for word in ['bitcoin', 'crypto', 'digital asset', '비트코인', '암호화폐']):
+                return "📈 약한 호재"  # 비트코인 직접 언급
+            elif any(word in content for word in ['china', 'trade', 'tariff', '중국', '무역', '관세']):
+                return "📊 시장 관심"  # 간접 영향
+            elif any(word in content for word in ['economy', 'economic', '경제']):
+                return "⚠️ 관련성 검토"  # 경제 관련
+            else:
+                return "⚠️ 비트코인 무관"  # 직접 관련 없음
+        
+        # 미중 무역/관계 - 글로벌 경제 영향만
+        if any(word in content for word in ['us china trade', 'trade war', 'china tariff', 'xi jinping']):
+            if has_bitcoin:
+                return "📊 중간 변동성"
+            elif any(word in content for word in ['billion', 'trillion', 'agreement', '협정']):
+                return "⚠️ 간접 영향"  # 대규모 경제 이벤트
+            else:
+                return "⚠️ 제한적 영향"
+        
+        # Fed/금리 관련 - 비트코인에 직접 영향
+        if any(word in content for word in ['fed rate', 'powell', 'fomc', 'interest rate']):
+            if any(word in content for word in ['hike', 'raise', 'increase']):
+                return "📉 중간 악재"  # 금리 인상
+            elif any(word in content for word in ['cut', 'lower', 'decrease']):
+                return "📈 중간 호재"  # 금리 인하
+            else:
+                return "⚠️ 통화 정책"
+        
+        # 기업 비트코인 구매
+        if has_bitcoin:
+            for company in self.important_companies:
+                if company.lower() in content and any(word in content for word in ['bought', 'purchased', 'buys', 'bitcoin', '비트코인 구매', '매입']):
+                    if any(word in content for word in ['billion', '억 달러', '십억']):
+                        return "📈 중간 호재"
+                    else:
+                        return "📈 약한 호재"
+        
+        # 비트코인 관련성이 없는 경우
+        if not has_bitcoin and not any(word in content for word in ['crypto', 'cryptocurrency', '암호화폐']):
+            # 알트코인 뉴스
+            if any(word in content for word in ['ethereum', 'eth', 'xrp', 'ripple']):
+                return "⚠️ 알트코인 (BTC 무관)"
+            # 일반 뉴스
+            else:
+                return "⚠️ 비트코인 무관"
+        
+        # 비트코인 우세/도미넌스 관련
+        if any(word in content for word in ['dominance', '우세', '점유율']):
+            return "⚠️ 중립 (이미 반영)"
+        
+        # 사기/해킹 관련 - 비트코인 관련만
+        if has_bitcoin and any(word in content for word in ['scam', 'fraud', 'hack', '사기', '해킹']):
+            if any(word in content for word in ['decrease', 'down', '감소', '줄어']):
+                return "📈 약한 호재"  # 보안 개선
+            else:
+                return "📉 약한 악재"  # 사기 피해
+        
+        # 강한 악재/호재 (비트코인 관련)
+        if has_bitcoin:
+            strong_bearish = ['ban', 'banned', 'lawsuit', 'crash', 'crackdown', 'reject', 'rejected', 'hack', 'hacked', '금지', '규제', '소송', '폭락', '해킹']
+            strong_bullish = ['approval', 'approved', 'adoption', 'breakthrough', 'all-time high', 'ath', '승인', '채택', '신고가']
+            bearish = ['concern', 'worry', 'decline', 'fall', 'drop', 'uncertainty', 'regulation', 'fine', '우려', '하락', '불확실']
+            bullish = ['growth', 'rise', 'increase', 'positive', 'rally', 'surge', 'investment', 'institutional', '상승', '증가', '긍정적', '투자']
+            
+            strong_bearish_count = sum(1 for word in strong_bearish if word in content)
+            strong_bullish_count = sum(1 for word in strong_bullish if word in content)
+            bearish_count = sum(1 for word in bearish if word in content)
+            bullish_count = sum(1 for word in bullish if word in content)
+            
+            if strong_bearish_count >= 1:
+                return "📉 중간 악재"
+            elif strong_bullish_count >= 1:
+                return "📈 중간 호재"
+            elif bearish_count > bullish_count:
+                return "📉 약한 악재"
+            elif bullish_count > bearish_count:
+                return "📈 약한 호재"
+        
+        # 기본값
+        if has_bitcoin:
+            return "⚠️ 중립"
+        else:
+            return "⚠️ 비트코인 무관"
+    
+    async def get_recent_news(self, hours: int = 6) -> List[Dict]:
+        """최근 뉴스 가져오기 - 회사별 중복 제거 강화"""
+        try:
+            cutoff_time = datetime.now() - timedelta(hours=hours)
+            recent_news = []
+            seen_titles = set()  # 중복 체크용
+            company_count = {}  # 회사별 카운트
+            
+            for article in self.news_buffer:
+                try:
+                    # 발행 시간 체크
+                    if article.get('published_at'):
+                        pub_time_str = article.get('published_at', '').replace('Z', '').replace('T', ' ')
+                        # 다양한 시간 형식 처리
+                        try:
+                            if 'T' in article.get('published_at', ''):
+                                pub_time = datetime.fromisoformat(pub_time_str)
+                            else:
+                                from dateutil import parser
+                                pub_time = parser.parse(article.get('published_at', ''))
+                            
+                            if pub_time > cutoff_time:
+                                # 중복 체크
+                                title_hash = self._generate_content_hash(article.get('title', ''), '')
+                                if title_hash not in seen_titles:
+                                    # 회사별 카운트 확인
+                                    skip = False
+                                    article_title = (article.get('title', '') + ' ' + article.get('title_ko', '')).lower()
+                                    
+                                    for company in self.important_companies:
+                                        if company.lower() in article_title:
+                                            bitcoin_keywords = ['bitcoin', 'btc', '비트코인', 'purchase', 'bought', '구매', '매입']
+                                            if any(keyword in article_title for keyword in bitcoin_keywords):
+                                                if company_count.get(company.lower(), 0) >= 1:
+                                                    skip = True
+                                                    break
+                                                else:
+                                                    company_count[company.lower()] = company_count.get(company.lower(), 0) + 1
+                                    
+                                    if not skip:
+                                        recent_news.append(article)
+                                        seen_titles.add(title_hash)
+                        except:
+                            # 시간 파싱 실패시 최근 뉴스로 간주 (안전장치)
+                            title_hash = self._generate_content_hash(article.get('title', ''), '')
+                            if title_hash not in seen_titles:
+                                recent_news.append(article)
+                                seen_titles.add(title_hash)
+                    else:
+                        title_hash = self._generate_content_hash(article.get('title', ''), '')
+                        if title_hash not in seen_titles:
+                            recent_news.append(article)
+                            seen_titles.add(title_hash)
+                except:
+                    pass
+            
+            # 추가 중복 제거: 유사한 제목 제거
+            final_news = []
+            for article in recent_news:
+                is_similar = False
+                for final_article in final_news:
+                    if self._is_similar_news(article.get('title', ''), final_article.get('title', '')):
+                        is_similar = True
+                        break
+                
+                if not is_similar:
+                    final_news.append(article)
+            
+            # 정렬 기준: 가중치 → 카테고리 → 시간
+            def sort_key(x):
+                weight = x.get('weight', 0)
+                category_priority = {'crypto': 5, 'api': 4, 'politics': 3, 'finance': 2, 'news': 2, 'tech': 1}  # 정치 카테고리 추가
+                cat_score = category_priority.get(x.get('category', ''), 0)
+                pub_time = x.get('published_at', '')
+                return (weight, cat_score, pub_time)
+            
+            final_news.sort(key=sort_key, reverse=True)
+            
+            # 카테고리별 균형 조정 (정치/뉴스 카테고리 추가)
+            balanced_news = []
+            crypto_count = 0
+            politics_count = 0  # 신규 추가
+            other_count = 0
+            
+            for article in final_news:
+                category = article.get('category', '')
+                if category == 'crypto' and crypto_count < 8:
+                    balanced_news.append(article)
+                    crypto_count += 1
+                elif category in ['politics', 'news'] and politics_count < 4:  # 정치/뉴스 카테고리 추가
+                    balanced_news.append(article)
+                    politics_count += 1
+                elif category not in ['crypto', 'politics', 'news'] and other_count < 3:
+                    balanced_news.append(article)
+                    other_count += 1
+                elif len(balanced_news) < 12:  # 총 12개 미만이면 추가
+                    balanced_news.append(article)
+            
+            final_result = balanced_news[:15]  # 최대 15개로 증가
+            
+            logger.info(f"📰 최근 {hours}시간 뉴스 반환: 총 {len(final_result)}건 (암호화폐: {crypto_count}, 정치: {politics_count}, 기타: {other_count})")
+            return final_result
+            
+        except Exception as e:
+            logger.error(f"최근 뉴스 조회 오류: {e}")
+            return []
+    
+    async def close(self):
+        """세션 종료"""
+        try:
+            if self.session:
+                await self.session.close()
+                logger.info("🔚 뉴스 수집기 세션 종료 완료")
+        except Exception as e:
+            logger.error(f"세션 종료 중 오류: {e}")
+, '달러', 'dollar', 'million', 'billion']):
+                            logger.warning(f"🚨 기업 비트코인 구매: {company} - {article.get('title', '')[:50]}...")
+                            return True
+            
+            # 비트코인 + ETF
+            if any(word in content for word in ['etf', 'etf approval', 'etf rejected', 'spot etf']):
+                if article.get('weight', 0) >= 7:
+                    logger.warning(f"🚨 비트코인 ETF 뉴스: {article.get('title', '')[:50]}...")
+                    return True
+            
+            # 비트코인 + 규제
+            if any(word in content for word in ['sec', 'regulation', 'ban', 'lawsuit', 'court', '규제', '금지']):
+                if article.get('weight', 0) >= 7:
+                    logger.warning(f"🚨 비트코인 규제 뉴스: {article.get('title', '')[:50]}...")
+                    return True
+        
+        # 2. 트럼프 관련 - 비트코인/경제 관련만
         trump_keywords = ['trump', 'donald trump', 'president trump', '트럼프']
         if any(keyword in content for keyword in trump_keywords):
-            # 신뢰할 만한 소스에서만 (가중치 7 이상)
-            if article.get('weight', 0) >= 7:
-                logger.warning(f"🚨 트럼프 관련 크리티컬 뉴스: {article.get('source', '')[:20]} - {article.get('title_ko', article.get('title', ''))[:50]}...")
-                return True
+            # 트럼프 + 비트코인/암호화폐/경제 관련만
+            trump_relevant = ['bitcoin', 'btc', 'crypto', 'cryptocurrency', '비트코인', '암호화폐', 
+                            'tariff', 'trade', 'china', 'fed', 'federal reserve', 'economy', 
+                            '관세', '무역', '중국', '연준', '경제', 'executive order', 'policy']
+            if any(rel in content for rel in trump_relevant):
+                if article.get('weight', 0) >= 7:
+                    logger.warning(f"🚨 트럼프 경제/암호화폐 뉴스: {article.get('title', '')[:50]}...")
+                    return True
+            else:
+                # 트럼프 관련이지만 경제/암호화폐와 무관하면 제외
+                return False
         
-        # 미중 무역/관계 관련 - 신규 추가
+        # 3. 미중 무역 - 비트코인 언급 또는 경제 전반 영향
         trade_keywords = ['us china trade', 'china trade war', 'trade talks', 'xi jinping', '미중 무역', '시진핑']
         if any(keyword in content for keyword in trade_keywords):
-            if article.get('weight', 0) >= 7:
-                logger.warning(f"🚨 미중 무역 크리티컬 뉴스: {article.get('source', '')[:20]} - {article.get('title_ko', article.get('title', ''))[:50]}...")
+            # 글로벌 경제에 영향을 주는 규모의 뉴스만
+            if any(word in content for word in ['billion', 'trillion', 'agreement', 'deal', '협정', '합의']) and article.get('weight', 0) >= 7:
+                logger.warning(f"🚨 미중 무역 주요 뉴스: {article.get('title', '')[:50]}...")
                 return True
+            elif has_bitcoin or has_crypto:
+                logger.warning(f"🚨 미중 무역 + 암호화폐: {article.get('title', '')[:50]}...")
+                return True
+            else:
+                return False
         
-        # Fed/금리 관련 - 강화
+        # 4. Fed/금리 관련 - 실제 결정이나 중요 발언만
         fed_keywords = ['fed rate decision', 'powell says', 'fomc decides', 'interest rate hike', 'interest rate cut', '연준 금리']
-        if any(keyword in content for keyword in fed_keywords):
+        fed_important = ['rate decision', 'rate hike', 'rate cut', 'fomc meeting', 'powell speech', '금리 결정', '금리 인상', '금리 인하']
+        if any(keyword in content for keyword in fed_keywords) or any(keyword in content for keyword in fed_important):
             if article.get('weight', 0) >= 7:
-                logger.warning(f"🚨 Fed 관련 크리티컬 뉴스: {article.get('source', '')[:20]} - {article.get('title_ko', article.get('title', ''))[:50]}...")
+                logger.warning(f"🚨 Fed 중요 뉴스: {article.get('title', '')[:50]}...")
                 return True
         
-        # 비트코인 관련성 체크 (기존 로직 유지)
-        bitcoin_related = ['bitcoin', 'btc', 'crypto', '비트코인', '암호화폐']
-        if not any(keyword in content for keyword in bitcoin_related):
-            # 비트코인 관련 언급이 없으면서 트럼프/정치도 아니면 크리티컬 아님
-            return False
+        # 5. 기타 크리티컬 키워드 - 비트코인 관련성 있을 때만
+        if has_bitcoin:
+            bitcoin_critical = [
+                'bitcoin crash', 'bitcoin surge', 'bitcoin rally', 'bitcoin plunge',
+                'whale alert', 'large bitcoin transfer', 'bitcoin moved',
+                'exchange hacked', 'bitcoin stolen', 'security breach',
+                '비트코인 폭락', '비트코인 급등', '고래 이동', '거래소 해킹'
+            ]
+            
+            for keyword in bitcoin_critical:
+                if keyword.lower() in content:
+                    if article.get('weight', 0) >= 6:
+                        negative_filters = ['fake', 'rumor', 'unconfirmed', 'alleged', 'speculation', '루머', '추측', '미확인']
+                        if not any(neg in content for neg in negative_filters):
+                            logger.warning(f"🚨 비트코인 크리티컬: {article.get('title', '')[:50]}...")
+                            return True
         
-        # 기업 비트코인 구매 감지
-        for company in self.important_companies:
-            if company.lower() in content:
-                # 비트코인 구매 관련 키워드 체크
-                purchase_keywords = ['bought', 'buys', 'purchased', 'bitcoin purchase', 'bitcoin acquisition',
-                                   '비트코인 구매', '비트코인 매입', '비트코인 투자', 'bitcoin', 'btc']
-                if any(keyword in content for keyword in purchase_keywords):
-                    # 금액이 포함된 경우 더 높은 신뢰도
-                    if any(char in content for char in ['$', '달러', 'dollar', 'million', 'billion']):
-                        logger.warning(f"🚨 기업 비트코인 구매 감지: {company} - {article.get('title', '')[:50]}...")
-                        return True
-        
-        # 기존 크리티컬 키워드 체크
-        for keyword in self.critical_keywords:
-            if keyword.lower() in content:
-                # 신뢰할 만한 소스에서만 (가중치 6 이상으로 완화)
-                if article.get('weight', 0) >= 6:
-                    # 추가 검증: 부정적 키워드 제외
-                    negative_filters = ['fake', 'rumor', 'unconfirmed', 'alleged', 'speculation', '루머', '추측', '미확인']
-                    if not any(neg in content for neg in negative_filters):
-                        logger.warning(f"🚨 크리티컬 뉴스 감지: {article.get('source', '')[:20]} - {article.get('title_ko', article.get('title', ''))[:50]}...")
-                        return True
+        # 6. 알트코인 뉴스는 비트코인 직접 영향 있을 때만
+        altcoin_keywords = ['ethereum', 'eth', 'xrp', 'ripple', 'solana', 'sol', 'cardano', 'ada']
+        if any(alt in content for alt in altcoin_keywords):
+            # 알트코인 뉴스는 비트코인과 직접 연관성이 명시된 경우만
+            if has_bitcoin and any(word in content for word in ['correlation', 'impact on bitcoin', 'bitcoin follows', '비트코인 영향']):
+                if article.get('weight', 0) >= 8:  # 더 높은 가중치 요구
+                    logger.warning(f"🚨 알트코인→비트코인 영향: {article.get('title', '')[:50]}...")
+                    return True
+            else:
+                # 알트코인 단독 뉴스는 제외
+                return False
         
         return False
     
