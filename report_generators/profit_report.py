@@ -249,7 +249,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_exchange_data('Gate')
     
     async def _get_position_info(self) -> dict:
-        """포지션 정보 조회 (Bitget)"""
+        """포지션 정보 조회 (Bitget) - V2 API 필드 확인"""
         try:
             positions = await self.bitget_client.get_positions(self.config.symbol)
             
@@ -260,6 +260,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             for position in positions:
                 total_size = float(position.get('total', 0))
                 if total_size > 0:
+                    self.logger.info(f"Bitget 포지션 전체 데이터: {position}")
+                    
                     hold_side = position.get('holdSide', '')
                     side = '롱' if hold_side == 'long' else '숏'
                     
@@ -267,11 +269,46 @@ class ProfitReportGenerator(BaseReportGenerator):
                     entry_price = float(position.get('openPriceAvg', 0))
                     mark_price = float(position.get('markPrice', 0))
                     margin_mode = position.get('marginMode', '')
-                    margin = float(position.get('margin', 0))
+                    
+                    # V2 API에서 증거금 관련 필드 확인
+                    margin = 0
+                    margin_fields = ['margin', 'initialMargin', 'im', 'holdMargin', 'marginCoin']
+                    for field in margin_fields:
+                        if field in position and position[field]:
+                            try:
+                                margin = float(position[field])
+                                if margin > 0:
+                                    self.logger.info(f"증거금 필드 발견: {field} = {margin}")
+                                    break
+                            except:
+                                continue
+                    
+                    # 미실현 손익
                     unrealized_pnl = float(position.get('unrealizedPL', 0))
+                    
+                    # margin이 0인 경우 대체 계산 방법
+                    if margin == 0:
+                        # 레버리지 정보 확인
+                        leverage = float(position.get('leverage', 10))
+                        
+                        # 포지션 가치 = 수량 * 현재가
+                        position_value = total_size * mark_price
+                        
+                        # 증거금 = 포지션 가치 / 레버리지
+                        margin = position_value / leverage
+                        self.logger.info(f"증거금 계산: 포지션가치({position_value}) / 레버리지({leverage}) = {margin}")
                     
                     # ROE 계산 (증거금 대비 수익률)
                     roe = (unrealized_pnl / margin) * 100 if margin > 0 else 0
+                    
+                    # PNL 퍼센트 대체 계산
+                    if roe == 0 and entry_price > 0:
+                        # 가격 변화율 기반 계산
+                        if side == '롱':
+                            roe = ((mark_price - entry_price) / entry_price) * 100 * leverage
+                        else:
+                            roe = ((entry_price - mark_price) / entry_price) * 100 * leverage
+                        self.logger.info(f"ROE 대체 계산: {roe:.2f}%")
                     
                     # 청산가 필드 확인
                     liquidation_price = 0
@@ -292,7 +329,8 @@ class ProfitReportGenerator(BaseReportGenerator):
                         'margin': margin,
                         'unrealized_pnl': unrealized_pnl,
                         'roe': roe,  # ROE 추가
-                        'liquidation_price': liquidation_price
+                        'liquidation_price': liquidation_price,
+                        'leverage': leverage if 'leverage' in position else 10
                     }
             
             return {'has_position': False}
