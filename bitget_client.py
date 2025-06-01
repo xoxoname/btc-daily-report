@@ -165,9 +165,10 @@ class BitgetClient:
             raise
     
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """거래 체결 내역 조회 (V2 API)"""
+        """거래 체결 내역 조회 (V2 API) - 페이징 처리 포함"""
         symbol = symbol or self.config.symbol
         
+        # 시간 제한 확인
         if start_time and end_time:
             max_days = 7
             time_diff = end_time - start_time
@@ -177,143 +178,11 @@ class BitgetClient:
                 start_time = end_time - max_time_diff
                 logger.info(f"7일 제한으로 조정: {datetime.fromtimestamp(start_time/1000)} ~ {datetime.fromtimestamp(end_time/1000)}")
         
-        return await self._get_fills_batch(symbol, start_time, end_time, min(limit, 500))
-    
-    async def _get_fills_batch(self, symbol: str, start_time: int = None, end_time: int = None, limit: int = 100, last_id: str = None) -> List[Dict]:
-        """거래 체결 내역 배치 조회"""
-        endpoints = ["/api/v2/mix/order/fill-history", "/api/v2/mix/order/fills"]
-        
-        for endpoint in endpoints:
-            params = {
-                'symbol': symbol,
-                'productType': 'USDT-FUTURES'
-            }
-            
-            if start_time:
-                params['startTime'] = str(start_time)
-            if end_time:
-                params['endTime'] = str(end_time)
-            if limit:
-                params['limit'] = str(limit)
-            if last_id:
-                params['lastEndId'] = str(last_id)
-            
-            try:
-                response = await self._request('GET', endpoint, params=params)
-                
-                fills = []
-                if isinstance(response, dict):
-                    if 'fillList' in response:
-                        fills = response['fillList']
-                    elif 'fills' in response:
-                        fills = response['fills']
-                    elif 'list' in response:
-                        fills = response['list']
-                    elif 'data' in response and isinstance(response['data'], list):
-                        fills = response['data']
-                elif isinstance(response, list):
-                    fills = response
-                
-                if fills:
-                    logger.info(f"{endpoint} 거래 내역 조회 성공: {len(fills)}건")
-                    return fills
-                    
-            except Exception as e:
-                logger.debug(f"{endpoint} 조회 실패: {e}")
-                continue
-        
-        return []
-    
-    async def get_all_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None) -> List[Dict]:
-        """모든 거래 내역 조회 - 페이징 처리"""
-        symbol = symbol or self.config.symbol
-        all_fills = []
-        
-        endpoints = [
-            ("/api/v2/mix/order/fill-history", ["fillList", "fills", "list"]),
-            ("/api/v2/mix/order/history", ["orderList", "list", "data"]),
-            ("/api/v2/mix/order/fills", ["fills", "list", "data"])
-        ]
-        
-        for endpoint, possible_keys in endpoints:
-            last_id = None
-            page = 0
-            consecutive_empty = 0
-            
-            while page < 50:
-                params = {
-                    'symbol': symbol,
-                    'productType': 'USDT-FUTURES',
-                    'limit': '100'
-                }
-                
-                if start_time:
-                    params['startTime'] = str(start_time)
-                if end_time:
-                    params['endTime'] = str(end_time)
-                if last_id:
-                    params['lastEndId'] = str(last_id)
-                
-                try:
-                    logger.info(f"{endpoint} 페이지 {page + 1} 조회 중...")
-                    response = await self._request('GET', endpoint, params=params)
-                    
-                    fills = []
-                    if isinstance(response, dict):
-                        for key in possible_keys:
-                            if key in response and isinstance(response[key], list):
-                                fills = response[key]
-                                break
-                    elif isinstance(response, list):
-                        fills = response
-                    
-                    if not fills:
-                        consecutive_empty += 1
-                        if consecutive_empty >= 2:
-                            break
-                        page += 1
-                        await asyncio.sleep(0.1)
-                        continue
-                    
-                    consecutive_empty = 0
-                    all_fills.extend(fills)
-                    logger.info(f"{endpoint} 페이지 {page + 1}: {len(fills)}건 (누적 {len(all_fills)}건)")
-                    
-                    if len(fills) < 100:
-                        logger.info(f"{endpoint} 마지막 페이지 도달")
-                        break
-                    
-                    last_fill = fills[-1]
-                    new_last_id = None
-                    
-                    id_fields = ['fillId', 'orderId', 'id', 'tradeId', 'billId']
-                    for field in id_fields:
-                        if field in last_fill and last_fill[field]:
-                            new_last_id = str(last_fill[field])
-                            break
-                    
-                    if not new_last_id or new_last_id == last_id:
-                        logger.warning(f"다음 페이지 ID를 찾을 수 없음")
-                        break
-                    
-                    last_id = new_last_id
-                    page += 1
-                    
-                    await asyncio.sleep(0.1)
-                    
-                except Exception as e:
-                    logger.error(f"{endpoint} 페이지 {page + 1} 오류: {e}")
-                    break
-            
-            if all_fills:
-                logger.info(f"{endpoint} 총 {len(all_fills)}건 조회 완료")
-                return all_fills
-        
-        logger.warning(f"모든 엔드포인트에서 거래 내역을 찾을 수 없음")
-        return all_fills
+        # 페이징 처리로 모든 거래 조회
+        return await self._get_all_fills_for_period(symbol, start_time, end_time)
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - 페이징 처리 추가"""
+        """손익 내역 조회 - 페이징 처리 포함"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -344,9 +213,12 @@ class BitgetClient:
             
             # 예상 날짜 목록 출력
             logger.info("예상 거래일 목록:")
+            expected_dates = []
             for i in range(days):
                 date = period_start + timedelta(days=i)
-                logger.info(f"  - {date.strftime('%Y-%m-%d')}")
+                date_str = date.strftime('%Y-%m-%d')
+                expected_dates.append(date_str)
+                logger.info(f"  - {date_str}")
             
             total_pnl = 0.0
             daily_pnl = {}
@@ -375,7 +247,7 @@ class BitgetClient:
                     current_start = current_end
                     await asyncio.sleep(0.2)  # API 요청 간격
             else:
-                # 7일 이하는 페이징 처리로 모든 거래 조회
+                # 7일 이하도 페이징 처리로 모든 거래 조회
                 logger.info(f"페이징 처리로 {days}일 거래 내역 조회 시작")
                 all_fills = await self._get_all_fills_for_period(symbol, start_time, end_time)
             
@@ -400,7 +272,7 @@ class BitgetClient:
                     
                     # 조회 기간 내의 거래만 처리
                     if trade_date_kst < period_start or trade_date_kst > period_end:
-                        logger.debug(f"기간 외 거래 제외: {trade_date_str}")
+                        logger.debug(f"기간 외 거래 제외: {trade_date_str} ({trade_date_kst})")
                         continue
                     
                     # 손익 필드 찾기
@@ -457,10 +329,9 @@ class BitgetClient:
             
             # 누락된 날짜 확인
             logger.info("누락된 거래일 확인:")
-            for i in range(days):
-                date = (period_start + timedelta(days=i)).strftime('%Y-%m-%d')
-                if date not in daily_pnl:
-                    logger.warning(f"  - {date}: 거래 없음")
+            for expected_date in expected_dates:
+                if expected_date not in daily_pnl:
+                    logger.warning(f"  - {expected_date}: 거래 없음")
             
             logger.info(f"=== {days}일 총 손익: ${total_pnl:,.2f} (거래 {trade_count}건, 수수료 ${total_fees:.2f}) ===")
             
@@ -498,6 +369,9 @@ class BitgetClient:
         end_kst = datetime.fromtimestamp(end_time/1000, tz=kst)
         logger.info(f"기간별 전체 거래 조회: {start_kst.strftime('%Y-%m-%d %H:%M')} ~ {end_kst.strftime('%Y-%m-%d %H:%M')}")
         
+        # ID 기반 중복 체크를 위한 세트
+        seen_ids = set()
+        
         while page < 50:  # 최대 50페이지까지
             try:
                 endpoint = "/api/v2/mix/order/fill-history"
@@ -528,9 +402,12 @@ class BitgetClient:
                     logger.info(f"페이지 {page + 1}: 더 이상 데이터가 없습니다")
                     break
                 
-                # 중복 제거를 위해 ID 기록
+                # 중복 제거 및 추가
                 new_fills_count = 0
+                last_fill_in_page = None
+                
                 for fill in fills:
+                    # ID 찾기
                     fill_id = None
                     for field in ['fillId', 'id', 'orderId', 'tradeId']:
                         if field in fill and fill[field]:
@@ -538,23 +415,18 @@ class BitgetClient:
                             break
                     
                     # 중복 체크
-                    is_duplicate = False
-                    if fill_id:
-                        for existing_fill in all_fills:
-                            existing_id = None
-                            for field in ['fillId', 'id', 'orderId', 'tradeId']:
-                                if field in existing_fill and existing_fill[field]:
-                                    existing_id = str(existing_fill[field])
-                                    break
-                            if existing_id == fill_id:
-                                is_duplicate = True
-                                break
-                    
-                    if not is_duplicate:
+                    if fill_id and fill_id not in seen_ids:
+                        seen_ids.add(fill_id)
                         all_fills.append(fill)
                         new_fills_count += 1
+                        last_fill_in_page = fill
                 
                 logger.info(f"페이지 {page + 1}: {len(fills)}건 조회, {new_fills_count}건 추가 (누적 {len(all_fills)}건)")
+                
+                # 새로 추가된 거래가 없으면 종료
+                if new_fills_count == 0:
+                    logger.info("중복된 데이터만 있어 조회 종료")
+                    break
                 
                 # 500건 미만이면 마지막 페이지
                 if len(fills) < 500:
@@ -562,20 +434,23 @@ class BitgetClient:
                     break
                 
                 # 다음 페이지를 위한 lastId 찾기
-                last_fill = fills[-1]
-                new_last_id = None
-                
-                for field in ['fillId', 'id', 'orderId', 'tradeId']:
-                    if field in last_fill and last_fill[field]:
-                        new_last_id = str(last_fill[field])
-                        logger.debug(f"다음 페이지 ID 필드: {field} = {new_last_id}")
+                if last_fill_in_page:
+                    new_last_id = None
+                    for field in ['fillId', 'id', 'orderId', 'tradeId']:
+                        if field in last_fill_in_page and last_fill_in_page[field]:
+                            new_last_id = str(last_fill_in_page[field])
+                            logger.debug(f"다음 페이지 ID 필드: {field} = {new_last_id}")
+                            break
+                    
+                    if not new_last_id or new_last_id == last_id:
+                        logger.warning("다음 페이지 ID를 찾을 수 없음")
                         break
-                
-                if not new_last_id or new_last_id == last_id:
-                    logger.warning("다음 페이지 ID를 찾을 수 없음")
+                    
+                    last_id = new_last_id
+                else:
+                    logger.warning("마지막 거래를 찾을 수 없음")
                     break
                 
-                last_id = new_last_id
                 page += 1
                 
                 # API 요청 간격
@@ -586,6 +461,24 @@ class BitgetClient:
                 break
         
         logger.info(f"기간별 조회 완료: 총 {len(all_fills)}건")
+        
+        # 날짜별로 거래 수 확인 (디버깅용)
+        date_counts = {}
+        for fill in all_fills:
+            trade_time = None
+            for time_field in ['cTime', 'createdTime', 'createTime', 'time']:
+                if time_field in fill:
+                    trade_time = int(fill[time_field])
+                    break
+            
+            if trade_time:
+                trade_date = datetime.fromtimestamp(trade_time / 1000, tz=kst).strftime('%Y-%m-%d')
+                date_counts[trade_date] = date_counts.get(trade_date, 0) + 1
+        
+        logger.info("날짜별 거래 수:")
+        for date, count in sorted(date_counts.items()):
+            logger.info(f"  {date}: {count}건")
+        
         return all_fills
     
     async def get_funding_rate(self, symbol: str = None) -> Dict:
