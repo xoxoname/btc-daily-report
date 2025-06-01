@@ -4,28 +4,57 @@ from typing import Dict
 from datetime import datetime
 import pytz
 import re
+import sys
+import os
+
+# ML 예측기 임포트
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from ml_predictor import MLPredictor
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+    print("⚠️ ML 예측기를 찾을 수 없습니다. 기본 분석을 사용합니다.")
 
 class ExceptionReportGenerator(BaseReportGenerator):
     """예외 상황 리포트 전담 생성기"""
     
     def __init__(self, config, data_collector, indicator_system, bitget_client=None):
         super().__init__(config, data_collector, indicator_system, bitget_client)
+        
+        # ML 예측기 초기화
+        self.ml_predictor = None
+        if ML_AVAILABLE:
+            try:
+                self.ml_predictor = MLPredictor()
+                self.logger.info(f"ML 예측기 초기화 완료 - 정확도: {self.ml_predictor.direction_accuracy:.1%}")
+            except Exception as e:
+                self.logger.error(f"ML 예측기 초기화 실패: {e}")
     
     async def generate_report(self, event: Dict) -> str:
         """🚨 긴급 예외 리포트 생성"""
         current_time = self._get_current_time_kst()
         
-        # 원인 요약
-        cause_summary = self._format_exception_cause(event)
+        # 원인 요약 (더 자세하게)
+        cause_summary = await self._format_detailed_exception_cause(event)
         
-        # GPT 분석 (변동률 포함)
-        gpt_analysis = await self._generate_exception_analysis(event)
+        # ML 기반 예측 또는 GPT 분석
+        if self.ml_predictor:
+            analysis = await self._generate_ml_analysis(event)
+        else:
+            analysis = await self._generate_exception_analysis(event)
         
         # 리스크 대응 - 동적 생성
         risk_strategy = await self._format_dynamic_risk_strategy(event)
         
         # 탐지 조건
         detection_conditions = self._format_detection_conditions(event)
+        
+        # ML 통계 (있을 경우)
+        ml_stats = ""
+        if self.ml_predictor:
+            stats = self.ml_predictor.get_stats()
+            ml_stats = f"\n\n<b>🤖 AI 예측 정확도</b>\n• 방향: {stats['direction_accuracy']}\n• 크기: {stats['magnitude_accuracy']}"
         
         report = f"""🚨 <b>BTC 긴급 예외 리포트</b>
 📅 {current_time} (KST)
@@ -37,7 +66,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
 ━━━━━━━━━━━━━━━━━━━
 
 <b>📊 AI 분석</b>
-{gpt_analysis}
+{analysis}
 
 ━━━━━━━━━━━━━━━━━━━
 
@@ -47,15 +76,15 @@ class ExceptionReportGenerator(BaseReportGenerator):
 ━━━━━━━━━━━━━━━━━━━
 
 <b>📌 탐지 사유</b>
-{detection_conditions}
+{detection_conditions}{ml_stats}
 
 ━━━━━━━━━━━━━━━━━━━
 ⚡ 실시간 자동 생성 리포트"""
         
         return report
     
-    def _format_exception_cause(self, event: Dict) -> str:
-        """예외 원인 포맷팅 - 시간 추가"""
+    async def _format_detailed_exception_cause(self, event: Dict) -> str:
+        """상세한 예외 원인 포맷팅"""
         event_type = event.get('type', 'unknown')
         kst = pytz.timezone('Asia/Seoul')
         
@@ -73,33 +102,11 @@ class ExceptionReportGenerator(BaseReportGenerator):
         except:
             time_str = datetime.now(kst).strftime('%H:%M')
         
-        if event_type == 'price_anomaly':
-            change = event.get('change_24h', 0) * 100
-            price = event.get('current_price', 0)
-            return f"""• {time_str} - 가격 {abs(change):.1f}% {'급등' if change > 0 else '급락'}
-• 현재가: ${price:,.0f}
-• {'매수' if change > 0 else '매도'}세 급증"""
-        
-        elif event_type == 'volume_anomaly':
-            volume = event.get('volume_24h', 0)
-            ratio = event.get('ratio', 0)
-            return f"""• {time_str} - 거래량 폭증 감지
-• 24시간 거래량: {volume:,.0f} BTC
-• 평균 대비 {ratio:.1f}배 증가
-• 대규모 거래 발생 중"""
-        
-        elif event_type == 'funding_rate_anomaly':
-            rate = event.get('funding_rate', 0)
-            annual = event.get('annual_rate', 0) * 100
-            return f"""• {time_str} - 펀딩비 이상 급등
-• 현재 펀딩비: {rate:.4f}%
-• 연환산 {annual:+.1f}%
-• {'롱' if rate > 0 else '숏'} 포지션 과열"""
-        
-        elif event_type == 'critical_news':
+        if event_type == 'critical_news':
             title = event.get('title', '')
             impact = event.get('impact', '')
             description = event.get('description', '')
+            source = event.get('source', '')
             
             # 한글 제목 우선 사용
             if 'title_ko' in event:
@@ -114,61 +121,247 @@ class ExceptionReportGenerator(BaseReportGenerator):
             else:
                 impact_emoji = "⚠️"
             
-            # 뉴스 내용 요약 추가
-            summary = self._summarize_news_content(title, description, impact)
+            # 상세 뉴스 내용 분석
+            detailed_summary = await self._extract_detailed_news_info(title, description, impact)
             
-            return f"""• {time_str} - {impact_emoji} {title}
-• 요약: {summary}
+            return f"""• {time_str} - {impact_emoji} <b>{title}</b>
+• 출처: {source}
+{detailed_summary}
 • 영향: {impact}"""
+        
+        elif event_type == 'price_anomaly':
+            change = event.get('change_24h', 0) * 100
+            price = event.get('current_price', 0)
+            volume_change = event.get('volume_ratio', 1.0)
+            
+            return f"""• {time_str} - <b>가격 {abs(change):.1f}% {'급등' if change > 0 else '급락'}</b>
+• 현재가: ${price:,.0f}
+• {'매수' if change > 0 else '매도'}세 급증 (거래량 {volume_change:.1f}배)
+• 청산 규모: ${event.get('liquidation_volume', 0):,.0f}"""
+        
+        elif event_type == 'volume_anomaly':
+            volume = event.get('volume_24h', 0)
+            ratio = event.get('ratio', 0)
+            dominant_side = event.get('dominant_side', '알수없음')
+            
+            return f"""• {time_str} - <b>거래량 폭증 감지</b>
+• 24시간 거래량: {volume:,.0f} BTC
+• 평균 대비 {ratio:.1f}배 증가
+• 주도 세력: {dominant_side}
+• 대규모 거래 발생 중"""
+        
+        elif event_type == 'funding_rate_anomaly':
+            rate = event.get('funding_rate', 0)
+            annual = event.get('annual_rate', 0) * 100
+            oi_change = event.get('open_interest_change', 0)
+            
+            return f"""• {time_str} - <b>펀딩비 이상 급등</b>
+• 현재 펀딩비: {rate:.4f}%
+• 연환산 {annual:+.1f}%
+• {'롱' if rate > 0 else '숏'} 포지션 과열
+• 미결제약정 변화: {oi_change:+.1f}%"""
         
         else:
             # 기본 포맷
-            return f"""• {time_str} - {event.get('description', '이상 징후 감지')}
-• {event.get('impact', '시장 영향 분석 중')}"""
+            return f"""• {time_str} - <b>{event.get('description', '이상 징후 감지')}</b>
+• {event.get('details', '세부 정보 분석 중')}
+• {event.get('impact', '시장 영향 평가 중')}"""
     
-    def _summarize_news_content(self, title: str, description: str, impact: str) -> str:
-        """뉴스 내용을 간단히 요약"""
+    async def _extract_detailed_news_info(self, title: str, description: str, impact: str) -> str:
+        """뉴스에서 상세 정보 추출"""
+        details = []
         content = (title + ' ' + description).lower()
         
-        # 비트코인 우세 관련
-        if 'dominance' in content or '우세' in content or '점유율' in content:
-            return "BTC 시장 점유율 상승, 알트코인 자금 이동"
+        # 1. 금액 정보 추출
+        import re
+        money_patterns = [
+            (r'\$?([\d,]+\.?\d*)\s*billion', 'billion'),
+            (r'\$?([\d,]+\.?\d*)\s*million', 'million'),
+            (r'([\d,]+\.?\d*)\s*억\s*달러', '억 달러'),
+            (r'([\d,]+\.?\d*)\s*억', '억원')
+        ]
         
-        # 기업 매수 관련
-        if any(word in content for word in ['bought', 'purchase', '구매', '매입']):
-            # 기업명 찾기
-            companies = ['tesla', 'microstrategy', 'gamestop', 'square']
-            for company in companies:
-                if company in content:
-                    return f"{company.capitalize()}의 BTC 추가 매입 확인"
-            return "기업의 BTC 매입 소식"
+        for pattern, unit in money_patterns:
+            matches = re.findall(pattern, content)
+            if matches:
+                amount = matches[0].replace(',', '')
+                details.append(f"• 💰 규모: ${amount} {unit}")
+                break
         
-        # 규제 관련
-        if any(word in content for word in ['sec', 'regulation', '규제', 'ban', '금지']):
-            if '호재' in impact:
-                return "규제 완화 또는 긍정적 정책 발표"
-            else:
-                return "규제 강화 우려 또는 부정적 정책"
+        # 2. 주요 인물/기관 추출
+        key_entities = {
+            'tesla': 'Tesla',
+            'elon musk': 'Elon Musk',
+            'microstrategy': 'MicroStrategy',
+            'michael saylor': 'Michael Saylor',
+            'gamestop': 'GameStop',
+            'trump': 'Trump',
+            'sec': 'SEC',
+            'fed': '연준',
+            'powell': 'Powell',
+            'gensler': 'Gensler'
+        }
         
-        # ETF 관련
+        mentioned_entities = []
+        for entity, display_name in key_entities.items():
+            if entity in content:
+                mentioned_entities.append(display_name)
+        
+        if mentioned_entities:
+            details.append(f"• 👤 관련: {', '.join(mentioned_entities[:3])}")
+        
+        # 3. 시간/일정 정보
+        time_indicators = {
+            'today': '오늘',
+            'yesterday': '어제',
+            'tomorrow': '내일',
+            'this week': '이번 주',
+            'next week': '다음 주',
+            'this month': '이번 달',
+            'immediately': '즉시',
+            'soon': '곧'
+        }
+        
+        for eng, kor in time_indicators.items():
+            if eng in content:
+                details.append(f"• ⏰ 시기: {kor}")
+                break
+        
+        # 4. 구체적 행동/결정
+        actions = {
+            'approved': '✅ 승인됨',
+            'rejected': '❌ 거부됨',
+            'announced': '📢 발표',
+            'bought': '💵 구매',
+            'sold': '💸 매도',
+            'filed': '📄 신청',
+            'launched': '🚀 출시',
+            'partnered': '🤝 제휴',
+            'invested': '💰 투자'
+        }
+        
+        for action, emoji_text in actions.items():
+            if action in content:
+                details.append(f"• {emoji_text}")
+                break
+        
+        # 5. 비트코인 관련 구체적 내용
         if 'etf' in content:
-            if 'approved' in content or '승인' in content:
-                return "비트코인 ETF 승인 소식"
-            elif 'reject' in content or '거부' in content:
-                return "비트코인 ETF 거부 소식"
-            else:
-                return "비트코인 ETF 관련 진전"
+            if 'spot' in content:
+                details.append("• 📊 유형: 현물 ETF")
+            elif 'futures' in content:
+                details.append("• 📊 유형: 선물 ETF")
         
-        # 기본 요약
+        if any(word in content for word in ['ban', 'prohibit', '금지']):
+            details.append("• ⛔ 규제: 금지/제한 조치")
+        elif any(word in content for word in ['allow', 'permit', '허용']):
+            details.append("• ✅ 규제: 허용/완화 조치")
+        
+        # 6. 시장 반응 예상
         if '호재' in impact:
-            return "긍정적 시장 소식"
+            if any(word in content for word in ['major', 'significant', 'massive', '대규모']):
+                details.append("• 📊 예상: 강한 상승 압력")
+            else:
+                details.append("• 📊 예상: 점진적 상승")
         elif '악재' in impact:
-            return "부정적 시장 소식"
-        else:
-            return "시장 변동 요인 발생"
+            if any(word in content for word in ['crash', 'plunge', 'collapse', '폭락']):
+                details.append("• 📊 예상: 급락 위험")
+            else:
+                details.append("• 📊 예상: 하락 압력")
+        
+        return '\n'.join(details) if details else "• 📋 추가 세부사항 분석 중"
+    
+    async def _generate_ml_analysis(self, event: Dict) -> str:
+        """ML 기반 예측 분석"""
+        try:
+            # 시장 데이터 수집
+            market_data = await self._get_market_data_for_ml()
+            
+            # ML 예측 수행
+            prediction = await self.ml_predictor.predict_impact(event, market_data)
+            
+            # 포맷팅
+            direction_text = {
+                'up': '📈 <b>상승</b>',
+                'down': '📉 <b>하락</b>',
+                'neutral': '➡️ <b>횡보</b>'
+            }
+            
+            analysis = f"""• <b>예측 방향</b>: {direction_text.get(prediction['direction'], '불명')}
+• <b>예상 변동률</b>: <b>{prediction['magnitude']:.1f}%</b>
+• <b>신뢰도</b>: <b>{prediction['confidence']*100:.0f}%</b>
+• <b>시장 영향력</b>: <b>{prediction['market_influence']:.0f}%</b>
+• <b>예상 시간대</b>: {prediction['timeframe']}
+• <b>리스크 수준</b>: {prediction['risk_level']}
+• <b>추천</b>: <b>{prediction['recommendation']}</b>
+
+━━━━━━━━━━━━━━━━━━━
+
+<b>📋 상세 분석</b>
+{prediction['detailed_analysis']}"""
+            
+            return analysis
+            
+        except Exception as e:
+            self.logger.error(f"ML 분석 실패: {e}")
+            # 폴백으로 기존 분석 사용
+            return await self._generate_exception_analysis(event)
+    
+    async def _get_market_data_for_ml(self) -> Dict:
+        """ML을 위한 시장 데이터 수집"""
+        market_data = {
+            'trend': 'neutral',
+            'volatility': 0.02,
+            'volume_ratio': 1.0,
+            'rsi': 50,
+            'fear_greed': 50,
+            'btc_dominance': 50
+        }
+        
+        try:
+            # 현재 가격 정보
+            if self.bitget_client:
+                ticker = await self.bitget_client.get_ticker('BTCUSDT')
+                if ticker:
+                    # 24시간 변화율로 트렌드 판단
+                    change_24h = float(ticker.get('changeUtc', 0))
+                    if change_24h > 0.02:
+                        market_data['trend'] = 'bullish'
+                    elif change_24h < -0.02:
+                        market_data['trend'] = 'bearish'
+                    
+                    # 거래량 비율 (평균 대비)
+                    volume = float(ticker.get('baseVolume', 0))
+                    market_data['volume_ratio'] = volume / 50000 if volume > 0 else 1.0
+            
+            # 기술 지표
+            if self.indicator_system:
+                # RSI
+                rsi_data = await self.indicator_system.calculate_rsi()
+                if rsi_data:
+                    market_data['rsi'] = rsi_data.get('value', 50)
+                
+                # 변동성
+                volatility_data = await self.indicator_system.calculate_volatility()
+                if volatility_data:
+                    market_data['volatility'] = volatility_data.get('value', 0.02)
+            
+            # Fear & Greed Index (실제 API 연동 필요)
+            # 여기서는 RSI 기반으로 대략 추정
+            if market_data['rsi'] > 70:
+                market_data['fear_greed'] = 80  # Greed
+            elif market_data['rsi'] < 30:
+                market_data['fear_greed'] = 20  # Fear
+            else:
+                market_data['fear_greed'] = 50  # Neutral
+            
+        except Exception as e:
+            self.logger.error(f"시장 데이터 수집 실패: {e}")
+        
+        return market_data
     
     async def _generate_exception_analysis(self, event: Dict) -> str:
-        """예외 분석 생성 - 현실적인 분석"""
+        """예외 분석 생성 - 현실적인 분석 (ML 없을 때)"""
         if self.openai_client:
             try:
                 # 이벤트 정보 정리
@@ -203,7 +396,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 다음 형식으로 현실적이고 정확한 분석을 제공하세요:
 
-1. 뉴스 요약: (핵심 내용을 20자 이내로)
+1. 뉴스 요약: (핵심 내용을 30자 이내로)
 2. 시장 영향력: X% (이 뉴스가 비트코인 가격에 미칠 영향을 0-100%로 평가)
 3. 예상 변동률: ±X% (실제 예상되는 가격 변동 범위)
 4. 추천 포지션: 롱/숏/관망 (명확한 근거와 함께)
