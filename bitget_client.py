@@ -643,8 +643,10 @@ class BitgetClient:
         return None
     
     async def get_simple_weekly_profit(self, days: int = 7) -> Dict:
-        """간단한 주간 손익 계산 - 현재 계정과 포지션 정보 기반"""
+        """간단한 주간 손익 계산 - achievedProfits vs 실제 거래내역 비교"""
         try:
+            logger.info(f"=== {days}일 손익 계산 시작 ===")
+            
             # 현재 계정 정보
             account = await self.get_account_info()
             current_equity = float(account.get('accountEquity', 0))
@@ -652,46 +654,70 @@ class BitgetClient:
             # 현재 포지션 정보
             positions = await self.get_positions()
             achieved_profits = 0
+            position_open_time = None
+            
             for pos in positions:
                 achieved = float(pos.get('achievedProfits', 0))
                 if achieved != 0:
                     achieved_profits = achieved
-                    logger.info(f"포지션 achievedProfits: ${achieved:.2f}")
-            
-            # achievedProfits가 있으면 그것을 기준으로
-            if achieved_profits > 0:
-                logger.info(f"=== achievedProfits 기반 수익 ===")
-                logger.info(f"포지션 실현 수익: ${achieved_profits:.2f}")
-                
-                # 최근 7일 거래만 확인
-                kst = pytz.timezone('Asia/Seoul')
-                now = datetime.now(kst)
-                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                period_start = today_start - timedelta(days=days-1)
-                
-                # 포지션이 언제 열렸는지 확인
-                position_open_time = None
-                if positions:
-                    ctime = positions[0].get('cTime')
+                    ctime = pos.get('cTime')
                     if ctime:
+                        kst = pytz.timezone('Asia/Seoul')
                         position_open_time = datetime.fromtimestamp(int(ctime)/1000, tz=kst)
-                        position_days = (now - position_open_time).days + 1
-                        
-                        if position_days <= days:
-                            # 포지션이 7일 이내에 열렸으면 전체가 7일 수익
-                            return {
-                                'total_pnl': achieved_profits,
-                                'days': days,
-                                'average_daily': achieved_profits / position_days,
-                                'source': 'achievedProfits',
-                                'position_days': position_days
-                            }
-                
-            # achievedProfits가 없거나 포지션이 오래된 경우 기존 방식
-            return await self.get_profit_loss_history(days=days)
+                    logger.info(f"포지션 achievedProfits: ${achieved:.2f}")
+                    if position_open_time:
+                        logger.info(f"포지션 오픈 시간: {position_open_time.strftime('%Y-%m-%d %H:%M')} KST")
+            
+            # 실제 거래 내역 기반 계산
+            actual_profit = await self.get_profit_loss_history(days=days)
+            actual_pnl = actual_profit.get('total_pnl', 0)
+            
+            logger.info(f"achievedProfits: ${achieved_profits:.2f}")
+            logger.info(f"실제 {days}일 거래내역: ${actual_pnl:.2f}")
+            
+            # 두 값 중 더 정확한 값 선택
+            if achieved_profits > 0 and actual_pnl > 0:
+                # 둘 다 있는 경우
+                if position_open_time:
+                    kst = pytz.timezone('Asia/Seoul')
+                    now = datetime.now(kst)
+                    position_days = (now - position_open_time).days + 1
+                    
+                    # 포지션이 정확히 7일 이내에 열렸고, achievedProfits가 합리적인 범위이면 사용
+                    if position_days <= days and abs(achieved_profits - actual_pnl) / max(abs(actual_pnl), 1) < 0.5:
+                        logger.info(f"achievedProfits 사용 (포지션 기간: {position_days}일)")
+                        return {
+                            'total_pnl': achieved_profits,
+                            'days': days,
+                            'average_daily': achieved_profits / days,
+                            'source': 'achievedProfits',
+                            'position_days': position_days,
+                            'daily_pnl': {}
+                        }
+                    else:
+                        logger.info(f"실제 거래내역 사용 (포지션 너무 오래됨 또는 차이 큼: {position_days}일)")
+                        return actual_profit
+                else:
+                    # 포지션 시간 모르면 실제 거래내역 사용
+                    logger.info("실제 거래내역 사용 (포지션 시간 불명)")
+                    return actual_profit
+            elif achieved_profits > 0 and actual_pnl == 0:
+                # achievedProfits만 있는 경우
+                logger.info("achievedProfits만 사용 (거래내역 없음)")
+                return {
+                    'total_pnl': achieved_profits,
+                    'days': days,
+                    'average_daily': achieved_profits / days,
+                    'source': 'achievedProfits_only',
+                    'daily_pnl': {}
+                }
+            else:
+                # 실제 거래내역 사용
+                logger.info("실제 거래내역 사용 (기본)")
+                return actual_profit
             
         except Exception as e:
-            logger.error(f"간단한 주간 손익 계산 실패: {e}")
+            logger.error(f"주간 손익 계산 실패: {e}")
             return {
                 'total_pnl': 0,
                 'days': days,
