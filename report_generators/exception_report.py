@@ -3,6 +3,7 @@ from .base_generator import BaseReportGenerator
 from typing import Dict
 from datetime import datetime
 import pytz
+import re
 
 class ExceptionReportGenerator(BaseReportGenerator):
     """예외 상황 리포트 전담 생성기"""
@@ -98,6 +99,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
         elif event_type == 'critical_news':
             title = event.get('title', '')
             impact = event.get('impact', '')
+            description = event.get('description', '')
             
             # 한글 제목 우선 사용
             if 'title_ko' in event:
@@ -112,7 +114,11 @@ class ExceptionReportGenerator(BaseReportGenerator):
             else:
                 impact_emoji = "⚠️"
             
+            # 뉴스 내용 요약 추가
+            summary = self._summarize_news_content(title, description, impact)
+            
             return f"""• {time_str} - {impact_emoji} {title}
+• 요약: {summary}
 • 영향: {impact}"""
         
         else:
@@ -120,8 +126,49 @@ class ExceptionReportGenerator(BaseReportGenerator):
             return f"""• {time_str} - {event.get('description', '이상 징후 감지')}
 • {event.get('impact', '시장 영향 분석 중')}"""
     
+    def _summarize_news_content(self, title: str, description: str, impact: str) -> str:
+        """뉴스 내용을 간단히 요약"""
+        content = (title + ' ' + description).lower()
+        
+        # 비트코인 우세 관련
+        if 'dominance' in content or '우세' in content or '점유율' in content:
+            return "BTC 시장 점유율 상승, 알트코인 자금 이동"
+        
+        # 기업 매수 관련
+        if any(word in content for word in ['bought', 'purchase', '구매', '매입']):
+            # 기업명 찾기
+            companies = ['tesla', 'microstrategy', 'gamestop', 'square']
+            for company in companies:
+                if company in content:
+                    return f"{company.capitalize()}의 BTC 추가 매입 확인"
+            return "기업의 BTC 매입 소식"
+        
+        # 규제 관련
+        if any(word in content for word in ['sec', 'regulation', '규제', 'ban', '금지']):
+            if '호재' in impact:
+                return "규제 완화 또는 긍정적 정책 발표"
+            else:
+                return "규제 강화 우려 또는 부정적 정책"
+        
+        # ETF 관련
+        if 'etf' in content:
+            if 'approved' in content or '승인' in content:
+                return "비트코인 ETF 승인 소식"
+            elif 'reject' in content or '거부' in content:
+                return "비트코인 ETF 거부 소식"
+            else:
+                return "비트코인 ETF 관련 진전"
+        
+        # 기본 요약
+        if '호재' in impact:
+            return "긍정적 시장 소식"
+        elif '악재' in impact:
+            return "부정적 시장 소식"
+        else:
+            return "시장 변동 요인 발생"
+    
     async def _generate_exception_analysis(self, event: Dict) -> str:
-        """예외 분석 생성 - 변동률 예측 추가"""
+        """예외 분석 생성 - 현실적인 분석"""
         if self.openai_client:
             try:
                 # 이벤트 정보 정리
@@ -140,7 +187,11 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 )
                 
                 if not is_bitcoin_related and event_info['type'] != 'critical_news':
-                    return "• 비트코인과 직접적 관련성이 낮은 이벤트입니다."
+                    return """• <b>뉴스 요약</b>: 비트코인과 간접적 관련
+• <b>시장 영향력</b>: <b>5%</b> 미만
+• <b>예상 변동률</b>: <b>무영향</b>
+• <b>추천 포지션</b>: <b>기존 전략 유지</b>
+• <b>예상 시간대</b>: 영향 없음"""
                 
                 prompt = f"""
 비트코인 시장에서 다음 예외 상황이 발생했습니다:
@@ -150,75 +201,131 @@ class ExceptionReportGenerator(BaseReportGenerator):
 영향: {event_info['impact']}
 설명: {event_info['description']}
 
-이 상황에 대한 전문적인 분석을 제공해주세요:
-1. 예상 변동률: 이 이벤트로 인한 비트코인 가격 변동 예상률을 +X% 또는 -X% 형태로 제시
-2. 방향성: 롱/숏 중 명확한 추천
-3. 시간대: 향후 몇 시간 내 예상 시나리오
+다음 형식으로 현실적이고 정확한 분석을 제공하세요:
 
-간결하고 명확하게 한국어로 3-4줄로 작성하세요.
-첫 줄에 반드시 예상 변동률을 포함하세요.
+1. 뉴스 요약: (핵심 내용을 20자 이내로)
+2. 시장 영향력: X% (이 뉴스가 비트코인 가격에 미칠 영향을 0-100%로 평가)
+3. 예상 변동률: ±X% (실제 예상되는 가격 변동 범위)
+4. 추천 포지션: 롱/숏/관망 (명확한 근거와 함께)
+5. 예상 시간대: (영향이 나타날 시간대)
+
+중요: 
+- 이미 시장에 반영된 뉴스인지 확인
+- 과장하지 말고 현실적으로 평가
+- "비트코인 우세"같은 경우는 이미 진행중인 상황이므로 추가 상승 여력은 제한적
+- 시장 영향력은 대부분 20% 미만이며, 50%를 넘는 경우는 극히 드물다
 """
                 
                 response = await self.openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "당신은 정확한 수치를 제시하는 암호화폐 분석가입니다. 반드시 구체적인 변동률(%)을 제시하세요."},
+                        {"role": "system", "content": "당신은 보수적이고 현실적인 암호화폐 분석가입니다. 과장하지 않고 정확한 분석을 제공합니다."},
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=300,
-                    temperature=0.5
+                    max_tokens=400,
+                    temperature=0.3
                 )
                 
-                return response.choices[0].message.content.strip()
+                analysis = response.choices[0].message.content.strip()
+                
+                # 포맷팅
+                lines = analysis.split('\n')
+                formatted_analysis = ""
+                for line in lines:
+                    if ':' in line:
+                        parts = line.split(':', 1)
+                        key = parts[0].strip()
+                        value = parts[1].strip()
+                        
+                        # 핵심 값들을 굵게 표시
+                        if any(k in key for k in ['시장 영향력', '예상 변동률', '추천 포지션']):
+                            # 값 부분만 굵게
+                            if '%' in value:
+                                # 퍼센트 값 찾기
+                                import re
+                                match = re.search(r'([\d.]+%)', value)
+                                if match:
+                                    value = value.replace(match.group(1), f"<b>{match.group(1)}</b>")
+                            elif any(pos in value for pos in ['롱', '숏', '관망']):
+                                # 포지션 추천 굵게
+                                for pos in ['롱', '숏', '관망']:
+                                    if pos in value:
+                                        value = value.replace(pos, f"<b>{pos}</b>")
+                        
+                        formatted_analysis += f"• <b>{key}</b>: {value}\n"
+                
+                return formatted_analysis.strip()
                 
             except Exception as e:
                 self.logger.error(f"GPT 예외 분석 생성 실패: {e}")
         
-        # 폴백 분석 (변동률 포함)
+        # 폴백 분석 (더 현실적으로)
+        return self._get_realistic_fallback_analysis(event)
+    
+    def _get_realistic_fallback_analysis(self, event: Dict) -> str:
+        """현실적인 폴백 분석"""
         event_type = event.get('type', 'unknown')
         impact = event.get('impact', '')
+        title = event.get('title', '')
         
+        # 비트코인 우세 관련
+        if '우세' in title or 'dominance' in title.lower():
+            return """• <b>뉴스 요약</b>: BTC 시장 점유율 상승 지속
+• <b>시장 영향력</b>: <b>15%</b> (단기 모멘텀 강화)
+• <b>예상 변동률</b>: <b>±0.5%</b> 내외
+• <b>추천 포지션</b>: <b>관망</b> (이미 반영된 움직임)
+• <b>예상 시간대</b>: 4-6시간 내 횡보"""
+        
+        # 기업 매수 뉴스
+        if any(word in title.lower() for word in ['bought', 'purchase', '구매', '매입']):
+            return """• <b>뉴스 요약</b>: 기업의 BTC 추가 매입
+• <b>시장 영향력</b>: <b>25%</b> (긍정적 신호)
+• <b>예상 변동률</b>: <b>+0.5~1.5%</b>
+• <b>추천 포지션</b>: <b>소량 롱</b> (단기 상승 가능)
+• <b>예상 시간대</b>: 1-2시간 내 반응"""
+        
+        # 일반적인 경우
         if event_type == 'critical_news':
             if '호재' in impact:
-                return """• 예상 변동률: <b>+2~5%</b>
-• 롱 포지션 권장 (단기 상승 압력)
-• 향후 4시간 내 추가 상승 예상
-• 과열 구간 진입 시 분할 익절"""
+                return """• <b>뉴스 요약</b>: 긍정적 시장 소식
+• <b>시장 영향력</b>: <b>20%</b>
+• <b>예상 변동률</b>: <b>+0.3~1%</b>
+• <b>추천 포지션</b>: <b>소량 롱</b> 고려
+• <b>예상 시간대</b>: 2-4시간 내 반응"""
             elif '악재' in impact:
-                return """• 예상 변동률: <b>-3~7%</b>
-• 숏 포지션 권장 (단기 하락 압력)
-• 향후 4시간 내 추가 하락 예상
-• 과매도 구간 진입 시 분할 익절"""
+                return """• <b>뉴스 요약</b>: 부정적 시장 소식
+• <b>시장 영향력</b>: <b>25%</b>
+• <b>예상 변동률</b>: <b>-0.5~1.5%</b>
+• <b>추천 포지션</b>: <b>리스크 관리</b> 우선
+• <b>예상 시간대</b>: 즉시~2시간"""
             else:
-                return """• 예상 변동률: <b>±2%</b> 내외
-• 관망 권장 (방향성 불명확)
-• 변동성 확대 예상
-• 명확한 방향 확인 후 진입"""
+                return """• <b>뉴스 요약</b>: 중립적 시장 소식
+• <b>시장 영향력</b>: <b>10%</b> 미만
+• <b>예상 변동률</b>: <b>±0.3%</b> 내외
+• <b>추천 포지션</b>: <b>관망</b>
+• <b>예상 시간대</b>: 불확실"""
         
         elif event_type == 'price_anomaly':
             change = event.get('change_24h', 0)
-            if change > 0:
-                return """• 예상 변동률: <b>+1~3%</b> 추가 상승
-• 롱 우세 (모멘텀 지속)
-• FOMO 매수세 유입 중
-• 고점 매수 리스크 주의"""
+            if abs(change) > 0.03:  # 3% 이상
+                return f"""• <b>가격 변동</b>: {change*100:+.1f}% 급변
+• <b>시장 영향력</b>: <b>이미 100% 반영</b>
+• <b>예상 변동률</b>: <b>{'+0.5~1%' if change > 0 else '-0.5~1%'}</b> 추가
+• <b>추천 포지션</b>: <b>{'역추세 숏' if change > 0 else '반등 롱'}</b> 준비
+• <b>예상 시간대</b>: 30분~1시간 내 조정"""
             else:
-                return """• 예상 변동률: <b>-2~4%</b> 추가 하락
-• 숏 우세 (패닉 매도)
-• 단기 과매도 가능성
-• 반등 타이밍 주시"""
-        
-        elif event_type == 'volume_anomaly':
-            return """• 예상 변동률: <b>±3~5%</b> 급변동
-• 대량 거래로 변동성 급증
-• 방향성은 차트 확인 필요
-• 손절선 타이트하게 설정"""
+                return f"""• <b>가격 변동</b>: {change*100:+.1f}% 변동
+• <b>시장 영향력</b>: <b>50% 반영</b>
+• <b>예상 변동률</b>: <b>±0.5%</b> 내외
+• <b>추천 포지션</b>: <b>관망</b>
+• <b>예상 시간대</b>: 1-2시간 관찰"""
         
         else:
-            return """• 예상 변동률: <b>±2%</b> 내외
-• 불확실성 증가로 관망
-• 포지션 축소 권장
-• 리스크 관리 최우선"""
+            return """• <b>이벤트 유형</b>: 일반 시장 변동
+• <b>시장 영향력</b>: <b>15%</b> 미만
+• <b>예상 변동률</b>: <b>±0.3%</b> 내외
+• <b>추천 포지션</b>: <b>기존 전략 유지</b>
+• <b>예상 시간대</b>: 점진적 반영"""
     
     async def _format_dynamic_risk_strategy(self, event: Dict) -> str:
         """동적 리스크 전략 생성"""
@@ -245,18 +352,18 @@ class ExceptionReportGenerator(BaseReportGenerator):
                     if ('호재' in event_impact and side == '롱') or ('악재' in event_impact and side == '숏'):
                         # 유리한 방향
                         if unrealized_pnl > 0:
-                            return f"""✅ {side} 포지션 유리 (수익 ${unrealized_pnl:.2f})
+                            return f"""✅ <b>{side} 포지션 유리</b> (수익 ${unrealized_pnl:.2f})
 • 일부 익절로 원금 확보
 • 나머지는 추세 따라가기
 • 레버리지 {leverage}배 유지/축소"""
                         else:
-                            return f"""⚠️ {side} 방향 맞음 (손실 ${abs(unrealized_pnl):.2f})
+                            return f"""⚠️ <b>{side} 방향 맞음</b> (손실 ${abs(unrealized_pnl):.2f})
 • 홀딩 권장 (방향 일치)
 • 평단가 개선은 신중히
 • 기존 손절선 유지"""
                     else:
                         # 불리한 방향
-                        return f"""🚨 {side} 포지션 위험!
+                        return f"""🚨 <b>{side} 포지션 위험!</b>
 • 즉시 50% 이상 정리
 • 손절선 현재가 -2%로 조정
 • 반대 포지션 준비"""
@@ -265,18 +372,18 @@ class ExceptionReportGenerator(BaseReportGenerator):
                     if total_equity > 0:
                         if '호재' in event.get('impact', ''):
                             recommended_size = min(total_equity * 0.3, 1000)  # 최대 30% 또는 $1000
-                            return f"""📈 롱 진입 기회
+                            return f"""📈 <b>롱 진입 기회</b>
 • 추천 규모: ${recommended_size:.0f} ({recommended_size/total_equity*100:.0f}%)
 • 레버리지: 3배 이하
 • 분할 진입 필수"""
                         elif '악재' in event.get('impact', ''):
                             recommended_size = min(total_equity * 0.3, 1000)
-                            return f"""📉 숏 진입 기회
+                            return f"""📉 <b>숏 진입 기회</b>
 • 추천 규모: ${recommended_size:.0f} ({recommended_size/total_equity*100:.0f}%)
 • 레버리지: 3배 이하
 • 분할 진입 필수"""
                         else:
-                            return f"""⏸️ 관망 권장
+                            return f"""⏸️ <b>관망 권장</b>
 • 자산 ${total_equity:.0f} 보존
 • 방향 확인 후 진입
 • 최대 15% 이내 사용"""
@@ -285,12 +392,12 @@ class ExceptionReportGenerator(BaseReportGenerator):
             else:
                 # severity가 critical이 아닌 경우
                 if has_position:
-                    return f"""📊 포지션 점검
+                    return f"""📊 <b>포지션 점검</b>
 • 손절선 재확인
 • 추가 진입 보류
 • 증거금 여유 확보"""
                 else:
-                    return f"""⚠️ 신중한 접근
+                    return f"""⚠️ <b>신중한 접근</b>
 • 소량 테스트만
 • 방향성 확인 대기
 • 리스크 관리 우선"""
@@ -303,17 +410,17 @@ class ExceptionReportGenerator(BaseReportGenerator):
         """폴백 리스크 전략"""
         if severity == 'critical':
             if event_type == 'critical_news':
-                return """🚨 긴급 대응 필요
+                return """🚨 <b>긴급 대응 필요</b>
 • 레버리지 즉시 축소
 • 반대 포지션은 청산
 • 뉴스 방향 따라가기"""
             else:
-                return """⚠️ 포지션 정리
+                return """⚠️ <b>포지션 정리</b>
 • 레버리지 포지션 축소
 • 현물은 일부 매도
 • 재진입 준비"""
         else:
-            return """📊 일반 대응
+            return """📊 <b>일반 대응</b>
 • 현재 포지션 유지
 • 추가 진입 보류
 • 시장 관찰 지속"""
