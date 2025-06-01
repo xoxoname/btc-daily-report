@@ -165,10 +165,9 @@ class BitgetClient:
             raise
     
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """거래 체결 내역 조회 (V2 API) - 페이징 처리 포함"""
+        """거래 체결 내역 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         
-        # 시간 제한 확인
         if start_time and end_time:
             max_days = 7
             time_diff = end_time - start_time
@@ -178,11 +177,55 @@ class BitgetClient:
                 start_time = end_time - max_time_diff
                 logger.info(f"7일 제한으로 조정: {datetime.fromtimestamp(start_time/1000)} ~ {datetime.fromtimestamp(end_time/1000)}")
         
-        # 페이징 처리로 모든 거래 조회
-        return await self._get_all_fills_for_period(symbol, start_time, end_time)
+        return await self._get_fills_batch(symbol, start_time, end_time, min(limit, 500))
+    
+    async def _get_fills_batch(self, symbol: str, start_time: int = None, end_time: int = None, limit: int = 100, last_id: str = None) -> List[Dict]:
+        """거래 체결 내역 배치 조회"""
+        endpoints = ["/api/v2/mix/order/fill-history", "/api/v2/mix/order/fills"]
+        
+        for endpoint in endpoints:
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES'
+            }
+            
+            if start_time:
+                params['startTime'] = str(start_time)
+            if end_time:
+                params['endTime'] = str(end_time)
+            if limit:
+                params['limit'] = str(limit)
+            if last_id:
+                params['lastEndId'] = str(last_id)
+            
+            try:
+                response = await self._request('GET', endpoint, params=params)
+                
+                fills = []
+                if isinstance(response, dict):
+                    if 'fillList' in response:
+                        fills = response['fillList']
+                    elif 'fills' in response:
+                        fills = response['fills']
+                    elif 'list' in response:
+                        fills = response['list']
+                    elif 'data' in response and isinstance(response['data'], list):
+                        fills = response['data']
+                elif isinstance(response, list):
+                    fills = response
+                
+                if fills:
+                    logger.info(f"{endpoint} 거래 내역 조회 성공: {len(fills)}건")
+                    return fills
+                    
+            except Exception as e:
+                logger.debug(f"{endpoint} 조회 실패: {e}")
+                continue
+        
+        return []
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - 더 긴 기간 조회 후 필터링"""
+        """손익 내역 조회 - 30일 조회 후 필요한 기간만 추출"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -190,85 +233,40 @@ class BitgetClient:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
             
-            # 조회 기간 설정
-            # days = 7이면: 오늘 포함 7일 (6일 전 0시부터 현재까지)
+            # 실제 필요한 기간
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             period_start = today_start - timedelta(days=days-1)
             period_end = now
             
-            # 7일 이하인 경우 더 긴 기간을 조회하여 안정성 확보
-            if days <= 7:
-                # 10일치를 조회한 후 필터링
-                extended_days = 10
-                extended_start = today_start - timedelta(days=extended_days-1)
-                
-                # UTC로 변환하여 타임스탬프 생성
-                start_time_utc = extended_start.astimezone(pytz.UTC)
-                end_time_utc = period_end.astimezone(pytz.UTC)
-                
-                start_time = int(start_time_utc.timestamp() * 1000)
-                end_time = int(end_time_utc.timestamp() * 1000)
-                
-                logger.info(f"=== {days}일 손익을 위해 {extended_days}일 조회 ===")
-                logger.info(f"전체 조회 기간: {extended_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
-                logger.info(f"실제 필터링 기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
-            else:
-                # 7일 초과인 경우 원래대로
-                start_time_utc = period_start.astimezone(pytz.UTC)
-                end_time_utc = period_end.astimezone(pytz.UTC)
-                
-                start_time = int(start_time_utc.timestamp() * 1000)
-                end_time = int(end_time_utc.timestamp() * 1000)
-                
-                logger.info(f"=== {days}일 손익 조회 ===")
-                logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
+            logger.info(f"=== {days}일 손익 조회 ===")
+            logger.info(f"실제 필요 기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
             
-            logger.info(f"타임스탬프: {start_time} ~ {end_time}")
+            # 30일 데이터 조회 (안정적인 데이터 확보를 위해)
+            base_days = 30
+            extended_start = today_start - timedelta(days=base_days-1)
             
-            # 예상 날짜 목록 출력
-            logger.info(f"예상 거래일 목록 ({days}일):")
-            expected_dates = []
-            for i in range(days):
-                date = period_start + timedelta(days=i)
-                date_str = date.strftime('%Y-%m-%d')
-                expected_dates.append(date_str)
-                logger.info(f"  - {date_str}")
+            # UTC로 변환
+            start_time_utc = extended_start.astimezone(pytz.UTC)
+            end_time_utc = now.astimezone(pytz.UTC)
             
+            start_time = int(start_time_utc.timestamp() * 1000)
+            end_time = int(end_time_utc.timestamp() * 1000)
+            
+            logger.info(f"30일 전체 조회: {extended_start.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}")
+            
+            # 모든 거래 내역 조회
+            all_fills = await self._get_all_fills_comprehensive(symbol, start_time, end_time)
+            
+            logger.info(f"30일 동안 조회된 총 거래 수: {len(all_fills)}건")
+            
+            # 날짜별로 거래 분류
+            trades_by_date = {}
             total_pnl = 0.0
             daily_pnl = {}
             total_fees = 0.0
             trade_count = 0
             
-            # 모든 거래 내역 조회 (페이징 처리)
-            all_fills = []
-            
-            # 기간별 조회
-            if days <= 7:
-                # 10일치 한 번에 조회
-                all_fills = await self._get_all_fills_for_period_with_retries(symbol, start_time, end_time)
-            elif days > 7:
-                # 7일씩 나눠서 조회
-                current_start = start_time
-                
-                while current_start < end_time:
-                    current_end = min(current_start + (7 * 24 * 60 * 60 * 1000), end_time)
-                    
-                    # KST로 변환하여 로깅
-                    start_kst = datetime.fromtimestamp(current_start/1000, tz=kst)
-                    end_kst = datetime.fromtimestamp(current_end/1000, tz=kst)
-                    logger.info(f"부분 조회: {start_kst.strftime('%Y-%m-%d')} ~ {end_kst.strftime('%Y-%m-%d')}")
-                    
-                    # 해당 기간의 모든 거래 조회 (페이징 처리)
-                    period_fills = await self._get_all_fills_for_period_with_retries(symbol, current_start, current_end)
-                    all_fills.extend(period_fills)
-                    
-                    current_start = current_end
-                    await asyncio.sleep(0.2)  # API 요청 간격
-            
-            logger.info(f"총 조회된 거래 수: {len(all_fills)}건")
-            
-            # 거래 처리 - 실제 필요한 기간만 필터링
-            filtered_count = 0
+            # 모든 거래 처리
             for trade in all_fills:
                 try:
                     # 시간 필드 찾기
@@ -284,13 +282,6 @@ class BitgetClient:
                     # KST 기준 날짜
                     trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
                     trade_date_str = trade_date_kst.strftime('%Y-%m-%d')
-                    
-                    # 실제 조회 기간 내의 거래만 처리
-                    if trade_date_kst < period_start or trade_date_kst > period_end:
-                        logger.debug(f"기간 외 거래 제외: {trade_date_str}")
-                        continue
-                    
-                    filtered_count += 1
                     
                     # 손익 필드 찾기
                     profit = 0.0
@@ -319,40 +310,42 @@ class BitgetClient:
                     if fee == 0 and 'fees' in trade:
                         fee = abs(float(trade.get('fees', 0)))
                     
-                    # 실현 손익 = profit - 수수료
-                    if profit != 0 or fee != 0:
-                        realized_pnl = profit - fee
-                        total_pnl += realized_pnl
-                        total_fees += fee
-                        trade_count += 1
-                        
-                        if trade_date_str not in daily_pnl:
-                            daily_pnl[trade_date_str] = 0
-                        daily_pnl[trade_date_str] += realized_pnl
-                        
-                        logger.debug(f"거래 포함: {trade_date_str} profit={profit:.2f}, fee={fee:.2f}, pnl={realized_pnl:.2f}")
+                    # 거래 정보 저장
+                    if trade_date_str not in trades_by_date:
+                        trades_by_date[trade_date_str] = []
+                    
+                    trades_by_date[trade_date_str].append({
+                        'time': trade_time,
+                        'profit': profit,
+                        'fee': fee,
+                        'pnl': profit - fee
+                    })
                     
                 except Exception as e:
                     logger.warning(f"거래 파싱 오류: {e}")
                     continue
             
-            logger.info(f"필터링 후 거래 수: {filtered_count}건 (실제 손익 계산: {trade_count}건)")
+            # 필요한 기간의 데이터만 추출
+            logger.info(f"\n=== {days}일 손익 계산 ===")
+            for i in range(days):
+                date = period_start + timedelta(days=i)
+                date_str = date.strftime('%Y-%m-%d')
+                
+                if date_str in trades_by_date:
+                    day_trades = trades_by_date[date_str]
+                    day_pnl = sum(t['pnl'] for t in day_trades)
+                    day_fees = sum(t['fee'] for t in day_trades)
+                    
+                    daily_pnl[date_str] = day_pnl
+                    total_pnl += day_pnl
+                    total_fees += day_fees
+                    trade_count += len(day_trades)
+                    
+                    logger.info(f"{date_str}: ${day_pnl:,.2f} ({len(day_trades)}건, 수수료 ${day_fees:.2f})")
+                else:
+                    logger.info(f"{date_str}: 거래 없음")
             
-            # 결과 로그
-            if daily_pnl:
-                logger.info("=== 일별 손익 내역 ===")
-                for date, pnl in sorted(daily_pnl.items()):
-                    logger.info(f"  {date}: ${pnl:,.2f}")
-            else:
-                logger.warning("조회된 손익 내역이 없습니다")
-            
-            # 누락된 날짜 확인
-            logger.info("누락된 거래일 확인:")
-            for expected_date in expected_dates:
-                if expected_date not in daily_pnl:
-                    logger.warning(f"  - {expected_date}: 거래 없음")
-            
-            logger.info(f"=== {days}일 총 손익: ${total_pnl:,.2f} (거래 {trade_count}건, 수수료 ${total_fees:.2f}) ===")
+            logger.info(f"\n=== {days}일 총 손익: ${total_pnl:,.2f} (거래 {trade_count}건, 수수료 ${total_fees:.2f}) ===")
             
             return {
                 'total_pnl': total_pnl,
@@ -376,146 +369,103 @@ class BitgetClient:
                 'error': str(e)
             }
     
-    async def _get_all_fills_for_period_with_retries(self, symbol: str, start_time: int, end_time: int, max_retries: int = 3) -> List[Dict]:
-        """특정 기간의 모든 거래 내역 조회 (재시도 포함)"""
-        for retry in range(max_retries):
-            try:
-                fills = await self._get_all_fills_for_period(symbol, start_time, end_time)
-                if fills or retry == max_retries - 1:
-                    return fills
-                logger.warning(f"조회된 거래가 없음. 재시도 {retry + 1}/{max_retries}")
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.error(f"거래 조회 실패 (재시도 {retry + 1}/{max_retries}): {e}")
-                if retry < max_retries - 1:
-                    await asyncio.sleep(1)
-                else:
-                    raise
-        return []
+    async def _get_all_fills_comprehensive(self, symbol: str, start_time: int, end_time: int) -> List[Dict]:
+        """포괄적인 거래 내역 조회 - 7일씩 나눠서 조회"""
+        all_fills = []
+        seen_ids = set()
+        
+        # 7일씩 나눠서 조회
+        current_start = start_time
+        
+        while current_start < end_time:
+            current_end = min(current_start + (7 * 24 * 60 * 60 * 1000), end_time)
+            
+            # KST로 변환하여 로깅
+            kst = pytz.timezone('Asia/Seoul')
+            start_kst = datetime.fromtimestamp(current_start/1000, tz=kst)
+            end_kst = datetime.fromtimestamp(current_end/1000, tz=kst)
+            logger.info(f"\n부분 조회: {start_kst.strftime('%Y-%m-%d')} ~ {end_kst.strftime('%Y-%m-%d')}")
+            
+            # 해당 기간 조회
+            period_fills = await self._get_period_fills_with_paging(symbol, current_start, current_end)
+            
+            # 중복 제거하며 추가
+            new_count = 0
+            for fill in period_fills:
+                fill_id = self._get_fill_id(fill)
+                if fill_id and fill_id not in seen_ids:
+                    seen_ids.add(fill_id)
+                    all_fills.append(fill)
+                    new_count += 1
+            
+            logger.info(f"조회 결과: {len(period_fills)}건 중 {new_count}건 추가")
+            
+            current_start = current_end
+            await asyncio.sleep(0.2)
+        
+        return all_fills
     
-    async def _get_all_fills_for_period(self, symbol: str, start_time: int, end_time: int) -> List[Dict]:
-        """특정 기간의 모든 거래 내역 조회 (페이징 처리)"""
+    async def _get_period_fills_with_paging(self, symbol: str, start_time: int, end_time: int) -> List[Dict]:
+        """특정 기간의 모든 거래 조회 (페이징)"""
         all_fills = []
         last_id = None
         page = 0
+        endpoint = "/api/v2/mix/order/fill-history"
         
-        # 날짜 로깅
-        kst = pytz.timezone('Asia/Seoul')
-        start_kst = datetime.fromtimestamp(start_time/1000, tz=kst)
-        end_kst = datetime.fromtimestamp(end_time/1000, tz=kst)
-        logger.info(f"기간별 전체 거래 조회: {start_kst.strftime('%Y-%m-%d %H:%M')} ~ {end_kst.strftime('%Y-%m-%d %H:%M')}")
-        
-        # ID 기반 중복 체크를 위한 세트
-        seen_ids = set()
-        
-        while page < 50:  # 최대 50페이지까지
+        while page < 20:  # 최대 20페이지
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES',
+                'startTime': str(start_time),
+                'endTime': str(end_time),
+                'limit': '500'
+            }
+            
+            if last_id:
+                params['lastEndId'] = str(last_id)
+            
             try:
-                endpoint = "/api/v2/mix/order/fill-history"
-                params = {
-                    'symbol': symbol,
-                    'productType': 'USDT-FUTURES',
-                    'startTime': str(start_time),
-                    'endTime': str(end_time),
-                    'limit': '500'  # 최대 한도
-                }
-                
-                if last_id:
-                    params['lastEndId'] = str(last_id)
-                
-                logger.info(f"페이지 {page + 1} 조회 중... (lastId: {last_id})")
                 response = await self._request('GET', endpoint, params=params)
                 
                 fills = []
-                if response is None:
-                    logger.warning("응답이 None입니다")
-                    break
-                elif isinstance(response, dict):
+                if isinstance(response, dict):
                     fills = response.get('fillList', response.get('list', []))
                 elif isinstance(response, list):
                     fills = response
                 
                 if not fills:
-                    logger.info(f"페이지 {page + 1}: 더 이상 데이터가 없습니다")
                     break
                 
-                # 중복 제거 및 추가
-                new_fills_count = 0
-                last_fill_in_page = None
+                all_fills.extend(fills)
+                logger.info(f"페이지 {page + 1}: {len(fills)}건 조회 (누적 {len(all_fills)}건)")
                 
-                for fill in fills:
-                    # ID 찾기
-                    fill_id = None
-                    for field in ['fillId', 'id', 'orderId', 'tradeId']:
-                        if field in fill and fill[field]:
-                            fill_id = str(fill[field])
-                            break
-                    
-                    # 중복 체크
-                    if fill_id and fill_id not in seen_ids:
-                        seen_ids.add(fill_id)
-                        all_fills.append(fill)
-                        new_fills_count += 1
-                        last_fill_in_page = fill
-                
-                logger.info(f"페이지 {page + 1}: {len(fills)}건 조회, {new_fills_count}건 추가 (누적 {len(all_fills)}건)")
-                
-                # 새로 추가된 거래가 없으면 종료
-                if new_fills_count == 0:
-                    logger.info("중복된 데이터만 있어 조회 종료")
-                    break
-                
-                # 500건 미만이면 마지막 페이지
                 if len(fills) < 500:
-                    logger.info("마지막 페이지 도달")
                     break
                 
-                # 다음 페이지를 위한 lastId 찾기
-                if last_fill_in_page:
-                    new_last_id = None
-                    for field in ['fillId', 'id', 'orderId', 'tradeId']:
-                        if field in last_fill_in_page and last_fill_in_page[field]:
-                            new_last_id = str(last_fill_in_page[field])
-                            logger.debug(f"다음 페이지 ID 필드: {field} = {new_last_id}")
-                            break
-                    
-                    if not new_last_id or new_last_id == last_id:
-                        logger.warning("다음 페이지 ID를 찾을 수 없음")
-                        break
-                    
-                    last_id = new_last_id
-                else:
-                    logger.warning("마지막 거래를 찾을 수 없음")
+                # 다음 페이지 ID
+                last_fill = fills[-1]
+                new_last_id = self._get_fill_id(last_fill)
+                
+                if not new_last_id or new_last_id == last_id:
                     break
                 
+                last_id = new_last_id
                 page += 1
                 
-                # API 요청 간격
                 await asyncio.sleep(0.1)
                 
             except Exception as e:
                 logger.error(f"페이지 {page + 1} 조회 오류: {e}")
                 break
         
-        logger.info(f"기간별 조회 완료: 총 {len(all_fills)}건")
-        
-        # 날짜별로 거래 수 확인 (디버깅용)
-        date_counts = {}
-        for fill in all_fills:
-            trade_time = None
-            for time_field in ['cTime', 'createdTime', 'createTime', 'time']:
-                if time_field in fill:
-                    trade_time = int(fill[time_field])
-                    break
-            
-            if trade_time:
-                trade_date = datetime.fromtimestamp(trade_time / 1000, tz=kst).strftime('%Y-%m-%d')
-                date_counts[trade_date] = date_counts.get(trade_date, 0) + 1
-        
-        logger.info("날짜별 거래 수:")
-        for date, count in sorted(date_counts.items()):
-            logger.info(f"  {date}: {count}건")
-        
         return all_fills
+    
+    def _get_fill_id(self, fill: Dict) -> Optional[str]:
+        """거래 ID 추출"""
+        for field in ['fillId', 'id', 'orderId', 'tradeId']:
+            if field in fill and fill[field]:
+                return str(fill[field])
+        return None
     
     async def get_funding_rate(self, symbol: str = None) -> Dict:
         """펀딩비 조회 (V2 API)"""
