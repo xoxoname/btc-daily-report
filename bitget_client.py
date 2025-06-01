@@ -182,7 +182,7 @@ class BitgetClient:
         return await self._get_all_fills_for_period(symbol, start_time, end_time)
     
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - 페이징 처리 포함"""
+        """손익 내역 조회 - 더 긴 기간 조회 후 필터링"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -196,23 +196,37 @@ class BitgetClient:
             period_start = today_start - timedelta(days=days-1)
             period_end = now
             
-            # UTC로 변환하여 타임스탬프 생성
-            start_time_utc = period_start.astimezone(pytz.UTC)
-            end_time_utc = period_end.astimezone(pytz.UTC)
+            # 7일 이하인 경우 더 긴 기간을 조회하여 안정성 확보
+            if days <= 7:
+                # 10일치를 조회한 후 필터링
+                extended_days = 10
+                extended_start = today_start - timedelta(days=extended_days-1)
+                
+                # UTC로 변환하여 타임스탬프 생성
+                start_time_utc = extended_start.astimezone(pytz.UTC)
+                end_time_utc = period_end.astimezone(pytz.UTC)
+                
+                start_time = int(start_time_utc.timestamp() * 1000)
+                end_time = int(end_time_utc.timestamp() * 1000)
+                
+                logger.info(f"=== {days}일 손익을 위해 {extended_days}일 조회 ===")
+                logger.info(f"전체 조회 기간: {extended_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
+                logger.info(f"실제 필터링 기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
+            else:
+                # 7일 초과인 경우 원래대로
+                start_time_utc = period_start.astimezone(pytz.UTC)
+                end_time_utc = period_end.astimezone(pytz.UTC)
+                
+                start_time = int(start_time_utc.timestamp() * 1000)
+                end_time = int(end_time_utc.timestamp() * 1000)
+                
+                logger.info(f"=== {days}일 손익 조회 ===")
+                logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
             
-            start_time = int(start_time_utc.timestamp() * 1000)
-            end_time = int(end_time_utc.timestamp() * 1000)
-            
-            logger.info(f"=== {days}일 손익 조회 ===")
-            logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
             logger.info(f"타임스탬프: {start_time} ~ {end_time}")
             
-            # 디버깅용: 실제 날짜 범위 확인
-            actual_days = (period_end - period_start).days + 1
-            logger.info(f"실제 조회 일수: {actual_days}일")
-            
             # 예상 날짜 목록 출력
-            logger.info("예상 거래일 목록:")
+            logger.info(f"예상 거래일 목록 ({days}일):")
             expected_dates = []
             for i in range(days):
                 date = period_start + timedelta(days=i)
@@ -228,8 +242,12 @@ class BitgetClient:
             # 모든 거래 내역 조회 (페이징 처리)
             all_fills = []
             
-            # days가 7일을 초과하는 경우 7일씩 나눠서 조회
-            if days > 7:
+            # 기간별 조회
+            if days <= 7:
+                # 10일치 한 번에 조회
+                all_fills = await self._get_all_fills_for_period_with_retries(symbol, start_time, end_time)
+            elif days > 7:
+                # 7일씩 나눠서 조회
                 current_start = start_time
                 
                 while current_start < end_time:
@@ -241,19 +259,16 @@ class BitgetClient:
                     logger.info(f"부분 조회: {start_kst.strftime('%Y-%m-%d')} ~ {end_kst.strftime('%Y-%m-%d')}")
                     
                     # 해당 기간의 모든 거래 조회 (페이징 처리)
-                    period_fills = await self._get_all_fills_for_period(symbol, current_start, current_end)
+                    period_fills = await self._get_all_fills_for_period_with_retries(symbol, current_start, current_end)
                     all_fills.extend(period_fills)
                     
                     current_start = current_end
                     await asyncio.sleep(0.2)  # API 요청 간격
-            else:
-                # 7일 이하도 페이징 처리로 모든 거래 조회
-                logger.info(f"페이징 처리로 {days}일 거래 내역 조회 시작")
-                all_fills = await self._get_all_fills_for_period(symbol, start_time, end_time)
             
             logger.info(f"총 조회된 거래 수: {len(all_fills)}건")
             
-            # 거래 처리
+            # 거래 처리 - 실제 필요한 기간만 필터링
+            filtered_count = 0
             for trade in all_fills:
                 try:
                     # 시간 필드 찾기
@@ -270,10 +285,12 @@ class BitgetClient:
                     trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
                     trade_date_str = trade_date_kst.strftime('%Y-%m-%d')
                     
-                    # 조회 기간 내의 거래만 처리
+                    # 실제 조회 기간 내의 거래만 처리
                     if trade_date_kst < period_start or trade_date_kst > period_end:
-                        logger.debug(f"기간 외 거래 제외: {trade_date_str} ({trade_date_kst})")
+                        logger.debug(f"기간 외 거래 제외: {trade_date_str}")
                         continue
+                    
+                    filtered_count += 1
                     
                     # 손익 필드 찾기
                     profit = 0.0
@@ -313,11 +330,13 @@ class BitgetClient:
                             daily_pnl[trade_date_str] = 0
                         daily_pnl[trade_date_str] += realized_pnl
                         
-                        logger.debug(f"거래: {trade_date_str} profit={profit:.2f}, fee={fee:.2f}, pnl={realized_pnl:.2f}")
+                        logger.debug(f"거래 포함: {trade_date_str} profit={profit:.2f}, fee={fee:.2f}, pnl={realized_pnl:.2f}")
                     
                 except Exception as e:
                     logger.warning(f"거래 파싱 오류: {e}")
                     continue
+            
+            logger.info(f"필터링 후 거래 수: {filtered_count}건 (실제 손익 계산: {trade_count}건)")
             
             # 결과 로그
             if daily_pnl:
@@ -356,6 +375,23 @@ class BitgetClient:
                 'total_fees': 0,
                 'error': str(e)
             }
+    
+    async def _get_all_fills_for_period_with_retries(self, symbol: str, start_time: int, end_time: int, max_retries: int = 3) -> List[Dict]:
+        """특정 기간의 모든 거래 내역 조회 (재시도 포함)"""
+        for retry in range(max_retries):
+            try:
+                fills = await self._get_all_fills_for_period(symbol, start_time, end_time)
+                if fills or retry == max_retries - 1:
+                    return fills
+                logger.warning(f"조회된 거래가 없음. 재시도 {retry + 1}/{max_retries}")
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.error(f"거래 조회 실패 (재시도 {retry + 1}/{max_retries}): {e}")
+                if retry < max_retries - 1:
+                    await asyncio.sleep(1)
+                else:
+                    raise
+        return []
     
     async def _get_all_fills_for_period(self, symbol: str, start_time: int, end_time: int) -> List[Dict]:
         """특정 기간의 모든 거래 내역 조회 (페이징 처리)"""
