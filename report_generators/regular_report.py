@@ -31,83 +31,41 @@ class RegularReportGenerator(BaseReportGenerator):
             if self.bitget_client and hasattr(self.indicator_system, 'set_bitget_client'):
                 self.indicator_system.set_bitget_client(self.bitget_client)
             
-            # 선물 특화 지표 계산
+            # 선물 특화 지표 계산 (백그라운드에서 모든 지표 분석)
             indicators = await self.indicator_system.calculate_all_indicators(market_data)
             
+            # 확장된 기술적 지표 분석 (백그라운드)
+            extended_indicators = await self._calculate_extended_indicators(market_data)
+            indicators.update(extended_indicators)
+            
             # 섹션별 생성
-            events_text = await self._format_market_events(market_data)
-            futures_analysis = await self._format_futures_analysis(market_data, indicators)
-            technical_text = await self._format_technical_analysis(market_data, indicators)
-            sentiment_text = await self._format_market_sentiment(market_data, indicators)
-            signal_text = self._format_trading_signals(indicators)
-            strategy_text = await self._format_strategy_recommendation(market_data, indicators)
-            risk_text = await self._format_risk_assessment(market_data, indicators)
-            
-            # 향후 12시간 예측 추가
-            prediction_text = await self._format_12h_prediction(market_data, indicators)
-            
-            validation_text = self._format_validation()
-            pnl_text = await self._format_profit_loss()
+            market_summary = await self._format_market_summary(market_data)
+            signal_summary = await self._format_signal_summary(indicators)
+            strategy_text = await self._format_trading_strategy(market_data, indicators)
+            prediction_text = await self._format_ai_prediction(market_data, indicators)
+            pnl_text = await self._format_integrated_pnl()
             mental_text = await self._generate_mental_care(market_data, indicators)
             
-            # 이번 예측 저장
-            self._save_prediction(indicators)
-            
-            report = f"""🧾 /report 명령어 – GPT 비트코인 매매 예측 리포트
-📅 작성 시각: {current_time} (KST)
+            report = f"""<b>🧾 비트코인 선물 매매 예측 리포트</b>
+<b>📅 {current_time}</b>
 ━━━━━━━━━━━━━━━━━━━
 
-📌 **시장 이벤트 및 주요 속보**
-{events_text}
+<b>📊 현재 시장 상황</b>
+{market_summary}
 
-━━━━━━━━━━━━━━━━━━━
+<b>📈 핵심 매매 신호</b>
+{signal_summary}
 
-📊 **선물 시장 핵심 지표**
-{futures_analysis}
-
-━━━━━━━━━━━━━━━━━━━
-
-📉 **기술적 분석**
-{technical_text}
-
-━━━━━━━━━━━━━━━━━━━
-
-🧠 **시장 심리 및 포지셔닝**
-{sentiment_text}
-
-━━━━━━━━━━━━━━━━━━━
-
-🎯 **롱/숏 신호 분석**
-{signal_text}
-
-━━━━━━━━━━━━━━━━━━━
-
-📌 **전략 제안**
+<b>💡 매매 전략</b>
 {strategy_text}
 
-━━━━━━━━━━━━━━━━━━━
-
-⚠️ **리스크 평가**
-{risk_text}
-
-━━━━━━━━━━━━━━━━━━━
-
-🔮 **향후 12시간 예측**
+<b>🔮 AI 예측 (12시간)</b>
 {prediction_text}
 
-━━━━━━━━━━━━━━━━━━━
-
-📊 **예측 검증**
-{validation_text}
-
-━━━━━━━━━━━━━━━━━━━
-
-💰 **손익 현황**
+<b>💰 통합 손익 현황</b>
 {pnl_text}
 
-━━━━━━━━━━━━━━━━━━━
-
-🧠 **멘탈 케어**
+<b>🧠 오늘의 한마디</b>
 {mental_text}"""
             
             return report
@@ -117,687 +75,843 @@ class RegularReportGenerator(BaseReportGenerator):
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return f"❌ 리포트 생성 중 오류가 발생했습니다: {str(e)}"
     
-    def _format_price_with_change(self, price: float, change_24h: float) -> str:
-        """가격과 24시간 변동률 포맷팅"""
-        change_percent = change_24h * 100
-        change_emoji = "📈" if change_24h > 0 else "📉" if change_24h < 0 else "➖"
-        return f"${price:,.0f} {change_emoji} ({change_percent:+.1f}%)"
-    
-    async def _format_market_events(self, market_data: dict) -> str:
-        """시장 이벤트 - 비트코인/미증시 직결 뉴스만"""
+    async def _calculate_extended_indicators(self, market_data: dict) -> dict:
+        """확장된 기술적 지표 계산 (백그라운드)"""
         try:
-            recent_news = await self.data_collector.get_recent_news(hours=3) if self.data_collector else []
+            extended = {}
             
-            if not recent_news:
-                return "• 현재 주요 시장 이벤트 없음"
-            
-            # 비트코인/미증시 직결 뉴스만 필터링
-            filtered_news = []
-            for news in recent_news:
-                title = news.get('title_ko', news.get('title', '')).lower()
-                description = news.get('description', '').lower()
-                content = title + ' ' + description
+            # K라인 데이터 가져오기
+            if self.bitget_client:
+                klines = await self.bitget_client.get_kline('BTCUSDT', '1H', 100)
                 
-                # 중요 키워드 체크
-                important_keywords = [
-                    # 비트코인 직접 관련
-                    'bitcoin', 'btc', '비트코인',
-                    # 기업 매입
-                    'bought', 'purchase', 'acquisition', '구매', '매입',
-                    # 정책/규제
-                    'sec', 'fed', 'fomc', 'trump', 'regulation', 'policy',
-                    '연준', '금리', '규제', '정책', '트럼프',
-                    # ETF
-                    'etf', '승인', 'approval', 'reject',
-                    # 시장 급변동
-                    'crash', 'surge', 'plunge', 'rally', '폭락', '급등',
-                    # 주요 기업
-                    'tesla', 'microstrategy', 'gamestop', 'coinbase', 'blackrock'
-                ]
-                
-                # 제외 키워드
-                exclude_keywords = [
-                    'how to', 'tutorial', 'guide', 'learn',
-                    '방법', '가이드', '배우기', '입문',
-                    'price prediction', '가격 예측',
-                    'crypto news today', '오늘의 암호화폐',
-                    'gold', '금', 'oil', '원유'
-                ]
-                
-                # 제외 키워드가 있으면 스킵
-                if any(keyword in content for keyword in exclude_keywords):
-                    continue
-                
-                # 중요 키워드가 2개 이상 포함된 경우만
-                keyword_count = sum(1 for keyword in important_keywords if keyword in content)
-                if keyword_count >= 2:
-                    filtered_news.append(news)
+                if klines:
+                    closes = [float(k[4]) for k in klines]  # 종가
+                    highs = [float(k[2]) for k in klines]   # 고가
+                    lows = [float(k[3]) for k in klines]    # 저가
+                    volumes = [float(k[5]) for k in klines]  # 거래량
+                    
+                    # 이동평균선
+                    extended['ma_7'] = sum(closes[-7:]) / 7
+                    extended['ma_25'] = sum(closes[-25:]) / 25
+                    extended['ma_99'] = sum(closes[-99:]) / 99
+                    
+                    # EMA 계산
+                    extended['ema_12'] = self._calculate_ema(closes, 12)
+                    extended['ema_26'] = self._calculate_ema(closes, 26)
+                    
+                    # MACD
+                    macd = extended['ema_12'] - extended['ema_26']
+                    extended['macd'] = macd
+                    extended['macd_signal'] = self._calculate_ema([macd], 9)
+                    extended['macd_histogram'] = macd - extended['macd_signal']
+                    
+                    # 볼린저 밴드
+                    ma_20 = sum(closes[-20:]) / 20
+                    std_20 = self._calculate_std(closes[-20:], ma_20)
+                    extended['bb_upper'] = ma_20 + (2 * std_20)
+                    extended['bb_middle'] = ma_20
+                    extended['bb_lower'] = ma_20 - (2 * std_20)
+                    extended['bb_width'] = (extended['bb_upper'] - extended['bb_lower']) / ma_20
+                    
+                    # 스토캐스틱
+                    extended['stoch_k'], extended['stoch_d'] = self._calculate_stochastic(highs, lows, closes)
+                    
+                    # CCI (Commodity Channel Index)
+                    extended['cci'] = self._calculate_cci(highs, lows, closes)
+                    
+                    # Williams %R
+                    extended['williams_r'] = self._calculate_williams_r(highs, lows, closes)
+                    
+                    # ATR (Average True Range)
+                    extended['atr'] = self._calculate_atr(highs, lows, closes)
+                    
+                    # ADX (Average Directional Index)
+                    extended['adx'] = self._calculate_adx(highs, lows, closes)
+                    
+                    # OBV (On Balance Volume)
+                    extended['obv'] = self._calculate_obv(closes, volumes)
+                    
+                    # MFI (Money Flow Index)
+                    extended['mfi'] = self._calculate_mfi(highs, lows, closes, volumes)
+                    
+                    # VWAP
+                    extended['vwap'] = self._calculate_vwap(highs, lows, closes, volumes)
+                    
+                    # 피봇 포인트
+                    extended['pivot_points'] = self._calculate_pivot_points(
+                        highs[-1], lows[-1], closes[-1]
+                    )
+                    
+                    # 이치모쿠 구름
+                    extended['ichimoku'] = self._calculate_ichimoku(highs, lows)
+                    
+                    # 파라볼릭 SAR
+                    extended['parabolic_sar'] = self._calculate_parabolic_sar(highs, lows)
+                    
+                    # 켈트너 채널
+                    extended['keltner_channels'] = self._calculate_keltner_channels(
+                        highs, lows, closes
+                    )
+                    
+                    # 슈퍼트렌드
+                    extended['supertrend'] = self._calculate_supertrend(
+                        highs, lows, closes, extended['atr']
+                    )
+                    
+                    # 지표 스코어링 (중요도 계산)
+                    extended['indicator_scores'] = self._score_indicators(extended, closes[-1])
             
-            # 중요도 순으로 정렬
-            filtered_news.sort(key=lambda x: x.get('weight', 0), reverse=True)
-            
-            # 상위 4개만 포맷팅
-            formatted = await self.format_news_with_time(filtered_news[:4], max_items=4)
-            
-            return '\n'.join(formatted) if formatted else "• 특이 뉴스 없음"
+            return extended
             
         except Exception as e:
-            self.logger.error(f"뉴스 포맷팅 오류: {e}")
-            return "• 뉴스 데이터 조회 중 오류"
+            self.logger.error(f"확장 지표 계산 실패: {e}")
+            return {}
     
-    async def _format_futures_analysis(self, market_data: dict, indicators: dict) -> str:
-        """선물 시장 핵심 지표"""
+    async def _format_market_summary(self, market_data: dict) -> str:
+        """시장 요약 - 간결하고 핵심만"""
         current_price = market_data.get('current_price', 0)
         change_24h = market_data.get('change_24h', 0)
+        volume_24h = market_data.get('volume_24h', 0)
+        volatility = market_data.get('volatility', 0)
         
-        # 각 분석 결과 가져오기
-        funding = indicators.get('funding_analysis', {})
-        oi = indicators.get('oi_analysis', {})
-        basis = indicators.get('futures_metrics', {}).get('basis', {})
-        ls_ratio = indicators.get('long_short_ratio', {})
-        liquidations = indicators.get('liquidation_analysis', {})
+        # 변동성 레벨
+        if volatility > 5:
+            vol_level = "매우 높음"
+            vol_emoji = "🔴"
+        elif volatility > 3:
+            vol_level = "높음"
+            vol_emoji = "🟠"
+        elif volatility > 1.5:
+            vol_level = "보통"
+            vol_emoji = "🟡"
+        else:
+            vol_level = "낮음"
+            vol_emoji = "🟢"
         
-        lines = [
-            f"• **현재가**: {self._format_price_with_change(current_price, change_24h)} (Bitget BTCUSDT)",
-            f"• **펀딩비**: {funding.get('current_rate', 0):+.3%} (연환산 {funding.get('annual_rate', 0):+.1f}%) → {funding.get('signal', '중립')}",
-            f"• **미결제약정**: {oi.get('oi_change_percent', 0):+.1f}% 변화 → {oi.get('price_divergence', '중립')}",
-            f"• **선물 베이시스**: {basis.get('rate', 0):+.3f}% → {basis.get('signal', '중립')}",
-            f"• **롱/숏 비율**: {ls_ratio.get('long_ratio', 50):.0f}:{ls_ratio.get('short_ratio', 50):.0f} → {ls_ratio.get('signal', '균형')}",
-            f"• **청산 위험**: {liquidations.get('liquidation_pressure', '중립')}"
-        ]
+        change_emoji = "📈" if change_24h > 0 else "📉" if change_24h < 0 else "➖"
         
-        # Fear & Greed Index 추가
-        if 'fear_greed' in market_data and market_data['fear_greed']:
-            fng = market_data['fear_greed']
-            lines.append(f"• **공포탐욕지수**: {fng.get('value', 50)}/100 ({fng.get('value_classification', 'Neutral')})")
-        
-        # 종합 평가 추가
-        lines.append("")
-        lines.append(self._generate_futures_summary(indicators))
-        
-        return '\n'.join(lines)
+        return f"""• BTC: ${current_price:,.0f} {change_emoji} ({change_24h:+.1%})
+- 24H 거래량: {volume_24h:,.0f} BTC
+- 변동성: {volatility:.1f}% ({vol_level}) {vol_emoji}"""
     
-    def _generate_futures_summary(self, indicators: dict) -> str:
-        """선물 지표 종합 평가 - 더 명확한 방향성"""
+    async def _format_signal_summary(self, indicators: dict) -> str:
+        """핵심 매매 신호 요약 - 시각적 개선"""
         composite = indicators.get('composite_signal', {})
         total_score = composite.get('total_score', 0)
-        signal = composite.get('signal', '중립')
+        confidence = composite.get('confidence', 50)
         
-        # 더 구체적인 평가
+        # 신호 강도 계산 (5단계)
+        if abs(total_score) >= 7:
+            strength = 5
+        elif abs(total_score) >= 5:
+            strength = 4
+        elif abs(total_score) >= 3:
+            strength = 3
+        elif abs(total_score) >= 1:
+            strength = 2
+        else:
+            strength = 1
+        
+        # 시각적 표현
+        strength_bar = "●" * strength + "○" * (5 - strength)
+        
+        # 방향성
         if total_score >= 5:
-            return "**핵심 지표 분석 종합 평가**: 강한 상승 신호로 적극적 롱 진입이 유리하다"
-        elif total_score >= 3:
-            return "**핵심 지표 분석 종합 평가**: 상승 우위로 신중한 롱 포지션이 유리하다"
-        elif total_score <= -5:
-            return "**핵심 지표 분석 종합 평가**: 강한 하락 신호로 적극적 숏 진입이 유리하다"
-        elif total_score <= -3:
-            return "**핵심 지표 분석 종합 평가**: 하락 우위로 신중한 숏 포지션이 유리하다"
-        else:
-            # 중립이어도 약간의 방향성 제시
-            if total_score > 0:
-                return "**핵심 지표 분석 종합 평가**: 약한 상승 신호나 명확한 돌파 확인 후 진입 권장"
-            elif total_score < 0:
-                return "**핵심 지표 분석 종합 평가**: 약한 하락 신호나 명확한 이탈 확인 후 진입 권장"
-            else:
-                return "**핵심 지표 분석 종합 평가**: 방향성 부재로 관망하되 돌파/이탈 시 빠른 대응 준비"
-    
-    async def _format_technical_analysis(self, market_data: dict, indicators: dict) -> str:
-        """기술적 분석 - 선물 관점"""
-        technical = indicators.get('technical', {})
-        market_profile = indicators.get('market_profile', {})
-        volume_delta = indicators.get('volume_delta', {})
-        
-        lines = [
-            f"• **24H 고/저**: ${market_data.get('high_24h', 0):,.0f} / ${market_data.get('low_24h', 0):,.0f}",
-            f"• **24H 변동**: {market_data.get('change_24h', 0):+.1%} | **거래량**: {market_data.get('volume_24h', 0):,.0f} BTC"
-        ]
-        
-        # 거래량 분석 추가
-        if volume_delta and volume_delta.get('signal'):
-            buy_vol = volume_delta.get('buy_volume', 0)
-            sell_vol = volume_delta.get('sell_volume', 0)
-            if buy_vol > sell_vol * 1.2:
-                lines.append("• 거래량 증가, 매수 체결 우세 → 롱 지지")
-            elif sell_vol > buy_vol * 1.2:
-                lines.append("• 거래량 증가, 매도 체결 우세 → 숏 지지")
-            else:
-                lines.append("• 거래량 균형 상태")
-        
-        # RSI
-        if 'rsi' in technical:
-            rsi_data = technical['rsi']
-            rsi_val = rsi_data.get('value', 50)
-            if rsi_val < 35:
-                lines.append(f"• **RSI(14)**: {rsi_val:.1f} → 과매도 구간 (반등 가능)")
-            elif rsi_val > 65:
-                lines.append(f"• **RSI(14)**: {rsi_val:.1f} → 과매수 구간 (조정 가능)")
-            else:
-                lines.append(f"• **RSI(14)**: {rsi_val:.1f} → 중립")
-        
-        # 마켓 프로파일
-        if market_profile and 'poc' in market_profile:
-            poc = market_profile['poc']
-            current = market_data.get('current_price', 0)
-            
-            if current > poc * 1.02:
-                poc_signal = "강한 롱 신호"
-            elif current > poc * 1.005:
-                poc_signal = "롱 우세"
-            elif current < poc * 0.98:
-                poc_signal = "강한 숏 신호"
-            elif current < poc * 0.995:
-                poc_signal = "숏 압력"
-            else:
-                poc_signal = "균형점 근처"
-            
-            lines.append(f"• **POC (Point of Control)**: ${poc:,.0f} → {poc_signal}")
-            lines.append(f"• **Value Area**: ${market_profile['value_area_low']:,.0f} ~ ${market_profile['value_area_high']:,.0f}")
-            lines.append(f"• **현재 위치**: {market_profile.get('price_position', '중립')}")
-        
-        # 기술적 분석 종합
-        lines.append("")
-        lines.append(self._generate_technical_summary(market_data, indicators))
-        
-        return '\n'.join(lines)
-    
-    def _generate_technical_summary(self, market_data: dict, indicators: dict) -> str:
-        """기술적 분석 종합 평가 - 더 명확한 방향성"""
-        technical = indicators.get('technical', {})
-        volume_delta = indicators.get('volume_delta', {})
-        market_profile = indicators.get('market_profile', {})
-        
-        bullish_count = 0
-        bearish_count = 0
-        
-        # RSI 체크 (가중치 2)
-        rsi_val = technical.get('rsi', {}).get('value', 50)
-        if rsi_val < 35:
-            bullish_count += 2
-        elif rsi_val > 65:
-            bearish_count += 2
-        
-        # 거래량 체크 (가중치 1.5)
-        if '매수 우세' in volume_delta.get('signal', ''):
-            bullish_count += 1.5
-        elif '매도 우세' in volume_delta.get('signal', ''):
-            bearish_count += 1.5
-        
-        # 가격 위치 체크 (가중치 1)
-        price_position = market_profile.get('price_position', '')
-        if 'Value Area 하단' in price_position:
-            bullish_count += 1
-        elif 'Value Area 상단' in price_position:
-            bearish_count += 1
-        
-        # POC 대비 위치 (가중치 1.5)
-        current = market_data.get('current_price', 0)
-        poc = market_profile.get('poc', current)
-        if current > poc * 1.01:
-            bullish_count += 1.5
-        elif current < poc * 0.99:
-            bearish_count += 1.5
-        
-        # 명확한 방향성 제시
-        if bullish_count >= bearish_count + 2:
-            return "**기술적 분석 종합 평가**: 강한 상승 신호들이 확인되어 즉시 롱 진입이 유리하다"
-        elif bullish_count > bearish_count:
-            return "**기술적 분석 종합 평가**: 상승 지표 우세로 롱 포지션 구축이 유리하다"
-        elif bearish_count >= bullish_count + 2:
-            return "**기술적 분석 종합 평가**: 강한 하락 신호들이 확인되어 즉시 숏 진입이 유리하다"
-        elif bearish_count > bullish_count:
-            return "**기술적 분석 종합 평가**: 하락 지표 우세로 숏 포지션 구축이 유리하다"
-        else:
-            return "**기술적 분석 종합 평가**: 지표 혼재로 추세 전환점 대기, 돌파 방향 추종 전략 권장"
-    
-    async def _format_market_sentiment(self, market_data: dict, indicators: dict) -> str:
-        """시장 심리 및 포지셔닝"""
-        cvd = indicators.get('volume_delta', {})
-        smart_money = indicators.get('smart_money', {})
-        
-        lines = []
-        
-        # CVD (누적 거래량 델타)
-        if cvd:
-            lines.append(f"• **CVD**: {cvd.get('cvd_ratio', 0):+.1f}% → {cvd.get('signal', '균형')}")
-            lines.append(f"• **매수/매도 거래량**: {cvd.get('buy_volume', 0):,.0f} / {cvd.get('sell_volume', 0):,.0f} BTC")
-        
-        # 스마트머니
-        if smart_money:
-            lines.append(f"• **대형 거래**: 매수 {smart_money.get('large_buy_count', 0)}건 vs 매도 {smart_money.get('large_sell_count', 0)}건")
-            lines.append(f"• **스마트머니 플로우**: {smart_money.get('net_flow', 0):+.1f} BTC → {smart_money.get('signal', '중립')}")
-        
-        # 시장 개요 (CoinGecko)
-        if 'market_overview' in market_data and market_data['market_overview']:
-            overview = market_data['market_overview']
-            lines.append(f"• **BTC 도미넌스**: {overview.get('btc_dominance', 0):.1f}%")
-            lines.append(f"• **전체 시총 변화**: {overview.get('market_cap_change_24h', 0):+.1f}%")
-        
-        # 시장 심리 종합
-        lines.append("")
-        lines.append(self._generate_sentiment_summary(indicators, market_data))
-        
-        return '\n'.join(lines) if lines else "• 센티먼트 데이터 수집 중"
-    
-    def _generate_sentiment_summary(self, indicators: dict, market_data: dict) -> str:
-        """시장 심리 종합 평가 - 더 명확한 방향성"""
-        cvd = indicators.get('volume_delta', {})
-        smart_money = indicators.get('smart_money', {})
-        
-        bullish_signals = 0
-        bearish_signals = 0
-        
-        # CVD 체크 (가중치 2)
-        cvd_ratio = cvd.get('cvd_ratio', 0)
-        if cvd_ratio > 15:
-            bullish_signals += 2
-        elif cvd_ratio > 5:
-            bullish_signals += 1
-        elif cvd_ratio < -15:
-            bearish_signals += 2
-        elif cvd_ratio < -5:
-            bearish_signals += 1
-        
-        # 스마트머니 체크 (가중치 2)
-        net_flow = smart_money.get('net_flow', 0)
-        if net_flow > 5:
-            bullish_signals += 2
-        elif net_flow > 2:
-            bullish_signals += 1
-        elif net_flow < -5:
-            bearish_signals += 2
-        elif net_flow < -2:
-            bearish_signals += 1
-        
-        # Fear & Greed 체크 (가중치 1.5)
-        if 'fear_greed' in market_data and market_data['fear_greed']:
-            fng_value = market_data['fear_greed'].get('value', 50)
-            if fng_value > 75:
-                bullish_signals += 1.5
-            elif fng_value > 60:
-                bullish_signals += 0.5
-            elif fng_value < 25:
-                bearish_signals += 1.5
-            elif fng_value < 40:
-                bearish_signals += 0.5
-        
-        # 명확한 방향성 제시
-        if bullish_signals >= bearish_signals + 2:
-            return "**시장 심리 종합 평가**: 매수 심리 압도적 우위로 롱 포지션 적극 권장"
-        elif bullish_signals > bearish_signals:
-            return "**시장 심리 종합 평가**: 긍정적 심리 우세로 롱 진입이 유리하다"
-        elif bearish_signals >= bullish_signals + 2:
-            return "**시장 심리 종합 평가**: 매도 심리 압도적 우위로 숏 포지션 적극 권장"
-        elif bearish_signals > bullish_signals:
-            return "**시장 심리 종합 평가**: 부정적 심리 우세로 숏 진입이 유리하다"
-        else:
-            return "**시장 심리 종합 평가**: 심리 지표 중립, 기술적 지표 우선 고려 필요"
-    
-    def _format_trading_signals(self, indicators: dict) -> str:
-        """롱/숏 신호 분석 - 더 명확한 신호"""
-        composite = indicators.get('composite_signal', {})
-        scores = composite.get('scores', {})
-        total_score = composite.get('total_score', 0)
-        
-        # 신호 색상과 강도 결정
-        if total_score >= 5:
-            signal_emoji = "🟢"
-            signal = "강한 롱 신호"
+            direction = "🟢 강한 상승"
+            signal_color = "🟢"
         elif total_score >= 2:
-            signal_emoji = "🟡"
-            signal = "롱 신호"
+            direction = "🟢 약한 상승"
+            signal_color = "🟡"
         elif total_score <= -5:
-            signal_emoji = "🔴"
-            signal = "강한 숏 신호"
+            direction = "🔴 강한 하락"
+            signal_color = "🔴"
         elif total_score <= -2:
-            signal_emoji = "🟠"
-            signal = "숏 신호"
+            direction = "🔴 약한 하락"
+            signal_color = "🟠"
         else:
-            signal_emoji = "⚪"
-            signal = "중립 (방향성 부재)"
+            direction = "⚪ 중립"
+            signal_color = "⚪"
         
-        lines = [
-            f"{signal_emoji} **종합 신호**: {signal} (신뢰도 {composite.get('confidence', 50):.0f}%)",
-            "",
-            "📊 **세부 점수** (±10점):"
-        ]
+        # 중요 지표 선별 (백그라운드에서 분석한 것 중 상위 3개)
+        extended = indicators.get('extended_indicators', {})
+        top_indicators = []
         
-        # 점수별 정렬 (절대값 기준)
-        sorted_scores = sorted(scores.items(), key=lambda x: abs(x[1]), reverse=True)
+        if 'indicator_scores' in extended:
+            sorted_indicators = sorted(
+                extended['indicator_scores'].items(),
+                key=lambda x: abs(x[1]),
+                reverse=True
+            )[:3]
+            
+            for ind_name, score in sorted_indicators:
+                if score > 0:
+                    top_indicators.append(f"• {ind_name}: 매수 신호")
+                elif score < 0:
+                    top_indicators.append(f"• {ind_name}: 매도 신호")
         
-        for indicator, score in sorted_scores:
-            # 점수 표시 간소화
-            lines.append(f"• {indicator:15s}: {score:+.1f}")
+        key_indicators = "\n".join(top_indicators) if top_indicators else "• 특이 신호 없음"
         
-        lines.extend([
-            "",
-            f"📍 **최종 점수**: {total_score:+.1f}/10",
-            f"📍 **추천 액션**: {self._get_clear_action(total_score)}",
-            f"📍 **포지션 크기**: {composite.get('position_size', '표준')}"
-        ])
-        
-        return '\n'.join(lines)
+        return f"""【강도】 {strength_bar} ({strength}/5)
+【방향】 {direction}
+【신뢰도】 {confidence:.0f}%
+
+<b>핵심 지표 요약:</b>
+{key_indicators}"""
     
-    def _get_clear_action(self, score: float) -> str:
-        """명확한 액션 제시"""
-        if score >= 5:
-            return "즉시 롱 진입 (전체 자금의 30-40%)"
-        elif score >= 3:
-            return "롱 진입 (전체 자금의 20-30%)"
-        elif score >= 1:
-            return "소량 롱 테스트 (전체 자금의 10-15%)"
-        elif score <= -5:
-            return "즉시 숏 진입 (전체 자금의 30-40%)"
-        elif score <= -3:
-            return "숏 진입 (전체 자금의 20-30%)"
-        elif score <= -1:
-            return "소량 숏 테스트 (전체 자금의 10-15%)"
-        else:
-            return "관망 (명확한 신호 대기)"
-    
-    async def _format_strategy_recommendation(self, market_data: dict, indicators: dict) -> str:
-        """구체적 전략 제안"""
+    async def _format_trading_strategy(self, market_data: dict, indicators: dict) -> str:
+        """매매 전략 - 명확하고 실행 가능한"""
         composite = indicators.get('composite_signal', {})
         total_score = composite.get('total_score', 0)
         current_price = market_data.get('current_price', 0)
         volatility = market_data.get('volatility', 0)
         
-        # 변동성 기반 진입 범위 조정
-        if volatility > 5:
-            entry_range = 0.008  # 0.8%
-        elif volatility > 3:
+        # 진입 범위 설정
+        if volatility > 3:
             entry_range = 0.005  # 0.5%
         else:
             entry_range = 0.003  # 0.3%
         
-        if self.openai_client:
-            # GPT 기반 전략 생성
-            try:
-                # 주요 지표 요약
-                summary = {
-                    '신호': self._get_clear_action(total_score),
-                    '점수': total_score,
-                    '현재가': current_price,
-                    '변동성': volatility,
-                    '펀딩비': indicators.get('funding_analysis', {}).get('current_rate', 0),
-                    'OI변화': indicators.get('oi_analysis', {}).get('oi_change_percent', 0),
-                    'CVD': indicators.get('volume_delta', {}).get('cvd_ratio', 0),
-                    '리스크': indicators.get('risk_metrics', {}).get('risk_level', '보통')
-                }
-                
-                prompt = f"""
-비트코인 선물 트레이더를 위한 구체적 전략을 제시하세요:
-
-현재 상황:
-- 가격: ${summary['현재가']:,.0f}
-- 종합 점수: {summary['점수']:.1f} (강한 신호: ±5 이상)
-- 변동성: {summary['변동성']:.1f}%
-- 펀딩비: {summary['펀딩비']:+.3%}
-- OI 변화: {summary['OI변화']:+.1f}%
-- CVD: {summary['CVD']:+.1f}%
-- 리스크: {summary['리스크']}
-
-다음을 포함하여 5줄로 작성:
-1. 진입 방향과 이유 (점수 기반)
-2. 구체적 진입가 범위 (현재가 기준 ±{entry_range*100:.1f}%)
-3. 손절가 설정 (변동성 고려)
-4. 목표가 (1차, 2차)
-5. 주의사항
-
-번호를 붙여서 각 항목을 명확히 구분하세요.
-중립인 경우 관망을 권하되 돌파/이탈 가격을 명시하세요.
-"""
-                
-                response = await self.openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "당신은 명확한 방향성을 제시하는 선물 트레이딩 전문가입니다."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=300,
-                    temperature=0.3
-                )
-                
-                return response.choices[0].message.content.strip()
-                
-            except Exception as e:
-                self.logger.error(f"GPT 전략 생성 실패: {e}")
-        
-        # 규칙 기반 전략 (더 명확한 방향성)
+        # 전략 결정
         if total_score >= 5:
-            return f"""1. 강한 상승 신호 확인, 즉시 롱 진입 권장
-2. 진입가 범위: ${current_price * (1-entry_range):,.0f} ~ ${current_price:,.0f}
-3. 손절가: ${current_price * 0.98:,.0f} (-2%)
-4. 목표가: 1차 ${current_price * 1.02:,.0f} (+2%), 2차 ${current_price * 1.04:,.0f} (+4%)
-5. 주의: 과열 구간 진입 시 분할 익절 필수"""
-        
+            action = "즉시 롱 진입"
+            entry_low = current_price * (1 - entry_range)
+            entry_high = current_price
+            stop_loss = current_price * 0.98
+            target1 = current_price * 1.02
+            target2 = current_price * 1.035
+            emoji = "🟢"
         elif total_score >= 2:
-            return f"""1. 상승 우위 확인, 신중한 롱 진입 권장
-2. 진입가 범위: ${current_price * (1-entry_range):,.0f} ~ ${current_price * 0.998:,.0f}
-3. 손절가: ${current_price * 0.985:,.0f} (-1.5%)
-4. 목표가: 1차 ${current_price * 1.015:,.0f} (+1.5%), 2차 ${current_price * 1.025:,.0f} (+2.5%)
-5. 주의: 저항선 근처 도달 시 일부 익절 고려"""
-        
+            action = "신중한 롱 진입"
+            entry_low = current_price * (1 - entry_range)
+            entry_high = current_price * 0.999
+            stop_loss = current_price * 0.985
+            target1 = current_price * 1.015
+            target2 = current_price * 1.025
+            emoji = "🟡"
         elif total_score <= -5:
-            return f"""1. 강한 하락 신호 확인, 즉시 숏 진입 권장
-2. 진입가 범위: ${current_price:,.0f} ~ ${current_price * (1+entry_range):,.0f}
-3. 손절가: ${current_price * 1.02:,.0f} (+2%)
-4. 목표가: 1차 ${current_price * 0.98:,.0f} (-2%), 2차 ${current_price * 0.96:,.0f} (-4%)
-5. 주의: 과매도 구간 진입 시 분할 익절 필수"""
-        
+            action = "즉시 숏 진입"
+            entry_low = current_price
+            entry_high = current_price * (1 + entry_range)
+            stop_loss = current_price * 1.02
+            target1 = current_price * 0.98
+            target2 = current_price * 0.965
+            emoji = "🔴"
         elif total_score <= -2:
-            return f"""1. 하락 우위 확인, 신중한 숏 진입 권장
-2. 진입가 범위: ${current_price * 1.002:,.0f} ~ ${current_price * (1+entry_range):,.0f}
-3. 손절가: ${current_price * 1.015:,.0f} (+1.5%)
-4. 목표가: 1차 ${current_price * 0.985:,.0f} (-1.5%), 2차 ${current_price * 0.975:,.0f} (-2.5%)
-5. 주의: 지지선 근처 도달 시 일부 익절 고려"""
-        
+            action = "신중한 숏 진입"
+            entry_low = current_price * 1.001
+            entry_high = current_price * (1 + entry_range)
+            stop_loss = current_price * 1.015
+            target1 = current_price * 0.985
+            target2 = current_price * 0.975
+            emoji = "🟠"
         else:
-            return f"""1. 방향성 부재로 관망 권장, 돌파/이탈 대기
-2. 상방 돌파: ${current_price * 1.008:,.0f} 이상 확정 시 롱
-3. 하방 이탈: ${current_price * 0.992:,.0f} 이하 확정 시 숏
-4. 목표: 돌파/이탈 방향으로 1.5~2% 수익
-5. 주의: 가짜 돌파 주의, 거래량 확인 필수"""
-    
-    async def _format_risk_assessment(self, market_data: dict, indicators: dict) -> str:
-        """리스크 평가 - 동적 생성"""
-        risk = indicators.get('risk_metrics', {})
-        liquidations = indicators.get('liquidation_analysis', {})
+            action = "관망 권장"
+            entry_low = current_price * 0.995
+            entry_high = current_price * 1.005
+            stop_loss = 0
+            target1 = 0
+            target2 = 0
+            emoji = "⚪"
         
-        # 계정 정보 가져오기
-        position_info = await self._get_position_info()
-        account_info = await self._get_account_info()
+        # 추가 분석 포인트
+        extended = indicators.get('extended_indicators', {})
+        warning = ""
         
-        # 기본 리스크 정보
-        lines = [
-            f"• **종합 리스크**: {risk.get('risk_level', '보통')} (점수 {risk.get('risk_score', 0)}/10)",
-            f"• **변동성 리스크**: {risk.get('volatility_risk', '보통')}",
-            f"• **펀딩비 리스크**: {risk.get('funding_risk', '보통')}"
-        ]
+        # RSI 체크
+        rsi = indicators.get('technical', {}).get('rsi', {}).get('value', 50)
+        if rsi > 70 and total_score > 0:
+            warning = "\n⚠️ 과매수 구간 - 조정 가능성"
+        elif rsi < 30 and total_score < 0:
+            warning = "\n⚠️ 과매도 구간 - 반등 가능성"
         
-        # 포지션별 맞춤 리스크 평가
-        if position_info.get('has_position'):
-            side = position_info.get('side', '')
-            entry_price = position_info.get('entry_price', 0)
-            current_price = market_data.get('current_price', 0)
-            liquidation_price = position_info.get('liquidation_price', 0)
-            
-            # 청산까지 거리
-            if liquidation_price > 0:
-                if side == '롱':
-                    liq_distance = ((current_price - liquidation_price) / current_price) * 100
-                else:
-                    liq_distance = ((liquidation_price - current_price) / current_price) * 100
-                
-                if liq_distance < 5:
-                    lines.append(f"• ⚠️ **청산 경고**: 청산가까지 {liq_distance:.1f}%만 남음!")
-                    lines.append("• **긴급 대응**: 즉시 포지션 축소 또는 증거금 추가 필요")
-                elif liq_distance < 10:
-                    lines.append(f"• **청산 주의**: 청산가까지 {liq_distance:.1f}% 여유")
-                    lines.append("• **권장 대응**: 일부 포지션 정리 고려")
-                else:
-                    lines.append(f"• **청산 안전**: 청산가까지 {liq_distance:.1f}% 여유")
+        # 볼륨 분석
+        volume_analysis = indicators.get('volume_delta', {})
+        if volume_analysis.get('smart_money', {}).get('signal') == '스마트머니 매수 진입':
+            warning += "\n✅ 고래 매집 확인 - 상승 준비"
+        elif volume_analysis.get('smart_money', {}).get('signal') == '스마트머니 매도 진행':
+            warning += "\n⚠️ 고래 매도 확인 - 하락 주의"
+        
+        if stop_loss > 0:
+            return f"""• 액션: {emoji} {action}
+- 진입: ${entry_low:,.0f} ~ ${entry_high:,.0f}
+- 손절: ${stop_loss:,.0f} ({(stop_loss/current_price-1)*100:+.1f}%)
+- 1차 목표: ${target1:,.0f} ({(target1/current_price-1)*100:+.1f}%)
+- 2차 목표: ${target2:,.0f} ({(target2/current_price-1)*100:+.1f}%){warning}"""
         else:
-            # 포지션 없을 때
-            total_equity = account_info.get('total_equity', 0)
-            if total_equity > 0:
-                # 권장 포지션 크기
-                if risk.get('risk_level') == '높음':
-                    recommended_size = total_equity * 0.1  # 10%
-                    lines.append(f"• **권장 포지션**: ${recommended_size:.0f} (총 자산의 10%)")
-                elif risk.get('risk_level') == '낮음':
-                    recommended_size = total_equity * 0.3  # 30%
-                    lines.append(f"• **권장 포지션**: ${recommended_size:.0f} (총 자산의 30%)")
-                else:
-                    recommended_size = total_equity * 0.2  # 20%
-                    lines.append(f"• **권장 포지션**: ${recommended_size:.0f} (총 자산의 20%)")
-        
-        # 청산 레벨
-        if liquidations and 'long_liquidation_levels' in liquidations:
-            lines.extend([
-                "",
-                "⚡ **주요 청산 레벨**:",
-                f"• 롱 청산: ${liquidations['long_liquidation_levels'][0]:,.0f} (3% 하락)",
-                f"• 숏 청산: ${liquidations['short_liquidation_levels'][0]:,.0f} (3% 상승)"
-            ])
-        
-        return '\n'.join(lines)
+            return f"""• 액션: {emoji} {action}
+- 상방 돌파: ${entry_high:,.0f} 이상 시 롱
+- 하방 이탈: ${entry_low:,.0f} 이하 시 숏
+- 대기 구간: ${entry_low:,.0f} ~ ${entry_high:,.0f}{warning}"""
     
-    async def _format_12h_prediction(self, market_data: dict, indicators: dict) -> str:
-        """향후 12시간 예측 - 더 정확한 확률"""
+    async def _format_ai_prediction(self, market_data: dict, indicators: dict) -> str:
+        """AI 예측 - 더 정확하고 명확한"""
         composite = indicators.get('composite_signal', {})
         total_score = composite.get('total_score', 0)
         current_price = market_data.get('current_price', 0)
         
-        # 더 정밀한 확률 계산
-        base_up = 33
-        base_down = 33
-        base_sideways = 34
+        # 기본 확률
+        up_prob = 33
+        sideways_prob = 34
+        down_prob = 33
         
-        # 점수 기반 확률 조정 (더 극단적으로)
+        # 지표 기반 확률 조정
+        # 1. 종합 점수
         if total_score > 0:
-            up_bonus = min(total_score * 8, 40)  # 최대 +40%
-            up_prob = base_up + up_bonus
-            down_prob = max(10, base_down - up_bonus * 0.7)
-            sideways_prob = 100 - up_prob - down_prob
+            up_bonus = min(total_score * 6, 30)
+            up_prob += up_bonus
+            down_prob -= up_bonus * 0.7
+            sideways_prob -= up_bonus * 0.3
         elif total_score < 0:
-            down_bonus = min(abs(total_score) * 8, 40)  # 최대 +40%
-            down_prob = base_down + down_bonus
-            up_prob = max(10, base_up - down_bonus * 0.7)
-            sideways_prob = 100 - up_prob - down_prob
-        else:
-            up_prob = base_up
-            down_prob = base_down
-            sideways_prob = base_sideways
+            down_bonus = min(abs(total_score) * 6, 30)
+            down_prob += down_bonus
+            up_prob -= down_bonus * 0.7
+            sideways_prob -= down_bonus * 0.3
         
-        # 추가 요인 고려
+        # 2. 펀딩비 조정
         funding = indicators.get('funding_analysis', {})
-        if funding.get('current_rate', 0) > 0.001:  # 펀딩비 과열
-            down_prob += 5
-            up_prob -= 5
-        elif funding.get('current_rate', 0) < -0.001:
+        funding_rate = funding.get('current_rate', 0)
+        if funding_rate > 0.001:  # 과열
+            down_prob += 8
+            up_prob -= 8
+        elif funding_rate < -0.001:  # 과매도
+            up_prob += 8
+            down_prob -= 8
+        
+        # 3. RSI 조정
+        rsi = indicators.get('technical', {}).get('rsi', {}).get('value', 50)
+        if rsi > 70:
+            down_prob += 10
+            up_prob -= 10
+        elif rsi < 30:
+            up_prob += 10
+            down_prob -= 10
+        
+        # 4. 거래량 분석
+        volume_signal = indicators.get('volume_delta', {}).get('signal', '')
+        if '매수 우세' in volume_signal:
             up_prob += 5
             down_prob -= 5
+        elif '매도 우세' in volume_signal:
+            down_prob += 5
+            up_prob -= 5
+        
+        # 5. 스마트머니 플로우
+        smart_money = indicators.get('smart_money', {})
+        if smart_money.get('net_flow', 0) > 5:
+            up_prob += 7
+            down_prob -= 7
+        elif smart_money.get('net_flow', 0) < -5:
+            down_prob += 7
+            up_prob -= 7
         
         # 정규화
-        total = up_prob + down_prob + sideways_prob
+        total = up_prob + sideways_prob + down_prob
         up_prob = int(up_prob / total * 100)
         down_prob = int(down_prob / total * 100)
         sideways_prob = 100 - up_prob - down_prob
         
-        lines = [
-            f"**상승**: {up_prob}% / **횡보**: {sideways_prob}% / **하락**: {down_prob}%",
-            "",
-            "📌 **전략 제안**:"
-        ]
+        # 예상 가격 범위
+        volatility = market_data.get('volatility', 2)
+        expected_move = volatility * 0.5  # 12시간 예상 변동률
         
-        # 명확한 전략 제안
-        if up_prob >= 60:
-            lines.append(f"높은 상승 확률로 지지선 ${current_price * 0.985:,.0f} 위에서는 롱 유지")
-            lines.append(f"저항선 ${current_price * 1.02:,.0f} 돌파 시 추가 상승 가속화 예상")
-        elif down_prob >= 60:
-            lines.append(f"높은 하락 확률로 저항선 ${current_price * 1.015:,.0f} 아래에서는 숏 유지")
-            lines.append(f"지지선 ${current_price * 0.98:,.0f} 이탈 시 추가 하락 가속화 예상")
-        elif up_prob > down_prob + 10:
-            lines.append(f"상승 우위로 ${current_price * 0.992:,.0f} 위에서 롱 포지션 유리")
-            lines.append(f"목표가 ${current_price * 1.015:,.0f} 도달 시 일부 익절 권장")
-        elif down_prob > up_prob + 10:
-            lines.append(f"하락 우위로 ${current_price * 1.008:,.0f} 아래에서 숏 포지션 유리")
-            lines.append(f"목표가 ${current_price * 0.985:,.0f} 도달 시 일부 익절 권장")
+        if up_prob > down_prob + 20:
+            min_price = current_price * (1 + expected_move * 0.3)
+            max_price = current_price * (1 + expected_move * 1.2)
+            trend = "상승 돌파"
+            emoji = "📈"
+        elif down_prob > up_prob + 20:
+            min_price = current_price * (1 - expected_move * 1.2)
+            max_price = current_price * (1 - expected_move * 0.3)
+            trend = "하락 이탈"
+            emoji = "📉"
         else:
-            lines.append(f"${current_price * 0.99:,.0f} ~ ${current_price * 1.01:,.0f} 박스권 횡보 예상")
-            lines.append("명확한 이탈 방향 확인 후 진입 권장")
+            min_price = current_price * (1 - expected_move * 0.5)
+            max_price = current_price * (1 + expected_move * 0.5)
+            trend = "횡보 지속"
+            emoji = "➡️"
         
-        return '\n'.join(lines)
-    
-    def _format_validation(self) -> str:
-        """이전 예측 검증"""
-        if not self.last_prediction:
-            return "• 이전 예측 기록 없음"
+        # 주요 이벤트 체크
+        events = []
+        if up_prob > 60:
+            events.append("• 강한 상승 모멘텀 형성")
+        if down_prob > 60:
+            events.append("• 하락 압력 증가")
+        if abs(up_prob - down_prob) < 10:
+            events.append("• 방향성 결정 대기")
         
-        # 실제 검증 로직 구현 필요
-        return f"""• {self.last_prediction.get('time', '이전')} 리포트 "{self.last_prediction.get('signal', '중립')}" 예상 → 실제 ±{abs(self.last_prediction.get('actual_change', 1.0)):.1f}% 등락 → {"✅ 예측 적중" if self.last_prediction.get('accurate', False) else "❌ 예측 실패"}"""
+        events_text = "\n".join(events) if events else ""
+        
+        return f"""▲ 상승 {up_prob}% {"(우세)" if up_prob > max(sideways_prob, down_prob) else ""}
+━ 횡보 {sideways_prob}%
+▼ 하락 {down_prob}% {"(우세)" if down_prob > max(up_prob, sideways_prob) else ""}
+
+→ 예상 범위: ${min_price:,.0f} ~ ${max_price:,.0f}
+→ 예상 추세: {emoji} {trend}
+
+{events_text}"""
     
-    async def _format_profit_loss(self) -> str:
-        """손익 현황"""
+    async def _format_integrated_pnl(self) -> str:
+        """통합 손익 현황 - Bitget + Gate.io"""
         try:
-            position_info = await self._get_position_info()
-            account_info = await self._get_account_info()
-            today_pnl = await self._get_today_realized_pnl()
+            # Bitget 정보
+            bitget_position = await self._get_position_info()
+            bitget_account = await self._get_account_info()
+            bitget_today_pnl = await self._get_today_realized_pnl()
+            bitget_weekly = await self._get_weekly_profit()
+            
+            # Gate.io 정보 (있는 경우)
+            gate_pnl = 0
+            gate_today = 0
+            gate_balance = 0
+            
+            if hasattr(self, 'gateio_client') and self.gateio_client:
+                try:
+                    gate_profit = await self.gateio_client.get_profit_history_since_may()
+                    gate_pnl = gate_profit.get('actual_profit', 0)
+                    gate_today = gate_profit.get('today_realized', 0)
+                    gate_balance = gate_profit.get('current_balance', 0)
+                except:
+                    pass
+            
+            # 총 손익 계산
+            total_equity = bitget_account.get('total_equity', 0) + gate_balance
+            total_weekly = bitget_weekly.get('total', 0) + gate_pnl
+            total_today = bitget_today_pnl + gate_today
             
             lines = []
             
-            # 포지션 정보
-            if position_info.get('has_position'):
-                side = position_info.get('side')
-                entry = position_info.get('entry_price', 0)
-                current = position_info.get('current_price', 0)
-                pnl_rate = position_info.get('pnl_rate', 0) * 100
-                
-                lines.append(f"• **현재 포지션**: {side} (진입 ${entry:,.0f}, {pnl_rate:+.1f}%)")
-                lines.append(f"• **미실현 손익**: {self._format_currency(position_info.get('unrealized_pnl', 0), False)}")
-            else:
-                lines.append("• **현재 포지션**: 없음")
+            # 총 자산
+            lines.append(f"• 총 자산: ${total_equity:,.2f}")
             
-            # 실현 손익
-            lines.append(f"• **오늘 실현**: {self._format_currency(today_pnl, False)}")
+            # 수익 분석
+            lines.append(f"• 총 수익: ${total_weekly:+,.2f}")
+            if gate_balance > 0:
+                lines.append(f"  - Bitget: ${bitget_weekly.get('total', 0):+,.2f}")
+                lines.append(f"  - Gate.io: ${gate_pnl:+,.2f}")
+            
+            lines.append(f"• 금일: ${total_today:+,.2f}")
+            lines.append(f"• 7일: ${total_weekly:+,.2f}")
+            
+            # 현재 포지션
+            if bitget_position.get('has_position'):
+                side = bitget_position.get('side')
+                entry = bitget_position.get('entry_price', 0)
+                pnl_rate = bitget_position.get('pnl_rate', 0) * 100
+                unrealized = bitget_position.get('unrealized_pnl', 0)
+                
+                lines.append(f"• 포지션: {side} (진입 ${entry:,.0f}, {pnl_rate:+.1f}%)")
+                
+                # 승률 계산 (간단 버전)
+                if hasattr(self, 'trade_history'):
+                    wins = len([t for t in self.trade_history if t['pnl'] > 0])
+                    total_trades = len(self.trade_history)
+                    if total_trades > 0:
+                        win_rate = wins / total_trades * 100
+                        lines.append(f"• 승률: {win_rate:.0f}% ({wins}승 {total_trades-wins}패)")
+            else:
+                lines.append("• 포지션: 없음")
             
             return '\n'.join(lines)
             
         except Exception as e:
-            self.logger.error(f"손익 포맷팅 실패: {e}")
+            self.logger.error(f"통합 손익 계산 실패: {e}")
             return "• 손익 정보 조회 실패"
     
     async def _generate_mental_care(self, market_data: dict, indicators: dict) -> str:
-        """멘탈 케어 - 선물 거래자 특화"""
+        """멘탈 케어 - 간결하고 자연스러운"""
         try:
             account_info = await self._get_account_info()
             position_info = await self._get_position_info()
             today_pnl = await self._get_today_realized_pnl()
             weekly_profit = await self._get_weekly_profit()
             
-            # 시장 상황 고려
-            signal = indicators.get('composite_signal', {}).get('signal', '중립')
-            risk_level = indicators.get('risk_metrics', {}).get('risk_level', '보통')
+            # Gate.io 수익 추가
+            if hasattr(self, 'gateio_client') and self.gateio_client:
+                try:
+                    gate_profit = await self.gateio_client.get_profit_history_since_may()
+                    today_pnl += gate_profit.get('today_realized', 0)
+                    weekly_profit['total'] += gate_profit.get('actual_profit', 0)
+                except:
+                    pass
             
-            # 기본 멘탈 케어
             message = await self.mental_care.generate_profit_mental_care(
                 account_info, position_info, today_pnl, weekly_profit
             )
             
-            # 형식에 맞게 수정
-            if self.openai_client:
-                return f"""GPT는 사용자의 자산 규모, 포지션 상태, 실현·미실현 수익, 최근 수익률 추이, 감정 흐름을 실시간 분석하여
-충동 매매를 억제할 수 있도록 매번 다른 말투로 코멘트를 생성합니다.
-수익 시엔 과열을 막고, 손실 시엔 복구 욕구를 잠재우며, 반복 매매를 피할 수 있도록 설계되어 있습니다.
-어떠한 문장도 하드코딩되어 있지 않으며, 사용자의 상태에 맞는 심리적 설득 효과를 유도합니다.
-
-{message}"""
-            
+            # 따옴표로 감싸서 반환
             return message
             
         except Exception as e:
             self.logger.error(f"멘탈 케어 생성 실패: {e}")
-            return '"선물 거래는 높은 변동성과의 싸움입니다. 감정을 배제하고 시스템을 따르세요. 📊"'
+            return '"시장은 기회로 가득합니다. 차분하게 기다리세요. 📊"'
+    
+    # 보조 계산 함수들
+    def _calculate_ema(self, prices: list, period: int) -> float:
+        """지수이동평균 계산"""
+        if len(prices) < period:
+            return sum(prices) / len(prices)
+        
+        multiplier = 2 / (period + 1)
+        ema = sum(prices[:period]) / period
+        
+        for price in prices[period:]:
+            ema = (price - ema) * multiplier + ema
+        
+        return ema
+    
+    def _calculate_std(self, values: list, mean: float) -> float:
+        """표준편차 계산"""
+        variance = sum((x - mean) ** 2 for x in values) / len(values)
+        return variance ** 0.5
+    
+    def _calculate_stochastic(self, highs: list, lows: list, closes: list, period: int = 14) -> tuple:
+        """스토캐스틱 계산"""
+        if len(closes) < period:
+            return 50, 50
+        
+        lowest_low = min(lows[-period:])
+        highest_high = max(highs[-period:])
+        
+        if highest_high == lowest_low:
+            return 50, 50
+        
+        k = ((closes[-1] - lowest_low) / (highest_high - lowest_low)) * 100
+        
+        # %D는 %K의 3일 이동평균
+        k_values = []
+        for i in range(min(3, len(closes) - period + 1)):
+            idx = -(i + 1)
+            lowest = min(lows[idx-period+1:idx+1])
+            highest = max(highs[idx-period+1:idx+1])
+            if highest != lowest:
+                k_val = ((closes[idx] - lowest) / (highest - lowest)) * 100
+                k_values.append(k_val)
+        
+        d = sum(k_values) / len(k_values) if k_values else k
+        
+        return k, d
+    
+    def _calculate_cci(self, highs: list, lows: list, closes: list, period: int = 20) -> float:
+        """CCI 계산"""
+        if len(closes) < period:
+            return 0
+        
+        typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+        sma = sum(typical_prices[-period:]) / period
+        
+        mean_deviation = sum(abs(tp - sma) for tp in typical_prices[-period:]) / period
+        
+        if mean_deviation == 0:
+            return 0
+        
+        cci = (typical_prices[-1] - sma) / (0.015 * mean_deviation)
+        return cci
+    
+    def _calculate_williams_r(self, highs: list, lows: list, closes: list, period: int = 14) -> float:
+        """Williams %R 계산"""
+        if len(closes) < period:
+            return -50
+        
+        highest_high = max(highs[-period:])
+        lowest_low = min(lows[-period:])
+        
+        if highest_high == lowest_low:
+            return -50
+        
+        williams_r = ((highest_high - closes[-1]) / (highest_high - lowest_low)) * -100
+        return williams_r
+    
+    def _calculate_atr(self, highs: list, lows: list, closes: list, period: int = 14) -> float:
+        """ATR 계산"""
+        if len(closes) < 2:
+            return 0
+        
+        true_ranges = []
+        for i in range(1, len(closes)):
+            high_low = highs[i] - lows[i]
+            high_close = abs(highs[i] - closes[i-1])
+            low_close = abs(lows[i] - closes[i-1])
+            true_ranges.append(max(high_low, high_close, low_close))
+        
+        if len(true_ranges) < period:
+            return sum(true_ranges) / len(true_ranges) if true_ranges else 0
+        
+        atr = sum(true_ranges[:period]) / period
+        
+        for tr in true_ranges[period:]:
+            atr = (atr * (period - 1) + tr) / period
+        
+        return atr
+    
+    def _calculate_adx(self, highs: list, lows: list, closes: list, period: int = 14) -> float:
+        """ADX 계산 (간단 버전)"""
+        if len(closes) < period * 2:
+            return 25  # 중립값
+        
+        # +DI와 -DI 계산 (간단 버전)
+        plus_dm = []
+        minus_dm = []
+        
+        for i in range(1, len(highs)):
+            high_diff = highs[i] - highs[i-1]
+            low_diff = lows[i-1] - lows[i]
+            
+            if high_diff > low_diff and high_diff > 0:
+                plus_dm.append(high_diff)
+                minus_dm.append(0)
+            elif low_diff > high_diff and low_diff > 0:
+                plus_dm.append(0)
+                minus_dm.append(low_diff)
+            else:
+                plus_dm.append(0)
+                minus_dm.append(0)
+        
+        # ATR
+        atr = self._calculate_atr(highs, lows, closes, period)
+        
+        if atr == 0:
+            return 25
+        
+        # DI 계산
+        plus_di = (sum(plus_dm[-period:]) / period) / atr * 100
+        minus_di = (sum(minus_dm[-period:]) / period) / atr * 100
+        
+        # DX 계산
+        di_sum = plus_di + minus_di
+        if di_sum == 0:
+            return 25
+        
+        dx = abs(plus_di - minus_di) / di_sum * 100
+        
+        return dx
+    
+    def _calculate_obv(self, closes: list, volumes: list) -> float:
+        """OBV 계산"""
+        if len(closes) < 2:
+            return 0
+        
+        obv = 0
+        for i in range(1, len(closes)):
+            if closes[i] > closes[i-1]:
+                obv += volumes[i]
+            elif closes[i] < closes[i-1]:
+                obv -= volumes[i]
+        
+        return obv
+    
+    def _calculate_mfi(self, highs: list, lows: list, closes: list, volumes: list, period: int = 14) -> float:
+        """MFI 계산"""
+        if len(closes) < period + 1:
+            return 50
+        
+        typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+        
+        positive_flow = 0
+        negative_flow = 0
+        
+        for i in range(len(typical_prices) - period, len(typical_prices)):
+            if i == 0:
+                continue
+            
+            money_flow = typical_prices[i] * volumes[i]
+            
+            if typical_prices[i] > typical_prices[i-1]:
+                positive_flow += money_flow
+            elif typical_prices[i] < typical_prices[i-1]:
+                negative_flow += money_flow
+        
+        if negative_flow == 0:
+            return 100
+        
+        money_ratio = positive_flow / negative_flow
+        mfi = 100 - (100 / (1 + money_ratio))
+        
+        return mfi
+    
+    def _calculate_vwap(self, highs: list, lows: list, closes: list, volumes: list) -> float:
+        """VWAP 계산"""
+        if not volumes or sum(volumes) == 0:
+            return closes[-1] if closes else 0
+        
+        typical_prices = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+        
+        total_pv = sum(tp * v for tp, v in zip(typical_prices, volumes))
+        total_volume = sum(volumes)
+        
+        return total_pv / total_volume if total_volume > 0 else closes[-1]
+    
+    def _calculate_pivot_points(self, high: float, low: float, close: float) -> dict:
+        """피봇 포인트 계산"""
+        pivot = (high + low + close) / 3
+        
+        return {
+            'pivot': pivot,
+            'r1': 2 * pivot - low,
+            'r2': pivot + (high - low),
+            'r3': high + 2 * (pivot - low),
+            's1': 2 * pivot - high,
+            's2': pivot - (high - low),
+            's3': low - 2 * (high - pivot)
+        }
+    
+    def _calculate_ichimoku(self, highs: list, lows: list) -> dict:
+        """이치모쿠 구름 계산"""
+        def donchian(data, period):
+            if len(data) < period:
+                return (max(data) + min(data)) / 2
+            return (max(data[-period:]) + min(data[-period:])) / 2
+        
+        # 전환선 (9일)
+        tenkan = donchian(highs, 9)
+        
+        # 기준선 (26일)
+        kijun = donchian(highs, 26)
+        
+        # 선행스팬 A
+        senkou_a = (tenkan + kijun) / 2
+        
+        # 선행스팬 B (52일)
+        senkou_b = donchian(highs, 52)
+        
+        return {
+            'tenkan': tenkan,
+            'kijun': kijun,
+            'senkou_a': senkou_a,
+            'senkou_b': senkou_b,
+            'cloud_top': max(senkou_a, senkou_b),
+            'cloud_bottom': min(senkou_a, senkou_b)
+        }
+    
+    def _calculate_parabolic_sar(self, highs: list, lows: list, af: float = 0.02, max_af: float = 0.2) -> float:
+        """파라볼릭 SAR 계산 (간단 버전)"""
+        if len(highs) < 2:
+            return lows[-1] if lows else 0
+        
+        # 초기값
+        sar = lows[0]
+        ep = highs[0]
+        trend = 1  # 1: 상승, -1: 하락
+        
+        for i in range(1, len(highs)):
+            if trend == 1:
+                sar = sar + af * (ep - sar)
+                if highs[i] > ep:
+                    ep = highs[i]
+                    af = min(af + 0.02, max_af)
+                
+                if lows[i] < sar:
+                    trend = -1
+                    sar = ep
+                    ep = lows[i]
+                    af = 0.02
+            else:
+                sar = sar + af * (ep - sar)
+                if lows[i] < ep:
+                    ep = lows[i]
+                    af = min(af + 0.02, max_af)
+                
+                if highs[i] > sar:
+                    trend = 1
+                    sar = ep
+                    ep = highs[i]
+                    af = 0.02
+        
+        return sar
+    
+    def _calculate_keltner_channels(self, highs: list, lows: list, closes: list, period: int = 20, multiplier: float = 2) -> dict:
+        """켈트너 채널 계산"""
+        ema = self._calculate_ema(closes, period)
+        atr = self._calculate_atr(highs, lows, closes, period)
+        
+        return {
+            'upper': ema + (multiplier * atr),
+            'middle': ema,
+            'lower': ema - (multiplier * atr)
+        }
+    
+    def _calculate_supertrend(self, highs: list, lows: list, closes: list, atr: float, multiplier: float = 3) -> dict:
+        """슈퍼트렌드 계산"""
+        if not closes:
+            return {'trend': 0, 'value': 0}
+        
+        hl_avg = (highs[-1] + lows[-1]) / 2
+        
+        upper_band = hl_avg + (multiplier * atr)
+        lower_band = hl_avg - (multiplier * atr)
+        
+        # 추세 결정
+        if closes[-1] > upper_band:
+            trend = 1  # 상승
+            value = lower_band
+        elif closes[-1] < lower_band:
+            trend = -1  # 하락
+            value = upper_band
+        else:
+            trend = 0  # 중립
+            value = hl_avg
+        
+        return {
+            'trend': trend,
+            'value': value,
+            'upper': upper_band,
+            'lower': lower_band
+        }
+    
+    def _score_indicators(self, extended: dict, current_price: float) -> dict:
+        """지표별 중요도 점수 계산"""
+        scores = {}
+        
+        # MACD
+        if 'macd' in extended and 'macd_signal' in extended:
+            if extended['macd'] > extended['macd_signal']:
+                scores['MACD'] = 1
+            else:
+                scores['MACD'] = -1
+        
+        # 볼린저 밴드
+        if all(k in extended for k in ['bb_upper', 'bb_lower']):
+            if current_price > extended['bb_upper']:
+                scores['볼린저밴드'] = -1  # 과매수
+            elif current_price < extended['bb_lower']:
+                scores['볼린저밴드'] = 1  # 과매도
+        
+        # 스토캐스틱
+        if 'stoch_k' in extended:
+            if extended['stoch_k'] < 20:
+                scores['스토캐스틱'] = 1  # 과매도
+            elif extended['stoch_k'] > 80:
+                scores['스토캐스틱'] = -1  # 과매수
+        
+        # CCI
+        if 'cci' in extended:
+            if extended['cci'] < -100:
+                scores['CCI'] = 1
+            elif extended['cci'] > 100:
+                scores['CCI'] = -1
+        
+        # MFI
+        if 'mfi' in extended:
+            if extended['mfi'] < 20:
+                scores['MFI'] = 1  # 과매도
+            elif extended['mfi'] > 80:
+                scores['MFI'] = -1  # 과매수
+        
+        # ADX (추세 강도)
+        if 'adx' in extended and extended['adx'] > 25:
+            scores['ADX'] = 2  # 강한 추세
+        
+        # 이치모쿠
+        if 'ichimoku' in extended:
+            if current_price > extended['ichimoku']['cloud_top']:
+                scores['이치모쿠'] = 1
+            elif current_price < extended['ichimoku']['cloud_bottom']:
+                scores['이치모쿠'] = -1
+        
+        # 슈퍼트렌드
+        if 'supertrend' in extended:
+            scores['슈퍼트렌드'] = extended['supertrend']['trend']
+        
+        return scores
     
     def _save_prediction(self, indicators: dict):
         """예측 저장"""
