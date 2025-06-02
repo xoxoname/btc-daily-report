@@ -241,15 +241,18 @@ class BitgetClient:
             logger.error(f"최근 체결 주문 조회 실패: {e}")
             return []
     
-    async def get_plan_orders(self, symbol: str = None, plan_type: str = 'normal') -> List[Dict]:
+    async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
         """플랜 주문(예약 주문) 조회 (V2 API) - planType 파라미터 추가"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/order/orders-plan-pending"
         params = {
             'symbol': symbol,
-            'productType': 'USDT-FUTURES',
-            'planType': plan_type  # normal, profit_loss
+            'productType': 'USDT-FUTURES'
         }
+        
+        # planType이 지정된 경우에만 추가
+        if plan_type:
+            params['planType'] = plan_type  # profit_loss, profit_plan, loss_plan
         
         try:
             response = await self._request('GET', endpoint, params=params)
@@ -303,20 +306,27 @@ class BitgetClient:
         try:
             symbol = symbol or self.config.symbol
             
-            # 1. 일반 플랜 주문 조회 (planType=normal)
-            plan_orders = await self.get_plan_orders(symbol, plan_type='normal')
+            # 1. 일반 플랜 주문 조회 (planType 없이)
+            plan_orders = await self.get_plan_orders(symbol)
             
-            # 2. TP/SL 주문 조회 (profit-loss 타입)
+            # 2. TP/SL 주문 조회 (profit_loss 타입)
             tp_sl_orders = await self.get_plan_orders(symbol, plan_type='profit_loss')
             
-            # 3. 통합 결과
+            # 3. 중복 제거 (일반 조회에 TP/SL이 포함될 수 있음)
+            tp_sl_ids = {order.get('planOrderId', order.get('orderId', '')) for order in tp_sl_orders}
+            filtered_plan_orders = [
+                order for order in plan_orders 
+                if order.get('planOrderId', order.get('orderId', '')) not in tp_sl_ids
+            ]
+            
+            # 4. 통합 결과
             result = {
-                'plan_orders': plan_orders,
+                'plan_orders': filtered_plan_orders,
                 'tp_sl_orders': tp_sl_orders,
-                'total_count': len(plan_orders) + len(tp_sl_orders)
+                'total_count': len(filtered_plan_orders) + len(tp_sl_orders)
             }
             
-            logger.info(f"전체 예약 주문: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
+            logger.info(f"전체 예약 주문: 일반 {len(filtered_plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
             
             return result
             
