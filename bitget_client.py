@@ -285,7 +285,7 @@ class BitgetClient:
             return []
     
     async def get_plan_orders_v2_pending(self, symbol: str = None) -> List[Dict]:
-        """V2 API로 대기중인 전체 주문 조회하여 예약 주문 필터링 - 개선된 버전"""
+        """V2 API로 대기중인 전체 주문 조회하여 예약 주문 필터링 - NoneType 오류 수정"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -299,20 +299,42 @@ class BitgetClient:
             response = await self._request('GET', endpoint, params=params)
             logger.info(f"V2 대기 주문 조회 응답: {response}")
             
-            # 응답 검증 강화
+            # 🔥 NoneType 오류 수정 - 강화된 null 체크
+            if response is None:
+                logger.warning("V2 대기 주문 조회 응답이 None입니다")
+                return []
+            
             if not response:
-                logger.warning("V2 대기 주문 조회 응답이 None 또는 빈 값입니다")
+                logger.warning("V2 대기 주문 조회 응답이 빈 값입니다")
                 return []
             
             # entrustedList에서 주문 목록 추출
             orders = []
             if isinstance(response, dict):
-                if 'entrustedList' in response and response['entrustedList']:
-                    orders = response['entrustedList']
-                elif 'data' in response and response['data']:
-                    orders = response['data']
+                if 'entrustedList' in response:
+                    orders_raw = response['entrustedList']
+                    # 🔥 entrustedList가 None인 경우 체크
+                    if orders_raw is None:
+                        logger.info("V2 응답의 entrustedList가 None입니다")
+                        return []
+                    elif isinstance(orders_raw, list):
+                        orders = orders_raw
+                    else:
+                        logger.warning(f"entrustedList가 예상과 다른 타입입니다: {type(orders_raw)}")
+                        return []
+                elif 'data' in response:
+                    orders_raw = response['data']
+                    # 🔥 data가 None인 경우 체크
+                    if orders_raw is None:
+                        logger.info("V2 응답의 data가 None입니다")
+                        return []
+                    elif isinstance(orders_raw, list):
+                        orders = orders_raw
+                    else:
+                        logger.warning(f"data가 예상과 다른 타입입니다: {type(orders_raw)}")
+                        return []
                 else:
-                    logger.info("V2 응답에 entrustedList가 없거나 비어있음")
+                    logger.info("V2 응답에 entrustedList나 data가 없습니다")
                     return []
             elif isinstance(response, list):
                 orders = response
@@ -321,6 +343,10 @@ class BitgetClient:
                 return []
             
             # orders가 None이거나 비어있는 경우 체크
+            if orders is None:
+                logger.info("V2에서 조회된 주문 목록이 None입니다")
+                return []
+            
             if not orders:
                 logger.info("V2에서 조회된 주문이 없습니다")
                 return []
@@ -328,11 +354,17 @@ class BitgetClient:
             # 예약 주문(트리거가 있는 주문) 및 TP/SL이 있는 주문 필터링
             plan_orders = []
             for order in orders:
-                if not order:  # None 체크
+                # 🔥 각 주문에 대해서도 None 체크
+                if order is None:
+                    logger.warning("주문 데이터가 None입니다. 스킵")
+                    continue
+                    
+                if not isinstance(order, dict):
+                    logger.warning(f"주문 데이터가 dict가 아닙니다: {type(order)}. 스킵")
                     continue
                     
                 is_plan_order = False
-                order_type = order.get('orderType', '').lower()
+                order_type = order.get('orderType', '').lower() if order.get('orderType') else ''
                 
                 # 1. 기본 트리거 조건들
                 if (order.get('triggerPrice') or 
@@ -376,31 +408,38 @@ class BitgetClient:
         # 1. V1 일반 예약 주문
         try:
             v1_orders = await self.get_plan_orders_v1(symbol)
-            all_orders.extend(v1_orders)
-            logger.info(f"V1 일반 예약 주문: {len(v1_orders)}건")
-        except:
-            pass
+            if v1_orders:  # None 체크 추가
+                all_orders.extend(v1_orders)
+                logger.info(f"V1 일반 예약 주문: {len(v1_orders)}건")
+        except Exception as e:
+            logger.warning(f"V1 일반 예약 주문 조회 실패: {e}")
         
         # 2. V1 TP/SL 주문
         try:
             v1_tp_sl = await self.get_plan_orders_v1(symbol, 'profit_loss')
-            all_orders.extend(v1_tp_sl)
-            logger.info(f"V1 TP/SL 주문: {len(v1_tp_sl)}건")
-        except:
-            pass
+            if v1_tp_sl:  # None 체크 추가
+                all_orders.extend(v1_tp_sl)
+                logger.info(f"V1 TP/SL 주문: {len(v1_tp_sl)}건")
+        except Exception as e:
+            logger.warning(f"V1 TP/SL 주문 조회 실패: {e}")
         
         # 3. V2 대기 주문에서 트리거 주문 찾기 (개선된 로직)
         try:
             v2_trigger = await self.get_plan_orders_v2_pending(symbol)
-            all_orders.extend(v2_trigger)
-            logger.info(f"V2 트리거 주문: {len(v2_trigger)}건")
-        except:
-            pass
+            if v2_trigger:  # None 체크 추가
+                all_orders.extend(v2_trigger)
+                logger.info(f"V2 트리거 주문: {len(v2_trigger)}건")
+        except Exception as e:
+            logger.warning(f"V2 트리거 주문 조회 실패: {e}")
         
         # 중복 제거 (더 정확한 ID 매칭)
         seen = set()
         unique_orders = []
         for order in all_orders:
+            # 🔥 각 주문 None 체크
+            if order is None:
+                continue
+                
             # 여러 ID 필드 확인
             order_id = (order.get('orderId') or 
                        order.get('planOrderId') or 
@@ -423,10 +462,10 @@ class BitgetClient:
             
             # plan_type이 지정되면 필터링
             if plan_type == 'profit_loss':
-                filtered = [o for o in all_orders if o.get('planType') == 'profit_loss' or o.get('isPlan') == 'profit_loss']
+                filtered = [o for o in all_orders if o and (o.get('planType') == 'profit_loss' or o.get('isPlan') == 'profit_loss')]
                 return filtered
             elif plan_type:
-                filtered = [o for o in all_orders if o.get('planType') == plan_type]
+                filtered = [o for o in all_orders if o and o.get('planType') == plan_type]
                 return filtered
             
             return all_orders
@@ -448,6 +487,10 @@ class BitgetClient:
             plan_orders = []
             
             for order in all_orders:
+                # 🔥 None 체크 추가
+                if order is None:
+                    continue
+                    
                 is_tp_sl = False
                 
                 # TP/SL 분류 조건들
