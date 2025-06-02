@@ -245,16 +245,21 @@ class BitgetClient:
         """플랜 주문(예약 주문) 조회 - V2 API 수정된 버전"""
         symbol = symbol or self.config.symbol
         
-        # planType별로 다른 엔드포인트 사용
+        # V2 API의 올바른 엔드포인트 사용
         if plan_type == 'profit_loss':
-            endpoint = "/api/v2/mix/order/profit-loss-orders"
+            # TP/SL 주문은 포지션과 함께 조회
+            endpoint = "/api/v2/mix/position/all-position"
+            params = {
+                'productType': 'USDT-FUTURES',
+                'marginCoin': 'USDT'
+            }
         else:
-            endpoint = "/api/v2/mix/order/plan-orders-pending"
-        
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES'
-        }
+            # 일반 예약 주문은 pending orders로 조회
+            endpoint = "/api/v2/mix/order/orders-pending"
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES'
+            }
         
         try:
             response = await self._request('GET', endpoint, params=params)
@@ -284,20 +289,23 @@ class BitgetClient:
     
     async def get_plan_orders_v1(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
         """플랜 주문 조회 - V1 API 폴백"""
+        # V1 API는 다른 심볼 형식을 사용
+        # BTCUSDT -> BTCUSDT_UMCBL
         symbol = symbol or self.config.symbol
+        v1_symbol = f"{symbol}_UMCBL"
+        
         endpoint = "/api/mix/v1/plan/currentPlan"
         
         params = {
-            'symbol': symbol,
-            'productType': 'umcbl'  # V1 API 파라미터
+            'symbol': v1_symbol,
+            'productType': 'umcbl'
         }
         
         if plan_type == 'profit_loss':
             params['isPlan'] = 'profit_loss'
         
         try:
-            # V1 API는 다른 서명 방식 사용
-            response = await self._request('GET', endpoint.replace('/v2/', '/v1/'), params=params)
+            response = await self._request('GET', endpoint, params=params)
             logger.debug(f"플랜 주문 V1 조회 응답: {response}")
             
             orders = response if isinstance(response, list) else []
@@ -310,8 +318,23 @@ class BitgetClient:
     async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
         """플랜 주문(예약 주문) 조회 - 메인 함수"""
         try:
-            # V2 API 시도
-            return await self.get_plan_orders_v2(symbol, plan_type)
+            # 먼저 일반 주문 조회로 시도
+            pending_orders = await self.get_orders(symbol)
+            
+            # 예약 주문만 필터링
+            plan_orders = []
+            for order in pending_orders:
+                # 트리거 가격이 있으면 예약 주문
+                if order.get('triggerPrice') or order.get('planType'):
+                    plan_orders.append(order)
+            
+            if plan_orders:
+                logger.info(f"일반 주문 조회에서 예약 주문 {len(plan_orders)}건 발견")
+                return plan_orders
+            
+            # 없으면 V1 API 시도
+            return await self.get_plan_orders_v1(symbol, plan_type)
+            
         except Exception as e:
             logger.error(f"플랜 주문 조회 실패, 빈 리스트 반환: {e}")
             return []
