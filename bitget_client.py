@@ -241,13 +241,14 @@ class BitgetClient:
             logger.error(f"최근 체결 주문 조회 실패: {e}")
             return []
     
-    async def get_plan_orders(self, symbol: str = None, status: str = 'plan') -> List[Dict]:
-        """플랜 주문(예약 주문) 조회 (V2 API)"""
+    async def get_plan_orders(self, symbol: str = None, plan_type: str = 'normal') -> List[Dict]:
+        """플랜 주문(예약 주문) 조회 (V2 API) - planType 파라미터 추가"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/order/orders-plan-pending"
         params = {
             'symbol': symbol,
-            'productType': 'USDT-FUTURES'
+            'productType': 'USDT-FUTURES',
+            'planType': plan_type  # normal, profit_loss
         }
         
         try:
@@ -302,24 +303,11 @@ class BitgetClient:
         try:
             symbol = symbol or self.config.symbol
             
-            # 1. 일반 플랜 주문 조회
-            plan_orders = await self.get_plan_orders(symbol)
+            # 1. 일반 플랜 주문 조회 (planType=normal)
+            plan_orders = await self.get_plan_orders(symbol, plan_type='normal')
             
             # 2. TP/SL 주문 조회 (profit-loss 타입)
-            tp_sl_endpoint = "/api/v2/mix/order/orders-plan-pending"
-            tp_sl_params = {
-                'symbol': symbol,
-                'productType': 'USDT-FUTURES',
-                'planType': 'profit_loss'  # TP/SL 주문
-            }
-            
-            tp_sl_orders = []
-            try:
-                tp_sl_response = await self._request('GET', tp_sl_endpoint, params=tp_sl_params)
-                tp_sl_orders = tp_sl_response if isinstance(tp_sl_response, list) else []
-                logger.info(f"TP/SL 주문 조회: {len(tp_sl_orders)}건")
-            except Exception as e:
-                logger.warning(f"TP/SL 주문 조회 실패: {e}")
+            tp_sl_orders = await self.get_plan_orders(symbol, plan_type='profit_loss')
             
             # 3. 통합 결과
             result = {
