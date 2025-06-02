@@ -55,10 +55,15 @@ class MirrorTradingSystem:
         # TP/SL 주문 추적
         self.tp_sl_orders: Dict[str, Dict] = {}  # 포지션 ID: {tp: [주문ID], sl: [주문ID]}
         
+        # 주문 체결 추적 (중복 미러링 방지용)
+        self.processed_orders: Set[str] = set()  # 이미 처리된 주문 ID들
+        self.last_order_check = datetime.now()
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
-        self.CHECK_INTERVAL = 3  # 3초마다 체크
+        self.CHECK_INTERVAL = 2  # 2초마다 체크 (더 빠르게)
+        self.ORDER_CHECK_INTERVAL = 1  # 1초마다 주문 체결 체크 (신규 추가)
         self.SYNC_CHECK_INTERVAL = 30  # 30초마다 동기화 체크
         self.MAX_RETRIES = 3
         self.MIN_POSITION_SIZE = 0.00001  # BTC
@@ -73,16 +78,18 @@ class MirrorTradingSystem:
             'partial_closes': 0,
             'full_closes': 0,
             'total_volume': 0.0,
+            'order_mirrors': 0,  # 주문 체결로 인한 미러링 횟수 (신규)
+            'position_mirrors': 0,  # 포지션 감지로 인한 미러링 횟수 (신규)
             'errors': []
         }
         
         self.monitoring = True
-        self.logger.info("미러 트레이딩 시스템 초기화 완료")
+        self.logger.info("🔥 실시간 주문 체결 감지 미러 트레이딩 시스템 초기화 완료")
     
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🚀 미러 트레이딩 시스템 시작")
+            self.logger.info("🚀 실시간 주문 체결 감지 미러 트레이딩 시스템 시작")
             
             # 초기 포지션 기록 (복제하지 않을 기존 포지션)
             await self._record_startup_positions()
@@ -90,11 +97,12 @@ class MirrorTradingSystem:
             # 초기 계정 상태 출력
             await self._log_account_status()
             
-            # 모니터링 태스크 시작
+            # 모니터링 태스크 시작 (주문 체결 감지 추가)
             tasks = [
-                self.monitor_positions(),
-                self.monitor_sync_status(),
-                self.generate_daily_reports()
+                self.monitor_order_fills(),      # 🔥 신규: 실시간 주문 체결 감지
+                self.monitor_positions(),        # 기존: 포지션 모니터링
+                self.monitor_sync_status(),      # 기존: 동기화 상태 모니터링
+                self.generate_daily_reports()    # 기존: 일일 리포트
             ]
             
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -106,6 +114,173 @@ class MirrorTradingSystem:
                 f"오류: {str(e)[:200]}"
             )
             raise
+    
+    async def monitor_order_fills(self):
+        """🔥 신규: 실시간 주문 체결 감지 - 가장 중요한 기능"""
+        self.logger.info("🔥 실시간 주문 체결 감지 시작 - 예약 주문 체결 즉시 미러링")
+        consecutive_errors = 0
+        
+        while self.monitoring:
+            try:
+                # 최근 1분간 체결된 주문 조회
+                filled_orders = await self.bitget.get_recent_filled_orders(
+                    symbol=self.SYMBOL, 
+                    minutes=1
+                )
+                
+                new_orders_count = 0
+                for order in filled_orders:
+                    order_id = order.get('orderId', order.get('id', ''))
+                    if not order_id:
+                        continue
+                    
+                    # 이미 처리된 주문은 스킵
+                    if order_id in self.processed_orders:
+                        continue
+                    
+                    # 신규 진입 주문만 처리 (reduce_only가 아닌 것)
+                    reduce_only = order.get('reduceOnly', 'false')
+                    if reduce_only == 'true' or reduce_only is True:
+                        continue
+                    
+                    # 새로운 진입 주문 감지
+                    self.logger.info(f"🆕 새로운 주문 체결 감지: {order_id}")
+                    self.logger.info(f"주문 상세: {order.get('side')} {order.get('size')} @ ${order.get('fillPrice', order.get('price', 0))}")
+                    
+                    # 주문으로부터 미러링 실행
+                    await self._process_filled_order(order)
+                    
+                    # 처리 완료 표시
+                    self.processed_orders.add(order_id)
+                    new_orders_count += 1
+                
+                if new_orders_count > 0:
+                    self.logger.info(f"🔥 {new_orders_count}개의 새로운 주문 체결을 처리했습니다")
+                
+                # 오래된 주문 ID 정리 (메모리 절약)
+                if len(self.processed_orders) > 1000:
+                    # 최근 500개만 유지
+                    recent_orders = list(self.processed_orders)[-500:]
+                    self.processed_orders = set(recent_orders)
+                
+                consecutive_errors = 0
+                await asyncio.sleep(self.ORDER_CHECK_INTERVAL)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                self.logger.error(f"주문 체결 감지 중 오류 (연속 {consecutive_errors}회): {e}")
+                
+                if consecutive_errors >= 5:
+                    await self.telegram.send_message(
+                        f"⚠️ 주문 체결 감지 시스템 오류\n"
+                        f"연속 {consecutive_errors}회 실패\n"
+                        f"오류: {str(e)[:200]}"
+                    )
+                
+                await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
+    
+    async def _process_filled_order(self, order: Dict):
+        """체결된 주문으로부터 미러링 실행"""
+        try:
+            order_id = order.get('orderId', order.get('id', ''))
+            side = order.get('side', '').lower()  # buy/sell
+            size = float(order.get('size', 0))
+            fill_price = float(order.get('fillPrice', order.get('price', 0)))
+            
+            self.logger.info(f"📊 체결 주문 분석: {order_id}")
+            self.logger.info(f"  방향: {side}")
+            self.logger.info(f"  수량: {size}")
+            self.logger.info(f"  체결가: ${fill_price}")
+            
+            # Bitget의 buy/sell을 long/short로 변환
+            position_side = 'long' if side == 'buy' else 'short'
+            
+            # 가상의 포지션 데이터 생성 (실제 포지션 API 형식에 맞춤)
+            synthetic_position = {
+                'symbol': self.SYMBOL,
+                'holdSide': position_side,
+                'total': str(size),
+                'openPriceAvg': str(fill_price),
+                'markPrice': str(fill_price),
+                'marginSize': '0',  # 실제 계산 필요
+                'leverage': '10',   # 기본값, 실제로는 계정에서 가져와야 함
+                'marginMode': 'crossed',
+                'unrealizedPL': '0'
+            }
+            
+            # 실제 레버리지 조회 시도
+            try:
+                account = await self.bitget.get_account_info()
+                if account:
+                    # 계정에서 현재 레버리지 정보 추출
+                    leverage = account.get('crossMarginLeverage', 10)
+                    synthetic_position['leverage'] = str(leverage)
+                    
+                    # 마진 계산 (notional value / leverage)
+                    notional = size * fill_price
+                    margin = notional / int(leverage)
+                    synthetic_position['marginSize'] = str(margin)
+                    
+                    self.logger.info(f"  레버리지: {leverage}x")
+                    self.logger.info(f"  마진: ${margin:.2f}")
+            except Exception as e:
+                self.logger.warning(f"레버리지 조회 실패, 기본값 사용: {e}")
+            
+            # 포지션 ID 생성
+            pos_id = f"{self.SYMBOL}_{position_side}_{fill_price}"
+            
+            # 시작 시 존재했던 포지션이면 무시
+            if pos_id in self.startup_positions:
+                self.logger.info(f"기존 포지션이므로 미러링 제외: {pos_id}")
+                return
+            
+            # 이미 미러링된 포지션인지 확인
+            if pos_id in self.mirrored_positions:
+                self.logger.info(f"이미 미러링된 포지션: {pos_id}")
+                return
+            
+            self.logger.info(f"🎯 실시간 미러링 실행: {pos_id}")
+            
+            # 미러링 실행
+            result = await self._mirror_new_position(synthetic_position)
+            
+            if result.success:
+                self.mirrored_positions[pos_id] = await self._create_position_info(synthetic_position)
+                self.position_sizes[pos_id] = size
+                self.daily_stats['successful_mirrors'] += 1
+                self.daily_stats['order_mirrors'] += 1  # 주문 기반 미러링 카운트
+                
+                await self.telegram.send_message(
+                    f"⚡ 실시간 주문 체결 미러링 성공\n"
+                    f"주문 ID: {order_id}\n"
+                    f"방향: {position_side}\n"
+                    f"체결가: ${fill_price:,.2f}\n"
+                    f"수량: {size}\n"
+                    f"마진: ${result.gate_data.get('margin', 0):,.2f}"
+                )
+                
+                self.logger.info(f"✅ 실시간 미러링 성공: {pos_id}")
+            else:
+                self.failed_mirrors.append(result)
+                self.daily_stats['failed_mirrors'] += 1
+                
+                await self.telegram.send_message(
+                    f"❌ 실시간 주문 체결 미러링 실패\n"
+                    f"주문 ID: {order_id}\n"
+                    f"오류: {result.error}"
+                )
+                
+                self.logger.error(f"❌ 실시간 미러링 실패: {result.error}")
+            
+            self.daily_stats['total_mirrored'] += 1
+            
+        except Exception as e:
+            self.logger.error(f"체결 주문 처리 중 오류: {e}")
+            self.daily_stats['errors'].append({
+                'time': datetime.now().isoformat(),
+                'error': str(e),
+                'order_id': order.get('orderId', 'unknown')
+            })
     
     async def _record_startup_positions(self):
         """시작 시 존재하는 포지션 기록"""
@@ -123,6 +298,18 @@ class MirrorTradingSystem:
                     self.position_sizes[pos_id] = float(pos.get('total', 0))
                     
                     self.logger.info(f"기존 포지션 기록 (복제 제외): {pos_id}")
+            
+            # 기존 주문 ID들도 기록 (중복 미러링 방지)
+            try:
+                recent_orders = await self.bitget.get_recent_filled_orders(self.SYMBOL, minutes=10)
+                for order in recent_orders:
+                    order_id = order.get('orderId', order.get('id', ''))
+                    if order_id:
+                        self.processed_orders.add(order_id)
+                
+                self.logger.info(f"기존 주문 {len(recent_orders)}건 기록 (중복 미러링 방지)")
+            except Exception as e:
+                self.logger.warning(f"기존 주문 기록 실패: {e}")
             
             self.logger.info(f"총 {len(self.startup_positions)}개의 기존 포지션이 복제에서 제외됩니다")
             
@@ -152,19 +339,21 @@ class MirrorTradingSystem:
             )
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시작\n\n"
+                f"🔥 실시간 주문 체결 감지 미러 트레이딩 시작\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}\n\n"
-                f"📊 기존 포지션: {len(self.startup_positions)}개 (복제 제외)"
+                f"📊 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
+                f"⚡ 주요 개선: 예약 주문 체결 즉시 미러링\n"
+                f"🎯 감지 주기: {self.ORDER_CHECK_INTERVAL}초마다 주문 체결 확인"
             )
             
         except Exception as e:
             self.logger.error(f"계정 상태 조회 실패: {e}")
     
     async def monitor_positions(self):
-        """포지션 모니터링 메인 루프"""
-        self.logger.info("포지션 모니터링 시작")
+        """포지션 모니터링 메인 루프 (기존 기능 유지)"""
+        self.logger.info("포지션 모니터링 시작 (주문 체결 감지와 병행)")
         consecutive_errors = 0
         
         while self.monitoring:
@@ -194,11 +383,11 @@ class MirrorTradingSystem:
                 
             except Exception as e:
                 consecutive_errors += 1
-                self.logger.error(f"모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
+                self.logger.error(f"포지션 모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
                 
                 if consecutive_errors >= 5:
                     await self.telegram.send_message(
-                        f"⚠️ 미러 트레이딩 모니터링 오류\n"
+                        f"⚠️ 포지션 모니터링 오류\n"
                         f"연속 {consecutive_errors}회 실패\n"
                         f"오류: {str(e)[:200]}"
                     )
@@ -206,7 +395,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.CHECK_INTERVAL * 2)
     
     async def _process_position(self, bitget_pos: Dict):
-        """포지션 처리 (신규/업데이트)"""
+        """포지션 처리 (신규/업데이트) - 주문 체결로 이미 처리된 경우 스킵"""
         try:
             pos_id = self._generate_position_id(bitget_pos)
             
@@ -216,32 +405,45 @@ class MirrorTradingSystem:
             
             current_size = float(bitget_pos.get('total', 0))
             
-            # 새로운 포지션
+            # 새로운 포지션이지만 주문 체결로 이미 처리되었을 수 있음
             if pos_id not in self.mirrored_positions:
-                self.logger.info(f"🆕 새로운 포지션 감지: {pos_id}")
-                result = await self._mirror_new_position(bitget_pos)
+                # 주문 체결 감지로 이미 처리되었는지 확인
+                # (실시간 주문 체결 감지가 더 빠르므로 대부분 이미 처리됨)
                 
-                if result.success:
-                    self.mirrored_positions[pos_id] = await self._create_position_info(bitget_pos)
-                    self.position_sizes[pos_id] = current_size
-                    self.daily_stats['successful_mirrors'] += 1
+                self.logger.info(f"🔍 포지션 감지: {pos_id} (주문 체결로 이미 처리되었을 수 있음)")
+                
+                # 잠시 대기 후 다시 확인 (주문 체결 처리 시간 여유)
+                await asyncio.sleep(2)
+                
+                if pos_id not in self.mirrored_positions:
+                    self.logger.info(f"🆕 포지션 기반 미러링 실행: {pos_id}")
+                    result = await self._mirror_new_position(bitget_pos)
                     
-                    await self.telegram.send_message(
-                        f"✅ 포지션 미러링 성공\n"
-                        f"방향: {bitget_pos.get('holdSide', '')}\n"
-                        f"진입가: ${float(bitget_pos.get('openPriceAvg', 0)):,.2f}\n"
-                        f"마진: ${result.gate_data.get('margin', 0):,.2f}"
-                    )
+                    if result.success:
+                        self.mirrored_positions[pos_id] = await self._create_position_info(bitget_pos)
+                        self.position_sizes[pos_id] = current_size
+                        self.daily_stats['successful_mirrors'] += 1
+                        self.daily_stats['position_mirrors'] += 1  # 포지션 기반 미러링 카운트
+                        
+                        await self.telegram.send_message(
+                            f"✅ 포지션 기반 미러링 성공\n"
+                            f"방향: {bitget_pos.get('holdSide', '')}\n"
+                            f"진입가: ${float(bitget_pos.get('openPriceAvg', 0)):,.2f}\n"
+                            f"마진: ${result.gate_data.get('margin', 0):,.2f}\n"
+                            f"📝 주문 체결 감지에서 누락된 포지션"
+                        )
+                    else:
+                        self.failed_mirrors.append(result)
+                        self.daily_stats['failed_mirrors'] += 1
+                        
+                        await self.telegram.send_message(
+                            f"❌ 포지션 기반 미러링 실패\n"
+                            f"오류: {result.error}"
+                        )
+                    
+                    self.daily_stats['total_mirrored'] += 1
                 else:
-                    self.failed_mirrors.append(result)
-                    self.daily_stats['failed_mirrors'] += 1
-                    
-                    await self.telegram.send_message(
-                        f"❌ 포지션 미러링 실패\n"
-                        f"오류: {result.error}"
-                    )
-                
-                self.daily_stats['total_mirrored'] += 1
+                    self.logger.info(f"✅ 이미 주문 체결로 처리된 포지션: {pos_id}")
                 
             # 기존 포지션 업데이트 확인
             else:
@@ -747,11 +949,13 @@ class MirrorTradingSystem:
                 success_rate = (self.daily_stats['successful_mirrors'] / 
                               self.daily_stats['total_mirrored']) * 100
             
-            report = f"""📊 일일 미러 트레이딩 리포트
+            report = f"""📊 일일 실시간 미러 트레이딩 리포트
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
-📈 미러링 통계
+🔥 실시간 감지 성과
+- 주문 체결 기반: {self.daily_stats['order_mirrors']}회
+- 포지션 기반: {self.daily_stats['position_mirrors']}회
 - 총 시도: {self.daily_stats['total_mirrored']}회
 - 성공: {self.daily_stats['successful_mirrors']}회
 - 실패: {self.daily_stats['failed_mirrors']}회
@@ -769,6 +973,11 @@ class MirrorTradingSystem:
 🔄 현재 미러링 포지션
 - 활성: {len(self.mirrored_positions)}개
 - 실패 기록: {len(self.failed_mirrors)}건
+
+⚡ 시스템 최적화
+- 주문 체결 감지: {self.ORDER_CHECK_INTERVAL}초마다
+- 포지션 모니터링: {self.CHECK_INTERVAL}초마다
+- 처리된 주문 수: {len(self.processed_orders)}건
 
 """
             
@@ -795,6 +1004,8 @@ class MirrorTradingSystem:
             'partial_closes': 0,
             'full_closes': 0,
             'total_volume': 0.0,
+            'order_mirrors': 0,
+            'position_mirrors': 0,
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -827,9 +1038,9 @@ class MirrorTradingSystem:
         try:
             final_report = await self._create_daily_report()
             await self.telegram.send_message(
-                f"🛑 미러 트레이딩 종료\n\n{final_report}"
+                f"🛑 실시간 미러 트레이딩 종료\n\n{final_report}"
             )
         except:
             pass
         
-        self.logger.info("미러 트레이딩 시스템 중지")
+        self.logger.info("실시간 미러 트레이딩 시스템 중지")
