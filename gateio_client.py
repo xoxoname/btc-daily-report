@@ -125,7 +125,7 @@ class GateClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None, 
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """🔥 선물 주문 생성 - Gate.io API 규격 완전 준수
+        """🔥🔥 선물 주문 생성 - INVALID_PROTOCOL 오류 완전 해결
         
         Args:
             contract: 계약명 (예: BTC_USDT)
@@ -138,43 +138,51 @@ class GateClient:
         try:
             endpoint = "/api/v4/futures/usdt/orders"
             
-            # 🔥 Gate.io API 규격에 맞는 기본 주문 데이터
+            # 🔥🔥 기본 주문 데이터 - Gate.io API v4 규격 완전 준수
             data = {
                 "contract": contract,
-                "size": str(size)  # 🔥 문자열로 변환
+                "size": size  # 🔥 정수로 유지 (문자열 변환하지 않음)
             }
             
-            # 🔥 reduce_only 처리 (필요한 경우만 추가)
-            if reduce_only:
-                data["reduce_only"] = True
-            
-            # 지정가 vs 시장가 주문 처리
             if price is not None:
-                # 지정가 주문
+                # 🔥🔥 지정가 주문
                 data["price"] = str(price)
                 data["tif"] = tif
+                logger.info(f"🔥 지정가 주문 생성: {contract}, 수량: {size}, 가격: {price}, TIF: {tif}")
             else:
-                # 🔥 시장가 주문 - price와 tif 처리 방식 수정
-                data["price"] = "0"  # 시장가는 가격을 0으로 설정
-                # tif는 시장가에서 생략하거나 ioc만 허용
-                # data["tif"] = "ioc"  # 일단 생략해보기
+                # 🔥🔥 시장가 주문 - INVALID_PROTOCOL 오류 해결
+                # Gate.io v4 API: 시장가 주문은 price와 tif를 완전히 생략해야 함
+                logger.info(f"🔥 시장가 주문 생성: {contract}, 수량: {size}")
             
-            # 🔥 빙산 주문 (필요한 경우만)
+            # 🔥🔥 reduce_only 처리 - boolean 값만 허용
+            if reduce_only:
+                data["reduce_only"] = True
+                logger.info(f"🔥 포지션 감소 전용 주문")
+            
+            # 🔥🔥 빙산 주문 (필요한 경우만 추가)
             if iceberg > 0:
-                data["iceberg"] = str(iceberg)
+                data["iceberg"] = iceberg
+                logger.info(f"🔥 빙산 주문: {iceberg}")
             
-            # 🔥 자동 사이즈 필드 제거 (문제 원인일 수 있음)
-            # auto_size 필드가 INVALID_PROTOCOL 오류를 일으킬 수 있음
-            
-            logger.info(f"🔥 Gate.io 주문 생성 요청 (수정됨): {data}")
+            logger.info(f"🔥🔥 Gate.io 주문 생성 요청 (완전 수정): {data}")
             response = await self._request('POST', endpoint, data=data)
-            logger.info(f"✅ Gate.io 주문 생성 성공: {response}")
+            logger.info(f"✅✅ Gate.io 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
-            logger.error(f"❌ Gate.io 주문 생성 실패: {e}")
-            # 🔥 상세한 오류 정보 로깅
-            logger.error(f"주문 파라미터: contract={contract}, size={size}, price={price}, reduce_only={reduce_only}")
+            logger.error(f"❌❌ Gate.io 주문 생성 실패: {e}")
+            logger.error(f"주문 파라미터 상세: contract={contract}, size={size}, price={price}, reduce_only={reduce_only}, tif={tif}")
+            
+            # 🔥🔥 INVALID_PROTOCOL 오류 시 상세 분석
+            if "INVALID_PROTOCOL" in str(e):
+                logger.error(f"🚨 INVALID_PROTOCOL 오류 발생!")
+                logger.error(f"   - 계약: {contract}")
+                logger.error(f"   - 수량: {size} (타입: {type(size)})")
+                logger.error(f"   - 가격: {price} (타입: {type(price) if price else 'None'})")
+                logger.error(f"   - 감소전용: {reduce_only} (타입: {type(reduce_only)})")
+                logger.error(f"   - TIF: {tif}")
+                logger.error(f"   - 최종 데이터: {data}")
+            
             raise
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
@@ -298,48 +306,60 @@ class GateClient:
     async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
                                          order_type: str, contract: str, size: int, 
                                          price: Optional[str] = None) -> Dict:
-        """가격 트리거 주문 생성 (TP/SL) - 개선된 에러 처리
+        """🔥🔥 가격 트리거 주문 생성 (TP/SL) - INVALID_PROTOCOL 오류 해결
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
             trigger_price: 트리거 가격
             order_type: 주문 타입 (limit, market)
             contract: 계약명
-            size: 수량
+            size: 수량 (정수)
             price: 지정가 (시장가면 None)
         """
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
+            # 🔥🔥 Gate.io API v4 트리거 주문 규격 완전 준수
             initial_data = {
                 "type": order_type,
-                "side": "long" if size > 0 else "short",
-                "size": str(abs(size))
+                "contract": contract,
+                "size": str(size)  # 🔥 문자열로 변환
             }
             
+            # 🔥🔥 지정가인 경우만 price 추가
             if order_type == "limit" and price:
                 initial_data["price"] = str(price)
             
+            # 🔥🔥 트리거 주문 데이터 구조
             data = {
                 "initial": initial_data,
                 "trigger": {
                     "strategy_type": "0",  # 가격 트리거
                     "price_type": "0",     # 최종가격
-                    "price": trigger_price,
+                    "price": str(trigger_price),
                     "rule": trigger_type   # ge(>=) 또는 le(<=)
-                },
-                "contract": contract
+                }
             }
             
-            logger.info(f"Gate.io 가격 트리거 주문 생성: {data}")
+            logger.info(f"🔥🔥 Gate.io 가격 트리거 주문 생성 (수정): {data}")
             response = await self._request('POST', endpoint, data=data)
-            logger.info(f"Gate.io 가격 트리거 주문 생성 성공: {response}")
+            logger.info(f"✅✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
-            logger.error(f"가격 트리거 주문 생성 실패: {e}")
-            # 🔥 상세한 에러 정보 로깅
+            logger.error(f"❌❌ 가격 트리거 주문 생성 실패: {e}")
             logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}")
+            
+            # 🔥🔥 INVALID_PROTOCOL 오류 시 상세 분석
+            if "INVALID_PROTOCOL" in str(e):
+                logger.error(f"🚨 트리거 주문 INVALID_PROTOCOL 오류!")
+                logger.error(f"   - 계약: {contract}")
+                logger.error(f"   - 수량: {size} (타입: {type(size)})")
+                logger.error(f"   - 트리거가: {trigger_price} (타입: {type(trigger_price)})")
+                logger.error(f"   - 트리거 타입: {trigger_type}")
+                logger.error(f"   - 주문 타입: {order_type}")
+                logger.error(f"   - 최종 데이터: {data}")
+            
             raise
     
     async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
@@ -363,11 +383,11 @@ class GateClient:
         try:
             endpoint = f"/api/v4/futures/usdt/price_orders/{order_id}"
             response = await self._request('DELETE', endpoint)
-            logger.info(f"Gate.io 가격 트리거 주문 취소 성공: {order_id}")
+            logger.info(f"✅ Gate.io 가격 트리거 주문 취소 성공: {order_id}")
             return response
             
         except Exception as e:
-            logger.error(f"가격 트리거 주문 취소 실패: {order_id} - {e}")
+            logger.error(f"❌ 가격 트리거 주문 취소 실패: {order_id} - {e}")
             raise
     
     async def get_contract_info(self, contract: str = "BTC_USDT") -> Dict:
@@ -411,19 +431,19 @@ class GateClient:
             
             logger.info(f"Gate.io 포지션 종료: {contract}, 현재 사이즈: {position_size}, 종료 사이즈: {close_size}")
             
-            # 시장가로 포지션 종료
+            # 🔥🔥 시장가로 포지션 종료 - 수정된 주문 방식 사용
             result = await self.place_order(
                 contract=contract,
                 size=close_size,
-                reduce_only=True,
-                tif="ioc"  # 즉시 체결
+                reduce_only=True
+                # tif와 price 제거하여 순수 시장가 주문
             )
             
-            logger.info(f"Gate.io 포지션 종료 성공: {result}")
+            logger.info(f"✅ Gate.io 포지션 종료 성공: {result}")
             return result
             
         except Exception as e:
-            logger.error(f"포지션 종료 실패: {e}")
+            logger.error(f"❌ 포지션 종료 실패: {e}")
             raise
     
     async def get_order_history(self, contract: str = "BTC_USDT", status: str = "finished", 
