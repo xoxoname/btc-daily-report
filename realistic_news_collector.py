@@ -167,8 +167,8 @@ class RealisticNewsCollector:
         
         return False
     
-    async def translate_text(self, text: str, max_length: int = 200) -> str:
-        """텍스트를 한국어로 번역 - 명확하고 상세하게"""
+    async def translate_text(self, text: str, max_length: int = 300) -> str:
+        """텍스트를 한국어로 번역 - 자연스럽고 이해하기 쉽게"""
         if not self.openai_client:
             return text
         
@@ -187,12 +187,36 @@ class RealisticNewsCollector:
         
         try:
             response = await self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4-turbo-preview",
                 messages=[
-                    {"role": "system", "content": "You are a professional financial news translator specializing in Bitcoin and cryptocurrency news. Translate to Korean clearly and include all important details like: company names (keep original name with Korean translation), specific amounts (in dollars/bitcoin), actions taken, and key terms. Keep the translation natural and easy to understand for Korean readers. Important: Always keep company names like MicroStrategy, Tesla, BlackRock, etc. in their original English form followed by Korean in parentheses if needed."},
-                    {"role": "user", "content": f"Translate this Bitcoin/crypto news to Korean (max {max_length} chars), keeping company names clear:\n{text}"}
+                    {
+                        "role": "system", 
+                        "content": """당신은 한국의 암호화폐 전문 기자입니다. 비트코인 뉴스를 한국 독자들이 쉽게 이해할 수 있도록 자연스러운 한국어로 번역합니다.
+
+번역 원칙:
+1. 한국 뉴스 스타일로 자연스럽게 번역 (직역 금지)
+2. 중요 정보 모두 포함:
+   - 기업/인물명 (영문 유지 + 필요시 한글 병기)
+   - 구체적 금액 (달러는 '달러', BTC는 'BTC'로 표기)
+   - 행동/결정 내용 (매수, 매도, 승인, 거부 등)
+   - 시기/날짜 정보
+3. 금융 용어는 한국에서 실제 사용하는 표현으로:
+   - bought/purchased → 매입했다, 매수했다
+   - sold → 매도했다
+   - approved → 승인했다
+   - rejected → 거부했다
+   - announced → 발표했다
+   - surge/soar → 급등했다
+   - plunge/crash → 급락했다
+4. 문장은 명확하고 간결하게
+5. 맥락과 의미가 충분히 전달되도록"""
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"다음 비트코인 뉴스 제목을 한국 뉴스 스타일로 자연스럽게 번역해주세요 (최대 {max_length}자):\n\n{text}"
+                    }
                 ],
-                max_tokens=400,
+                max_tokens=600,
                 temperature=0.3
             )
             
@@ -200,7 +224,17 @@ class RealisticNewsCollector:
             
             # 길이 체크
             if len(translated) > max_length:
-                translated = translated[:max_length-3] + "..."
+                # 의미가 끊기지 않도록 문장 단위로 자르기
+                sentences = translated.split('.')
+                result = ""
+                for sentence in sentences:
+                    if len(result + sentence + ".") <= max_length - 3:
+                        result += sentence + "."
+                    else:
+                        break
+                translated = result.strip()
+                if not translated:
+                    translated = translated[:max_length-3] + "..."
             
             # 캐시 저장 및 카운트 증가
             self.translation_cache[cache_key] = translated
@@ -220,38 +254,114 @@ class RealisticNewsCollector:
             return text
         except Exception as e:
             logger.warning(f"번역 실패: {str(e)[:50]}")
-            return text
+            # GPT-3.5로 폴백
+            try:
+                response = await self.openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {
+                            "role": "system", 
+                            "content": "비트코인 뉴스를 자연스러운 한국어로 번역합니다. 기업명은 영문 유지, 금액과 행동을 명확히 표현해주세요."
+                        },
+                        {
+                            "role": "user", 
+                            "content": f"다음을 한국어로 번역 (최대 {max_length}자):\n{text}"
+                        }
+                    ],
+                    max_tokens=400,
+                    temperature=0.3
+                )
+                
+                translated = response.choices[0].message.content.strip()
+                if len(translated) > max_length:
+                    translated = translated[:max_length-3] + "..."
+                
+                self.translation_cache[cache_key] = translated
+                self.translation_count += 1
+                
+                return translated
+            except:
+                return text
     
-    async def summarize_article(self, title: str, description: str, max_length: int = 300) -> str:
-        """기사 내용을 요약"""
+    async def summarize_article(self, title: str, description: str, max_length: int = 400) -> str:
+        """기사 내용을 한국어로 요약"""
         if not self.openai_client or not description:
             return ""
         
         # 이미 짧으면 그대로 반환
-        if len(description) <= max_length:
-            return description
+        if len(description) <= 200:
+            return ""
         
         try:
             response = await self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4-turbo-preview",
                 messages=[
-                    {"role": "system", "content": "You are a Bitcoin news analyst. Summarize the key points of Bitcoin/crypto news in Korean. Focus on: 1) Who (company/person), 2) What action (bought/sold/announced), 3) How much (specific amounts), 4) Why (reason if mentioned), 5) Impact on Bitcoin. Be concise and clear."},
-                    {"role": "user", "content": f"Summarize this Bitcoin news in Korean (max {max_length} chars):\nTitle: {title}\nContent: {description[:1000]}"}
+                    {
+                        "role": "system", 
+                        "content": """당신은 한국의 비트코인 전문 애널리스트입니다. 비트코인 뉴스의 핵심 내용을 한국 투자자들이 이해하기 쉽게 요약합니다.
+
+요약 원칙:
+1. 투자 판단에 중요한 정보 중심으로 요약
+2. 다음 정보를 반드시 포함:
+   - 누가 (기업/인물명)
+   - 무엇을 (구체적 행동: 매입, 매도, 발표 등)
+   - 얼마나 (금액, 수량)
+   - 왜 (이유나 배경)
+   - 비트코인에 미칠 영향
+3. 한국 투자자 관점에서 중요한 내용 강조
+4. 불필요한 배경 설명은 제외
+5. 핵심만 간결하게"""
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"다음 비트코인 뉴스를 한국어로 요약해주세요 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:1500]}"
+                    }
                 ],
-                max_tokens=400,
+                max_tokens=600,
                 temperature=0.3
             )
             
             summary = response.choices[0].message.content.strip()
             
             if len(summary) > max_length:
-                summary = summary[:max_length-3] + "..."
+                sentences = summary.split('.')
+                result = ""
+                for sentence in sentences:
+                    if len(result + sentence + ".") <= max_length - 3:
+                        result += sentence + "."
+                    else:
+                        break
+                summary = result.strip() or summary[:max_length-3] + "..."
             
             return summary
             
         except Exception as e:
             logger.warning(f"요약 실패: {str(e)[:50]}")
-            return description[:max_length] + "..." if len(description) > max_length else description
+            # GPT-3.5로 폴백
+            try:
+                response = await self.openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {
+                            "role": "system", 
+                            "content": "비트코인 뉴스의 핵심을 한국어로 요약합니다. 누가, 무엇을, 얼마나, 왜를 중심으로 간결하게 요약해주세요."
+                        },
+                        {
+                            "role": "user", 
+                            "content": f"요약 (최대 {max_length}자):\n제목: {title}\n내용: {description[:1000]}"
+                        }
+                    ],
+                    max_tokens=400,
+                    temperature=0.3
+                )
+                
+                summary = response.choices[0].message.content.strip()
+                if len(summary) > max_length:
+                    summary = summary[:max_length-3] + "..."
+                
+                return summary
+            except:
+                return description[:max_length] + "..." if len(description) > max_length else description
     
     def _extract_company_from_content(self, title: str, description: str = "") -> str:
         """컨텐츠에서 기업명 추출"""
