@@ -44,17 +44,35 @@ class ExceptionDetector:
         self.short_term_threshold = 1.0  # 5분 내 1% 변동
         self.medium_term_threshold = 2.0  # 15분 내 2% 변동
         
+        # 전송된 뉴스 제목 캐시 (중복 방지 강화)
+        self.sent_news_titles = {}
+        
         self.logger.info(f"예외 감지기 초기화 - 가격 {self.PRICE_CHANGE_THRESHOLD}%, 거래량 {self.VOLUME_SPIKE_THRESHOLD}배")
     
     def _generate_exception_hash(self, anomaly: Dict) -> str:
-        """예외 상황의 고유 해시 생성"""
+        """예외 상황의 고유 해시 생성 - 더 엄격하게"""
         anomaly_type = anomaly.get('type', '')
         
         if anomaly_type == 'critical_news':
             title = anomaly.get('title', '').lower()
-            clean_title = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title)
-            clean_title = re.sub(r'\s+', ' ', clean_title).strip()
-            return hashlib.md5(f"news_{clean_title}".encode()).hexdigest()
+            # 회사명과 주요 키워드 추출
+            companies = []
+            for company in ['microstrategy', 'tesla', 'sberbank', 'blackrock', 'gamestop']:
+                if company in title:
+                    companies.append(company)
+            
+            # 액션 추출
+            actions = []
+            for action in ['bought', 'purchased', 'buys', 'adds', 'launches', 'approves']:
+                if action in title:
+                    actions.append(action)
+            
+            # 숫자 추출
+            numbers = re.findall(r'\d+(?:,\d+)*', title)
+            
+            # 고유 식별자 생성
+            unique_id = f"news_{'-'.join(companies)}_{'-'.join(actions)}_{'-'.join(numbers)}"
+            return hashlib.md5(unique_id.encode()).hexdigest()
         
         elif anomaly_type == 'price_anomaly':
             change = anomaly.get('change_24h', 0)
@@ -84,7 +102,7 @@ class ExceptionDetector:
             return hashlib.md5(content.encode()).hexdigest()
     
     def _is_similar_exception(self, anomaly1: Dict, anomaly2: Dict) -> bool:
-        """두 예외 상황이 유사한지 확인"""
+        """두 예외 상황이 유사한지 확인 - 더 엄격하게"""
         if anomaly1.get('type') != anomaly2.get('type'):
             return False
         
@@ -92,6 +110,30 @@ class ExceptionDetector:
             title1 = anomaly1.get('title', '').lower()
             title2 = anomaly2.get('title', '').lower()
             
+            # 회사명 체크
+            companies1 = set()
+            companies2 = set()
+            for company in ['microstrategy', 'tesla', 'sberbank', 'blackrock', 'gamestop']:
+                if company in title1:
+                    companies1.add(company)
+                if company in title2:
+                    companies2.add(company)
+            
+            # 같은 회사의 뉴스인지 확인
+            if companies1 and companies2 and companies1 == companies2:
+                # 액션도 유사한지 확인
+                actions1 = set()
+                actions2 = set()
+                for action in ['bought', 'purchased', 'buys', 'adds', 'launches', 'approves']:
+                    if action in title1:
+                        actions1.add(action)
+                    if action in title2:
+                        actions2.add(action)
+                
+                if actions1 and actions2 and len(actions1 & actions2) > 0:
+                    return True
+            
+            # 단어 유사도 체크
             clean1 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title1)
             clean2 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title2)
             
@@ -109,7 +151,7 @@ class ExceptionDetector:
             
             similarity = intersection / union if union > 0 else 0
             
-            return similarity > 0.7
+            return similarity > 0.8  # 80% 이상 유사
         
         return False
     
@@ -316,7 +358,7 @@ class ExceptionDetector:
         return None
     
     async def send_alert(self, anomaly: Dict) -> bool:
-        """이상 징후 알림 전송 - 간소화"""
+        """이상 징후 알림 전송 - 중복 방지 강화"""
         try:
             if not self.telegram_bot:
                 return False
@@ -327,6 +369,28 @@ class ExceptionDetector:
                 if '무관' in impact or '알트코인' in impact:
                     self.logger.info(f"🔄 비트코인 무관 뉴스 알림 생략")
                     return False
+                
+                # 뉴스 제목으로 중복 체크
+                title = anomaly.get('title', '')
+                title_hash = hashlib.md5(title.encode()).hexdigest()
+                current_time = datetime.now()
+                
+                # 이미 전송된 제목인지 확인
+                if title_hash in self.sent_news_titles:
+                    last_sent = self.sent_news_titles[title_hash]
+                    if current_time - last_sent < timedelta(hours=2):
+                        self.logger.info(f"🔄 최근 전송된 뉴스 제목 스킵: {title[:50]}...")
+                        return False
+                
+                # 제목 캐시에 추가
+                self.sent_news_titles[title_hash] = current_time
+                
+                # 오래된 캐시 정리
+                cutoff_time = current_time - timedelta(hours=6)
+                self.sent_news_titles = {
+                    h: t for h, t in self.sent_news_titles.items()
+                    if t > cutoff_time
+                }
             
             # 예외 해시 생성
             exception_hash = self._generate_exception_hash(anomaly)
