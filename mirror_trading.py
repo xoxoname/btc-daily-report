@@ -164,9 +164,9 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 예약 주문 기록 실패: {e}")
     
     async def _record_startup_position_tp_sl(self):
-        """🔥 신규: 시작 시 존재하는 포지션의 TP/SL 기록 (복제 제외)"""
+        """🔥 신규: 시작 시 존재하는 포지션의 TP/SL 기록 (복제 제외) - 개선된 구분 로직"""
         try:
-            self.logger.info("🔥 기존 포지션의 TP/SL 기록 시작")
+            self.logger.info("🔥 기존 포지션의 TP/SL 기록 시작 (개선된 구분)")
             
             # 현재 활성 포지션들 조회
             positions = await self.bitget.get_positions(self.SYMBOL)
@@ -180,12 +180,28 @@ class MirrorTradingSystem:
                     tp_sl_orders = plan_data.get('tp_sl_orders', [])
                     
                     for tp_sl_order in tp_sl_orders:
-                        order_id = tp_sl_order.get('orderId', tp_sl_order.get('planOrderId', ''))
-                        if order_id:
-                            self.startup_position_tp_sl.add(order_id)
-                            self.logger.info(f"기존 포지션 {pos_id}의 TP/SL 기록 (복제 제외): {order_id}")
+                        # 기존 포지션 클로즈용 TP/SL만 제외 (추가 진입용은 복제)
+                        trade_side = tp_sl_order.get('tradeSide', tp_sl_order.get('side', ''))
+                        reduce_only = tp_sl_order.get('reduceOnly', False)
+                        
+                        # 기존 포지션 클로즈용 TP/SL 판단
+                        is_existing_position_tp_sl = (
+                            trade_side in ['close_long', 'close_short'] or 
+                            reduce_only is True or 
+                            reduce_only == 'true'
+                        )
+                        
+                        if is_existing_position_tp_sl:
+                            order_id = tp_sl_order.get('orderId', tp_sl_order.get('planOrderId', ''))
+                            if order_id:
+                                self.startup_position_tp_sl.add(order_id)
+                                self.logger.info(f"기존 포지션 {pos_id}의 클로즈 TP/SL 기록 (복제 제외): {order_id} - {trade_side}")
+                        else:
+                            # 추가 진입용 TP/SL은 복제 대상
+                            order_id = tp_sl_order.get('orderId', tp_sl_order.get('planOrderId', ''))
+                            self.logger.info(f"추가 진입용 TP/SL 감지 (복제 대상): {order_id} - {trade_side}")
             
-            self.logger.info(f"🔥 총 {len(self.startup_position_tp_sl)}개의 기존 포지션 TP/SL이 복제에서 제외됩니다")
+            self.logger.info(f"🔥 총 {len(self.startup_position_tp_sl)}개의 기존 포지션 클로즈 TP/SL이 복제에서 제외됩니다")
             
         except Exception as e:
             self.logger.error(f"기존 포지션 TP/SL 기록 실패: {e}")
@@ -215,10 +231,23 @@ class MirrorTradingSystem:
                     if order_id in self.startup_plan_orders:
                         continue
                     
-                    # 기존 포지션의 TP/SL은 스킵 🔥
+                    # 기존 포지션의 TP/SL은 스킵하되, 추가 진입용은 복제 🔥
                     if order_id in self.startup_position_tp_sl:
-                        self.logger.info(f"기존 포지션 TP/SL 스킵: {order_id}")
-                        continue
+                        # 추가 검증: 정말 기존 포지션 클로즈용인지 확인
+                        trade_side = order.get('tradeSide', order.get('side', ''))
+                        reduce_only = order.get('reduceOnly', False)
+                        
+                        is_existing_close = (
+                            trade_side in ['close_long', 'close_short'] or 
+                            reduce_only is True or 
+                            reduce_only == 'true'
+                        )
+                        
+                        if is_existing_close:
+                            self.logger.info(f"기존 포지션 클로즈 TP/SL 스킵: {order_id} - {trade_side}")
+                            continue
+                        else:
+                            self.logger.info(f"추가 진입용으로 판단, 복제 진행: {order_id} - {trade_side}")
                     
                     # 이미 처리된 주문은 스킵
                     if order_id in self.processed_plan_orders:
@@ -302,10 +331,21 @@ class MirrorTradingSystem:
                 self.logger.error(f"트리거 가격을 찾을 수 없습니다: {bitget_order}")
                 return
             
-            # 비트겟 계정 정보 조회
+            # 비트겟 계정 정보 조회 및 레버리지 추출
             bitget_account = await self.bitget.get_account_info()
             bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
             bitget_leverage = int(bitget_account.get('crossMarginLeverage', 10))
+            
+            # 🔥 주문에서 레버리지 정보도 확인 (더 정확한 레버리지)
+            order_leverage = bitget_order.get('leverage')
+            if order_leverage:
+                try:
+                    bitget_leverage = int(float(order_leverage))
+                    self.logger.info(f"주문에서 레버리지 추출: {bitget_leverage}x")
+                except:
+                    pass
+            
+            self.logger.info(f"🔥 비트겟 레버리지: {bitget_leverage}x (계정: {bitget_account.get('crossMarginLeverage', 'N/A')}, 주문: {order_leverage or 'N/A'})")
             
             # 비트겟에서 이 주문이 체결될 때 사용할 마진 계산
             bitget_notional_value = size * trigger_price
@@ -380,11 +420,26 @@ class MirrorTradingSystem:
             self.logger.info(f"  레버리지: {bitget_leverage}x")
             self.logger.info(f"  주문 방향: {'Buy' if is_buy_order else 'Sell'}")
             
-            # 레버리지 설정
+            # 🔥 레버리지 설정 강화 (주문 직전에 확실하게 설정)
             try:
+                self.logger.info(f"🔧 게이트 레버리지 설정 시작: {bitget_leverage}x")
                 await self.gate.set_leverage(self.GATE_CONTRACT, bitget_leverage)
+                
+                # 설정 확인
+                await asyncio.sleep(0.5)  # 잠시 대기
+                try:
+                    # 게이트 포지션 정보에서 레버리지 확인 (가능한 경우)
+                    gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+                    if gate_positions:
+                        current_leverage = gate_positions[0].get('leverage', 'N/A')
+                        self.logger.info(f"🔧 게이트 현재 레버리지 확인: {current_leverage}")
+                except Exception as e:
+                    self.logger.warning(f"레버리지 확인 실패: {e}")
+                    
+                self.logger.info(f"✅ 게이트 레버리지 설정 완료: {bitget_leverage}x")
             except Exception as e:
-                self.logger.warning(f"레버리지 설정 실패: {e}")
+                self.logger.error(f"❌ 게이트 레버리지 설정 실패: {e}")
+                # 레버리지 설정 실패해도 주문은 진행 (기본 레버리지 사용)
             
             # Gate.io에 예약 주문 생성
             try:
@@ -896,9 +951,20 @@ class MirrorTradingSystem:
                     f"진입마진: ${gate_margin:.2f}"
                 )
                 
-                # 3. 레버리지 설정
+                # 3. 레버리지 설정 강화
                 leverage = int(float(bitget_pos.get('leverage', 1)))
-                await self.gate.set_leverage(self.GATE_CONTRACT, leverage)
+                
+                # 🔥 레버리지 설정 강화 (포지션 미러링)
+                try:
+                    self.logger.info(f"🔧 게이트 레버리지 설정 (포지션): {leverage}x")
+                    await self.gate.set_leverage(self.GATE_CONTRACT, leverage)
+                    
+                    # 설정 확인
+                    await asyncio.sleep(0.3)
+                    self.logger.info(f"✅ 게이트 레버리지 설정 완료 (포지션): {leverage}x")
+                except Exception as e:
+                    self.logger.error(f"❌ 게이트 레버리지 설정 실패 (포지션): {e}")
+                    # 계속 진행
                 
                 # 4. 포지션 방향 및 수량 계산
                 side = bitget_pos.get('holdSide', '').lower()
