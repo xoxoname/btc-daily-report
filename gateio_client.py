@@ -65,43 +65,29 @@ class GateClient:
         query_string = ""
         payload = ""
         
-        # GET 요청의 경우 params를 query string으로 변환
-        if method.upper() == 'GET' and params:
+        if params:
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             url += f"?{query_string}"
         
-        # POST/PUT/DELETE 요청의 경우 data를 JSON으로 변환
-        if method.upper() in ['POST', 'PUT', 'DELETE'] and data:
+        if data:
             payload = json.dumps(data)
         
         headers = self._generate_signature(method, endpoint, query_string, payload)
         
         try:
             logger.info(f"Gate.io API 요청: {method} {url}")
-            if payload:
-                logger.debug(f"Gate.io 요청 데이터: {payload}")
+            if data:
+                logger.info(f"요청 데이터: {payload}")
             
-            # GET 요청은 params 없이, POST 요청은 data로 전송
-            if method.upper() == 'GET':
-                async with self.session.request(method, url, headers=headers) as response:
-                    response_text = await response.text()
-                    logger.debug(f"Gate.io 응답: {response_text[:500]}")
-                    
-                    if response.status != 200:
-                        logger.error(f"Gate.io API 오류: {response.status} - {response_text}")
-                        raise Exception(f"Gate.io API 오류: {response_text}")
-                    
-                    return json.loads(response_text) if response_text else {}
-            else:
-                async with self.session.request(method, url, headers=headers, data=payload) as response:
-                    response_text = await response.text()
-                    logger.debug(f"Gate.io 응답: {response_text[:500]}")
-                    
-                    if response.status not in [200, 201]:
-                        logger.error(f"Gate.io API 오류: {response.status} - {response_text}")
-                        raise Exception(f"Gate.io API 오류: {response_text}")
-                    
-                    return json.loads(response_text) if response_text else {}
+            async with self.session.request(method, url, headers=headers, data=payload) as response:
+                response_text = await response.text()
+                logger.debug(f"Gate.io 응답: {response_text[:500]}")
+                
+                if response.status != 200:
+                    logger.error(f"Gate.io API 오류: {response.status} - {response_text}")
+                    raise Exception(f"Gate.io API 오류: {response_text}")
+                
+                return json.loads(response_text) if response_text else {}
                 
         except Exception as e:
             logger.error(f"Gate.io API 요청 중 오류: {e}")
@@ -139,36 +125,46 @@ class GateClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None, 
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """선물 주문 생성
+        """선물 주문 생성 - Gate.io API 규격에 맞춰 수정
         
         Args:
             contract: 계약명 (예: BTC_USDT)
             size: 주문 수량 (양수=롱, 음수=숏)
             price: 지정가 (None이면 시장가)
             reduce_only: 포지션 감소 전용
-            tif: Time in Force (gtc, ioc, poc)
+            tif: Time in Force (gtc, ioc, poc, fok)
             iceberg: 빙산 주문 수량
         """
         try:
             endpoint = "/api/v4/futures/usdt/orders"
             
+            # 기본 주문 데이터
             data = {
                 "contract": contract,
                 "size": size,
-                "reduce_only": reduce_only,
-                "tif": tif
+                "reduce_only": reduce_only
             }
             
-            if price:
+            # 지정가 주문
+            if price is not None:
                 data["price"] = str(price)
+                data["tif"] = tif
             else:
-                data["tif"] = "ioc"  # 시장가는 IOC로 설정
+                # 시장가 주문 - tif는 ioc 또는 생략
+                data["tif"] = "ioc"
             
+            # 빙산 주문
             if iceberg > 0:
                 data["iceberg"] = iceberg
             
-            logger.info(f"Gate.io 주문 생성: {data}")
+            # 자동 사이즈 감소 (Gate.io 기본값)
+            data["auto_size"] = "close_long" if size < 0 else "close_short" if reduce_only else None
+            if data["auto_size"] is None:
+                del data["auto_size"]
+            
+            logger.info(f"Gate.io 주문 생성 요청: {data}")
             response = await self._request('POST', endpoint, data=data)
+            logger.info(f"Gate.io 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
@@ -180,14 +176,14 @@ class GateClient:
         try:
             endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
             
-            data = {
+            params = {
                 "leverage": str(leverage)
             }
             
             if cross_leverage_limit > 0:
-                data["cross_leverage_limit"] = str(cross_leverage_limit)
+                params["cross_leverage_limit"] = str(cross_leverage_limit)
             
-            response = await self._request('POST', endpoint, data=data)
+            response = await self._request('POST', endpoint, params=params)
             logger.info(f"레버리지 설정 완료: {contract} - {leverage}x")
             return response
             
