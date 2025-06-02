@@ -336,7 +336,8 @@ class MirrorTradingSystem:
                     contract=self.GATE_CONTRACT,
                     size=gate_size,
                     price=None,  # 시장가
-                    reduce_only=False
+                    reduce_only=False,
+                    tif="ioc"  # 시장가는 IOC
                 )
                 
                 self.logger.info(f"✅ 게이트 진입 성공: {order_result}")
@@ -547,7 +548,8 @@ class MirrorTradingSystem:
                 contract=self.GATE_CONTRACT,
                 size=close_size,
                 price=None,  # 시장가
-                reduce_only=True
+                reduce_only=True,
+                tif="ioc"  # 즉시 체결
             )
             
             await self.telegram.send_message(
