@@ -285,7 +285,7 @@ class BitgetClient:
             return []
     
     async def get_plan_orders_v2_pending(self, symbol: str = None) -> List[Dict]:
-        """V2 API로 대기중인 전체 주문 조회하여 예약 주문 필터링"""
+        """V2 API로 대기중인 전체 주문 조회하여 예약 주문 필터링 - 개선된 버전"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -299,16 +299,46 @@ class BitgetClient:
             response = await self._request('GET', endpoint, params=params)
             logger.info(f"V2 대기 주문 조회 응답: {response}")
             
-            orders = response if isinstance(response, list) else []
+            # entrustedList에서 주문 목록 추출
+            orders = []
+            if isinstance(response, dict) and 'entrustedList' in response:
+                orders = response['entrustedList']
+            elif isinstance(response, list):
+                orders = response
             
-            # 예약 주문(트리거가 있는 주문)만 필터링
+            # 예약 주문(트리거가 있는 주문) 및 TP/SL이 있는 주문 필터링
             plan_orders = []
             for order in orders:
-                # triggerPrice가 있거나 planType이 있으면 예약 주문
-                if order.get('triggerPrice') or order.get('planType') or order.get('triggerType'):
+                is_plan_order = False
+                order_type = order.get('orderType', '').lower()
+                
+                # 1. 기본 트리거 조건들
+                if (order.get('triggerPrice') or 
+                    order.get('planType') or 
+                    order.get('triggerType')):
+                    is_plan_order = True
+                    logger.info(f"V2에서 기본 트리거 예약 주문 발견: {order.get('orderId')}")
+                
+                # 2. TP/SL이 설정된 일반 주문도 예약 주문으로 분류
+                elif (order.get('presetStopSurplusPrice') or 
+                      order.get('presetStopLossPrice') or
+                      order.get('presetStopSurplusExecutePrice') or
+                      order.get('presetStopLossExecutePrice')):
+                    is_plan_order = True
+                    logger.info(f"V2에서 TP/SL 설정된 예약 주문 발견: {order.get('orderId')}")
+                    logger.info(f"  - TP 가격: {order.get('presetStopSurplusPrice')}")
+                    logger.info(f"  - SL 가격: {order.get('presetStopLossPrice')}")
+                
+                # 3. 특정 주문 타입들도 예약 주문으로 분류
+                elif order_type in ['trigger_market', 'trigger_limit', 'plan_limit', 'plan_market']:
+                    is_plan_order = True
+                    logger.info(f"V2에서 특수 타입 예약 주문 발견: {order.get('orderId')} (타입: {order_type})")
+                
+                if is_plan_order:
                     plan_orders.append(order)
-                    logger.info(f"V2에서 예약 주문 발견: {json.dumps(order, ensure_ascii=False, indent=2)}")
+                    logger.info(f"V2 예약 주문 상세: {json.dumps(order, ensure_ascii=False, indent=2)}")
             
+            logger.info(f"V2에서 총 {len(plan_orders)}개의 예약 주문 발견")
             return plan_orders
             
         except Exception as e:
@@ -316,7 +346,7 @@ class BitgetClient:
             return []
     
     async def get_all_trigger_orders(self, symbol: str = None) -> List[Dict]:
-        """모든 트리거 주문 조회 (다양한 방법 시도)"""
+        """모든 트리거 주문 조회 (다양한 방법 시도) - 개선된 버전"""
         all_orders = []
         symbol = symbol or self.config.symbol
         
@@ -336,7 +366,7 @@ class BitgetClient:
         except:
             pass
         
-        # 3. V2 대기 주문에서 트리거 주문 찾기
+        # 3. V2 대기 주문에서 트리거 주문 찾기 (개선된 로직)
         try:
             v2_trigger = await self.get_plan_orders_v2_pending(symbol)
             all_orders.extend(v2_trigger)
@@ -344,14 +374,20 @@ class BitgetClient:
         except:
             pass
         
-        # 중복 제거
+        # 중복 제거 (더 정확한 ID 매칭)
         seen = set()
         unique_orders = []
         for order in all_orders:
-            order_id = order.get('orderId', order.get('planOrderId', ''))
+            # 여러 ID 필드 확인
+            order_id = (order.get('orderId') or 
+                       order.get('planOrderId') or 
+                       order.get('clientOid') or
+                       str(order.get('cTime', '')))
+            
             if order_id and order_id not in seen:
                 seen.add(order_id)
                 unique_orders.append(order)
+                logger.info(f"고유 예약 주문 추가: {order_id}")
         
         logger.info(f"총 고유한 트리거 주문: {len(unique_orders)}건")
         return unique_orders
@@ -377,22 +413,42 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """모든 플랜 주문과 TP/SL 조회 (통합)"""
+        """모든 플랜 주문과 TP/SL 조회 (통합) - 개선된 분류"""
         try:
             symbol = symbol or self.config.symbol
             
             # 모든 트리거 주문 조회
             all_orders = await self.get_all_trigger_orders(symbol)
             
-            # TP/SL 분류
+            # TP/SL과 일반 예약주문 분류 (더 정확한 분류)
             tp_sl_orders = []
             plan_orders = []
             
             for order in all_orders:
-                if order.get('planType') == 'profit_loss' or order.get('isPlan') == 'profit_loss':
+                is_tp_sl = False
+                
+                # TP/SL 분류 조건들
+                if (order.get('planType') == 'profit_loss' or 
+                    order.get('isPlan') == 'profit_loss' or
+                    order.get('side') in ['close_long', 'close_short'] or
+                    order.get('tradeSide') in ['close_long', 'close_short'] or
+                    order.get('reduceOnly') == True or
+                    order.get('reduceOnly') == 'true'):
+                    is_tp_sl = True
+                
+                # TP/SL 가격이 설정된 경우도 확인
+                elif (order.get('presetStopSurplusPrice') or 
+                      order.get('presetStopLossPrice')):
+                    # 이 경우는 일반 주문에 TP/SL이 설정된 것이므로 plan_orders로 분류
+                    # 하지만 별도로 TP/SL 정보를 추출할 수 있음
+                    pass
+                
+                if is_tp_sl:
                     tp_sl_orders.append(order)
+                    logger.info(f"TP/SL 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
                 else:
                     plan_orders.append(order)
+                    logger.info(f"일반 예약 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
             
             # 통합 결과
             result = {
@@ -401,7 +457,30 @@ class BitgetClient:
                 'total_count': len(all_orders)
             }
             
-            logger.info(f"전체 예약 주문: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
+            logger.info(f"전체 예약 주문 분류 완료: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
+            
+            # 각 카테고리별 상세 로깅
+            if plan_orders:
+                logger.info("=== 일반 예약 주문 목록 ===")
+                for i, order in enumerate(plan_orders, 1):
+                    order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
+                    side = order.get('side', order.get('tradeSide', 'unknown'))
+                    price = order.get('price', order.get('triggerPrice', 'unknown'))
+                    tp_price = order.get('presetStopSurplusPrice', '')
+                    sl_price = order.get('presetStopLossPrice', '')
+                    logger.info(f"{i}. ID: {order_id}, 방향: {side}, 가격: {price}")
+                    if tp_price:
+                        logger.info(f"   TP 설정: {tp_price}")
+                    if sl_price:
+                        logger.info(f"   SL 설정: {sl_price}")
+            
+            if tp_sl_orders:
+                logger.info("=== TP/SL 주문 목록 ===")
+                for i, order in enumerate(tp_sl_orders, 1):
+                    order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
+                    side = order.get('side', order.get('tradeSide', 'unknown'))
+                    trigger_price = order.get('triggerPrice', 'unknown')
+                    logger.info(f"{i}. ID: {order_id}, 방향: {side}, 트리거가: {trigger_price}")
             
             return result
             
