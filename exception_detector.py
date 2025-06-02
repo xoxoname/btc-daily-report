@@ -304,6 +304,11 @@ class ExceptionDetector:
             current_price = float(ticker.get('last', 0))
             current_time = datetime.now()
             
+            # 가격이 0이거나 유효하지 않으면 스킵
+            if current_price <= 0:
+                self.logger.warning(f"유효하지 않은 가격 데이터: {current_price}")
+                return None
+            
             # 가격 이력에 추가
             self.price_history.append({
                 'price': current_price,
