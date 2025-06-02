@@ -241,33 +241,79 @@ class BitgetClient:
             logger.error(f"최근 체결 주문 조회 실패: {e}")
             return []
     
-    async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """플랜 주문(예약 주문) 조회 (V2 API) - planType 파라미터 추가"""
+    async def get_plan_orders_v2(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
+        """플랜 주문(예약 주문) 조회 - V2 API 수정된 버전"""
         symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/order/orders-plan-pending"
+        
+        # planType별로 다른 엔드포인트 사용
+        if plan_type == 'profit_loss':
+            endpoint = "/api/v2/mix/order/profit-loss-orders"
+        else:
+            endpoint = "/api/v2/mix/order/plan-orders-pending"
+        
         params = {
             'symbol': symbol,
             'productType': 'USDT-FUTURES'
         }
         
-        # planType이 지정된 경우에만 추가
-        if plan_type:
-            params['planType'] = plan_type  # profit_loss, profit_plan, loss_plan
-        
         try:
             response = await self._request('GET', endpoint, params=params)
-            logger.debug(f"플랜 주문 조회 응답: {response}")
+            logger.debug(f"플랜 주문 V2 조회 응답 ({plan_type}): {response}")
             
-            orders = response if isinstance(response, list) else []
+            # 응답 처리
+            if isinstance(response, dict):
+                # orderList나 data 필드에서 주문 목록 추출
+                orders = response.get('orderList', response.get('data', []))
+                if not isinstance(orders, list):
+                    orders = []
+            elif isinstance(response, list):
+                orders = response
+            else:
+                orders = []
             
             # 상세 정보 로깅
             for order in orders:
-                logger.info(f"예약 주문: {order.get('planOrderId')} - {order.get('side')} {order.get('size')} @ trigger: {order.get('triggerPrice')}")
+                logger.info(f"예약 주문: {order.get('planOrderId', order.get('orderId'))} - {order.get('side')} {order.get('size')} @ trigger: {order.get('triggerPrice')}")
             
             return orders
             
         except Exception as e:
-            logger.error(f"플랜 주문 조회 실패: {e}")
+            logger.warning(f"플랜 주문 V2 조회 실패 ({plan_type}): {e}")
+            # V1 API로 폴백
+            return await self.get_plan_orders_v1(symbol, plan_type)
+    
+    async def get_plan_orders_v1(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
+        """플랜 주문 조회 - V1 API 폴백"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/mix/v1/plan/currentPlan"
+        
+        params = {
+            'symbol': symbol,
+            'productType': 'umcbl'  # V1 API 파라미터
+        }
+        
+        if plan_type == 'profit_loss':
+            params['isPlan'] = 'profit_loss'
+        
+        try:
+            # V1 API는 다른 서명 방식 사용
+            response = await self._request('GET', endpoint.replace('/v2/', '/v1/'), params=params)
+            logger.debug(f"플랜 주문 V1 조회 응답: {response}")
+            
+            orders = response if isinstance(response, list) else []
+            return orders
+            
+        except Exception as e:
+            logger.error(f"플랜 주문 V1 조회도 실패: {e}")
+            return []
+    
+    async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
+        """플랜 주문(예약 주문) 조회 - 메인 함수"""
+        try:
+            # V2 API 시도
+            return await self.get_plan_orders_v2(symbol, plan_type)
+        except Exception as e:
+            logger.error(f"플랜 주문 조회 실패, 빈 리스트 반환: {e}")
             return []
     
     async def get_plan_order_history(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
@@ -306,17 +352,17 @@ class BitgetClient:
         try:
             symbol = symbol or self.config.symbol
             
-            # 1. 일반 플랜 주문 조회 (planType 없이)
+            # 1. 일반 플랜 주문 조회
             plan_orders = await self.get_plan_orders(symbol)
             
             # 2. TP/SL 주문 조회 (profit_loss 타입)
             tp_sl_orders = await self.get_plan_orders(symbol, plan_type='profit_loss')
             
             # 3. 중복 제거 (일반 조회에 TP/SL이 포함될 수 있음)
-            tp_sl_ids = {order.get('planOrderId', order.get('orderId', '')) for order in tp_sl_orders}
+            tp_sl_ids = {order.get('planOrderId', order.get('orderId', '')) for order in tp_sl_orders if order.get('planOrderId') or order.get('orderId')}
             filtered_plan_orders = [
                 order for order in plan_orders 
-                if order.get('planOrderId', order.get('orderId', '')) not in tp_sl_ids
+                if (order.get('planOrderId', order.get('orderId', '')) not in tp_sl_ids)
             ]
             
             # 4. 통합 결과
