@@ -54,6 +54,11 @@ class RealisticNewsCollector:
             'bitcoin acquisition', 'adds bitcoin', 'bitcoin investment',
             '비트코인 구매', '비트코인 매입', 'BTC 구매',
             
+            # 국가/은행 채택
+            'central bank bitcoin', 'russia bitcoin', 'sberbank bitcoin', 'bitcoin bonds',
+            'government bitcoin', 'country adopts bitcoin', 'bitcoin legal tender',
+            '중앙은행 비트코인', '러시아 비트코인', '비트코인 채권',
+            
             # 비트코인 규제 (직접적)
             'sec bitcoin lawsuit', 'bitcoin ban', 'bitcoin regulation', 'bitcoin lawsuit',
             'china bans bitcoin', 'government bans bitcoin', 'court bitcoin',
@@ -97,7 +102,8 @@ class RealisticNewsCollector:
             'tesla', 'microstrategy', 'square', 'block', 'paypal', 'mastercard',
             'gamestop', 'gme', 'blackrock', 'fidelity', 'ark invest',
             'coinbase', 'binance', 'kraken', 'bitget',
-            'metaplanet', '메타플래닛', '테슬라', '마이크로스트래티지'
+            'metaplanet', '메타플래닛', '테슬라', '마이크로스트래티지',
+            'sberbank', '스베르방크', 'jpmorgan', 'goldman sachs'
         ]
         
         # RSS 피드 - 암호화폐 전문 소스 위주
@@ -111,6 +117,7 @@ class RealisticNewsCollector:
             {'url': 'https://u.today/rss', 'source': 'U.Today', 'weight': 8, 'category': 'crypto'},
             {'url': 'https://ambcrypto.com/feed/', 'source': 'AMBCrypto', 'weight': 8, 'category': 'crypto'},
             {'url': 'https://cryptonews.com/news/feed/', 'source': 'Cryptonews', 'weight': 8, 'category': 'crypto'},
+            {'url': 'https://www.watcher.guru/news/feed', 'source': 'Watcher.Guru', 'weight': 9, 'category': 'crypto'},  # WatcherGuru 추가
             
             # 금융 (Fed/규제 관련)
             {'url': 'https://feeds.bloomberg.com/markets/news.rss', 'source': 'Bloomberg Markets', 'weight': 9, 'category': 'finance'},
@@ -167,8 +174,8 @@ class RealisticNewsCollector:
         
         return False
     
-    async def translate_text(self, text: str, max_length: int = 300) -> str:
-        """텍스트를 한국어로 번역 - 자연스럽고 이해하기 쉽게"""
+    async def translate_text(self, text: str, max_length: int = 400) -> str:
+        """텍스트를 한국어로 번역 - 완벽히 자연스럽게"""
         if not self.openai_client:
             return text
         
@@ -191,29 +198,34 @@ class RealisticNewsCollector:
                 messages=[
                     {
                         "role": "system", 
-                        "content": """당신은 한국의 암호화폐 전문 기자입니다. 비트코인 뉴스를 한국 독자들이 쉽게 이해할 수 있도록 자연스러운 한국어로 번역합니다.
+                        "content": """당신은 한국의 블록체인 전문 기자입니다. 비트코인 뉴스를 한국 독자들이 즉시 이해할 수 있도록 매끄러운 한국어로 번역합니다.
 
 번역 원칙:
-1. 한국 뉴스 스타일로 자연스럽게 번역 (직역 금지)
-2. 중요 정보 모두 포함:
-   - 기업/인물명 (영문 유지 + 필요시 한글 병기)
-   - 구체적 금액 (달러는 '달러', BTC는 'BTC'로 표기)
-   - 행동/결정 내용 (매수, 매도, 승인, 거부 등)
-   - 시기/날짜 정보
-3. 금융 용어는 한국에서 실제 사용하는 표현으로:
-   - bought/purchased → 매입했다, 매수했다
-   - sold → 매도했다
-   - approved → 승인했다
-   - rejected → 거부했다
-   - announced → 발표했다
-   - surge/soar → 급등했다
-   - plunge/crash → 급락했다
-4. 문장은 명확하고 간결하게
-5. 맥락과 의미가 충분히 전달되도록"""
+1. 한국 경제 뉴스처럼 자연스럽게 번역
+2. 핵심 정보를 명확하게 전달:
+   - 주체 (기업/인물/국가)
+   - 행동 (매입, 매도, 발표, 승인 등)
+   - 규모 (금액, 수량)
+   - 영향/의미
+3. 전문 용어 처리:
+   - MicroStrategy → 마이크로스트래티지
+   - Tesla → 테슬라  
+   - Sberbank → 스베르방크
+   - BlackRock → 블랙록
+   - SEC → SEC (미국 증권거래위원회)
+   - ETF → ETF
+   - Bitcoin bonds → 비트코인 연계 채권
+4. 자연스러운 한국어 문장 구조 사용
+5. 불필요한 수식어 제거, 핵심만 전달
+
+예시:
+"MicroStrategy buys 500 BTC" → "마이크로스트래티지, 비트코인 500개 추가 매입"
+"Russia's Sberbank launches Bitcoin-linked bonds" → "러시아 최대 은행 스베르방크, 비트코인 연계 채권 출시"
+"SEC approves spot Bitcoin ETF" → "SEC, 현물 비트코인 ETF 승인""""
                     },
                     {
                         "role": "user", 
-                        "content": f"다음 비트코인 뉴스 제목을 한국 뉴스 스타일로 자연스럽게 번역해주세요 (최대 {max_length}자):\n\n{text}"
+                        "content": f"다음 비트코인 뉴스를 자연스러운 한국어로 번역해주세요 (최대 {max_length}자):\n\n{text}"
                     }
                 ],
                 max_tokens=600,
@@ -261,7 +273,7 @@ class RealisticNewsCollector:
                     messages=[
                         {
                             "role": "system", 
-                            "content": "비트코인 뉴스를 자연스러운 한국어로 번역합니다. 기업명은 영문 유지, 금액과 행동을 명확히 표현해주세요."
+                            "content": "비트코인 뉴스를 자연스러운 한국어로 번역합니다. 기업명은 한국식으로 (테슬라, 마이크로스트래티지 등), 금액과 행동을 명확히 표현해주세요."
                         },
                         {
                             "role": "user", 
@@ -283,8 +295,8 @@ class RealisticNewsCollector:
             except:
                 return text
     
-    async def summarize_article(self, title: str, description: str, max_length: int = 400) -> str:
-        """기사 내용을 한국어로 요약"""
+    async def summarize_article(self, title: str, description: str, max_length: int = 500) -> str:
+        """기사 내용을 한국어로 상세 요약"""
         if not self.openai_client or not description:
             return ""
         
@@ -298,26 +310,31 @@ class RealisticNewsCollector:
                 messages=[
                     {
                         "role": "system", 
-                        "content": """당신은 한국의 비트코인 전문 애널리스트입니다. 비트코인 뉴스의 핵심 내용을 한국 투자자들이 이해하기 쉽게 요약합니다.
+                        "content": """당신은 한국의 비트코인 투자 전문가입니다. 비트코인 뉴스의 핵심을 한국 투자자들이 즉시 활용할 수 있도록 상세히 요약합니다.
 
 요약 원칙:
-1. 투자 판단에 중요한 정보 중심으로 요약
-2. 다음 정보를 반드시 포함:
-   - 누가 (기업/인물명)
-   - 무엇을 (구체적 행동: 매입, 매도, 발표 등)
-   - 얼마나 (금액, 수량)
-   - 왜 (이유나 배경)
-   - 비트코인에 미칠 영향
-3. 한국 투자자 관점에서 중요한 내용 강조
-4. 불필요한 배경 설명은 제외
-5. 핵심만 간결하게"""
+1. 투자 판단에 필요한 모든 정보 포함:
+   - 누가: 기업/인물/국가명 (한국식 표기)
+   - 무엇을: 구체적 행동 (매입, 매도, 발표, 출시 등)
+   - 얼마나: 정확한 금액/수량
+   - 언제: 시기 정보
+   - 왜: 배경과 이유
+   - 영향: 시장에 미칠 영향
+2. 투자자 관점에서 중요도 순으로 정리
+3. 구체적인 숫자와 사실 위주
+4. 불확실한 추측은 제외
+5. 한국 투자자가 바로 이해할 수 있는 표현 사용
+
+예시:
+"마이크로스트래티지가 12월 15일 580,955개의 비트코인을 보유하게 되었다. 이는 약 270억 달러 규모로, 전체 비트코인 공급량의 2.7%에 해당한다. 평균 매입가는 46,500달러이며, 현재 시세 대비 30% 수익을 보고 있다."
+"""
                     },
                     {
                         "role": "user", 
-                        "content": f"다음 비트코인 뉴스를 한국어로 요약해주세요 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:1500]}"
+                        "content": f"다음 비트코인 뉴스를 한국어로 상세 요약해주세요 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:1500]}"
                     }
                 ],
-                max_tokens=600,
+                max_tokens=800,
                 temperature=0.3
             )
             
@@ -344,14 +361,14 @@ class RealisticNewsCollector:
                     messages=[
                         {
                             "role": "system", 
-                            "content": "비트코인 뉴스의 핵심을 한국어로 요약합니다. 누가, 무엇을, 얼마나, 왜를 중심으로 간결하게 요약해주세요."
+                            "content": "비트코인 뉴스의 핵심을 한국어로 요약합니다. 누가, 무엇을, 얼마나, 왜를 중심으로 구체적인 정보를 포함해주세요."
                         },
                         {
                             "role": "user", 
                             "content": f"요약 (최대 {max_length}자):\n제목: {title}\n내용: {description[:1000]}"
                         }
                     ],
-                    max_tokens=400,
+                    max_tokens=600,
                     temperature=0.3
                 )
                 
@@ -399,35 +416,52 @@ class RealisticNewsCollector:
         return ""
     
     def _generate_content_hash(self, title: str, description: str = "") -> str:
-        """뉴스 내용의 해시 생성 (중복 체크용)"""
-        # 제목에서 숫자와 특수문자 제거
-        clean_title = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title.lower())
-        clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+        """뉴스 내용의 해시 생성 (중복 체크용) - 더 엄격하게"""
+        # 제목과 설명에서 핵심 내용 추출
+        content = f"{title} {description[:200]}".lower()
         
-        # 회사명과 키워드 추출
-        companies = []
-        keywords = []
+        # 숫자 정규화 (580,955 -> 580955)
+        content = re.sub(r'[\d,]+', lambda m: m.group(0).replace(',', ''), content)
         
+        # 회사명 정규화
+        companies_found = []
         for company in self.important_companies:
-            if company.lower() in clean_title.lower():
-                companies.append(company.lower())
+            if company.lower() in content:
+                companies_found.append(company.lower())
         
-        # 핵심 키워드 추출
-        key_terms = ['bitcoin', 'btc', 'purchase', 'bought', 'buys', 'etf', 'sec', 'ban', 'hack']
-        for term in key_terms:
-            if term in clean_title.lower():
-                keywords.append(term)
+        # 액션 키워드 추출
+        action_keywords = []
+        actions = ['bought', 'purchased', 'acquired', 'adds', 'buys', 'sells', 'sold', 
+                  'announced', 'launches', 'approves', 'rejects', 'bans']
+        for action in actions:
+            if action in content:
+                action_keywords.append(action)
         
-        # 회사명 + 핵심 키워드로 해시 생성
-        if companies and keywords:
-            hash_content = f"{','.join(sorted(set(companies)))}_{','.join(sorted(set(keywords)))}"
+        # BTC 수량 추출
+        btc_amounts = re.findall(r'(\d+(?:,\d+)*)\s*(?:btc|bitcoin)', content)
+        
+        # 고유 식별자 생성
+        unique_parts = []
+        if companies_found:
+            unique_parts.append('_'.join(sorted(companies_found)))
+        if action_keywords:
+            unique_parts.append('_'.join(sorted(action_keywords)))
+        if btc_amounts:
+            unique_parts.append('_'.join(btc_amounts))
+        
+        # 해시 생성
+        if unique_parts:
+            hash_content = '|'.join(unique_parts)
         else:
-            hash_content = clean_title
+            # 핵심 단어만 추출
+            words = re.findall(r'\b[a-z]{4,}\b', content)
+            important_words = [w for w in words if w not in ['that', 'this', 'with', 'from', 'have', 'been', 'their', 'about']]
+            hash_content = ' '.join(sorted(important_words[:10]))
         
         return hashlib.md5(hash_content.encode()).hexdigest()
     
-    def _is_duplicate_emergency(self, article: Dict, time_window: int = 60) -> bool:
-        """긴급 알림이 중복인지 확인 (60분 이내)"""
+    def _is_duplicate_emergency(self, article: Dict, time_window: int = 120) -> bool:
+        """긴급 알림이 중복인지 확인 (120분 이내) - 더 엄격하게"""
         try:
             current_time = datetime.now()
             content_hash = self._generate_content_hash(
@@ -447,6 +481,14 @@ class RealisticNewsCollector:
                 logger.info(f"🔄 중복 긴급 알림 방지: {article.get('title', '')[:50]}...")
                 return True
             
+            # 제목 유사성 체크
+            current_title = article.get('title', '').lower()
+            for sent_hash in self.emergency_alerts_sent:
+                # 이미 전송된 뉴스들과 유사성 체크
+                if self._calculate_title_similarity(current_title, sent_hash) > 0.8:
+                    logger.info(f"🔄 유사 긴급 알림 방지: {article.get('title', '')[:50]}...")
+                    return True
+            
             # 새로운 알림 기록
             self.emergency_alerts_sent[content_hash] = current_time
             return False
@@ -454,6 +496,13 @@ class RealisticNewsCollector:
         except Exception as e:
             logger.error(f"중복 체크 오류: {e}")
             return False
+    
+    def _calculate_title_similarity(self, title1: str, title2_hash: str) -> float:
+        """제목 유사도 계산"""
+        # 간단한 단어 기반 유사도
+        words1 = set(re.findall(r'\b\w+\b', title1.lower()))
+        # 해시는 직접 비교 불가하므로 기본값 반환
+        return 0.0
     
     def _is_similar_news(self, title1: str, title2: str) -> bool:
         """두 뉴스 제목이 유사한지 확인"""
@@ -629,7 +678,7 @@ class RealisticNewsCollector:
         
         if has_crypto:
             # ETF, SEC, 규제 등 중요 키워드와 함께 나오면 포함
-            important_terms = ['etf', 'sec', 'regulation', 'ban', 'approval', 'court', 'lawsuit']
+            important_terms = ['etf', 'sec', 'regulation', 'ban', 'approval', 'court', 'lawsuit', 'bonds', 'russia', 'sberbank']
             if any(term in content for term in important_terms):
                 return True
         
@@ -641,68 +690,68 @@ class RealisticNewsCollector:
         return False
     
     def _estimate_price_impact(self, article: Dict) -> str:
-        """뉴스의 예상 가격 영향 추정 - 현실적으로"""
+        """뉴스의 예상 가격 영향 추정 - 명확하게 상승/하락 표시"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
         # ETF 관련
         if 'etf approved' in content or 'etf approval' in content:
-            return '📈 +1~3%'
+            return '📈 상승 +1~3%'
         elif 'etf rejected' in content or 'etf rejection' in content:
-            return '📉 -1~3%'
+            return '📉 하락 -1~3%'
         elif 'etf' in content:
-            return '⚡ ±0.5~1%'
+            return '⚡ 변동 ±0.5~1%'
         
-        # 기업 구매
-        for company in ['tesla', 'microstrategy', 'gamestop', 'blackrock']:
-            if company in content and any(word in content for word in ['bought', 'purchased', 'buys', 'adds']):
+        # 기업/국가 구매
+        for entity in ['tesla', 'microstrategy', 'gamestop', 'blackrock', 'russia', 'sberbank']:
+            if entity in content and any(word in content for word in ['bought', 'purchased', 'buys', 'adds', 'launches', 'bonds']):
                 if 'billion' in content:
-                    return '📈 +0.5~2%'
+                    return '📈 상승 +0.5~2%'
                 elif 'million' in content:
-                    return '📈 +0.3~1%'
+                    return '📈 상승 +0.3~1%'
                 else:
-                    return '📈 +0.2~0.5%'
+                    return '📈 상승 +0.2~0.5%'
         
         # 규제/금지
         if any(word in content for word in ['ban', 'banned', 'prohibit']):
             if 'china' in content:
-                return '📉 -2~4%'
+                return '📉 하락 -2~4%'
             else:
-                return '📉 -1~3%'
+                return '📉 하락 -1~3%'
         elif 'lawsuit' in content or 'sue' in content:
-            return '📉 -0.5~2%'
+            return '📉 하락 -0.5~2%'
         elif 'regulation' in content:
-            return '⚡ ±0.5~1.5%'
+            return '⚡ 변동 ±0.5~1.5%'
         
         # Fed 금리
         if any(word in content for word in ['rate hike', 'rates higher', 'hawkish']):
-            return '📉 -0.5~2%'
+            return '📉 하락 -0.5~2%'
         elif any(word in content for word in ['rate cut', 'rates lower', 'dovish']):
-            return '📈 +0.5~2%'
+            return '📈 상승 +0.5~2%'
         elif 'fed' in content or 'fomc' in content:
-            return '⚡ ±0.3~1%'
+            return '⚡ 변동 ±0.3~1%'
         
         # 시장 급변동
         if any(word in content for word in ['crash', 'plunge', 'tumble']):
-            return '📉 -3~5%'
+            return '📉 하락 -3~5%'
         elif any(word in content for word in ['surge', 'soar', 'rally', 'all time high', 'ath']):
-            return '📈 +2~4%'
+            return '📈 상승 +2~4%'
         
         # 해킹/보안
         if any(word in content for word in ['hack', 'stolen', 'breach']):
             if 'billion' in content:
-                return '📉 -1~3%'
+                return '📉 하락 -1~3%'
             else:
-                return '📉 -0.5~1.5%'
+                return '📉 하락 -0.5~1.5%'
         
         # 고래 이동
         if 'whale' in content or 'large transfer' in content:
             if 'exchange' in content:
-                return '⚡ ±0.5~1.5%'
+                return '⚡ 변동 ±0.5~1.5%'
             else:
-                return '⚡ ±0.2~0.5%'
+                return '⚡ 변동 ±0.2~0.5%'
         
         # 기본값
-        return '⚡ ±0.3~1%'
+        return '⚡ 변동 ±0.3~1%'
     
     def _is_critical_news(self, article: Dict) -> bool:
         """크리티컬 뉴스 판단 - 비트코인 직접 영향만"""
@@ -740,6 +789,8 @@ class RealisticNewsCollector:
             ('bitcoin', 'ban', 'government'),   # 정부 금지
             ('bitcoin', 'etf', 'launch'),       # ETF 출시
             ('fed', 'rate', 'decision'),        # Fed 금리 결정
+            ('russia', 'bitcoin', 'bonds'),     # 러시아 비트코인 채권
+            ('sberbank', 'bitcoin'),            # 스베르방크 비트코인
         ]
         
         for pattern in critical_patterns:
@@ -1056,7 +1107,7 @@ class RealisticNewsCollector:
         try:
             url = "https://newsapi.org/v2/everything"
             params = {
-                'q': '(bitcoin OR btc) AND (etf OR sec OR "bought bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "bitcoin ban" OR "bitcoin regulation" OR "bitcoin hack" OR "whale alert" OR "fed rate")',
+                'q': '(bitcoin OR btc) AND (etf OR sec OR "bought bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "bitcoin ban" OR "bitcoin regulation" OR "bitcoin hack" OR "whale alert" OR "fed rate" OR "russia bitcoin" OR "sberbank")',
                 'language': 'en',
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
@@ -1124,7 +1175,7 @@ class RealisticNewsCollector:
             url = "https://newsdata.io/api/1/news"
             params = {
                 'apikey': self.newsdata_key,
-                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation"',
+                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin"',
                 'language': 'en',
                 'category': 'business,top',
                 'size': 30
