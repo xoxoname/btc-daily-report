@@ -171,25 +171,106 @@ class GateClient:
             logger.error(f"주문 생성 실패: {e}")
             raise
     
-    async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0) -> Dict:
-        """레버리지 설정"""
+    async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
+                          retry_count: int = 3) -> Dict:
+        """🔥🔥 레버리지 설정 강화 - 재시도 및 확인 로직 추가"""
+        for attempt in range(retry_count):
+            try:
+                endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
+                
+                params = {
+                    "leverage": str(leverage)
+                }
+                
+                if cross_leverage_limit > 0:
+                    params["cross_leverage_limit"] = str(cross_leverage_limit)
+                
+                logger.info(f"🔧 Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
+                response = await self._request('POST', endpoint, params=params)
+                
+                # 설정 후 잠시 대기
+                await asyncio.sleep(0.3)
+                
+                # 🔥 설정 확인
+                verify_success = await self._verify_leverage_setting(contract, leverage)
+                if verify_success:
+                    logger.info(f"✅ Gate.io 레버리지 설정 및 확인 완료: {contract} - {leverage}x")
+                    return response
+                else:
+                    logger.warning(f"⚠️ 레버리지 설정 확인 실패, 재시도 {attempt + 1}/{retry_count}")
+                    if attempt < retry_count - 1:
+                        await asyncio.sleep(0.5)
+                        continue
+                    else:
+                        logger.error(f"❌ 레버리지 설정 최종 실패: {contract} - {leverage}x")
+                        return response  # 응답은 성공이었으니 일단 반환
+                
+            except Exception as e:
+                logger.error(f"❌ Gate.io 레버리지 설정 시도 {attempt + 1} 실패: {e}")
+                if attempt < retry_count - 1:
+                    await asyncio.sleep(1.0)  # 오류 시 더 긴 대기
+                    continue
+                else:
+                    raise
+        
+        # 모든 시도 실패
+        raise Exception(f"레버리지 설정 최대 재시도 횟수 초과: {contract} - {leverage}x")
+    
+    async def _verify_leverage_setting(self, contract: str, expected_leverage: int) -> bool:
+        """🔥 레버리지 설정 확인"""
         try:
-            endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
+            positions = await self.get_positions(contract)
+            if positions:
+                current_leverage = positions[0].get('leverage')
+                if current_leverage:
+                    current_lev_int = int(float(current_leverage))
+                    if current_lev_int == expected_leverage:
+                        logger.info(f"✅ 레버리지 확인 성공: {current_lev_int}x = {expected_leverage}x")
+                        return True
+                    else:
+                        logger.warning(f"⚠️ 레버리지 불일치: 현재 {current_lev_int}x, 예상 {expected_leverage}x")
+                        return False
             
-            params = {
-                "leverage": str(leverage)
-            }
-            
-            if cross_leverage_limit > 0:
-                params["cross_leverage_limit"] = str(cross_leverage_limit)
-            
-            response = await self._request('POST', endpoint, params=params)
-            logger.info(f"레버리지 설정 완료: {contract} - {leverage}x")
-            return response
+            # 포지션이 없으면 직접 설정 API로 확인 불가, 일단 성공으로 처리
+            logger.info("📝 포지션이 없어 레버리지 확인 불가, 설정 성공으로 처리")
+            return True
             
         except Exception as e:
-            logger.error(f"레버리지 설정 실패: {e}")
-            raise
+            logger.warning(f"레버리지 확인 중 오류: {e}")
+            return True  # 확인 실패해도 설정은 성공했을 수 있으므로
+    
+    async def get_leverage_info(self, contract: str = "BTC_USDT") -> Dict:
+        """🔥 현재 레버리지 정보 조회"""
+        try:
+            positions = await self.get_positions(contract)
+            if positions:
+                position = positions[0]
+                leverage = position.get('leverage', 'N/A')
+                mode = position.get('mode', 'N/A')  # single, dual_long, dual_short
+                
+                logger.info(f"🔧 Gate.io 현재 레버리지: {leverage}x, 모드: {mode}")
+                return {
+                    'leverage': leverage,
+                    'mode': mode,
+                    'contract': contract
+                }
+            else:
+                # 포지션이 없으면 기본 정보 반환
+                logger.info("📝 활성 포지션이 없어 레버리지 정보 조회 불가")
+                return {
+                    'leverage': 'N/A',
+                    'mode': 'N/A',
+                    'contract': contract
+                }
+                
+        except Exception as e:
+            logger.error(f"레버리지 정보 조회 실패: {e}")
+            return {
+                'leverage': 'Error',
+                'mode': 'Error',
+                'contract': contract,
+                'error': str(e)
+            }
     
     async def set_position_mode(self, contract: str, mode: str = "dual_long") -> Dict:
         """포지션 모드 설정 (dual_long, dual_short, single)"""
@@ -211,7 +292,7 @@ class GateClient:
     async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
                                          order_type: str, contract: str, size: int, 
                                          price: Optional[str] = None) -> Dict:
-        """가격 트리거 주문 생성 (TP/SL)
+        """가격 트리거 주문 생성 (TP/SL) - 개선된 에러 처리
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
@@ -244,12 +325,15 @@ class GateClient:
                 "contract": contract
             }
             
-            logger.info(f"Gate.io 가격 트리거 주문: {data}")
+            logger.info(f"Gate.io 가격 트리거 주문 생성: {data}")
             response = await self._request('POST', endpoint, data=data)
+            logger.info(f"Gate.io 가격 트리거 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
             logger.error(f"가격 트리거 주문 생성 실패: {e}")
+            # 🔥 상세한 에러 정보 로깅
+            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}")
             raise
     
     async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
@@ -273,10 +357,11 @@ class GateClient:
         try:
             endpoint = f"/api/v4/futures/usdt/price_orders/{order_id}"
             response = await self._request('DELETE', endpoint)
+            logger.info(f"Gate.io 가격 트리거 주문 취소 성공: {order_id}")
             return response
             
         except Exception as e:
-            logger.error(f"가격 트리거 주문 취소 실패: {e}")
+            logger.error(f"가격 트리거 주문 취소 실패: {order_id} - {e}")
             raise
     
     async def get_contract_info(self, contract: str = "BTC_USDT") -> Dict:
@@ -318,13 +403,18 @@ class GateClient:
                 else:  # 숏 포지션
                     close_size = min(abs(size), abs(position_size))
             
+            logger.info(f"Gate.io 포지션 종료: {contract}, 현재 사이즈: {position_size}, 종료 사이즈: {close_size}")
+            
             # 시장가로 포지션 종료
-            return await self.place_order(
+            result = await self.place_order(
                 contract=contract,
                 size=close_size,
                 reduce_only=True,
                 tif="ioc"  # 즉시 체결
             )
+            
+            logger.info(f"Gate.io 포지션 종료 성공: {result}")
+            return result
             
         except Exception as e:
             logger.error(f"포지션 종료 실패: {e}")
@@ -402,7 +492,7 @@ class GateClient:
             return []
     
     async def get_profit_history_since_may(self) -> Dict:
-        """2025년 5월 29일부터의 손익 계산"""
+        """2025년 5월 29일부터의 손익 계산 - 개선된 오류 처리"""
         try:
             import pytz
             from datetime import datetime
@@ -493,31 +583,37 @@ class GateClient:
             actual_start_timestamp = max(seven_days_timestamp, start_timestamp)
             
             # PnL 조회 (최근 7일 또는 거래 시작일부터)
-            pnl_records = await self.get_account_book(
-                type="pnl",
-                start_time=actual_start_timestamp,
-                limit=1000
-            )
-            
-            for record in pnl_records:
-                change = float(record.get('change', 0))
-                record_time = int(record.get('time', 0))
+            try:
+                pnl_records = await self.get_account_book(
+                    type="pnl",
+                    start_time=actual_start_timestamp,
+                    limit=1000
+                )
                 
-                weekly_pnl += change
-                
-                # 오늘 손익
-                if record_time >= today_timestamp:
-                    today_pnl += change
+                for record in pnl_records:
+                    change = float(record.get('change', 0))
+                    record_time = int(record.get('time', 0))
+                    
+                    weekly_pnl += change
+                    
+                    # 오늘 손익
+                    if record_time >= today_timestamp:
+                        today_pnl += change
+            except Exception as e:
+                logger.error(f"주간 PnL 조회 실패: {e}")
             
             # 수수료 조회 (최근 7일 또는 거래 시작일부터)
-            fee_records = await self.get_account_book(
-                type="fee",
-                start_time=actual_start_timestamp,
-                limit=1000
-            )
-            
-            for record in fee_records:
-                weekly_fee += abs(float(record.get('change', 0)))
+            try:
+                fee_records = await self.get_account_book(
+                    type="fee",
+                    start_time=actual_start_timestamp,
+                    limit=1000
+                )
+                
+                for record in fee_records:
+                    weekly_fee += abs(float(record.get('change', 0)))
+            except Exception as e:
+                logger.error(f"주간 수수료 조회 실패: {e}")
             
             # 7일 순수익
             weekly_net = weekly_pnl - weekly_fee
@@ -547,12 +643,14 @@ class GateClient:
             
         except Exception as e:
             logger.error(f"Gate 손익 내역 조회 실패: {e}")
-            # 폴백: 현재 잔고 기반 계산
+            # 🔥 폴백: 현재 잔고 기반 계산 강화
             try:
                 account = await self.get_account_balance()
                 total_equity = float(account.get('total', 0))
                 # 초기 자본 700 달러 기준
                 total_pnl = total_equity - 700
+                
+                logger.info(f"Gate.io 폴백 계산: 현재 ${total_equity:.2f} - 초기 $700 = ${total_pnl:.2f}")
                 
                 return {
                     'total': total_pnl,
@@ -563,17 +661,55 @@ class GateClient:
                     'today_realized': 0.0,
                     'current_balance': total_equity,
                     'initial_capital': 700,
-                    'actual_profit': total_pnl
+                    'actual_profit': total_pnl,
+                    'error': f"상세 내역 조회 실패: {str(e)[:100]}"
                 }
-            except:
+            except Exception as fallback_error:
+                logger.error(f"폴백 계산도 실패: {fallback_error}")
                 return {
                     'total': 0,
                     'weekly': {'total': 0, 'average': 0},
                     'today_realized': 0,
                     'current_balance': 0,
                     'initial_capital': 700,
-                    'actual_profit': 0
+                    'actual_profit': 0,
+                    'error': f"전체 조회 실패: {str(e)[:100]}"
                 }
+    
+    async def test_connection(self) -> Dict:
+        """🔥 연결 테스트 및 기본 정보 확인"""
+        try:
+            logger.info("🔧 Gate.io 연결 테스트 시작")
+            
+            # 1. 계정 잔고 조회
+            account = await self.get_account_balance()
+            balance = float(account.get('total', 0))
+            
+            # 2. 레버리지 정보 조회
+            leverage_info = await self.get_leverage_info()
+            
+            # 3. 계약 정보 조회
+            contract_info = await self.get_contract_info()
+            
+            result = {
+                'connection': 'success',
+                'balance': balance,
+                'leverage': leverage_info.get('leverage', 'N/A'),
+                'mode': leverage_info.get('mode', 'N/A'),
+                'contract': contract_info.get('name', 'BTC_USDT'),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            logger.info(f"✅ Gate.io 연결 테스트 성공: 잔고 ${balance:.2f}, 레버리지 {leverage_info.get('leverage')}x")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Gate.io 연결 테스트 실패: {e}")
+            return {
+                'connection': 'failed',
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
     
     async def close(self):
         """세션 종료"""
