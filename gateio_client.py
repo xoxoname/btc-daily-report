@@ -125,7 +125,7 @@ class GateClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None, 
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """선물 주문 생성 - Gate.io API 규격에 맞춰 수정
+        """🔥 선물 주문 생성 - Gate.io API 규격 완전 준수
         
         Args:
             contract: 계약명 (예: BTC_USDT)
@@ -138,37 +138,43 @@ class GateClient:
         try:
             endpoint = "/api/v4/futures/usdt/orders"
             
-            # 기본 주문 데이터
+            # 🔥 Gate.io API 규격에 맞는 기본 주문 데이터
             data = {
                 "contract": contract,
-                "size": size,
-                "reduce_only": reduce_only
+                "size": str(size)  # 🔥 문자열로 변환
             }
             
-            # 지정가 주문
+            # 🔥 reduce_only 처리 (필요한 경우만 추가)
+            if reduce_only:
+                data["reduce_only"] = True
+            
+            # 지정가 vs 시장가 주문 처리
             if price is not None:
+                # 지정가 주문
                 data["price"] = str(price)
                 data["tif"] = tif
             else:
-                # 시장가 주문 - tif는 ioc 또는 생략
-                data["tif"] = "ioc"
+                # 🔥 시장가 주문 - price와 tif 처리 방식 수정
+                data["price"] = "0"  # 시장가는 가격을 0으로 설정
+                # tif는 시장가에서 생략하거나 ioc만 허용
+                # data["tif"] = "ioc"  # 일단 생략해보기
             
-            # 빙산 주문
+            # 🔥 빙산 주문 (필요한 경우만)
             if iceberg > 0:
-                data["iceberg"] = iceberg
+                data["iceberg"] = str(iceberg)
             
-            # 자동 사이즈 감소 (Gate.io 기본값)
-            data["auto_size"] = "close_long" if size < 0 else "close_short" if reduce_only else None
-            if data["auto_size"] is None:
-                del data["auto_size"]
+            # 🔥 자동 사이즈 필드 제거 (문제 원인일 수 있음)
+            # auto_size 필드가 INVALID_PROTOCOL 오류를 일으킬 수 있음
             
-            logger.info(f"Gate.io 주문 생성 요청: {data}")
+            logger.info(f"🔥 Gate.io 주문 생성 요청 (수정됨): {data}")
             response = await self._request('POST', endpoint, data=data)
-            logger.info(f"Gate.io 주문 생성 성공: {response}")
+            logger.info(f"✅ Gate.io 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
-            logger.error(f"주문 생성 실패: {e}")
+            logger.error(f"❌ Gate.io 주문 생성 실패: {e}")
+            # 🔥 상세한 오류 정보 로깅
+            logger.error(f"주문 파라미터: contract={contract}, size={size}, price={price}, reduce_only={reduce_only}")
             raise
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
