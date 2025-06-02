@@ -37,15 +37,12 @@ class ExceptionReportGenerator(BaseReportGenerator):
         
         if event_type == 'critical_news':
             # 뉴스 정보
-            title = event.get('title', '')
-            title_ko = event.get('title_ko', title)
-            description = event.get('description', '')
+            title_ko = event.get('title_ko', event.get('title', ''))
             summary = event.get('summary', '')
             impact = event.get('impact', '')
             expected_change = event.get('expected_change', '')
-            source = event.get('source', '')
-            published_at = event.get('published_at', '')
             company = event.get('company', '')  # 기업명
+            published_at = event.get('published_at', '')
             
             # 발행 시각 포맷팅
             pub_time_str = ""
@@ -66,6 +63,15 @@ class ExceptionReportGenerator(BaseReportGenerator):
                     pub_time_str = "시간 정보 없음"
             else:
                 pub_time_str = "시간 정보 없음"
+            
+            # 예상 변동 방향 명확히
+            direction_text = ""
+            if '📈' in expected_change:
+                direction_text = "상승"
+            elif '📉' in expected_change:
+                direction_text = "하락"
+            else:
+                direction_text = "변동"
             
             # 영향도에 따른 분석
             if '호재' in impact:
@@ -89,21 +95,9 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 recommendation = "관망"
                 strategy = "• 방향성 확인 대기\n• 소량 거래만\n• 변동성 주의"
             
-            # 기업명이 있으면 포함
-            company_info = ""
-            if company:
-                company_info = f"\n🏢 <b>관련 기업</b>: {company}"
-            
-            # 요약 정보
-            summary_info = ""
-            if summary and summary != description[:200]:
-                summary_info = f"\n\n📝 <b>요약</b>:\n{summary}"
-            elif description:
-                # description에서 핵심 내용 추출
-                desc_summary = description[:300]
-                if len(description) > 300:
-                    desc_summary += "..."
-                summary_info = f"\n\n📝 <b>내용</b>:\n{desc_summary}"
+            # 기업명이 있으면 제목에 포함
+            if company and company.lower() not in title_ko.lower():
+                title_ko = f"{company} - {title_ko}"
             
             # 리포트 생성
             report = f"""🚨 <b>BTC 긴급 예외 리포트</b>
@@ -112,11 +106,10 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 {impact_emoji} <b>{title_ko}</b>
 
-📰 <b>원문</b>: {title}{company_info}
 📊 <b>영향</b>: {impact}
-💹 <b>예상 변동</b>: {expected_change}
-📰 <b>출처</b>: {source}{summary_info}
+💹 <b>예상 {direction_text}</b>: {expected_change}
 
+{summary if summary else ''}
 ━━━━━━━━━━━━━━━
 
 🎯 <b>추천</b>: {recommendation}
