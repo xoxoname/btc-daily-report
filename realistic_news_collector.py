@@ -189,8 +189,8 @@ class RealisticNewsCollector:
             response = await self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a professional financial news translator specializing in Bitcoin and cryptocurrency news. Translate to Korean clearly and include all important details like: company names, specific amounts (in dollars/bitcoin), actions taken, and key terms. Keep the translation natural and easy to understand for Korean readers."},
-                    {"role": "user", "content": f"Translate this Bitcoin/crypto news to Korean (max {max_length} chars):\n{text}"}
+                    {"role": "system", "content": "You are a professional financial news translator specializing in Bitcoin and cryptocurrency news. Translate to Korean clearly and include all important details like: company names (keep original name with Korean translation), specific amounts (in dollars/bitcoin), actions taken, and key terms. Keep the translation natural and easy to understand for Korean readers. Important: Always keep company names like MicroStrategy, Tesla, BlackRock, etc. in their original English form followed by Korean in parentheses if needed."},
+                    {"role": "user", "content": f"Translate this Bitcoin/crypto news to Korean (max {max_length} chars), keeping company names clear:\n{text}"}
                 ],
                 max_tokens=400,
                 temperature=0.3
@@ -221,6 +221,72 @@ class RealisticNewsCollector:
         except Exception as e:
             logger.warning(f"번역 실패: {str(e)[:50]}")
             return text
+    
+    async def summarize_article(self, title: str, description: str, max_length: int = 300) -> str:
+        """기사 내용을 요약"""
+        if not self.openai_client or not description:
+            return ""
+        
+        # 이미 짧으면 그대로 반환
+        if len(description) <= max_length:
+            return description
+        
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a Bitcoin news analyst. Summarize the key points of Bitcoin/crypto news in Korean. Focus on: 1) Who (company/person), 2) What action (bought/sold/announced), 3) How much (specific amounts), 4) Why (reason if mentioned), 5) Impact on Bitcoin. Be concise and clear."},
+                    {"role": "user", "content": f"Summarize this Bitcoin news in Korean (max {max_length} chars):\nTitle: {title}\nContent: {description[:1000]}"}
+                ],
+                max_tokens=400,
+                temperature=0.3
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            
+            if len(summary) > max_length:
+                summary = summary[:max_length-3] + "..."
+            
+            return summary
+            
+        except Exception as e:
+            logger.warning(f"요약 실패: {str(e)[:50]}")
+            return description[:max_length] + "..." if len(description) > max_length else description
+    
+    def _extract_company_from_content(self, title: str, description: str = "") -> str:
+        """컨텐츠에서 기업명 추출"""
+        content = (title + " " + description).lower()
+        
+        # 중요 기업 확인
+        found_companies = []
+        for company in self.important_companies:
+            if company.lower() in content:
+                # 원래 대소문자 유지
+                for original in self.important_companies:
+                    if original.lower() == company.lower():
+                        found_companies.append(original)
+                        break
+        
+        # 첫 번째 발견된 기업 반환
+        if found_companies:
+            return found_companies[0]
+        
+        # 특정 패턴으로 기업명 찾기
+        patterns = [
+            r'([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\s+(?:bought|purchased|acquired|adds)',
+            r'([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\s+bitcoin',
+            r'([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\s+BTC',
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, title + " " + description)
+            if matches:
+                # 알려진 기업명인지 확인
+                for match in matches:
+                    if len(match) > 2 and match.lower() not in ['the', 'and', 'for', 'with']:
+                        return match
+        
+        return ""
     
     def _generate_content_hash(self, title: str, description: str = "") -> str:
         """뉴스 내용의 해시 생성 (중복 체크용)"""
@@ -383,9 +449,26 @@ class RealisticNewsCollector:
                                 if not self._is_bitcoin_related(article):
                                     continue
                                 
+                                # 기업명 추출
+                                company = self._extract_company_from_content(
+                                    article.get('title', ''),
+                                    article.get('description', '')
+                                )
+                                if company:
+                                    article['company'] = company
+                                
                                 # 번역 필요 여부 체크
                                 if self.openai_client and self._should_translate(article):
                                     article['title_ko'] = await self.translate_text(article['title'])
+                                    
+                                    # 요약 생성 (크리티컬 뉴스만)
+                                    if self._is_critical_news(article):
+                                        summary = await self.summarize_article(
+                                            article['title'],
+                                            article.get('description', '')
+                                        )
+                                        if summary:
+                                            article['summary'] = summary
                                 else:
                                     article['title_ko'] = article.get('title', '')
                                 
@@ -637,6 +720,8 @@ class RealisticNewsCollector:
                 'title': article.get('title', ''),
                 'title_ko': article.get('title_ko', article.get('title', '')),
                 'description': article.get('description', '')[:1400],  # 1400자 유지
+                'summary': article.get('summary', ''),  # 요약 추가
+                'company': article.get('company', ''),  # 기업명 추가
                 'source': article.get('source', ''),
                 'url': article.get('url', ''),
                 'timestamp': datetime.now(),
@@ -729,9 +814,23 @@ class RealisticNewsCollector:
                                         }
                                         
                                         if self._is_bitcoin_related(article):
+                                            # 기업명 추출
+                                            company = self._extract_company_from_content(
+                                                article['title'],
+                                                article.get('description', '')
+                                            )
+                                            if company:
+                                                article['company'] = company
+                                            
                                             if self._is_critical_news(article):
                                                 if self._should_translate(article):
                                                     article['title_ko'] = await self.translate_text(article['title'])
+                                                    summary = await self.summarize_article(
+                                                        article['title'],
+                                                        article.get('description', '')
+                                                    )
+                                                    if summary:
+                                                        article['summary'] = summary
                                                 
                                                 if not self._is_duplicate_emergency(article):
                                                     article['expected_change'] = self._estimate_price_impact(article)
@@ -874,8 +973,23 @@ class RealisticNewsCollector:
                         }
                         
                         if self._is_bitcoin_related(formatted_article):
+                            # 기업명 추출
+                            company = self._extract_company_from_content(
+                                formatted_article['title'],
+                                formatted_article.get('description', '')
+                            )
+                            if company:
+                                formatted_article['company'] = company
+                            
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
+                                if self._is_critical_news(formatted_article):
+                                    summary = await self.summarize_article(
+                                        formatted_article['title'],
+                                        formatted_article.get('description', '')
+                                    )
+                                    if summary:
+                                        formatted_article['summary'] = summary
                             
                             if self._is_critical_news(formatted_article):
                                 if not self._is_duplicate_emergency(formatted_article):
@@ -925,8 +1039,23 @@ class RealisticNewsCollector:
                         }
                         
                         if self._is_bitcoin_related(formatted_article):
+                            # 기업명 추출
+                            company = self._extract_company_from_content(
+                                formatted_article['title'],
+                                formatted_article.get('description', '')
+                            )
+                            if company:
+                                formatted_article['company'] = company
+                            
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
+                                if self._is_critical_news(formatted_article):
+                                    summary = await self.summarize_article(
+                                        formatted_article['title'],
+                                        formatted_article.get('description', '')
+                                    )
+                                    if summary:
+                                        formatted_article['summary'] = summary
                             
                             if self._is_critical_news(formatted_article):
                                 if not self._is_duplicate_emergency(formatted_article):
@@ -978,8 +1107,23 @@ class RealisticNewsCollector:
                         }
                         
                         if self._is_bitcoin_related(formatted_article):
+                            # 기업명 추출
+                            company = self._extract_company_from_content(
+                                formatted_article['title'],
+                                formatted_article.get('description', '')
+                            )
+                            if company:
+                                formatted_article['company'] = company
+                            
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
+                                if self._is_critical_news(formatted_article):
+                                    summary = await self.summarize_article(
+                                        formatted_article['title'],
+                                        formatted_article.get('description', '')
+                                    )
+                                    if summary:
+                                        formatted_article['summary'] = summary
                             
                             if self._is_critical_news(formatted_article):
                                 if not self._is_duplicate_emergency(formatted_article):
