@@ -146,6 +146,121 @@ class BitgetClient:
             logger.error(f"포지션 조회 실패: {e}")
             raise
     
+    async def get_orders(self, symbol: str = None, status: str = None, limit: int = 100) -> List[Dict]:
+        """주문 조회 (V2 API) - 예약 주문 포함"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/order/orders-pending"
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES'
+        }
+        
+        if status:
+            params['status'] = status
+        if limit:
+            params['limit'] = str(limit)
+        
+        try:
+            response = await self._request('GET', endpoint, params=params)
+            logger.debug(f"주문 조회 응답: {response}")
+            
+            orders = response if isinstance(response, list) else []
+            return orders
+            
+        except Exception as e:
+            logger.error(f"주문 조회 실패: {e}")
+            return []
+    
+    async def get_order_history(self, symbol: str = None, status: str = 'filled', 
+                              start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
+        """주문 내역 조회 (V2 API)"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/order/orders-history"
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES',
+            'pageSize': str(limit)
+        }
+        
+        if status:
+            params['status'] = status
+        if start_time:
+            params['startTime'] = str(start_time)
+        if end_time:
+            params['endTime'] = str(end_time)
+        
+        try:
+            response = await self._request('GET', endpoint, params=params)
+            
+            # 응답이 dict이고 orderList가 있는 경우
+            if isinstance(response, dict) and 'orderList' in response:
+                return response['orderList']
+            # 응답이 리스트인 경우
+            elif isinstance(response, list):
+                return response
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"주문 내역 조회 실패: {e}")
+            return []
+    
+    async def get_recent_filled_orders(self, symbol: str = None, minutes: int = 5) -> List[Dict]:
+        """최근 체결된 주문 조회 (미러링용)"""
+        try:
+            symbol = symbol or self.config.symbol
+            
+            # 현재 시간에서 N분 전까지
+            now = datetime.now()
+            start_time = now - timedelta(minutes=minutes)
+            start_timestamp = int(start_time.timestamp() * 1000)
+            end_timestamp = int(now.timestamp() * 1000)
+            
+            # 최근 체결된 주문 조회
+            filled_orders = await self.get_order_history(
+                symbol=symbol,
+                status='filled',
+                start_time=start_timestamp,
+                end_time=end_timestamp,
+                limit=50
+            )
+            
+            logger.info(f"최근 {minutes}분간 체결된 주문: {len(filled_orders)}건")
+            
+            # 신규 진입 주문만 필터링 (reduce_only가 아닌 것)
+            new_position_orders = []
+            for order in filled_orders:
+                reduce_only = order.get('reduceOnly', 'false')
+                if reduce_only == 'false' or reduce_only is False:
+                    new_position_orders.append(order)
+                    logger.info(f"신규 진입 주문 감지: {order.get('orderId')} - {order.get('side')} {order.get('size')}")
+            
+            return new_position_orders
+            
+        except Exception as e:
+            logger.error(f"최근 체결 주문 조회 실패: {e}")
+            return []
+    
+    async def get_plan_orders(self, symbol: str = None, status: str = 'plan') -> List[Dict]:
+        """플랜 주문(예약 주문) 조회 (V2 API)"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/order/orders-plan-pending"
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES'
+        }
+        
+        try:
+            response = await self._request('GET', endpoint, params=params)
+            logger.debug(f"플랜 주문 조회 응답: {response}")
+            
+            orders = response if isinstance(response, list) else []
+            return orders
+            
+        except Exception as e:
+            logger.error(f"플랜 주문 조회 실패: {e}")
+            return []
+    
     async def get_account_info(self) -> Dict:
         """계정 정보 조회 (V2 API)"""
         endpoint = "/api/v2/mix/account/accounts"
