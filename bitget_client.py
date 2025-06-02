@@ -247,23 +247,26 @@ class BitgetClient:
         
         # V2 API의 올바른 엔드포인트 사용
         if plan_type == 'profit_loss':
-            # TP/SL 주문은 포지션과 함께 조회
-            endpoint = "/api/v2/mix/position/all-position"
+            # TP/SL 주문은 따로 조회
+            endpoint = "/api/v2/mix/order/orders-plan-pending"
             params = {
+                'symbol': symbol,
                 'productType': 'USDT-FUTURES',
-                'marginCoin': 'USDT'
+                'planType': 'profit_loss'
             }
         else:
-            # 일반 예약 주문은 pending orders로 조회
-            endpoint = "/api/v2/mix/order/orders-pending"
+            # 일반 예약 주문 조회
+            endpoint = "/api/v2/mix/order/orders-plan-pending"
             params = {
                 'symbol': symbol,
                 'productType': 'USDT-FUTURES'
             }
+            if plan_type:
+                params['planType'] = plan_type
         
         try:
             response = await self._request('GET', endpoint, params=params)
-            logger.debug(f"플랜 주문 V2 조회 응답 ({plan_type}): {response}")
+            logger.info(f"플랜 주문 V2 조회 응답 ({plan_type}): {response}")
             
             # 응답 처리
             if isinstance(response, dict):
@@ -318,21 +321,15 @@ class BitgetClient:
     async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
         """플랜 주문(예약 주문) 조회 - 메인 함수"""
         try:
-            # 먼저 일반 주문 조회로 시도
-            pending_orders = await self.get_orders(symbol)
+            # V2 API로 먼저 시도
+            orders = await self.get_plan_orders_v2(symbol, plan_type)
             
-            # 예약 주문만 필터링
-            plan_orders = []
-            for order in pending_orders:
-                # 트리거 가격이 있으면 예약 주문
-                if order.get('triggerPrice') or order.get('planType'):
-                    plan_orders.append(order)
+            if orders:
+                logger.info(f"V2 API에서 예약 주문 {len(orders)}건 발견")
+                return orders
             
-            if plan_orders:
-                logger.info(f"일반 주문 조회에서 예약 주문 {len(plan_orders)}건 발견")
-                return plan_orders
-            
-            # 없으면 V1 API 시도
+            # V2가 실패하면 V1 API 시도
+            logger.info("V2 API 조회 실패, V1 API로 폴백")
             return await self.get_plan_orders_v1(symbol, plan_type)
             
         except Exception as e:
