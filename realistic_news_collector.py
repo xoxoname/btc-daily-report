@@ -10,6 +10,7 @@ import openai
 import os
 import hashlib
 import re
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,9 @@ class RealisticNewsCollector:
         self.news_title_cache = {}  # 제목별 캐시
         self.company_news_count = {}  # 회사별 뉴스 카운트
         self.news_first_seen = {}  # 뉴스 최초 발견 시간
+        
+        # 중복 방지 데이터 파일 경로
+        self.persistence_file = 'news_duplicates.json'
         
         # 번역 캐시 및 rate limit 관리
         self.translation_cache = {}  # 번역 캐시
@@ -156,8 +160,87 @@ class RealisticNewsCollector:
             'alpha_vantage': 2
         }
         
+        # 중복 방지 데이터 로드
+        self._load_duplicate_data()
+        
         logger.info(f"뉴스 수집기 초기화 완료 - 비트코인 전용 필터링 강화")
         logger.info(f"📊 설정: RSS 15초 체크, 번역 15분당 {self.max_translations_per_15min}개, 크리티컬 키워드 {len(self.critical_keywords)}개")
+        logger.info(f"💾 중복 방지 데이터 로드: 처리된 뉴스 {len(self.processed_news_hashes)}개, 긴급 알림 {len(self.emergency_alerts_sent)}개")
+    
+    def _load_duplicate_data(self):
+        """중복 방지 데이터 파일에서 로드"""
+        try:
+            if os.path.exists(self.persistence_file):
+                with open(self.persistence_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # 처리된 뉴스 해시 로드
+                self.processed_news_hashes = set(data.get('processed_news_hashes', []))
+                
+                # 긴급 알림 데이터 로드 (시간 문자열을 datetime으로 변환)
+                emergency_data = data.get('emergency_alerts_sent', {})
+                current_time = datetime.now()
+                cutoff_time = current_time - timedelta(hours=24)  # 24시간 이내 데이터만 유지
+                
+                for hash_key, time_str in emergency_data.items():
+                    try:
+                        alert_time = datetime.fromisoformat(time_str)
+                        if alert_time > cutoff_time:  # 24시간 이내 데이터만 유지
+                            self.emergency_alerts_sent[hash_key] = alert_time
+                    except:
+                        continue
+                
+                # 뉴스 제목 캐시 로드
+                title_data = data.get('sent_news_titles', {})
+                cutoff_time = current_time - timedelta(hours=6)  # 6시간 이내 데이터만 유지
+                
+                for title_hash, time_str in title_data.items():
+                    try:
+                        sent_time = datetime.fromisoformat(time_str)
+                        if sent_time > cutoff_time:  # 6시간 이내 데이터만 유지
+                            self.sent_news_titles[title_hash] = sent_time
+                    except:
+                        continue
+                
+                # 처리된 뉴스 해시 크기 제한 (최대 5000개)
+                if len(self.processed_news_hashes) > 5000:
+                    self.processed_news_hashes = set(list(self.processed_news_hashes)[-2500:])
+                
+                logger.info(f"중복 방지 데이터 로드 완료: 처리된 뉴스 {len(self.processed_news_hashes)}개, 긴급 알림 {len(self.emergency_alerts_sent)}개, 뉴스 제목 {len(self.sent_news_titles)}개")
+                
+        except Exception as e:
+            logger.warning(f"중복 방지 데이터 로드 실패: {e}")
+            # 기본값으로 초기화
+            self.processed_news_hashes = set()
+            self.emergency_alerts_sent = {}
+            self.sent_news_titles = {}
+    
+    def _save_duplicate_data(self):
+        """중복 방지 데이터를 파일에 저장"""
+        try:
+            # datetime을 문자열로 변환하여 저장
+            emergency_data = {}
+            for hash_key, alert_time in self.emergency_alerts_sent.items():
+                emergency_data[hash_key] = alert_time.isoformat()
+            
+            title_data = {}
+            for title_hash, sent_time in self.sent_news_titles.items():
+                title_data[title_hash] = sent_time.isoformat()
+            
+            data = {
+                'processed_news_hashes': list(self.processed_news_hashes),
+                'emergency_alerts_sent': emergency_data,
+                'sent_news_titles': title_data,
+                'last_updated': datetime.now().isoformat()
+            }
+            
+            with open(self.persistence_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                
+            logger.debug(f"중복 방지 데이터 저장 완료: {len(self.processed_news_hashes)}개 해시")
+            
+        except Exception as e:
+            logger.error(f"중복 방지 데이터 저장 실패: {e}")
     
     def _reset_translation_count_if_needed(self):
         """필요시 번역 카운트 리셋"""
@@ -315,11 +398,12 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
     async def summarize_article(self, title: str, description: str, max_length: int = 500) -> str:
         """기사 내용을 한국어로 상세 요약 - 투자 판단에 필요한 핵심 정보"""
         if not self.openai_client or not description:
-            return ""
+            # OpenAI가 없거나 description이 없으면 제목과 기본 정보로 요약 생성
+            return self._generate_basic_summary(title, description)
         
-        # 이미 짧으면 그대로 반환
+        # 이미 짧으면 기본 요약 생성
         if len(description) <= 200:
-            return ""
+            return self._generate_basic_summary(title, description)
         
         try:
             # 뉴스 타입 분류
@@ -403,7 +487,75 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                 
                 return summary
             except:
-                return description[:max_length] + "..." if len(description) > max_length else description
+                return self._generate_basic_summary(title, description)
+    
+    def _generate_basic_summary(self, title: str, description: str) -> str:
+        """OpenAI 없이 기본 요약 생성"""
+        try:
+            # 제목에서 핵심 정보 추출
+            content = (title + " " + description).lower()
+            
+            summary_parts = []
+            
+            # 기업명 추출
+            for company in self.important_companies:
+                if company.lower() in content:
+                    if company.lower() == 'sberbank':
+                        summary_parts.append("러시아 최대 은행 스베르방크가")
+                    elif company.lower() == 'tesla':
+                        summary_parts.append("테슬라가")
+                    elif company.lower() == 'microstrategy':
+                        summary_parts.append("마이크로스트래티지가")
+                    elif company.lower() == 'blackrock':
+                        summary_parts.append("블랙록이")
+                    else:
+                        summary_parts.append(f"{company}가")
+                    break
+            
+            # 행동 추출
+            if 'bought' in content or 'purchase' in content or '구매' in content:
+                summary_parts.append("비트코인을 매입했습니다.")
+            elif 'launch' in content or 'bonds' in content or '출시' in content or '채권' in content:
+                summary_parts.append("비트코인 연계 상품을 출시했습니다.")
+            elif 'approved' in content or '승인' in content:
+                summary_parts.append("비트코인 관련 승인을 받았습니다.")
+            elif 'rejected' in content or '거부' in content:
+                summary_parts.append("비트코인 관련 승인이 거부되었습니다.")
+            else:
+                summary_parts.append("비트코인 관련 중요한 발표를 했습니다.")
+            
+            # 금액 정보 추출
+            amount_match = re.search(r'\$?([\d,]+(?:\.\d+)?)\s*(billion|million|천만|억)', content)
+            if amount_match:
+                amount = amount_match.group(1)
+                unit = amount_match.group(2)
+                if 'billion' in unit:
+                    summary_parts.append(f"규모는 약 {amount}억 달러입니다.")
+                elif 'million' in unit:
+                    summary_parts.append(f"규모는 약 {amount}백만 달러입니다.")
+            
+            # BTC 수량 정보
+            btc_match = re.search(r'([\d,]+)\s*(?:btc|bitcoin)', content)
+            if btc_match:
+                btc_amount = btc_match.group(1)
+                summary_parts.append(f"비트코인 {btc_amount}개가 관련되었습니다.")
+            
+            if summary_parts:
+                return " ".join(summary_parts)
+            else:
+                # 제목 기반 기본 요약
+                if 'sberbank' in content and 'bonds' in content:
+                    return "러시아 최대 은행 스베르방크가 비트코인 연계 채권을 출시했습니다. 이는 러시아의 비트코인 채택 확대를 의미하며, 기관 투자자들의 관심을 끌 것으로 예상됩니다."
+                elif 'etf' in content:
+                    return "비트코인 ETF 관련 중요한 발표가 있었습니다. ETF 승인은 기관 투자자들의 비트코인 접근성을 크게 향상시킬 것으로 예상됩니다."
+                elif any(company in content for company in ['tesla', 'microstrategy', 'blackrock']):
+                    return "대형 기업의 비트코인 관련 중요한 발표가 있었습니다. 기업의 비트코인 채택은 시장의 제도화를 가속화할 것으로 보입니다."
+                else:
+                    return "비트코인 시장에 중요한 영향을 미칠 수 있는 발표가 있었습니다. 투자자들은 시장 반응을 주의 깊게 지켜볼 필요가 있습니다."
+                    
+        except Exception as e:
+            logger.error(f"기본 요약 생성 실패: {e}")
+            return "비트코인 관련 중요한 뉴스가 발표되었습니다. 자세한 내용은 원문을 확인하시기 바랍니다."
     
     def _classify_news_for_summary(self, title: str, description: str) -> str:
         """요약을 위한 뉴스 타입 분류"""
@@ -555,6 +707,10 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             
             # 새로운 알림 기록
             self.emergency_alerts_sent[content_hash] = current_time
+            
+            # 파일에 저장
+            self._save_duplicate_data()
+            
             return False
             
         except Exception as e:
@@ -982,9 +1138,9 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             # 처리된 뉴스로 기록
             self.processed_news_hashes.add(content_hash)
             
-            # 오래된 해시 정리
-            if len(self.processed_news_hashes) > 1000:
-                self.processed_news_hashes = set(list(self.processed_news_hashes)[-500:])
+            # 처리된 뉴스 해시 크기 제한
+            if len(self.processed_news_hashes) > 10000:
+                self.processed_news_hashes = set(list(self.processed_news_hashes)[-5000:])
             
             # 최초 발견 시간 기록
             if content_hash not in self.news_first_seen:
@@ -1008,6 +1164,9 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                 'published_at': article.get('published_at', ''),
                 'first_seen': self.news_first_seen[content_hash]
             }
+            
+            # 파일에 저장
+            self._save_duplicate_data()
             
             # 데이터 컬렉터에 전달
             if hasattr(self, 'data_collector') and self.data_collector:
@@ -1044,6 +1203,9 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             # 버퍼에 추가
             self.news_buffer.append(article)
             self.processed_news_hashes.add(content_hash)
+            
+            # 파일에 저장
+            self._save_duplicate_data()
             
             # 버퍼 크기 관리 (최대 50개)
             if len(self.news_buffer) > 50:
@@ -1476,6 +1638,9 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
     async def close(self):
         """세션 종료"""
         try:
+            # 중복 방지 데이터 저장
+            self._save_duplicate_data()
+            
             if self.session:
                 await self.session.close()
                 logger.info("🔚 뉴스 수집기 세션 종료")
