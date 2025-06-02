@@ -64,6 +64,9 @@ class MirrorTradingSystem:
         self.processed_plan_orders: Set[str] = set()  # 이미 처리된 예약 주문 ID들
         self.startup_plan_orders: Set[str] = set()  # 시작 시 존재했던 예약 주문 (복제 제외)
         
+        # 🔥🔥 예약주문 취소 감지 개선
+        self.last_plan_order_ids: Set[str] = set()  # 이전 체크에서 발견된 예약주문 ID들
+        
         # 🔥 기존 포지션 TP/SL 제외용 (개선된 분류)
         self.startup_position_tp_sl: Set[str] = set()  # 시작 시 존재했던 포지션의 클로즈 TP/SL (복제 제외)
         
@@ -145,6 +148,7 @@ class MirrorTradingSystem:
                 if order_id:
                     self.startup_plan_orders.add(order_id)
                     self.processed_plan_orders.add(order_id)
+                    self.last_plan_order_ids.add(order_id)  # 🔥🔥 초기 ID 목록에도 추가
                     self.logger.info(f"기존 예약 주문 기록 (복제 제외): {order_id}")
             
             # TP/SL 주문 기록
@@ -153,6 +157,7 @@ class MirrorTradingSystem:
                 if order_id:
                     self.startup_plan_orders.add(order_id)
                     self.processed_plan_orders.add(order_id)
+                    self.last_plan_order_ids.add(order_id)  # 🔥🔥 초기 ID 목록에도 추가
                     self.logger.info(f"기존 TP/SL 주문 기록 (복제 제외): {order_id}")
             
             total_existing = len(plan_orders) + len(tp_sl_orders)
@@ -221,8 +226,8 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 포지션 TP/SL 기록 실패: {e}")
     
     async def monitor_plan_orders(self):
-        """🔥 신규: 예약 주문 모니터링 - 가장 중요한 기능"""
-        self.logger.info("🔥🔥 예약 주문 달러 비율 복제 모니터링 시작 (레버리지 완전 동기화)")
+        """🔥🔥 예약 주문 모니터링 - 취소 감지 로직 완전 개선"""
+        self.logger.info("🔥🔥 예약 주문 달러 비율 복제 모니터링 시작 (취소 감지 개선)")
         consecutive_errors = 0
         
         while self.monitoring:
@@ -233,6 +238,26 @@ class MirrorTradingSystem:
                 current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
                 
                 all_current_orders = current_plan_orders + current_tp_sl_orders
+                
+                # 🔥🔥 현재 존재하는 예약주문 ID 집합
+                current_order_ids = set()
+                for order in all_current_orders:
+                    order_id = order.get('orderId', order.get('planOrderId', ''))
+                    if order_id:
+                        current_order_ids.add(order_id)
+                
+                # 🔥🔥 취소된 예약 주문 감지 (개선된 로직)
+                # 이전에 존재했지만 지금은 없는 주문들 찾기
+                canceled_order_ids = self.last_plan_order_ids - current_order_ids
+                
+                # 기존 포지션/주문은 취소 감지에서 제외
+                canceled_order_ids -= self.startup_plan_orders
+                canceled_order_ids -= self.startup_position_tp_sl
+                
+                # 🔥🔥 취소된 주문 처리
+                for canceled_order_id in canceled_order_ids:
+                    self.logger.info(f"🚫🚫 예약 주문 취소 감지: {canceled_order_id}")
+                    await self._handle_plan_order_cancel(canceled_order_id)
                 
                 # 새로운 예약 주문 감지
                 new_orders_count = 0
@@ -248,7 +273,7 @@ class MirrorTradingSystem:
                     # 🔥 개선된 기존 포지션 TP/SL 필터링
                     if order_id in self.startup_position_tp_sl:
                         # 이미 기존 포지션의 클로즈 TP/SL로 분류됨 → 스킵
-                        self.logger.info(f"기존 포지션 클로즈 TP/SL 스킵: {order_id}")
+                        self.logger.debug(f"기존 포지션 클로즈 TP/SL 스킵: {order_id}")
                         continue
                     
                     # 이미 처리된 주문은 스킵
@@ -266,21 +291,14 @@ class MirrorTradingSystem:
                     self.processed_plan_orders.add(order_id)
                     new_orders_count += 1
                 
-                # 취소된 예약 주문 감지
-                current_order_ids = set()
-                for order in all_current_orders:
-                    order_id = order.get('orderId', order.get('planOrderId', ''))
-                    if order_id and order_id not in self.startup_plan_orders and order_id not in self.startup_position_tp_sl:
-                        current_order_ids.add(order_id)
-                
-                # 복제된 주문 중 비트겟에서 사라진 것들 찾기
-                canceled_orders = set(self.mirrored_plan_orders.keys()) - current_order_ids
-                for canceled_order_id in canceled_orders:
-                    self.logger.info(f"🚫 예약 주문 취소 감지: {canceled_order_id}")
-                    await self._handle_plan_order_cancel(canceled_order_id)
+                # 🔥🔥 현재 상태를 다음 비교를 위해 저장
+                self.last_plan_order_ids = current_order_ids.copy()
                 
                 if new_orders_count > 0:
                     self.logger.info(f"🔥🔥 {new_orders_count}개의 새로운 예약 주문을 복제했습니다")
+                
+                if canceled_order_ids:
+                    self.logger.info(f"🚫🚫 {len(canceled_order_ids)}개의 예약 주문 취소를 처리했습니다")
                 
                 # 오래된 주문 ID 정리 (메모리 절약)
                 if len(self.processed_plan_orders) > 500:
@@ -304,7 +322,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
     
     async def _process_new_plan_order(self, bitget_order: Dict):
-        """🔥 개선: 새로운 예약 주문 복제 - 레버리지 완전 동기화"""
+        """🔥🔥 개선: 새로운 예약 주문 복제 - 오류 처리 강화"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()  # buy/sell 또는 open/close
@@ -416,6 +434,11 @@ class MirrorTradingSystem:
             # 게이트 계약 수 계산
             gate_notional_value = gate_margin * bitget_leverage
             gate_size = int(gate_notional_value / (trigger_price * 0.0001))  # quanto_multiplier
+            
+            # 🔥🔥 사이즈가 0이면 최소 1로 설정
+            if gate_size == 0:
+                gate_size = 1
+                self.logger.warning("게이트 계약 수가 0이어서 최소값 1로 설정")
             
             # 방향에 따라 부호 조정 (더 정확한 방향 판단)
             is_buy_order = False
@@ -538,9 +561,13 @@ class MirrorTradingSystem:
             })
     
     async def _handle_plan_order_cancel(self, bitget_order_id: str):
-        """🔥 신규: 예약 주문 취소 처리"""
+        """🔥🔥 예약 주문 취소 처리 - 개선된 로직"""
         try:
+            self.logger.info(f"🚫 예약 주문 취소 처리 시작: {bitget_order_id}")
+            
+            # 미러링된 주문인지 확인
             if bitget_order_id not in self.mirrored_plan_orders:
+                self.logger.info(f"미러링되지 않은 주문이므로 취소 처리 스킵: {bitget_order_id}")
                 return
             
             mirror_info = self.mirrored_plan_orders[bitget_order_id]
@@ -554,27 +581,42 @@ class MirrorTradingSystem:
                     self.daily_stats['plan_order_cancels'] += 1
                     
                     await self.telegram.send_message(
-                        f"🚫 예약 주문 취소 동기화\n"
+                        f"🚫✅ 예약 주문 취소 동기화 완료\n"
                         f"비트겟 ID: {bitget_order_id}\n"
                         f"게이트 ID: {gate_order_id}\n"
-                        f"비트겟에서 취소되어 게이트에서도 취소했습니다."
+                        f"비트겟에서 취소되어 게이트에서도 자동 취소했습니다."
                     )
                     
                     self.logger.info(f"✅ 예약 주문 취소 완료: {bitget_order_id} → {gate_order_id}")
                     
                 except Exception as e:
                     self.logger.error(f"게이트 예약 주문 취소 실패: {e}")
-                    await self.telegram.send_message(
-                        f"❌ 예약 주문 취소 실패\n"
-                        f"게이트 ID: {gate_order_id}\n"
-                        f"수동 확인이 필요합니다."
-                    )
+                    
+                    # 🔥🔥 취소 실패 시에도 계속 시도하도록 상세 오류 처리
+                    if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+                        self.logger.info(f"게이트 주문이 이미 없음: {gate_order_id}")
+                        await self.telegram.send_message(
+                            f"🚫⚠️ 예약 주문 취소 처리\n"
+                            f"비트겟 ID: {bitget_order_id}\n"
+                            f"게이트 ID: {gate_order_id}\n"
+                            f"게이트 주문이 이미 취소되었거나 체결되었습니다."
+                        )
+                    else:
+                        await self.telegram.send_message(
+                            f"❌ 예약 주문 취소 실패\n"
+                            f"비트겟 ID: {bitget_order_id}\n"
+                            f"게이트 ID: {gate_order_id}\n"
+                            f"오류: {str(e)[:200]}\n"
+                            f"수동 확인이 필요합니다."
+                        )
             
             # 미러링 기록에서 제거
             del self.mirrored_plan_orders[bitget_order_id]
+            self.logger.info(f"미러링 기록에서 제거 완료: {bitget_order_id}")
             
         except Exception as e:
             self.logger.error(f"예약 주문 취소 처리 실패: {e}")
+            self.logger.error(f"상세 오류: {traceback.format_exc()}")
     
     async def monitor_order_fills(self):
         """실시간 주문 체결 감지"""
@@ -831,7 +873,7 @@ class MirrorTradingSystem:
                 f"• 30% 제한 완전 해제\n"
                 f"• 기존 포지션 클로즈 TP/SL 제외\n"
                 f"• 📈 추가 진입 예약 TP/SL 복제\n"
-                f"• 예약 주문 취소 시 자동 동기화\n"
+                f"• 🚫🚫 예약 주문 취소 시 자동 동기화 (개선)\n"
                 f"• 주문 체결 시 포지션 미러링\n\n"
                 f"💰 달러 비율 복제 (제한 해제):\n"
                 f"• 비트겟 마진 비율 = 게이트 마진 비율\n"
@@ -845,11 +887,11 @@ class MirrorTradingSystem:
                 f"⚡ 감지 주기:\n"
                 f"• 예약 주문: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
                 f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n\n"
-                f"📈 향상된 정확도:\n"
-                f"• 더 정확한 예약 주문 감지\n"
-                f"• TP/SL 설정된 주문도 감지\n"
-                f"• 다양한 주문 타입 지원\n"
-                f"• 추가 진입 TP/SL 복제"
+                f"🚫🚫 예약주문 취소 감지 (개선):\n"
+                f"• 비트겟에서 예약주문 취소 시 게이트도 자동 취소\n"
+                f"• 실시간 취소 상태 비교\n"
+                f"• 취소 실패 시 상세 오류 처리\n"
+                f"• 이미 체결/취소된 주문 자동 감지"
             )
             
         except Exception as e:
@@ -976,7 +1018,7 @@ class MirrorTradingSystem:
             })
     
     async def _mirror_new_position(self, bitget_pos: Dict) -> MirrorResult:
-        """새로운 포지션 미러링 (레버리지 완전 동기화)"""
+        """🔥🔥 새로운 포지션 미러링 - INVALID_PROTOCOL 오류 해결"""
         retry_count = 0
         
         while retry_count < self.MAX_RETRIES:
@@ -1055,6 +1097,11 @@ class MirrorTradingSystem:
                 notional_value = gate_margin * leverage
                 gate_size = int(notional_value / (current_price * quanto_multiplier))
                 
+                # 🔥🔥 최소 사이즈 체크
+                if gate_size == 0:
+                    gate_size = 1
+                    self.logger.warning("게이트 계약 수가 0이어서 최소값 1로 설정")
+                
                 if side == 'short':
                     gate_size = -gate_size
                 
@@ -1065,13 +1112,13 @@ class MirrorTradingSystem:
                     f"계약수: {gate_size}"
                 )
                 
-                # 5. 진입 주문 (시장가)
+                # 5. 🔥🔥 진입 주문 (시장가) - 수정된 방식
                 order_result = await self.gate.place_order(
                     contract=self.GATE_CONTRACT,
                     size=gate_size,
-                    price=None,  # 시장가
-                    reduce_only=False,
-                    tif="ioc"  # 시장가는 IOC
+                    price=None,  # 🔥🔥 시장가 (price와 tif 완전 생략)
+                    reduce_only=False
+                    # tif 파라미터 완전 제거
                 )
                 
                 self.logger.info(f"✅ 게이트 진입 성공: {order_result}")
@@ -1098,16 +1145,25 @@ class MirrorTradingSystem:
                 
             except Exception as e:
                 retry_count += 1
-                self.logger.error(f"포지션 미러링 시도 {retry_count}/{self.MAX_RETRIES} 실패: {e}")
+                error_msg = str(e)
+                self.logger.error(f"포지션 미러링 시도 {retry_count}/{self.MAX_RETRIES} 실패: {error_msg}")
+                
+                # 🔥🔥 INVALID_PROTOCOL 오류 시 상세 분석
+                if "INVALID_PROTOCOL" in error_msg:
+                    self.logger.error(f"🚨🚨 INVALID_PROTOCOL 오류 발생!")
+                    self.logger.error(f"   - 비트겟 포지션: {bitget_pos}")
+                    self.logger.error(f"   - 재시도 횟수: {retry_count}/{self.MAX_RETRIES}")
                 
                 if retry_count < self.MAX_RETRIES:
-                    await asyncio.sleep(2 ** retry_count)  # 지수 백오프
+                    wait_time = 2 ** retry_count  # 지수 백오프
+                    self.logger.info(f"🔄 {wait_time}초 후 재시도...")
+                    await asyncio.sleep(wait_time)
                 else:
                     return MirrorResult(
                         success=False,
                         action="new_position",
                         bitget_data=bitget_pos,
-                        error=f"최대 재시도 횟수 초과: {str(e)}"
+                        error=f"최대 재시도 횟수 초과: {error_msg}"
                     )
     
     async def _calculate_margin_ratio(self, bitget_pos: Dict) -> Optional[float]:
@@ -1172,26 +1228,28 @@ class MirrorTradingSystem:
                     if i == len(tp_prices) - 1:  # 마지막은 남은 전체
                         tp_size = remaining_size
                     
-                    tp_order = await self.gate.create_price_triggered_order(
-                        trigger_type="ge",
-                        trigger_price=str(tp_price),
-                        order_type="limit",
-                        contract=self.GATE_CONTRACT,
-                        size=-tp_size,
-                        price=str(tp_price)
-                    )
-                    tp_orders.append(tp_order)
-                    remaining_size -= tp_size
+                    if tp_size > 0:  # 🔥🔥 0보다 큰 경우만 주문
+                        tp_order = await self.gate.create_price_triggered_order(
+                            trigger_type="ge",
+                            trigger_price=str(tp_price),
+                            order_type="limit",
+                            contract=self.GATE_CONTRACT,
+                            size=-tp_size,
+                            price=str(tp_price)
+                        )
+                        tp_orders.append(tp_order)
+                        remaining_size -= tp_size
                 
                 # SL 주문 (전체)
-                sl_order = await self.gate.create_price_triggered_order(
-                    trigger_type="le",
-                    trigger_price=str(sl_price),
-                    order_type="market",
-                    contract=self.GATE_CONTRACT,
-                    size=-abs(gate_size)
-                )
-                sl_orders.append(sl_order)
+                if abs(gate_size) > 0:  # 🔥🔥 0보다 큰 경우만 주문
+                    sl_order = await self.gate.create_price_triggered_order(
+                        trigger_type="le",
+                        trigger_price=str(sl_price),
+                        order_type="market",
+                        contract=self.GATE_CONTRACT,
+                        size=-abs(gate_size)
+                    )
+                    sl_orders.append(sl_order)
                 
             else:
                 # 숏 포지션
@@ -1209,26 +1267,28 @@ class MirrorTradingSystem:
                     if i == len(tp_prices) - 1:
                         tp_size = remaining_size
                     
-                    tp_order = await self.gate.create_price_triggered_order(
-                        trigger_type="le",
-                        trigger_price=str(tp_price),
-                        order_type="limit",
-                        contract=self.GATE_CONTRACT,
-                        size=tp_size,
-                        price=str(tp_price)
-                    )
-                    tp_orders.append(tp_order)
-                    remaining_size -= tp_size
+                    if tp_size > 0:  # 🔥🔥 0보다 큰 경우만 주문
+                        tp_order = await self.gate.create_price_triggered_order(
+                            trigger_type="le",
+                            trigger_price=str(tp_price),
+                            order_type="limit",
+                            contract=self.GATE_CONTRACT,
+                            size=tp_size,
+                            price=str(tp_price)
+                        )
+                        tp_orders.append(tp_order)
+                        remaining_size -= tp_size
                 
                 # SL 주문
-                sl_order = await self.gate.create_price_triggered_order(
-                    trigger_type="ge",
-                    trigger_price=str(sl_price),
-                    order_type="market",
-                    contract=self.GATE_CONTRACT,
-                    size=abs(gate_size)
-                )
-                sl_orders.append(sl_order)
+                if abs(gate_size) > 0:  # 🔥🔥 0보다 큰 경우만 주문
+                    sl_order = await self.gate.create_price_triggered_order(
+                        trigger_type="ge",
+                        trigger_price=str(sl_price),
+                        order_type="market",
+                        contract=self.GATE_CONTRACT,
+                        size=abs(gate_size)
+                    )
+                    sl_orders.append(sl_order)
             
             # TP/SL 주문 ID 저장
             self.tp_sl_orders[pos_id] = {
@@ -1278,13 +1338,13 @@ class MirrorTradingSystem:
             
             self.logger.info(f"부분 청산 실행: {close_size} 계약 ({reduction_ratio*100:.1f}%)")
             
-            # 시장가로 부분 청산
+            # 🔥🔥 시장가로 부분 청산 - 수정된 방식
             result = await self.gate.place_order(
                 contract=self.GATE_CONTRACT,
                 size=close_size,
-                price=None,  # 시장가
-                reduce_only=True,
-                tif="ioc"  # 즉시 체결
+                price=None,  # 🔥🔥 시장가
+                reduce_only=True
+                # tif 파라미터 제거
             )
             
             await self.telegram.send_message(
@@ -1557,6 +1617,11 @@ class MirrorTradingSystem:
 - 예약 주문도 동일 비율 복제
 - 기존 포지션 클로즈 TP/SL 제외
 - 추가 진입 예약 TP/SL 복제
+
+🚫🚫 예약주문 취소 동기화 (개선)
+- 비트겟에서 예약주문 취소 → 게이트도 자동 취소
+- 실시간 취소 상태 비교
+- 취소 실패 시 상세 오류 처리
 
 """
             
