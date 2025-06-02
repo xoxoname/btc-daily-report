@@ -31,16 +31,41 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 self.logger.error(f"ML 예측기 초기화 실패: {e}")
     
     async def generate_report(self, event: Dict) -> str:
-        """🚨 긴급 예외 리포트 생성 - 간소화"""
+        """🚨 긴급 예외 리포트 생성 - 상세 정보 포함"""
         current_time = self._get_current_time_kst()
         event_type = event.get('type', 'unknown')
         
         if event_type == 'critical_news':
             # 뉴스 정보
-            title = event.get('title_ko', event.get('title', ''))
+            title = event.get('title', '')
+            title_ko = event.get('title_ko', title)
+            description = event.get('description', '')
+            summary = event.get('summary', '')
             impact = event.get('impact', '')
             expected_change = event.get('expected_change', '')
             source = event.get('source', '')
+            published_at = event.get('published_at', '')
+            company = event.get('company', '')  # 기업명
+            
+            # 발행 시각 포맷팅
+            pub_time_str = ""
+            if published_at:
+                try:
+                    if 'T' in published_at:
+                        pub_time = datetime.fromisoformat(published_at.replace('Z', ''))
+                    else:
+                        from dateutil import parser
+                        pub_time = parser.parse(published_at)
+                    
+                    if pub_time.tzinfo is None:
+                        pub_time = pytz.UTC.localize(pub_time)
+                    
+                    kst_time = pub_time.astimezone(pytz.timezone('Asia/Seoul'))
+                    pub_time_str = kst_time.strftime('%Y-%m-%d %H:%M')
+                except:
+                    pub_time_str = "시간 정보 없음"
+            else:
+                pub_time_str = "시간 정보 없음"
             
             # 영향도에 따른 분석
             if '호재' in impact:
@@ -64,15 +89,33 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 recommendation = "관망"
                 strategy = "• 방향성 확인 대기\n• 소량 거래만\n• 변동성 주의"
             
+            # 기업명이 있으면 포함
+            company_info = ""
+            if company:
+                company_info = f"\n🏢 <b>관련 기업</b>: {company}"
+            
+            # 요약 정보
+            summary_info = ""
+            if summary and summary != description[:200]:
+                summary_info = f"\n\n📝 <b>요약</b>:\n{summary}"
+            elif description:
+                # description에서 핵심 내용 추출
+                desc_summary = description[:300]
+                if len(description) > 300:
+                    desc_summary += "..."
+                summary_info = f"\n\n📝 <b>내용</b>:\n{desc_summary}"
+            
             # 리포트 생성
-            report = f"""🚨 <b>BTC 긴급 속보</b>
+            report = f"""🚨 <b>BTC 긴급 예외 리포트</b>
+📅 발행: {pub_time_str}
 ━━━━━━━━━━━━━━━
 
-{impact_emoji} <b>{title}</b>
+{impact_emoji} <b>{title_ko}</b>
 
+📰 <b>원문</b>: {title}{company_info}
 📊 <b>영향</b>: {impact}
 💹 <b>예상 변동</b>: {expected_change}
-📰 <b>출처</b>: {source}
+📰 <b>출처</b>: {source}{summary_info}
 
 ━━━━━━━━━━━━━━━
 
