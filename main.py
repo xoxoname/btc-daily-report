@@ -670,14 +670,25 @@ class BitcoinPredictionSystem:
 - 활성 미러: {active_mirrors}개
 - 제외된 기존 포지션: {len(self.mirror_trading.startup_positions)}개
 
+<b>🔥 예약 주문 현황:</b>
+- 복제된 예약 주문: {len(self.mirror_trading.mirrored_plan_orders)}개
+- 제외된 기존 예약 주문: {len(self.mirror_trading.startup_plan_orders)}개
+
 <b>📈 오늘 통계:</b>
 - 시도: {self.mirror_trading.daily_stats['total_mirrored']}회
 - 성공: {self.mirror_trading.daily_stats['successful_mirrors']}회
 - 실패: {self.mirror_trading.daily_stats['failed_mirrors']}회
 - 성공률: {success_rate:.1f}%
+- 예약 주문 미러링: {self.mirror_trading.daily_stats['plan_order_mirrors']}회
+- 예약 주문 취소: {self.mirror_trading.daily_stats['plan_order_cancels']}회
 - 부분청산: {self.mirror_trading.daily_stats['partial_closes']}회
 - 전체청산: {self.mirror_trading.daily_stats['full_closes']}회
 - 총 거래량: ${self.mirror_trading.daily_stats['total_volume']:,.2f}
+
+<b>💰 달러 비율 복제:</b>
+- 총 자산 대비 동일 비율 유지
+- 최대 30% 제한 적용
+- 예약 주문도 동일 비율 복제
 
 <b>⚠️ 최근 오류:</b>
 - 실패 기록: {failed_count}건"""
@@ -1131,6 +1142,8 @@ class BitcoinPredictionSystem:
 - 총 시도: {mirror_stats['total_mirrored']}회
 - 성공: {mirror_stats['successful_mirrors']}회
 - 실패: {mirror_stats['failed_mirrors']}회
+- 예약 주문 미러링: {mirror_stats['plan_order_mirrors']}회
+- 예약 주문 취소: {mirror_stats['plan_order_cancels']}회
 - 부분 청산: {mirror_stats['partial_closes']}회
 - 전체 청산: {mirror_stats['full_closes']}회
 - 총 거래량: ${mirror_stats['total_volume']:,.2f}"""
@@ -1250,11 +1263,13 @@ class BitcoinPredictionSystem:
             
             if self.mirror_mode:
                 welcome_message += """
-<b>🔄 미러 트레이딩:</b>
+<b>🔄 미러 트레이딩 (달러 비율 복제):</b>
 - 비트겟 → 게이트 자동 복제
-- 마진 비율 기반 진입
+- 총 자산 대비 동일 비율
+- 예약 주문도 동일 비율 복제
 - TP/SL 자동 동기화
 - 부분/전체 청산 미러링
+- 최대 30% 제한
 """
             
             if self.ml_mode:
@@ -1351,7 +1366,7 @@ class BitcoinPredictionSystem:
             self.logger.info("텔레그램 봇 시작 중...")
             await self.telegram_bot.start()
             
-            mode_text = "미러 트레이딩" if self.mirror_mode else "분석 전용"
+            mode_text = "미러 트레이딩 (달러 비율)" if self.mirror_mode else "분석 전용"
             if self.ml_mode:
                 mode_text += " + ML 예측"
             
@@ -1367,10 +1382,13 @@ class BitcoinPredictionSystem:
             
             if self.mirror_mode:
                 startup_msg += """
-<b>🔄 미러 트레이딩 활성화:</b>
+<b>🔄 미러 트레이딩 활성화 (달러 비율):</b>
 - 비트겟 → 게이트 자동 복제
-- 기존 포지션은 복제 제외
+- 총 자산 대비 동일 비율 적용
+- 예약 주문도 동일 비율 복제
+- 기존 포지션/예약주문은 복제 제외
 - 신규 진입만 미러링
+- 최대 30% 제한
 """
             
             if self.ml_mode:
