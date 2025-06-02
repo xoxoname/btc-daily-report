@@ -8,7 +8,7 @@ import re
 logger = logging.getLogger(__name__)
 
 class ExceptionDetector:
-    """예외 상황 감지 및 알림 - 정확성 향상"""
+    """예외 상황 감지 및 알림 - 정확성 향상 + 실제 시장 반응 체크"""
     
     def __init__(self, bitget_client=None, telegram_bot=None):
         self.bitget_client = bitget_client
@@ -47,7 +47,113 @@ class ExceptionDetector:
         # 전송된 뉴스 제목 캐시 (중복 방지 강화)
         self.sent_news_titles = {}
         
-        self.logger.info(f"예외 감지기 초기화 - 가격 {self.PRICE_CHANGE_THRESHOLD}%, 거래량 {self.VOLUME_SPIKE_THRESHOLD}배")
+        # 뉴스 후 시장 반응 추적
+        self.news_market_reactions = {}  # 뉴스별 실제 시장 반응 기록
+        
+        self.logger.info(f"예외 감지기 초기화 완료 - 가격 {self.PRICE_CHANGE_THRESHOLD}%, 거래량 {self.VOLUME_SPIKE_THRESHOLD}배")
+    
+    async def check_news_market_reaction(self, news_hash: str, news_time: datetime, 
+                                       initial_price: float, initial_volume: float) -> Dict:
+        """뉴스 발표 후 실제 시장 반응 체크"""
+        try:
+            # 1-2시간 후 시장 반응 확인
+            check_time = datetime.now()
+            time_elapsed = (check_time - news_time).total_seconds() / 3600  # 시간 단위
+            
+            if time_elapsed < 1.0:  # 1시간 미만이면 아직 체크 안함
+                return {}
+            
+            if time_elapsed > 6.0:  # 6시간 이상이면 체크 종료
+                return {}
+            
+            # 현재 시장 데이터 조회
+            current_data = await self._get_current_market_data()
+            if not current_data:
+                return {}
+            
+            current_price = current_data['price']
+            current_volume = current_data['volume']
+            
+            # 가격 변동률 계산
+            price_change_pct = ((current_price - initial_price) / initial_price) * 100
+            
+            # 거래량 변동률 계산
+            volume_change_pct = ((current_volume - initial_volume) / initial_volume) * 100 if initial_volume > 0 else 0
+            
+            # 반응 분류
+            reaction_level = self._classify_market_reaction(price_change_pct, volume_change_pct, time_elapsed)
+            
+            reaction_data = {
+                'news_hash': news_hash,
+                'time_elapsed_hours': time_elapsed,
+                'initial_price': initial_price,
+                'current_price': current_price,
+                'price_change_pct': price_change_pct,
+                'initial_volume': initial_volume,
+                'current_volume': current_volume,
+                'volume_change_pct': volume_change_pct,
+                'reaction_level': reaction_level,
+                'check_time': check_time
+            }
+            
+            # 반응 데이터 저장
+            self.news_market_reactions[news_hash] = reaction_data
+            
+            self.logger.info(f"뉴스 시장 반응 체크: {time_elapsed:.1f}시간 후 - 가격 {price_change_pct:+.2f}%, 거래량 {volume_change_pct:+.1f}%, 반응: {reaction_level}")
+            
+            return reaction_data
+            
+        except Exception as e:
+            self.logger.error(f"뉴스 시장 반응 체크 실패: {e}")
+            return {}
+    
+    def _classify_market_reaction(self, price_change_pct: float, volume_change_pct: float, time_elapsed: float) -> str:
+        """시장 반응 분류"""
+        abs_price_change = abs(price_change_pct)
+        
+        # 시간대별 임계값 조정
+        if time_elapsed <= 2.0:  # 2시간 이내
+            significant_threshold = 1.0
+            strong_threshold = 2.5
+        elif time_elapsed <= 6.0:  # 6시간 이내
+            significant_threshold = 1.5
+            strong_threshold = 3.0
+        else:  # 6시간 이후
+            significant_threshold = 2.0
+            strong_threshold = 4.0
+        
+        # 반응 분류
+        if abs_price_change >= strong_threshold:
+            if volume_change_pct > 50:
+                return "강한 반응" if price_change_pct > 0 else "강한 매도"
+            else:
+                return "중간 반응" if price_change_pct > 0 else "중간 매도"
+        elif abs_price_change >= significant_threshold:
+            return "약한 반응" if price_change_pct > 0 else "약한 매도"
+        elif abs_price_change >= 0.5:
+            return "미미한 반응"
+        else:
+            return "반응 없음"
+    
+    async def _get_current_market_data(self) -> Optional[Dict]:
+        """현재 시장 데이터 조회"""
+        try:
+            if not self.bitget_client:
+                return None
+            
+            ticker = await self.bitget_client.get_ticker('BTCUSDT')
+            if not ticker:
+                return None
+            
+            return {
+                'price': float(ticker.get('last', 0)),
+                'volume': float(ticker.get('baseVolume', 0)),
+                'change_24h': float(ticker.get('changeUtc', 0))
+            }
+            
+        except Exception as e:
+            self.logger.error(f"시장 데이터 조회 실패: {e}")
+            return None
     
     def _generate_exception_hash(self, anomaly: Dict) -> str:
         """예외 상황의 고유 해시 생성 - 더 엄격하게"""
