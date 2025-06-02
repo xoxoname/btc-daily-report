@@ -65,27 +65,43 @@ class GateClient:
         query_string = ""
         payload = ""
         
-        if params:
+        # GET 요청의 경우 params를 query string으로 변환
+        if method.upper() == 'GET' and params:
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             url += f"?{query_string}"
         
-        if data:
+        # POST/PUT/DELETE 요청의 경우 data를 JSON으로 변환
+        if method.upper() in ['POST', 'PUT', 'DELETE'] and data:
             payload = json.dumps(data)
         
         headers = self._generate_signature(method, endpoint, query_string, payload)
         
         try:
             logger.info(f"Gate.io API 요청: {method} {url}")
+            if payload:
+                logger.debug(f"Gate.io 요청 데이터: {payload}")
             
-            async with self.session.request(method, url, headers=headers, data=payload) as response:
-                response_text = await response.text()
-                logger.debug(f"Gate.io 응답: {response_text[:500]}")
-                
-                if response.status != 200:
-                    logger.error(f"Gate.io API 오류: {response.status} - {response_text}")
-                    raise Exception(f"Gate.io API 오류: {response_text}")
-                
-                return json.loads(response_text) if response_text else {}
+            # GET 요청은 params 없이, POST 요청은 data로 전송
+            if method.upper() == 'GET':
+                async with self.session.request(method, url, headers=headers) as response:
+                    response_text = await response.text()
+                    logger.debug(f"Gate.io 응답: {response_text[:500]}")
+                    
+                    if response.status != 200:
+                        logger.error(f"Gate.io API 오류: {response.status} - {response_text}")
+                        raise Exception(f"Gate.io API 오류: {response_text}")
+                    
+                    return json.loads(response_text) if response_text else {}
+            else:
+                async with self.session.request(method, url, headers=headers, data=payload) as response:
+                    response_text = await response.text()
+                    logger.debug(f"Gate.io 응답: {response_text[:500]}")
+                    
+                    if response.status not in [200, 201]:
+                        logger.error(f"Gate.io API 오류: {response.status} - {response_text}")
+                        raise Exception(f"Gate.io API 오류: {response_text}")
+                    
+                    return json.loads(response_text) if response_text else {}
                 
         except Exception as e:
             logger.error(f"Gate.io API 요청 중 오류: {e}")
@@ -164,14 +180,14 @@ class GateClient:
         try:
             endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
             
-            params = {
+            data = {
                 "leverage": str(leverage)
             }
             
             if cross_leverage_limit > 0:
-                params["cross_leverage_limit"] = str(cross_leverage_limit)
+                data["cross_leverage_limit"] = str(cross_leverage_limit)
             
-            response = await self._request('POST', endpoint, params=params)
+            response = await self._request('POST', endpoint, data=data)
             logger.info(f"레버리지 설정 완료: {contract} - {leverage}x")
             return response
             
