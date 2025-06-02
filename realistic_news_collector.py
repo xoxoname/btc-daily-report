@@ -193,12 +193,7 @@ class RealisticNewsCollector:
             return text
         
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": """당신은 한국의 블록체인 전문 기자입니다. 비트코인 뉴스를 한국 독자들이 즉시 이해할 수 있도록 매끄러운 한국어로 번역합니다.
+            system_content = """당신은 한국의 블록체인 전문 기자입니다. 비트코인 뉴스를 한국 독자들이 즉시 이해할 수 있도록 매끄러운 한국어로 번역합니다.
 
 번역 원칙:
 1. 한국 경제 뉴스처럼 자연스럽게 번역
@@ -219,9 +214,16 @@ class RealisticNewsCollector:
 5. 불필요한 수식어 제거, 핵심만 전달
 
 예시:
-"MicroStrategy buys 500 BTC" → "마이크로스트래티지, 비트코인 500개 추가 매입"
-"Russia's Sberbank launches Bitcoin-linked bonds" → "러시아 최대 은행 스베르방크, 비트코인 연계 채권 출시"
-"SEC approves spot Bitcoin ETF" → "SEC, 현물 비트코인 ETF 승인""""
+MicroStrategy buys 500 BTC → 마이크로스트래티지, 비트코인 500개 추가 매입
+Russia's Sberbank launches Bitcoin-linked bonds → 러시아 최대 은행 스베르방크, 비트코인 연계 채권 출시
+SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
+            
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": system_content
                     },
                     {
                         "role": "user", 
@@ -305,12 +307,7 @@ class RealisticNewsCollector:
             return ""
         
         try:
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": """당신은 한국의 비트코인 투자 전문가입니다. 비트코인 뉴스의 핵심을 한국 투자자들이 즉시 활용할 수 있도록 상세히 요약합니다.
+            system_content = """당신은 한국의 비트코인 투자 전문가입니다. 비트코인 뉴스의 핵심을 한국 투자자들이 즉시 활용할 수 있도록 상세히 요약합니다.
 
 요약 원칙:
 1. 투자 판단에 필요한 모든 정보 포함:
@@ -326,8 +323,14 @@ class RealisticNewsCollector:
 5. 한국 투자자가 바로 이해할 수 있는 표현 사용
 
 예시:
-"마이크로스트래티지가 12월 15일 580,955개의 비트코인을 보유하게 되었다. 이는 약 270억 달러 규모로, 전체 비트코인 공급량의 2.7%에 해당한다. 평균 매입가는 46,500달러이며, 현재 시세 대비 30% 수익을 보고 있다."
-"""
+마이크로스트래티지가 12월 15일 580,955개의 비트코인을 보유하게 되었다. 이는 약 270억 달러 규모로, 전체 비트코인 공급량의 2.7%에 해당한다. 평균 매입가는 46,500달러이며, 현재 시세 대비 30% 수익을 보고 있다."""
+            
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": system_content
                     },
                     {
                         "role": "user", 
