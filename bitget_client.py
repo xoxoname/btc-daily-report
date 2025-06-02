@@ -299,16 +299,38 @@ class BitgetClient:
             response = await self._request('GET', endpoint, params=params)
             logger.info(f"V2 대기 주문 조회 응답: {response}")
             
+            # 응답 검증 강화
+            if not response:
+                logger.warning("V2 대기 주문 조회 응답이 None 또는 빈 값입니다")
+                return []
+            
             # entrustedList에서 주문 목록 추출
             orders = []
-            if isinstance(response, dict) and 'entrustedList' in response:
-                orders = response['entrustedList']
+            if isinstance(response, dict):
+                if 'entrustedList' in response and response['entrustedList']:
+                    orders = response['entrustedList']
+                elif 'data' in response and response['data']:
+                    orders = response['data']
+                else:
+                    logger.info("V2 응답에 entrustedList가 없거나 비어있음")
+                    return []
             elif isinstance(response, list):
                 orders = response
+            else:
+                logger.warning(f"V2 응답 형식이 예상과 다름: {type(response)}")
+                return []
+            
+            # orders가 None이거나 비어있는 경우 체크
+            if not orders:
+                logger.info("V2에서 조회된 주문이 없습니다")
+                return []
             
             # 예약 주문(트리거가 있는 주문) 및 TP/SL이 있는 주문 필터링
             plan_orders = []
             for order in orders:
+                if not order:  # None 체크
+                    continue
+                    
                 is_plan_order = False
                 order_type = order.get('orderType', '').lower()
                 
@@ -343,6 +365,7 @@ class BitgetClient:
             
         except Exception as e:
             logger.error(f"V2 대기 주문 조회 실패: {e}")
+            logger.error(f"상세 오류: {traceback.format_exc()}")
             return []
     
     async def get_all_trigger_orders(self, symbol: str = None) -> List[Dict]:
