@@ -62,7 +62,7 @@ class BitcoinPredictionSystem:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.logger.info("=" * 50)
-        self.logger.info("비트코인 예측 시스템 초기화 시작 - 속보 최적화 버전")
+        self.logger.info("비트코인 예측 시스템 초기화 시작 - 정확도 향상 버전")
         self.logger.info("=" * 50)
         
         # 설정 로드
@@ -85,7 +85,7 @@ class BitcoinPredictionSystem:
         if self.ml_mode:
             try:
                 self.ml_predictor = MLPredictor()
-                self.logger.info(f"✅ ML 예측기 초기화 완료 - 정확도: {self.ml_predictor.direction_accuracy:.1%}")
+                self.logger.info(f"✅ ML 예측기 초기화 완료")
             except Exception as e:
                 self.logger.error(f"ML 예측기 초기화 실패: {e}")
                 self.ml_mode = False
@@ -103,7 +103,7 @@ class BitcoinPredictionSystem:
             'errors': 0
         }
         
-        # 예외 감지 통계 - 신규 추가 (datetime 객체를 문자열로 저장)
+        # 예외 감지 통계
         self.exception_stats = {
             'total_detected': 0,
             'news_alerts': 0,
@@ -111,7 +111,7 @@ class BitcoinPredictionSystem:
             'volume_alerts': 0,
             'funding_alerts': 0,
             'short_term_alerts': 0,
-            'last_reset': datetime.now().isoformat()  # ISO 형식 문자열로 저장
+            'last_reset': datetime.now().isoformat()
         }
         
         # 클라이언트 초기화
@@ -128,7 +128,7 @@ class BitcoinPredictionSystem:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
-        self.logger.info(f"시스템 초기화 완료 (미러 트레이딩: {'활성' if self.mirror_mode else '비활성'}, ML: {'활성' if self.ml_mode else '비활성'})")
+        self.logger.info(f"시스템 초기화 완료 (미러: {'활성' if self.mirror_mode else '비활성'}, ML: {'활성' if self.ml_mode else '비활성'})")
     
     def _initialize_clients(self):
         """클라이언트 초기화"""
@@ -197,19 +197,19 @@ class BitcoinPredictionSystem:
             )
             self.logger.info("✅ 분석 엔진 초기화 완료")
             
-            # 예외 감지기 - 향상된 설정
+            # 예외 감지기
             self.exception_detector = ExceptionDetector(
                 bitget_client=self.bitget_client,
                 telegram_bot=self.telegram_bot
             )
-            self.logger.info("✅ 예외 감지기 초기화 완료 - 민감도 향상")
+            self.logger.info("✅ 예외 감지기 초기화 완료 - 비트코인 전용")
             
         except Exception as e:
             self.logger.error(f"컴포넌트 초기화 실패: {e}")
             raise
     
     def _setup_scheduler(self):
-        """스케줄러 작업 설정 - 예외 감지 주기 단축"""
+        """스케줄러 작업 설정"""
         timezone = pytz.timezone('Asia/Seoul')
         
         # 정기 리포트 스케줄 (9시, 13시, 18시, 23시)
@@ -232,49 +232,49 @@ class BitcoinPredictionSystem:
             )
             self.logger.info(f"📅 정기 리포트 스케줄 등록: {hour:02d}:{minute:02d}")
         
-        # 예외 감지 (2분마다로 단축) - 주요 개선
+        # 예외 감지 (5분마다)
         self.scheduler.add_job(
             func=self.check_exceptions,
             trigger="interval",
-            minutes=2,  # 5분 → 2분으로 단축
+            minutes=5,
             timezone=timezone,
             id="exception_check",
             replace_existing=True
         )
-        self.logger.info("📅 예외 감지 스케줄 등록: 2분마다 (기존 5분에서 단축)")
+        self.logger.info("📅 예외 감지 스케줄 등록: 5분마다")
         
-        # 급속 변동 감지 (1분마다) - 신규 추가
+        # 급속 변동 감지 (2분마다)
         self.scheduler.add_job(
             func=self.rapid_exception_check,
             trigger="interval",
-            minutes=1,
+            minutes=2,
             timezone=timezone,
             id="rapid_exception_check",
             replace_existing=True
         )
-        self.logger.info("📅 급속 변동 감지 스케줄 등록: 1분마다 (신규)")
+        self.logger.info("📅 급속 변동 감지 스케줄 등록: 2분마다")
         
-        # 시스템 상태 체크 (20분마다로 단축)
+        # 시스템 상태 체크 (30분마다)
         self.scheduler.add_job(
             func=self.system_health_check,
             trigger="interval",
-            minutes=20,  # 30분 → 20분으로 단축
+            minutes=30,
             timezone=timezone,
             id="health_check",
             replace_existing=True
         )
         
-        # ML 예측 검증 (20분마다로 단축) - ML 모드일 때만
+        # ML 예측 검증 (30분마다) - ML 모드일 때만
         if self.ml_mode and self.ml_predictor:
             self.scheduler.add_job(
                 func=self.verify_ml_predictions,
                 trigger="interval",
-                minutes=20,  # 30분 → 20분으로 단축
+                minutes=30,
                 timezone=timezone,
                 id="ml_verification",
                 replace_existing=True
             )
-            self.logger.info("📅 ML 예측 검증 스케줄 등록: 20분마다")
+            self.logger.info("📅 ML 예측 검증 스케줄 등록: 30분마다")
         
         # 일일 통계 리포트 (매일 자정)
         self.scheduler.add_job(
@@ -287,7 +287,7 @@ class BitcoinPredictionSystem:
             replace_existing=True
         )
         
-        # 예외 감지 통계 리포트 (6시간마다) - 신규 추가
+        # 예외 감지 통계 리포트 (6시간마다)
         self.scheduler.add_job(
             func=self.exception_stats_report,
             trigger="interval",
@@ -297,7 +297,7 @@ class BitcoinPredictionSystem:
             replace_existing=True
         )
         
-        self.logger.info("✅ 스케줄러 설정 완료 - 속보 최적화")
+        self.logger.info("✅ 스케줄러 설정 완료")
     
     def _signal_handler(self, signum, frame):
         """시그널 핸들러"""
@@ -305,25 +305,20 @@ class BitcoinPredictionSystem:
         asyncio.create_task(self.stop())
     
     async def rapid_exception_check(self):
-        """급속 변동 감지 - 1분마다 실행 (신규 추가)"""
+        """급속 변동 감지 - 2분마다 실행"""
         try:
             self.logger.debug("급속 변동 감지 시작")
             
-            # 단기 변동성만 체크 (빠른 응답을 위해)
+            # 단기 변동성 체크
             try:
-                short_term_anomaly = await self.exception_detector.check_short_term_volatility()
-                if short_term_anomaly:
-                    self.exception_stats['short_term_alerts'] += 1
-                    self.exception_stats['total_detected'] += 1
-                    self.logger.warning(f"급속 변동 감지: {short_term_anomaly}")
-                    await self.exception_detector.send_alert(short_term_anomaly)
+                anomalies = await self.exception_detector.detect_all_anomalies()
                 
-                rapid_change_anomaly = await self.exception_detector.check_rapid_price_change()
-                if rapid_change_anomaly:
-                    self.exception_stats['short_term_alerts'] += 1
-                    self.exception_stats['total_detected'] += 1
-                    self.logger.warning(f"연속 변동 감지: {rapid_change_anomaly}")
-                    await self.exception_detector.send_alert(rapid_change_anomaly)
+                for anomaly in anomalies:
+                    if anomaly.get('type') in ['short_term_volatility', 'rapid_price_change']:
+                        self.exception_stats['short_term_alerts'] += 1
+                        self.exception_stats['total_detected'] += 1
+                        self.logger.warning(f"급속 변동 감지: {anomaly}")
+                        await self.exception_detector.send_alert(anomaly)
                     
             except Exception as e:
                 self.logger.error(f"급속 변동 체크 오류: {e}")
@@ -332,7 +327,7 @@ class BitcoinPredictionSystem:
             self.logger.error(f"급속 변동 감지 실패: {str(e)}")
     
     async def check_exceptions(self):
-        """예외 상황 감지 - 기존 로직 + 통계 추가"""
+        """예외 상황 감지 - 간소화"""
         try:
             self.logger.debug("예외 상황 체크 시작")
             
@@ -354,7 +349,7 @@ class BitcoinPredictionSystem:
                 self.logger.warning(f"이상 징후 감지: {anomaly}")
                 await self.exception_detector.send_alert(anomaly)
             
-            # 데이터 수집기의 이벤트 확인
+            # 데이터 수집기의 이벤트 확인 (뉴스)
             critical_events = []
             for event in self.data_collector.events_buffer:
                 severity = None
@@ -363,16 +358,22 @@ class BitcoinPredictionSystem:
                 elif isinstance(event, dict):
                     severity = event.get('severity')
                 
-                if severity in ['high', 'critical']:
+                if severity == 'critical':  # critical만 처리
                     critical_events.append(event)
             
             # 중요 이벤트 처리
-            for event in critical_events[:5]:  # 최대 5개로 증가 (기존 3개)
+            for event in critical_events[:3]:  # 최대 3개
                 try:
                     if hasattr(event, '__dict__'):
                         event_data = event.__dict__
                     else:
                         event_data = event
+                    
+                    # 비트코인 관련성 체크
+                    impact = event_data.get('impact', '')
+                    if '무관' in impact or '알트코인' in impact:
+                        self.logger.info(f"🔄 비트코인 무관 뉴스 스킵: {event_data.get('title', '')[:50]}...")
+                        continue
                     
                     # 뉴스 이벤트 통계
                     if event_data.get('type') == 'critical_news':
@@ -380,25 +381,22 @@ class BitcoinPredictionSystem:
                         self.exception_stats['total_detected'] += 1
                     
                     # ML 예측 기록 (ML 모드일 때만)
-                    if self.ml_mode and self.ml_predictor:
+                    if self.ml_mode and self.ml_predictor and event_data.get('type') == 'critical_news':
                         try:
-                            # 현재 가격 기록
                             ticker = await self.bitget_client.get_ticker('BTCUSDT')
                             if ticker:
                                 current_price = float(ticker.get('last', 0))
                                 
-                                # 예측 생성 및 기록
                                 market_data = await self._get_market_data_for_ml()
                                 prediction = await self.ml_predictor.predict_impact(event_data, market_data)
                                 
-                                # 예측 기록
                                 await self.ml_predictor.record_prediction(
                                     event_data,
                                     prediction,
                                     current_price
                                 )
                                 
-                                self.logger.info(f"ML 예측 기록: {event_data.get('title', 'Unknown')[:30]}... - 예상: {prediction['magnitude']:.1f}%")
+                                self.logger.info(f"ML 예측 기록: {event_data.get('title', '')[:30]}...")
                         except Exception as e:
                             self.logger.error(f"ML 예측 기록 실패: {e}")
                     
@@ -406,7 +404,7 @@ class BitcoinPredictionSystem:
                     report = await self.report_manager.generate_exception_report(event_data)
                     await self.telegram_bot.send_message(report, parse_mode='HTML')
                     
-                    self.logger.info(f"긴급 알림 전송: {event_data.get('title', 'Unknown')}")
+                    self.logger.info(f"긴급 알림 전송: {event_data.get('title_ko', event_data.get('title', 'Unknown'))[:50]}...")
                     
                 except Exception as e:
                     self.logger.error(f"예외 리포트 생성 실패: {e}")
@@ -423,18 +421,18 @@ class BitcoinPredictionSystem:
             self.logger.debug(traceback.format_exc())
     
     async def exception_stats_report(self):
-        """예외 감지 통계 리포트 - 신규 추가"""
+        """예외 감지 통계 리포트"""
         try:
             current_time = datetime.now()
             last_reset = datetime.fromisoformat(self.exception_stats['last_reset'])
             time_since_reset = current_time - last_reset
             hours_since_reset = time_since_reset.total_seconds() / 3600
             
-            if hours_since_reset < 1:  # 1시간 미만이면 리포트 생략
+            if hours_since_reset < 1:
                 return
             
             total = self.exception_stats['total_detected']
-            if total == 0:  # 감지된 예외가 없으면 리포트 생략
+            if total == 0:
                 return
             
             report = f"""<b>📊 예외 감지 통계 리포트</b>
@@ -442,18 +440,18 @@ class BitcoinPredictionSystem:
 ━━━━━━━━━━━━━━━━━━━
 
 <b>📈 지난 {hours_since_reset:.1f}시간 동안:</b>
-• 총 감지: <b>{total}건</b>
-• 시간당 평균: <b>{total/hours_since_reset:.1f}건</b>
+- 총 감지: <b>{total}건</b>
+- 시간당 평균: <b>{total/hours_since_reset:.1f}건</b>
 
 <b>📋 카테고리별 감지:</b>
-• 🚨 중요 뉴스: <b>{self.exception_stats['news_alerts']}건</b> ({self.exception_stats['news_alerts']/total*100:.0f}%)
-• 📊 가격 변동: <b>{self.exception_stats['price_alerts']}건</b> ({self.exception_stats['price_alerts']/total*100:.0f}%)
-• 📈 거래량 급증: <b>{self.exception_stats['volume_alerts']}건</b> ({self.exception_stats['volume_alerts']/total*100:.0f}%)
-• 💰 펀딩비 이상: <b>{self.exception_stats['funding_alerts']}건</b> ({self.exception_stats['funding_alerts']/total*100:.0f}%)
-• ⚡ 단기 급변동: <b>{self.exception_stats['short_term_alerts']}건</b> ({self.exception_stats['short_term_alerts']/total*100:.0f}%)
+- 🚨 중요 뉴스: <b>{self.exception_stats['news_alerts']}건</b> ({self.exception_stats['news_alerts']/total*100:.0f}%)
+- 📊 가격 변동: <b>{self.exception_stats['price_alerts']}건</b> ({self.exception_stats['price_alerts']/total*100:.0f}%)
+- 📈 거래량 급증: <b>{self.exception_stats['volume_alerts']}건</b> ({self.exception_stats['volume_alerts']/total*100:.0f}%)
+- 💰 펀딩비 이상: <b>{self.exception_stats['funding_alerts']}건</b> ({self.exception_stats['funding_alerts']/total*100:.0f}%)
+- ⚡ 단기 급변동: <b>{self.exception_stats['short_term_alerts']}건</b> ({self.exception_stats['short_term_alerts']/total*100:.0f}%)
 
 ━━━━━━━━━━━━━━━━━━━
-🔥 시스템이 활발히 작동 중입니다!"""
+🔥 비트코인 전용 시스템 정상 작동 중"""
             
             await self.telegram_bot.send_message(report, parse_mode='HTML')
             
@@ -465,10 +463,10 @@ class BitcoinPredictionSystem:
                 'volume_alerts': 0,
                 'funding_alerts': 0,
                 'short_term_alerts': 0,
-                'last_reset': current_time.isoformat()  # ISO 형식 문자열로 저장
+                'last_reset': current_time.isoformat()
             }
             
-            self.logger.info(f"예외 감지 통계 리포트 전송 완료 - 총 {total}건 감지")
+            self.logger.info(f"예외 감지 통계 리포트 전송 완료 - 총 {total}건")
             
         except Exception as e:
             self.logger.error(f"예외 통계 리포트 생성 실패: {e}")
@@ -490,7 +488,7 @@ class BitcoinPredictionSystem:
                 'forecast': ['매수', '매도', '사야', '팔아', '지금', '예측', 'buy', 'sell', '롱', '숏'],
                 'report': ['시장', '상황', '어때', '분석', 'market', '리포트'],
                 'schedule': ['일정', '언제', '시간', 'schedule', '스케줄'],
-                'stats': ['통계', '성과', '감지', 'stats', '예외'],  # 신규 추가
+                'stats': ['통계', '성과', '감지', 'stats', '예외'],
                 'help': ['도움', '명령', 'help', '사용법', '안내']
             }
             
@@ -513,7 +511,7 @@ class BitcoinPredictionSystem:
             elif detected_command == 'schedule':
                 await self.handle_schedule_command(update, context)
             elif detected_command == 'stats':
-                await self.handle_stats_command(update, context)  # 신규 추가
+                await self.handle_stats_command(update, context)
             elif detected_command == 'help':
                 await self.handle_start_command(update, context)
             else:
@@ -528,7 +526,7 @@ class BitcoinPredictionSystem:
             await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.", parse_mode='HTML')
     
     async def handle_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """통계 명령 처리 - 신규 추가"""
+        """통계 명령 처리"""
         try:
             user_id = update.effective_user.id
             username = update.effective_user.username or "Unknown"
@@ -552,49 +550,49 @@ class BitcoinPredictionSystem:
 ━━━━━━━━━━━━━━━━━━━
 
 <b>⏱️ 시스템 상태:</b>
-• 가동 시간: <b>{hours}시간 {minutes}분</b>
-• 총 명령 처리: <b>{total_commands}건</b>
-• 오류 발생: <b>{self.command_stats['errors']}건</b>
+- 가동 시간: <b>{hours}시간 {minutes}분</b>
+- 총 명령 처리: <b>{total_commands}건</b>
+- 오류 발생: <b>{self.command_stats['errors']}건</b>
 
 <b>🚨 예외 감지 성과 (최근 {stats_hours:.1f}시간):</b>
-• 총 감지: <b>{total_exceptions}건</b>
-• 시간당 평균: <b>{total_exceptions/max(stats_hours, 0.1):.1f}건</b>
+- 총 감지: <b>{total_exceptions}건</b>
+- 시간당 평균: <b>{total_exceptions/max(stats_hours, 0.1):.1f}건</b>
 
 <b>📋 세부 감지 현황:</b>
-• 🚨 중요 뉴스: <b>{self.exception_stats['news_alerts']}건</b>
-• 📊 가격 변동: <b>{self.exception_stats['price_alerts']}건</b>
-• 📈 거래량 급증: <b>{self.exception_stats['volume_alerts']}건</b>
-• 💰 펀딩비 이상: <b>{self.exception_stats['funding_alerts']}건</b>
-• ⚡ 단기 급변동: <b>{self.exception_stats['short_term_alerts']}건</b>
+- 🚨 중요 뉴스: <b>{self.exception_stats['news_alerts']}건</b>
+- 📊 가격 변동: <b>{self.exception_stats['price_alerts']}건</b>
+- 📈 거래량 급증: <b>{self.exception_stats['volume_alerts']}건</b>
+- 💰 펀딩비 이상: <b>{self.exception_stats['funding_alerts']}건</b>
+- ⚡ 단기 급변동: <b>{self.exception_stats['short_term_alerts']}건</b>
 
 <b>💬 명령어 사용 통계:</b>
-• 리포트: {self.command_stats['report']}회
-• 예측: {self.command_stats['forecast']}회
-• 수익: {self.command_stats['profit']}회"""
+- 리포트: {self.command_stats['report']}회
+- 예측: {self.command_stats['forecast']}회
+- 수익: {self.command_stats['profit']}회"""
 
             if self.mirror_mode:
                 stats_msg += f"\n• 미러: {self.command_stats['mirror']}회"
             
             stats_msg += f"""
-• 자연어: {self.command_stats['natural_language']}회
+- 자연어: {self.command_stats['natural_language']}회
 
 <b>🔧 감지 설정:</b>
-• 가격 변동: ≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%
-• 거래량: ≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
-• 펀딩비: ≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%
-• 단기 변동: ≥{self.exception_detector.short_term_threshold}% (5분)
+- 가격 변동: ≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%
+- 거래량: ≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
+- 펀딩비: ≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%
+- 단기 변동: ≥{self.exception_detector.short_term_threshold}% (5분)
 
 ━━━━━━━━━━━━━━━━━━━
-⚡ 초고속 속보 시스템 가동 중!"""
+⚡ 비트코인 전용 고정밀 시스템"""
             
             if self.ml_mode and self.ml_predictor:
                 ml_stats = self.ml_predictor.get_stats()
                 stats_msg += f"""
 
 <b>🤖 ML 예측 성능:</b>
-• 총 예측: {ml_stats['total_predictions']}건
-• 방향 정확도: {ml_stats['direction_accuracy']}
-• 크기 정확도: {ml_stats['magnitude_accuracy']}"""
+- 총 예측: {ml_stats['total_predictions']}건
+- 방향 정확도: {ml_stats['direction_accuracy']}
+- 크기 정확도: {ml_stats['magnitude_accuracy']}"""
             
             await update.message.reply_text(stats_msg, parse_mode='HTML')
             
@@ -848,7 +846,7 @@ class BitcoinPredictionSystem:
             additional_info += f"• 현재 시각: {now.strftime('%Y-%m-%d %H:%M')} KST\n"
             additional_info += f"• 다음 정기 리포트: "
             
-            # 다음 리포트 시간 계산 (9시, 13시, 18시, 23시)
+            # 다음 리포트 시간 계산
             report_hours = [9, 13, 18, 23]
             next_report_hour = None
             for hour in report_hours:
@@ -861,12 +859,12 @@ class BitcoinPredictionSystem:
             else:
                 additional_info += f"내일 09:00\n"
             
-            additional_info += f"• 예외 감지: 2분마다 자동 실행\n"
-            additional_info += f"• 급속 변동 감지: 1분마다 자동 실행\n"
-            additional_info += f"• 시스템 상태 체크: 20분마다"
+            additional_info += f"• 예외 감지: 5분마다 자동 실행\n"
+            additional_info += f"• 급속 변동 감지: 2분마다 자동 실행\n"
+            additional_info += f"• 시스템 상태 체크: 30분마다"
             
             if self.ml_mode:
-                additional_info += f"\n• ML 예측 검증: 20분마다"
+                additional_info += f"\n• ML 예측 검증: 30분마다"
             
             full_report = schedule_report + additional_info
             
@@ -932,17 +930,17 @@ class BitcoinPredictionSystem:
 <b>⏰ 예측 시간:</b> {verification['prediction_time']}
 
 <b>📊 예측 vs 실제:</b>
-• 예측 변동률: <b>{verification['predicted_change']:.1f}%</b>
-• 실제 변동률: <b>{verification['actual_change']:.1f}%</b>
-• 초기가: ${verification['initial_price']:,.0f}
-• 현재가: ${verification['current_price']:,.0f}
+- 예측 변동률: <b>{verification['predicted_change']:.1f}%</b>
+- 실제 변동률: <b>{verification['actual_change']:.1f}%</b>
+- 초기가: ${verification['initial_price']:,.0f}
+- 현재가: ${verification['current_price']:,.0f}
 
 <b>✅ 정확도:</b>
-• 방향: {"✅ 맞음" if verification['direction_correct'] else "❌ 틀림"}
-• 크기 정확도: <b>{verification['accuracy']:.1f}%</b>
+- 방향: {"✅ 맞음" if verification['direction_correct'] else "❌ 틀림"}
+- 크기 정확도: <b>{verification['accuracy']:.1f}%</b>
 
 <b>📈 전체 AI 성능:</b>
-• 누적 정확도: {self.ml_predictor.direction_accuracy:.1%}"""
+- 누적 정확도: {self.ml_predictor.direction_accuracy:.1%}"""
                     
                     await self.telegram_bot.send_message(msg, parse_mode='HTML')
             
@@ -1025,10 +1023,10 @@ class BitcoinPredictionSystem:
                 health_status['services']['ml_predictor'] = 'OK'
                 health_status['ml_stats'] = self.ml_predictor.get_stats()
             
-            # 예외 감지기 상태 추가
+            # 예외 감지기 상태
             health_status['services']['exception_detector'] = 'OK'
             
-            # exception_stats 복사 시 datetime 객체를 문자열로 변환
+            # exception_stats 복사
             health_status['exception_stats'] = {
                 'total_detected': self.exception_stats['total_detected'],
                 'news_alerts': self.exception_stats['news_alerts'],
@@ -1036,7 +1034,7 @@ class BitcoinPredictionSystem:
                 'volume_alerts': self.exception_stats['volume_alerts'],
                 'funding_alerts': self.exception_stats['funding_alerts'],
                 'short_term_alerts': self.exception_stats['short_term_alerts'],
-                'last_reset': self.exception_stats['last_reset']  # 이미 ISO 문자열이므로 그대로 사용
+                'last_reset': self.exception_stats['last_reset']
             }
             
             # 메모리 사용량 체크
@@ -1057,7 +1055,7 @@ class BitcoinPredictionSystem:
                 
                 await self.telegram_bot.send_message(error_msg, parse_mode='HTML')
             
-            # 로그 기록 (JSON 직렬화 가능한 형태로)
+            # 로그 기록
             self.logger.info(f"시스템 건강 체크 완료: {json.dumps(health_status, indent=2)}")
             
         except Exception as e:
@@ -1122,15 +1120,7 @@ class BitcoinPredictionSystem:
 - 총 예측: {stats['total_predictions']}건
 - 검증 완료: {stats['verified_predictions']}건
 - 방향 정확도: {stats['direction_accuracy']}
-- 크기 정확도: {stats['magnitude_accuracy']}
-
-<b>📊 카테고리별 정확도:</b>"""
-                
-                for category in ['etf_approval', 'company_purchase', 'regulatory_action', 
-                               'security_breach', 'funding_rate', 'security_improvement', 'fraud_scam']:
-                    if category in stats['category_accuracy']:
-                        acc = stats['category_accuracy'][category]
-                        report += f"\n• {category.replace('_', ' ').title()}: {acc:.1f}%"
+- 크기 정확도: {stats['magnitude_accuracy']}"""
             
             # 미러 트레이딩 통계 추가
             if self.mirror_mode and self.mirror_trading:
@@ -1148,14 +1138,14 @@ class BitcoinPredictionSystem:
             report += f"""
 
 <b>🔧 시스템 설정:</b>
-- 예외 감지: 2분마다
-- 급속 변동: 1분마다
+- 예외 감지: 5분마다
+- 급속 변동: 2분마다
 - 뉴스 수집: 15초마다
 - 가격 임계값: {self.exception_detector.PRICE_CHANGE_THRESHOLD}%
 - 거래량 임계값: {self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
 
 ━━━━━━━━━━━━━━━━━━━
-⚡ 초고속 속보 시스템이 완벽히 작동했습니다!"""
+⚡ 비트코인 전용 시스템이 완벽히 작동했습니다!"""
             
             await self.telegram_bot.send_message(report, parse_mode='HTML')
             
@@ -1170,7 +1160,7 @@ class BitcoinPredictionSystem:
                 'volume_alerts': 0,
                 'funding_alerts': 0,
                 'short_term_alerts': 0,
-                'last_reset': datetime.now().isoformat()  # ISO 형식 문자열로 저장
+                'last_reset': datetime.now().isoformat()
             }
             
         except Exception as e:
@@ -1212,14 +1202,14 @@ class BitcoinPredictionSystem:
             welcome_message = f"""<b>🚀 비트코인 예측 시스템에 오신 것을 환영합니다!</b>
 
 현재 모드: {mode_text}
-시스템 버전: 2.1 - 초고속 속보 최적화
+시스템 버전: 2.2 - 비트코인 전용 정확도 향상
 
 <b>📊 슬래시 명령어:</b>
 - /report - 전체 분석 리포트
 - /forecast - 단기 예측 요약
 - /profit - 실시간 수익 현황
 - /schedule - 자동 일정 안내
-- /stats - 시스템 통계 (신규!)"""
+- /stats - 시스템 통계"""
             
             if self.mirror_mode:
                 welcome_message += "\n• /mirror - 미러 트레이딩 상태"
@@ -1231,29 +1221,29 @@ class BitcoinPredictionSystem:
 - "지금 매수해도 돼?"
 - "시장 상황 어때?"
 - "다음 리포트 언제?"
-- "시스템 통계 보여줘" (신규!)
+- "시스템 통계 보여줘"
 """
             
             if self.mirror_mode:
                 welcome_message += '• "미러 트레이딩 상태는?"\n'
             
             welcome_message += f"""
-<b>🔔 자동 기능 (최적화됨):</b>
+<b>🔔 자동 기능:</b>
 - 정기 리포트: 09:00, 13:00, 18:00, 23:00
-- 예외 감지: <b>2분마다</b> (기존 5분에서 단축)
-- 급속 변동: <b>1분마다</b> (신규 추가)
-- 뉴스 수집: <b>15초마다</b> (RSS 초고속)
-- 시스템 체크: 20분마다"""
+- 예외 감지: <b>5분마다</b>
+- 급속 변동: <b>2분마다</b>
+- 뉴스 수집: <b>15초마다</b> (RSS)
+- 시스템 체크: 30분마다"""
             
             if self.ml_mode:
-                welcome_message += "\n• ML 예측 검증: 20분마다"
+                welcome_message += "\n• ML 예측 검증: 30분마다"
             
             welcome_message += f"""
 
-<b>⚡ 실시간 알림 (민감도 향상):</b>
-- 가격 급변동 (≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%) 
+<b>⚡ 실시간 알림 (비트코인 전용):</b>
+- 가격 급변동 (≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%)
 - 단기 급변동 (5분 내 ≥{self.exception_detector.short_term_threshold}%)
-- 중요 뉴스 발생 (트럼프, 미중무역, Fed 포함)
+- 비트코인 중요 뉴스 (ETF, 기업 구매, 규제)
 - 펀딩비 이상 (≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%)
 - 거래량 급증 (≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배)
 """
@@ -1271,7 +1261,7 @@ class BitcoinPredictionSystem:
                 welcome_message += f"""
 <b>🤖 ML 예측 시스템:</b>
 - 과거 데이터 학습
-- 실시간 예측 정확도: {self.ml_predictor.direction_accuracy:.1%}
+- 실시간 예측
 - 카테고리별 최적화
 - 자동 성능 개선
 """
@@ -1290,13 +1280,13 @@ class BitcoinPredictionSystem:
 - 오늘 예외 감지: <b>{total_exceptions}건</b>
 - 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
 
-🚨 <b>주요 개선사항:</b>
-• 속보 감지 속도 5배 향상 (2분 → 1분)
-• 트럼프/미중무역 키워드 대폭 확장
-• 단기 급변동 감지 추가 (5분, 15분)
-• 뉴스 수집 주기 단축 (45초 → 15초)
+🚨 <b>주요 특징:</b>
+- 비트코인 전용 필터링
+- 정확한 호재/악재 판단
+- 현실적인 예상 변동률
+- 상황별 맞춤 전략
 
-📈 GPT 기반 정확한 비트코인 분석을 제공합니다.
+📈 정확한 비트코인 분석을 제공합니다.
 
 도움이 필요하시면 언제든 질문해주세요! 😊"""
             
@@ -1314,7 +1304,7 @@ class BitcoinPredictionSystem:
         """시스템 시작"""
         try:
             self.logger.info("=" * 50)
-            self.logger.info("시스템 시작 프로세스 개시 - 초고속 속보 버전")
+            self.logger.info("시스템 시작 프로세스 개시 - 비트코인 전용")
             self.logger.info("=" * 50)
             
             self.is_running = True
@@ -1349,7 +1339,7 @@ class BitcoinPredictionSystem:
             self.telegram_bot.add_handler('forecast', self.handle_forecast_command)
             self.telegram_bot.add_handler('profit', self.handle_profit_command)
             self.telegram_bot.add_handler('schedule', self.handle_schedule_command)
-            self.telegram_bot.add_handler('stats', self.handle_stats_command)  # 신규 추가
+            self.telegram_bot.add_handler('stats', self.handle_stats_command)
             
             if self.mirror_mode:
                 self.telegram_bot.add_handler('mirror', self.handle_mirror_command)
@@ -1372,7 +1362,7 @@ class BitcoinPredictionSystem:
 
 <b>📊 운영 모드:</b> {mode_text}
 <b>🕐 시작 시각:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-<b>🔥 버전:</b> 2.1 - 초고속 속보 최적화
+<b>🔥 버전:</b> 2.2 - 비트코인 전용
 """
             
             if self.mirror_mode:
@@ -1386,28 +1376,28 @@ class BitcoinPredictionSystem:
             if self.ml_mode:
                 startup_msg += f"""
 <b>🤖 ML 예측 시스템 활성화:</b>
-- 현재 정확도: {self.ml_predictor.direction_accuracy:.1%}
+- 실시간 예측 및 검증
 - 자동 학습 및 개선
-- 카테고리별 최적화
 """
             
             startup_msg += f"""
-<b>⚡ 초고속 속보 기능:</b>
-- 예외 감지: 2분마다 (기존 5분에서 단축)
-- 급속 변동: 1분마다 (신규 추가)
-- 뉴스 수집: 15초마다 (RSS 초고속)
-- 가격 임계값: {self.exception_detector.PRICE_CHANGE_THRESHOLD}% (기존 1.0%에서 하향)
-- 거래량 임계값: {self.exception_detector.VOLUME_SPIKE_THRESHOLD}배 (기존 3.0배에서 하향)
+<b>⚡ 비트코인 전용 기능:</b>
+- 예외 감지: 5분마다
+- 급속 변동: 2분마다
+- 뉴스 수집: 15초마다 (RSS)
+- 가격 임계값: {self.exception_detector.PRICE_CHANGE_THRESHOLD}%
+- 거래량 임계값: {self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
 
-<b>🎯 트럼프/정치 이벤트 강화:</b>
-- 트럼프 관련 무조건 크리티컬 처리
-- 미중 무역 키워드 대폭 확장
-- Fed 금리 관련 민감도 향상
+<b>🎯 필터링 강화:</b>
+- 비트코인 직접 관련 뉴스만
+- 알트코인/일반 정치 뉴스 제외
+- 정확한 호재/악재 판단
+- 현실적인 예상 변동률
 
 <b>📌 활성 기능:</b>
 - 실시간 가격 모니터링
-- 뉴스 및 이벤트 추적 (키워드 {len(self.exception_detector._generate_exception_hash.__doc__ or '')}개+)
-- 기술적 분석 (20개 이상 지표)
+- 비트코인 전용 뉴스 추적
+- 기술적 분석
 - GPT 기반 예측
 - 자동 리포트 생성 (9시, 13시, 18시, 23시)
 
@@ -1421,7 +1411,7 @@ class BitcoinPredictionSystem:
             await self.system_health_check()
             
             # 메인 루프
-            self.logger.info("메인 루프 시작 - 초고속 속보 모드")
+            self.logger.info("메인 루프 시작")
             while self.is_running:
                 await asyncio.sleep(1)
                 
@@ -1476,7 +1466,7 @@ class BitcoinPredictionSystem:
 - 총 예측: {stats['total_predictions']}건
 - 정확도: {stats['direction_accuracy']}"""
                 
-                shutdown_msg += "\n\n초고속 속보 시스템이 안전하게 종료됩니다."
+                shutdown_msg += "\n\n비트코인 전용 시스템이 안전하게 종료됩니다."
                 
                 await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
             except:
@@ -1516,7 +1506,7 @@ class BitcoinPredictionSystem:
                 self.ml_predictor.save_predictions()
             
             self.logger.info("=" * 50)
-            self.logger.info("✅ 초고속 속보 시스템이 안전하게 종료되었습니다")
+            self.logger.info("✅ 비트코인 전용 시스템이 안전하게 종료되었습니다")
             self.logger.info("=" * 50)
             
         except Exception as e:
@@ -1527,7 +1517,7 @@ async def main():
     """메인 함수"""
     try:
         print("\n" + "=" * 50)
-        print("🚀 비트코인 예측 시스템 v2.1 - 초고속 속보 최적화")
+        print("🚀 비트코인 예측 시스템 v2.2 - 비트코인 전용")
         print("=" * 50 + "\n")
         
         system = BitcoinPredictionSystem()
