@@ -64,6 +64,9 @@ class MirrorTradingSystem:
         self.processed_plan_orders: Set[str] = set()  # 이미 처리된 예약 주문 ID들
         self.startup_plan_orders: Set[str] = set()  # 시작 시 존재했던 예약 주문 (복제 제외)
         
+        # 🔥 기존 포지션 TP/SL 제외용
+        self.startup_position_tp_sl: Set[str] = set()  # 시작 시 존재했던 포지션의 TP/SL (복제 제외)
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -92,7 +95,7 @@ class MirrorTradingSystem:
         }
         
         self.monitoring = True
-        self.logger.info("🔥🔥 예약 주문 달러 비율 복제 미러 트레이딩 시스템 초기화 완료")
+        self.logger.info("🔥🔥 예약 주문 달러 비율 복제 미러 트레이딩 시스템 초기화 완료 (30% 제한 해제)")
     
     async def start(self):
         """미러 트레이딩 시작"""
@@ -102,6 +105,7 @@ class MirrorTradingSystem:
             # 초기 포지션 및 예약 주문 기록
             await self._record_startup_positions()
             await self._record_startup_plan_orders()  # 🔥 신규: 기존 예약 주문 기록
+            await self._record_startup_position_tp_sl()  # 🔥 신규: 기존 포지션 TP/SL 기록
             
             # 초기 계정 상태 출력
             await self._log_account_status()
@@ -137,7 +141,7 @@ class MirrorTradingSystem:
             
             # 일반 예약 주문 기록
             for order in plan_orders:
-                order_id = order.get('planOrderId', order.get('orderId', ''))
+                order_id = order.get('orderId', order.get('planOrderId', ''))
                 if order_id:
                     self.startup_plan_orders.add(order_id)
                     self.processed_plan_orders.add(order_id)
@@ -145,7 +149,7 @@ class MirrorTradingSystem:
             
             # TP/SL 주문 기록
             for order in tp_sl_orders:
-                order_id = order.get('planOrderId', order.get('orderId', ''))
+                order_id = order.get('orderId', order.get('planOrderId', ''))
                 if order_id:
                     self.startup_plan_orders.add(order_id)
                     self.processed_plan_orders.add(order_id)
@@ -159,9 +163,36 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"기존 예약 주문 기록 실패: {e}")
     
+    async def _record_startup_position_tp_sl(self):
+        """🔥 신규: 시작 시 존재하는 포지션의 TP/SL 기록 (복제 제외)"""
+        try:
+            self.logger.info("🔥 기존 포지션의 TP/SL 기록 시작")
+            
+            # 현재 활성 포지션들 조회
+            positions = await self.bitget.get_positions(self.SYMBOL)
+            
+            for pos in positions:
+                if float(pos.get('total', 0)) > 0:
+                    pos_id = self._generate_position_id(pos)
+                    
+                    # 해당 포지션의 TP/SL 주문들 찾기
+                    plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+                    tp_sl_orders = plan_data.get('tp_sl_orders', [])
+                    
+                    for tp_sl_order in tp_sl_orders:
+                        order_id = tp_sl_order.get('orderId', tp_sl_order.get('planOrderId', ''))
+                        if order_id:
+                            self.startup_position_tp_sl.add(order_id)
+                            self.logger.info(f"기존 포지션 {pos_id}의 TP/SL 기록 (복제 제외): {order_id}")
+            
+            self.logger.info(f"🔥 총 {len(self.startup_position_tp_sl)}개의 기존 포지션 TP/SL이 복제에서 제외됩니다")
+            
+        except Exception as e:
+            self.logger.error(f"기존 포지션 TP/SL 기록 실패: {e}")
+    
     async def monitor_plan_orders(self):
         """🔥 신규: 예약 주문 모니터링 - 가장 중요한 기능"""
-        self.logger.info("🔥🔥 예약 주문 달러 비율 복제 모니터링 시작")
+        self.logger.info("🔥🔥 예약 주문 달러 비율 복제 모니터링 시작 (30% 제한 해제)")
         consecutive_errors = 0
         
         while self.monitoring:
@@ -176,12 +207,17 @@ class MirrorTradingSystem:
                 # 새로운 예약 주문 감지
                 new_orders_count = 0
                 for order in all_current_orders:
-                    order_id = order.get('planOrderId', order.get('orderId', ''))
+                    order_id = order.get('orderId', order.get('planOrderId', ''))
                     if not order_id:
                         continue
                     
                     # 시작 시 존재했던 주문은 스킵
                     if order_id in self.startup_plan_orders:
+                        continue
+                    
+                    # 기존 포지션의 TP/SL은 스킵 🔥
+                    if order_id in self.startup_position_tp_sl:
+                        self.logger.info(f"기존 포지션 TP/SL 스킵: {order_id}")
                         continue
                     
                     # 이미 처리된 주문은 스킵
@@ -190,7 +226,7 @@ class MirrorTradingSystem:
                     
                     # 새로운 예약 주문 감지
                     self.logger.info(f"🆕🔥 새로운 예약 주문 감지: {order_id}")
-                    self.logger.info(f"상세: {order.get('side')} {order.get('size')} @ trigger: {order.get('triggerPrice')}")
+                    self.logger.info(f"상세: {order.get('side', order.get('tradeSide'))} {order.get('size')} @ trigger: {order.get('triggerPrice', order.get('price'))}")
                     
                     # 예약 주문 복제 실행
                     await self._process_new_plan_order(order)
@@ -202,8 +238,8 @@ class MirrorTradingSystem:
                 # 취소된 예약 주문 감지
                 current_order_ids = set()
                 for order in all_current_orders:
-                    order_id = order.get('planOrderId', order.get('orderId', ''))
-                    if order_id and order_id not in self.startup_plan_orders:
+                    order_id = order.get('orderId', order.get('planOrderId', ''))
+                    if order_id and order_id not in self.startup_plan_orders and order_id not in self.startup_position_tp_sl:
                         current_order_ids.add(order_id)
                 
                 # 복제된 주문 중 비트겟에서 사라진 것들 찾기
@@ -237,14 +273,22 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
     
     async def _process_new_plan_order(self, bitget_order: Dict):
-        """🔥 신규: 새로운 예약 주문 복제 - 달러 비율 적용"""
+        """🔥 신규: 새로운 예약 주문 복제 - 달러 비율 적용 (30% 제한 해제)"""
         try:
-            order_id = bitget_order.get('planOrderId', bitget_order.get('orderId', ''))
-            side = bitget_order.get('side', '').lower()  # buy/sell
+            order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
+            side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()  # buy/sell 또는 open/close
             size = float(bitget_order.get('size', 0))
-            trigger_price = float(bitget_order.get('triggerPrice', 0))
+            
+            # 트리거 가격 추출 (여러 필드 확인)
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if bitget_order.get(price_field):
+                    trigger_price = float(bitget_order.get(price_field))
+                    break
+            
             trigger_type = bitget_order.get('triggerType', 'market_price')  # market_price, mark_price
             plan_type = bitget_order.get('planType', 'normal')  # normal, profit_loss
+            order_type = bitget_order.get('orderType', 'market')  # market, limit
             
             self.logger.info(f"🔥 예약 주문 달러 비율 복제 분석: {order_id}")
             self.logger.info(f"  방향: {side}")
@@ -252,6 +296,11 @@ class MirrorTradingSystem:
             self.logger.info(f"  트리거가: ${trigger_price}")
             self.logger.info(f"  트리거 타입: {trigger_type}")
             self.logger.info(f"  계획 타입: {plan_type}")
+            self.logger.info(f"  주문 타입: {order_type}")
+            
+            if trigger_price == 0:
+                self.logger.error(f"트리거 가격을 찾을 수 없습니다: {bitget_order}")
+                return
             
             # 비트겟 계정 정보 조회
             bitget_account = await self.bitget.get_account_info()
@@ -269,13 +318,13 @@ class MirrorTradingSystem:
                 self.logger.error("비트겟 총 자산이 0이거나 음수입니다.")
                 return
             
-            # 비율 제한 (최대 30%)
-            margin_ratio = min(margin_ratio, 0.3)
+            # 🔥 30% 제한 해제 - 비율 그대로 사용
+            # margin_ratio = min(margin_ratio, 0.3)  # 이 줄 제거
             
-            self.logger.info(f"💰 달러 비율 계산:")
+            self.logger.info(f"💰 달러 비율 계산 (제한 해제):")
             self.logger.info(f"  비트겟 총 자산: ${bitget_total_equity:,.2f}")
             self.logger.info(f"  비트겟 예상 마진: ${bitget_required_margin:,.2f}")
-            self.logger.info(f"  마진 비율: {margin_ratio:.4f} ({margin_ratio*100:.2f}%)")
+            self.logger.info(f"  마진 비율: {margin_ratio:.4f} ({margin_ratio*100:.2f}%) - 제한 없음")
             
             # 게이트 계정 정보
             gate_account = await self.gate.get_account_balance()
@@ -299,12 +348,29 @@ class MirrorTradingSystem:
             gate_notional_value = gate_margin * bitget_leverage
             gate_size = int(gate_notional_value / (trigger_price * 0.0001))  # quanto_multiplier
             
-            # 방향에 따라 부호 조정
-            if side == 'sell':
+            # 방향에 따라 부호 조정 (더 정확한 방향 판단)
+            is_buy_order = False
+            if side in ['buy', 'open_long']:
+                is_buy_order = True
+            elif side in ['sell', 'open_short']:
+                is_buy_order = False
+            elif side in ['close_long']:
+                is_buy_order = False  # 롱 포지션 클로즈는 sell
+                gate_size = -gate_size
+            elif side in ['close_short']:
+                is_buy_order = True   # 숏 포지션 클로즈는 buy
+            else:
+                # 기본적으로 side가 buy면 양수, sell이면 음수
+                is_buy_order = 'buy' in side.lower()
+            
+            if not is_buy_order and side not in ['close_long']:
                 gate_size = -gate_size
             
-            # Gate.io 트리거 타입 변환
-            gate_trigger_type = "ge" if side == "buy" else "le"  # buy는 가격이 올라가면, sell은 가격이 내려가면
+            # Gate.io 트리거 타입 변환 (더 정확한 로직)
+            if is_buy_order or side in ['close_short']:
+                gate_trigger_type = "ge"  # 가격이 올라가면 트리거
+            else:
+                gate_trigger_type = "le"  # 가격이 내려가면 트리거
             
             self.logger.info(f"🎯 게이트 예약 주문 생성:")
             self.logger.info(f"  게이트 총 자산: ${gate_total_equity:,.2f}")
@@ -312,6 +378,7 @@ class MirrorTradingSystem:
             self.logger.info(f"  게이트 크기: {gate_size} 계약")
             self.logger.info(f"  트리거: {gate_trigger_type} ${trigger_price}")
             self.logger.info(f"  레버리지: {bitget_leverage}x")
+            self.logger.info(f"  주문 방향: {'Buy' if is_buy_order else 'Sell'}")
             
             # 레버리지 설정
             try:
@@ -343,15 +410,16 @@ class MirrorTradingSystem:
                 self.daily_stats['plan_order_mirrors'] += 1
                 
                 await self.telegram.send_message(
-                    f"🔥✅ 예약 주문 달러 비율 복제 성공\n"
+                    f"🔥✅ 예약 주문 달러 비율 복제 성공 (제한 해제)\n"
                     f"비트겟 ID: {order_id}\n"
                     f"게이트 ID: {gate_order.get('id')}\n"
                     f"방향: {side.upper()}\n"
                     f"트리거가: ${trigger_price:,.2f}\n\n"
-                    f"💰 달러 비율 복제:\n"
+                    f"💰 달러 비율 복제 (제한 해제):\n"
                     f"비트겟 마진: ${bitget_required_margin:,.2f} ({margin_ratio*100:.2f}%)\n"
                     f"게이트 마진: ${gate_margin:,.2f} ({margin_ratio*100:.2f}%)\n"
-                    f"게이트 수량: {abs(gate_size)} 계약"
+                    f"게이트 수량: {abs(gate_size)} 계약\n"
+                    f"📊 자산 현황: 비트겟 ${bitget_total_equity:,.0f} / 게이트 ${gate_total_equity:,.0f}"
                 )
                 
                 self.logger.info(f"✅🔥 예약 주문 달러 비율 복제 성공: {order_id} → {gate_order.get('id')}")
@@ -369,7 +437,7 @@ class MirrorTradingSystem:
             self.daily_stats['errors'].append({
                 'time': datetime.now().isoformat(),
                 'error': str(e),
-                'plan_order_id': bitget_order.get('planOrderId', 'unknown')
+                'plan_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', 'unknown'))
             })
     
     async def _handle_plan_order_cancel(self, bitget_order_id: str):
@@ -640,25 +708,33 @@ class MirrorTradingSystem:
             )
             
             await self.telegram.send_message(
-                f"🔥🔥 예약 주문 달러 비율 복제 미러 트레이딩 시작\n\n"
+                f"🔥🔥 예약 주문 달러 비율 복제 미러 트레이딩 시작 (제한 해제)\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
-                f"• 게이트: ${gate_equity:,.2f}\n\n"
+                f"• 게이트: ${gate_equity:,.2f}\n"
+                f"• 비율: {(gate_equity/bitget_equity*100):.1f}%\n\n"
                 f"📊 기존 항목 (복제 제외):\n"
                 f"• 포지션: {len(self.startup_positions)}개\n"
-                f"• 예약 주문: {len(self.startup_plan_orders)}개\n\n"
-                f"🔥 핵심 기능:\n"
-                f"• 예약 주문 달러 비율 복제\n"
+                f"• 예약 주문: {len(self.startup_plan_orders)}개\n"
+                f"• 기존 포지션 TP/SL: {len(self.startup_position_tp_sl)}개\n\n"
+                f"🔥 핵심 기능 (개선):\n"
+                f"• 예약 주문 달러 비율 완전 복제\n"
+                f"• 30% 제한 완전 해제\n"
+                f"• 기존 포지션 TP/SL 제외\n"
+                f"• 신규 예약 주문 TP/SL 복제\n"
                 f"• 예약 주문 취소 시 자동 동기화\n"
-                f"• TP/SL 주문도 완전 복제\n"
                 f"• 주문 체결 시 포지션 미러링\n\n"
-                f"💰 달러 비율 복제:\n"
+                f"💰 달러 비율 복제 (제한 해제):\n"
                 f"• 비트겟 마진 비율 = 게이트 마진 비율\n"
                 f"• 총 자산 대비 동일 비율 유지\n"
-                f"• 최대 30% 제한\n\n"
+                f"• 제한 없이 완전 복제\n\n"
                 f"⚡ 감지 주기:\n"
                 f"• 예약 주문: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
-                f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다"
+                f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n\n"
+                f"📈 향상된 정확도:\n"
+                f"• 더 정확한 예약 주문 감지\n"
+                f"• TP/SL 설정된 주문도 감지\n"
+                f"• 다양한 주문 타입 지원"
             )
             
         except Exception as e:
@@ -783,7 +859,7 @@ class MirrorTradingSystem:
             })
     
     async def _mirror_new_position(self, bitget_pos: Dict) -> MirrorResult:
-        """새로운 포지션 미러링"""
+        """새로운 포지션 미러링 (30% 제한 해제)"""
         retry_count = 0
         
         while retry_count < self.MAX_RETRIES:
@@ -814,8 +890,8 @@ class MirrorTradingSystem:
                     )
                 
                 self.logger.info(
-                    f"💰 게이트 진입 계산\n"
-                    f"비율: {margin_ratio:.4f}\n"
+                    f"💰 게이트 진입 계산 (제한 해제)\n"
+                    f"비율: {margin_ratio:.4f} ({margin_ratio*100:.2f}%)\n"
                     f"가용자산: ${gate_available:.2f}\n"
                     f"진입마진: ${gate_margin:.2f}"
                 )
@@ -891,7 +967,7 @@ class MirrorTradingSystem:
                     )
     
     async def _calculate_margin_ratio(self, bitget_pos: Dict) -> Optional[float]:
-        """비트겟 포지션의 마진 비율 계산"""
+        """비트겟 포지션의 마진 비율 계산 (30% 제한 해제)"""
         try:
             # 비트겟 계정 정보
             bitget_account = await self.bitget.get_account_info()
@@ -906,17 +982,17 @@ class MirrorTradingSystem:
                 self.logger.warning(f"잘못된 마진 데이터: 총자산={total_equity}, 마진={position_margin}")
                 return None
             
-            # 마진 비율
+            # 마진 비율 (제한 해제)
             margin_ratio = position_margin / total_equity
             
-            # 비율 제한 (최대 50%)
-            margin_ratio = min(margin_ratio, 0.5)
+            # 🔥 30% 제한 완전 해제
+            # margin_ratio = min(margin_ratio, 0.5)  # 이 줄 제거됨
             
             self.logger.info(
-                f"📊 마진 비율 계산\n"
+                f"📊 마진 비율 계산 (제한 해제)\n"
                 f"비트겟 총자산: ${total_equity:,.2f}\n"
                 f"포지션 마진: ${position_margin:,.2f}\n"
-                f"비율: {margin_ratio:.4f} ({margin_ratio*100:.2f}%)"
+                f"비율: {margin_ratio:.4f} ({margin_ratio*100:.2f}%) - 제한 없음"
             )
             
             return margin_ratio
@@ -1191,10 +1267,11 @@ class MirrorTradingSystem:
             plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
             current_bitget_orders = plan_data.get('plan_orders', []) + plan_data.get('tp_sl_orders', [])
             
-            # 시작 시 존재했던 것 제외
+            # 시작 시 존재했던 것과 기존 포지션 TP/SL 제외
             new_bitget_orders = [
                 order for order in current_bitget_orders 
-                if order.get('planOrderId', order.get('orderId', '')) not in self.startup_plan_orders
+                if (order.get('orderId', order.get('planOrderId', '')) not in self.startup_plan_orders and
+                    order.get('orderId', order.get('planOrderId', '')) not in self.startup_position_tp_sl)
             ]
             
             bitget_plan_count = len(new_bitget_orders)
@@ -1286,7 +1363,7 @@ class MirrorTradingSystem:
                 success_rate = (self.daily_stats['successful_mirrors'] / 
                               self.daily_stats['total_mirrored']) * 100
             
-            report = f"""📊 일일 달러 비율 복제 미러 트레이딩 리포트
+            report = f"""📊 일일 달러 비율 복제 미러 트레이딩 리포트 (제한 해제)
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
@@ -1311,6 +1388,7 @@ class MirrorTradingSystem:
 💰 계정 잔고
 - 비트겟: ${bitget_equity:,.2f}
 - 게이트: ${gate_equity:,.2f}
+- 비율: {(gate_equity/bitget_equity*100):.1f}%
 
 🔄 현재 미러링 상태
 - 활성 포지션: {len(self.mirrored_positions)}개
@@ -1322,10 +1400,12 @@ class MirrorTradingSystem:
 - 주문 체결 감지: {self.ORDER_CHECK_INTERVAL}초마다
 - 포지션 모니터링: {self.CHECK_INTERVAL}초마다
 
-💰 달러 비율 복제
+💰 달러 비율 복제 (제한 해제)
 - 총 자산 대비 동일 비율 유지
-- 최대 30% 제한 적용
+- 30% 제한 완전 해제
 - 예약 주문도 동일 비율 복제
+- 기존 포지션 TP/SL 제외
+- 신규 예약 주문 TP/SL 복제
 
 """
             
@@ -1335,7 +1415,7 @@ class MirrorTradingSystem:
                 for i, error in enumerate(self.daily_stats['errors'][-3:], 1):  # 최근 3개만
                     report += f"{i}. {error['error'][:50]}...\n"
             
-            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥 달러 비율로 완벽 복제!"
+            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥 달러 비율로 완벽 복제! (제한 해제)"
             
             return report
             
@@ -1393,4 +1473,4 @@ class MirrorTradingSystem:
         except:
             pass
         
-        self.logger.info("달러 비율 복제 미러 트레이딩 시스템 중지")
+        self.logger.info("달러 비율 복제 미러 트레이딩 시스템 중지 (제한 해제)")
