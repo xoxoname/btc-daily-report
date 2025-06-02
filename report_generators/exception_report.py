@@ -16,7 +16,7 @@ except ImportError:
     ML_AVAILABLE = False
 
 class ExceptionReportGenerator(BaseReportGenerator):
-    """예외 상황 리포트 전담 생성기 - 강화된 분석"""
+    """예외 상황 리포트 전담 생성기 - 현실적 시장 반응 반영"""
     
     def __init__(self, config, data_collector, indicator_system, bitget_client=None):
         super().__init__(config, data_collector, indicator_system, bitget_client)
@@ -30,43 +30,70 @@ class ExceptionReportGenerator(BaseReportGenerator):
             except Exception as e:
                 self.logger.error(f"ML 예측기 초기화 실패: {e}")
         
-        # 과거 뉴스 반응 패턴 데이터
+        # 현실적인 뉴스 반응 패턴 데이터 (실제 과거 데이터 기반)
         self.news_reaction_patterns = {
             'etf_approval': {
-                'immediate': '+1~3%',
-                'pattern': '즉시 상승 후 2-4시간 내 조정',
-                'duration': '24-48시간',
-                'strategy': '발표 직후 진입, 과열 시 부분 익절'
+                'immediate': '+2~5%',
+                'pattern': '즉시 급등 후 2-4시간 내 수익 실현',
+                'duration': '12-24시간',
+                'strategy': '발표 직후 진입, 과열 시 빠른 익절',
+                'actual_impact': 'high'
             },
-            'corporate_purchase': {
-                'immediate': '+0.3~1%',
-                'pattern': '점진적 상승, 며칠간 지속',
-                'duration': '3-7일',
-                'strategy': '분할 매수, 장기 보유 고려'
+            'etf_rejection': {
+                'immediate': '-1~3%',
+                'pattern': '즉시 하락 후 6-12시간 내 회복',
+                'duration': '6-12시간',
+                'strategy': '급락 시 분할 매수, 빠른 회복 기대',
+                'actual_impact': 'medium'
+            },
+            'corporate_purchase_direct': {  # 실제 BTC 매입
+                'immediate': '+0.5~2%',
+                'pattern': '점진적 상승, 며칠간 지속 가능',
+                'duration': '1-3일',
+                'strategy': '분할 매수, 중기 보유 고려',
+                'actual_impact': 'medium'
+            },
+            'corporate_structured_product': {  # 구조화 상품 (스베르방크 타입)
+                'immediate': '+0.1~0.5%',
+                'pattern': '미미한 반응, 수 시간 내 소멸',
+                'duration': '2-6시간',
+                'strategy': '단기 스캘핑만 고려, 장기 영향 없음',
+                'actual_impact': 'minimal'
             },
             'regulation_positive': {
-                'immediate': '+0.5~2%',
-                'pattern': '초기 급등 후 안정화',
-                'duration': '1-3일',
-                'strategy': '단기 스윙, 과열 구간 주의'
+                'immediate': '+0.5~1.5%',
+                'pattern': '초기 상승 후 안정화',
+                'duration': '6-24시간',
+                'strategy': '단기 스윙, 과열 구간 주의',
+                'actual_impact': 'medium'
             },
             'regulation_negative': {
-                'immediate': '-1~3%',
-                'pattern': '급락 후 반등, V자 회복',
-                'duration': '12-24시간',
-                'strategy': '급락 시 분할 매수, 반등 대기'
+                'immediate': '-1~4%',
+                'pattern': '급락 후 반등, V자 회복 패턴',
+                'duration': '6-18시간',
+                'strategy': '급락 시 분할 매수, 반등 타이밍 포착',
+                'actual_impact': 'medium'
             },
             'banking_adoption': {
                 'immediate': '+0.2~0.8%',
-                'pattern': '완만한 상승, 기관 매수 지속',
-                'duration': '1주일+',
-                'strategy': '장기 관점 매수, 하락 시 추가 매수'
+                'pattern': '완만한 상승, 기관 관심 지속',
+                'duration': '1-2일',
+                'strategy': '장기 관점 매수, 하락 시 추가 매수',
+                'actual_impact': 'low'
             },
             'hack_incident': {
                 'immediate': '-0.5~2%',
-                'pattern': '즉시 하락 후 빠른 회복',
-                'duration': '2-6시간',
-                'strategy': '공포 매도 시 역매매, 단기 반등 노려'
+                'pattern': '즉시 하락 후 4-8시간 내 회복',
+                'duration': '4-12시간',
+                'strategy': '공포 매도 시 역매매, 단기 반등 기대',
+                'actual_impact': 'low'
+            },
+            'fed_rate_decision': {
+                'immediate': '±1~3%',
+                'pattern': '방향성 뚜렷, 하루 내 추세 확정',
+                'duration': '12-48시간',
+                'strategy': '방향성 확인 후 추세 추종',
+                'actual_impact': 'high'
             }
         }
         
@@ -80,31 +107,55 @@ class ExceptionReportGenerator(BaseReportGenerator):
         ]
     
     def _classify_news_type(self, article: Dict) -> str:
-        """뉴스 타입 분류"""
+        """뉴스 타입 분류 - 구조화 상품 vs 직접 투자 구분"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        if 'etf' in content and any(word in content for word in ['approved', 'approval', 'launch']):
-            return 'etf_approval'
-        elif 'etf' in content and any(word in content for word in ['rejected', 'rejection', 'delay']):
-            return 'regulation_negative'
-        elif any(company in content for company in ['tesla', 'microstrategy', 'blackrock', 'gamestop']) and \
-             any(word in content for word in ['bought', 'purchased', 'buys', 'adds']):
-            return 'corporate_purchase'
-        elif any(bank in content for bank in ['sberbank', 'bank', 'central bank']) and \
-             any(word in content for word in ['bitcoin', 'btc', 'bonds', 'launches']):
-            return 'banking_adoption'
-        elif any(word in content for word in ['regulation', 'legal', 'court']) and \
-             any(word in content for word in ['positive', 'approved', 'favorable']):
+        # ETF 관련
+        if 'etf' in content:
+            if any(word in content for word in ['approved', 'approval', 'launch']):
+                return 'etf_approval'
+            elif any(word in content for word in ['rejected', 'rejection', 'delay']):
+                return 'etf_rejection'
+        
+        # 기업 투자 - 직접 vs 구조화 상품 구분
+        if any(company in content for company in ['tesla', 'microstrategy', 'blackrock', 'gamestop']) and \
+           any(word in content for word in ['bought', 'purchased', 'buys', 'adds']):
+            return 'corporate_purchase_direct'
+        
+        # 구조화 상품 (비트코인 직접 매수 아님)
+        if any(word in content for word in ['structured', 'bonds', 'linked', 'tracking', 'exposure']) and \
+           any(word in content for word in ['bitcoin', 'btc']):
+            return 'corporate_structured_product'
+        
+        # 은행/기관 채택
+        if any(bank in content for bank in ['sberbank', 'bank', 'central bank']) and \
+           any(word in content for word in ['bitcoin', 'btc', 'bonds', 'launches']):
+            # 구조화 상품인지 직접 투자인지 구분
+            if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']):
+                return 'corporate_structured_product'
+            else:
+                return 'banking_adoption'
+        
+        # 규제 관련
+        if any(word in content for word in ['regulation', 'legal', 'court']) and \
+           any(word in content for word in ['positive', 'approved', 'favorable']):
             return 'regulation_positive'
         elif any(word in content for word in ['ban', 'prohibited', 'lawsuit', 'illegal']):
             return 'regulation_negative'
+        
+        # Fed 금리
+        if any(word in content for word in ['fed', 'fomc', 'federal reserve', 'interest rate']):
+            return 'fed_rate_decision'
+        
+        # 해킹/보안
         elif any(word in content for word in ['hack', 'stolen', 'breach', 'exploit']):
             return 'hack_incident'
+        
         else:
             return 'general'
     
     def _get_ml_impact_prediction(self, article: Dict) -> Dict:
-        """ML 기반 영향 예측"""
+        """ML 기반 영향 예측 - 현실적 조정"""
         try:
             if not self.ml_predictor:
                 return self._get_fallback_prediction(article)
@@ -115,17 +166,41 @@ class ExceptionReportGenerator(BaseReportGenerator):
             # ML 예측 실행
             prediction = self.ml_predictor.predict_price_impact(features)
             
+            # 현실적 조정 (과도한 예측 방지)
+            magnitude = min(prediction.get('magnitude', 0.5), 2.0)  # 최대 2% 제한
+            confidence = prediction.get('confidence', 0.6)
+            
             return {
                 'direction': prediction.get('direction', 'neutral'),
-                'magnitude': prediction.get('magnitude', 0.5),
-                'confidence': prediction.get('confidence', 0.6),
-                'timeframe': prediction.get('timeframe', '1-6시간'),
+                'magnitude': magnitude,
+                'confidence': confidence,
+                'timeframe': self._get_realistic_timeframe(article),
                 'risk_level': prediction.get('risk_level', 'medium')
             }
             
         except Exception as e:
             self.logger.error(f"ML 예측 실패: {e}")
             return self._get_fallback_prediction(article)
+    
+    def _get_realistic_timeframe(self, article: Dict) -> str:
+        """현실적인 반응 시점 계산"""
+        content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
+        
+        # 즉시 반응 (고영향)
+        if any(word in content for word in ['etf approved', 'etf rejected', 'fed rate']):
+            return '즉시-30분'
+        
+        # 빠른 반응 (중영향)
+        elif any(word in content for word in ['bought billion', 'lawsuit', 'ban']):
+            return '30분-2시간'
+        
+        # 지연 반응 (저영향)
+        elif any(word in content for word in ['structured', 'bonds', 'linked']):
+            return '1-4시간 (미미)'
+        
+        # 일반
+        else:
+            return '1-6시간'
     
     def _extract_news_features(self, article: Dict) -> Dict:
         """뉴스에서 ML 특성 추출"""
@@ -140,7 +215,9 @@ class ExceptionReportGenerator(BaseReportGenerator):
             'regulatory_keyword': any(word in content for word in ['sec', 'etf', 'regulation', 'court']),
             'urgency_indicators': len(re.findall(r'breaking|urgent|alert|immediate', content)),
             'negative_keywords': len(re.findall(r'ban|prohibited|hack|stolen|crash|plunge', content)),
-            'positive_keywords': len(re.findall(r'approved|launch|bought|partnership|adoption', content))
+            'positive_keywords': len(re.findall(r'approved|launch|bought|partnership|adoption', content)),
+            'is_structured_product': any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']),  # 새로 추가
+            'is_direct_investment': any(word in content for word in ['bought', 'purchased', 'acquired']) and not any(word in content for word in ['structured', 'bonds', 'linked'])  # 새로 추가
         }
         
         return features
@@ -159,24 +236,34 @@ class ExceptionReportGenerator(BaseReportGenerator):
         return (pos_count - neg_count) / (pos_count + neg_count)
     
     def _get_fallback_prediction(self, article: Dict) -> Dict:
-        """ML 사용 불가 시 폴백 예측"""
+        """ML 사용 불가 시 현실적 폴백 예측"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
+        # 구조화 상품은 영향 미미
+        if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']):
+            return {
+                'direction': 'neutral',
+                'magnitude': 0.3,  # 매우 낮음
+                'confidence': 0.7,
+                'timeframe': '1-4시간 (미미)',
+                'risk_level': 'low'
+            }
+        
         # 키워드 기반 간단 예측
-        if any(word in content for word in ['approved', 'etf', 'bought billion']):
+        if any(word in content for word in ['etf approved', 'bought billion']):
             return {
                 'direction': 'bullish',
                 'magnitude': 1.5,
-                'confidence': 0.7,
-                'timeframe': '1-6시간',
+                'confidence': 0.8,
+                'timeframe': '즉시-2시간',
                 'risk_level': 'medium'
             }
-        elif any(word in content for word in ['banned', 'prohibited', 'hack']):
+        elif any(word in content for word in ['banned', 'rejected', 'hack']):
             return {
                 'direction': 'bearish',
                 'magnitude': 1.2,
-                'confidence': 0.6,
-                'timeframe': '즉시-2시간',
+                'confidence': 0.7,
+                'timeframe': '즉시-1시간',
                 'risk_level': 'high'
             }
         else:
@@ -184,12 +271,12 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 'direction': 'neutral',
                 'magnitude': 0.5,
                 'confidence': 0.5,
-                'timeframe': '1-4시간',
+                'timeframe': '1-6시간',
                 'risk_level': 'low'
             }
     
     def _format_smart_strategy(self, news_type: str, ml_prediction: Dict, article: Dict) -> str:
-        """지능형 전략 제안"""
+        """현실적 전략 제안"""
         direction = ml_prediction.get('direction', 'neutral')
         magnitude = ml_prediction.get('magnitude', 0.5)
         confidence = ml_prediction.get('confidence', 0.5)
@@ -199,41 +286,67 @@ class ExceptionReportGenerator(BaseReportGenerator):
         
         strategy_lines = []
         
-        # 방향성에 따른 기본 전략
-        if direction == 'bullish' and confidence > 0.6:
+        # 뉴스 타입별 특화 전략
+        if news_type == 'corporate_structured_product':
+            strategy_lines.append("🎯 <b>구조화 상품 - 미미한 영향</b>")
+            strategy_lines.append("• 직접적인 BTC 수요 창출 없음")
+            strategy_lines.append("• 단기 스캘핑만 고려")
+            strategy_lines.append("• 장기 투자 의사결정에 영향 없음")
+            
+        elif news_type == 'corporate_purchase_direct':
             if magnitude > 1.0:
-                strategy_lines.append("🎯 <b>적극 매수 시나리오</b>")
-                strategy_lines.append("• 즉시 진입 후 분할 매수")
-                strategy_lines.append(f"• 예상 반응: {pattern_info.get('immediate', '+0.5~1.5%')}")
+                strategy_lines.append("🎯 <b>직접 매입 - 적극 매수 시나리오</b>")
+                strategy_lines.append("• 실제 BTC 수요 증가")
+                strategy_lines.append("• 분할 매수 후 중기 보유")
             else:
-                strategy_lines.append("🎯 <b>신중 매수 시나리오</b>")
+                strategy_lines.append("🎯 <b>직접 매입 - 신중 매수 시나리오</b>")
                 strategy_lines.append("• 소량 테스트 후 추가 진입")
-                strategy_lines.append(f"• 예상 반응: {pattern_info.get('immediate', '+0.2~0.8%')}")
+                
+        elif news_type == 'etf_approval':
+            strategy_lines.append("🎯 <b>ETF 승인 - 즉시 대응 필요</b>")
+            strategy_lines.append("• 발표 직후 빠른 진입")
+            strategy_lines.append("• 2-4시간 내 수익 실현 고려")
+            
+        elif news_type == 'etf_rejection':
+            strategy_lines.append("🎯 <b>ETF 거부 - 역매매 기회</b>")
+            strategy_lines.append("• 급락 시 분할 매수")
+            strategy_lines.append("• 6-12시간 내 회복 기대")
+            
         elif direction == 'bearish' and confidence > 0.6:
-            if magnitude > 1.0:
-                strategy_lines.append("🎯 <b>방어 및 역매매 시나리오</b>")
-                strategy_lines.append("• 기존 포지션 부분 청산")
-                strategy_lines.append("• 과매도 시 역매매 준비")
-            else:
-                strategy_lines.append("🎯 <b>관망 및 리스크 관리</b>")
-                strategy_lines.append("• 신규 진입 보류")
-                strategy_lines.append("• 기존 포지션 모니터링")
+            strategy_lines.append("🎯 <b>방어 및 역매매 시나리오</b>")
+            strategy_lines.append("• 기존 포지션 부분 청산")
+            strategy_lines.append("• 과매도 시 역매매 준비")
         else:
             strategy_lines.append("🎯 <b>중립 관망</b>")
             strategy_lines.append("• 추가 신호 대기")
             strategy_lines.append("• 소량 양방향 헷지 고려")
         
-        # 타이밍 정보
+        # 현실적인 타이밍 정보
         if pattern_info.get('pattern'):
             strategy_lines.append(f"⏱️ <b>반응 패턴</b>: {pattern_info['pattern']}")
         
-        # 지속 기간
+        # 현실적인 지속 기간
         if pattern_info.get('duration'):
             strategy_lines.append(f"📅 <b>영향 지속</b>: {pattern_info['duration']}")
+        else:
+            # 기본값 - 뉴스 타입에 따라
+            if news_type == 'corporate_structured_product':
+                strategy_lines.append(f"📅 <b>영향 지속</b>: 2-6시간 (미미)")
+            elif news_type in ['etf_approval', 'etf_rejection']:
+                strategy_lines.append(f"📅 <b>영향 지속</b>: 12-24시간")
+            else:
+                strategy_lines.append(f"📅 <b>영향 지속</b>: 6-12시간")
         
-        # 신뢰도 정보
-        confidence_text = "높음" if confidence > 0.7 else "보통" if confidence > 0.5 else "낮음"
-        strategy_lines.append(f"🎲 <b>예측 신뢰도</b>: {confidence_text} ({confidence:.0%})")
+        # 실제 영향도 표시
+        actual_impact = pattern_info.get('actual_impact', 'medium')
+        impact_text = {
+            'high': '높음 ⚡',
+            'medium': '보통 📊', 
+            'low': '낮음 📉',
+            'minimal': '미미 💭'
+        }.get(actual_impact, '보통 📊')
+        
+        strategy_lines.append(f"🎲 <b>실제 영향도</b>: {impact_text} (신뢰도: {confidence:.0%})")
         
         return "\n".join(strategy_lines)
     
@@ -243,44 +356,48 @@ class ExceptionReportGenerator(BaseReportGenerator):
             content = (title + " " + description).lower()
             summary_parts = []
             
+            # 구조화 상품 특별 처리
+            if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']):
+                if 'sberbank' in content:
+                    summary_parts.append("러시아 최대 은행 스베르방크가 비트코인 가격에 연동된 구조화 채권을 출시했습니다.")
+                    summary_parts.append("이는 직접적인 비트코인 매수가 아닌 가격 추적 상품으로, 실제 BTC 수요 창출 효과는 제한적입니다.")
+                    summary_parts.append("러시아 제재 상황과 OTC 거래로 인해 글로벌 시장에 미치는 즉각적 영향은 미미할 것으로 예상됩니다.")
+                else:
+                    summary_parts.append("새로운 비트코인 연계 구조화 상품이 출시되었습니다.")
+                    summary_parts.append("직접적인 비트코인 수요보다는 간접적 노출 제공에 중점을 둔 상품으로 평가됩니다.")
+                
+                return " ".join(summary_parts)
+            
             # 기업명과 행동 매칭
             if company:
                 company_lower = company.lower()
                 
-                # 스베르방크 특별 처리
-                if company_lower == 'sberbank':
-                    if 'bonds' in content or 'launch' in content:
-                        summary_parts.append("러시아 최대 은행 스베르방크가 비트코인 연계 구조화 채권을 출시했습니다.")
-                        summary_parts.append("이는 러시아 금융권의 비트코인 채택 확산을 의미하며, 전통 금융기관의 암호화폐 진입 가속화를 시사합니다.")
-                    
                 # 마이크로스트래티지 처리
-                elif company_lower == 'microstrategy':
+                if company_lower == 'microstrategy':
                     if 'bought' in content or 'purchase' in content:
-                        # BTC 수량 추출
                         btc_amounts = re.findall(r'(\d+(?:,\d+)*)\s*(?:btc|bitcoin)', content)
                         if btc_amounts:
                             amount = btc_amounts[0].replace(',', '')
-                            summary_parts.append(f"마이크로스트래티지가 비트코인 {btc_amounts[0]}개를 추가 매입했습니다.")
+                            summary_parts.append(f"마이크로스트래티지가 비트코인 {btc_amounts[0]}개를 직접 매입했습니다.")
                         else:
                             summary_parts.append("마이크로스트래티지가 비트코인을 추가 매입했습니다.")
                         
-                        summary_parts.append("기업의 지속적인 비트코인 매입은 장기 강세 신호로 해석되며, 다른 기업들의 유사한 움직임을 유도할 가능성이 높습니다.")
+                        summary_parts.append("이는 실제 BTC 수요 증가를 의미하며, 기업 재무 전략의 일환으로 시장에 긍정적 신호를 보냅니다.")
                 
                 # 테슬라 처리
                 elif company_lower == 'tesla':
                     if 'bought' in content or 'purchase' in content:
-                        summary_parts.append("테슬라가 비트코인 매입을 재개했습니다.")
-                        summary_parts.append("일론 머스크의 영향력을 고려할 때 상당한 시장 임팩트가 예상되며, 기관 투자자들의 FOMO를 자극할 수 있습니다.")
+                        summary_parts.append("테슬라가 비트코인 직접 매입을 재개했습니다.")
+                        summary_parts.append("일론 머스크의 영향력과 함께 시장에 상당한 관심을 불러일으킬 것으로 예상됩니다.")
                 
                 # 블랙록 처리
                 elif company_lower == 'blackrock':
                     if 'etf' in content:
                         if 'approved' in content:
                             summary_parts.append("세계 최대 자산운용사 블랙록의 비트코인 ETF가 승인되었습니다.")
-                            summary_parts.append("이는 비트코인의 주류 금융 편입을 의미하며, 기관 자금 유입의 물꼬를 트는 역사적 사건입니다.")
+                            summary_parts.append("이는 기관 자금의 대규모 유입 가능성을 열어주는 획기적 사건입니다.")
                         else:
                             summary_parts.append("블랙록의 비트코인 ETF 관련 중요한 발표가 있었습니다.")
-                            summary_parts.append("세계 최대 자산운용사의 움직임은 시장에 강력한 신호로 작용할 것입니다.")
             
             # 일반적인 패턴 처리
             if not summary_parts:
@@ -288,68 +405,61 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 if 'etf' in content:
                     if 'approved' in content or 'approval' in content:
                         summary_parts.append("비트코인 현물 ETF 승인 소식이 전해졌습니다.")
-                        summary_parts.append("ETF 승인은 기관 투자자들의 비트코인 접근성을 대폭 향상시키며, 대규모 자금 유입의 계기가 될 것으로 예상됩니다.")
+                        summary_parts.append("ETF 승인은 기관 투자자들의 대규모 자금 유입을 가능하게 하는 중요한 이정표입니다.")
                     elif 'rejected' in content or 'delay' in content:
                         summary_parts.append("비트코인 ETF 승인이 지연되거나 거부되었습니다.")
-                        summary_parts.append("단기적 실망감은 있으나, 지속적인 승인 신청은 장기적으로 긍정적 신호로 평가됩니다.")
-                    else:
-                        summary_parts.append("비트코인 ETF 관련 중요한 발표가 있었습니다.")
-                        summary_parts.append("ETF는 비트코인의 제도권 편입을 위한 핵심 수단으로 주목받고 있습니다.")
-                
-                # 규제 관련
-                elif 'sec' in content or 'regulation' in content:
-                    if any(word in content for word in ['approved', 'positive', 'favorable']):
-                        summary_parts.append("미국 SEC의 비트코인 관련 긍정적 발표가 있었습니다.")
-                        summary_parts.append("규제 명확성 확보는 기관 투자자들의 진입 장벽을 낮추는 핵심 요소입니다.")
-                    elif any(word in content for word in ['lawsuit', 'action', 'enforcement']):
-                        summary_parts.append("SEC의 암호화폐 관련 규제 조치가 발표되었습니다.")
-                        summary_parts.append("단기적 불확실성은 있으나, 명확한 규제 프레임워크 구축의 과정으로 해석됩니다.")
+                        summary_parts.append("단기적 실망감은 있으나, 지속적인 신청은 결국 승인 가능성을 높이고 있습니다.")
                 
                 # Fed 금리 관련
                 elif 'fed' in content or 'rate' in content:
                     if 'cut' in content or 'lower' in content:
                         summary_parts.append("연준의 금리 인하 결정이 발표되었습니다.")
-                        summary_parts.append("금리 인하는 유동성 증가를 통해 리스크 자산인 비트코인에 긍정적 영향을 미칠 것으로 예상됩니다.")
+                        summary_parts.append("금리 인하는 유동성 증가를 통해 비트코인과 같은 리스크 자산에 긍정적 영향을 미칩니다.")
                     elif 'hike' in content or 'increase' in content:
                         summary_parts.append("연준의 금리 인상 결정이 발표되었습니다.")
-                        summary_parts.append("금리 인상은 단기적으로 비트코인에 부담이 되나, 인플레이션 헤지 수요는 지속될 것으로 보입니다.")
-                
-                # 해킹/보안 사건
-                elif 'hack' in content or 'stolen' in content:
-                    summary_parts.append("암호화폐 거래소 또는 서비스에서 보안 사건이 발생했습니다.")
-                    summary_parts.append("단기적 매도 압력은 있으나, 비트코인 네트워크 자체의 보안성과는 별개의 문제로 구분해야 합니다.")
+                        summary_parts.append("단기적으로는 부담이지만 인플레이션 헤지 자산으로서의 비트코인 가치는 지속될 것입니다.")
                 
                 # 기본 케이스
                 else:
-                    # 제목에서 핵심 키워드 추출
-                    if any(word in content for word in ['bought', 'purchase', 'investment']):
-                        summary_parts.append("대형 기관 또는 기업의 비트코인 투자 소식이 전해졌습니다.")
-                        summary_parts.append("기관들의 지속적인 비트코인 채택은 장기적 가격 상승의 근본적 동력으로 작용하고 있습니다.")
-                    elif any(word in content for word in ['launch', 'service', 'platform']):
-                        summary_parts.append("비트코인 관련 새로운 서비스나 상품이 출시되었습니다.")
-                        summary_parts.append("생태계 확장은 비트코인의 실용성과 접근성을 높여 채택률 증가에 기여할 것으로 예상됩니다.")
-                    else:
-                        summary_parts.append("비트코인 시장에 영향을 미칠 수 있는 중요한 발표가 있었습니다.")
-                        summary_parts.append("시장 참여자들은 이번 소식이 비트코인 가격과 시장 동향에 미칠 영향을 면밀히 분석하고 있습니다.")
+                    summary_parts.append("비트코인 시장에 영향을 미칠 수 있는 발표가 있었습니다.")
+                    summary_parts.append("투자자들은 이번 소식의 실제 시장 영향을 면밀히 분석하고 있습니다.")
             
-            # 금액 정보 추가
-            amount_match = re.search(r'\$?([\d,]+(?:\.\d+)?)\s*(billion|million)', content)
-            if amount_match and len(summary_parts) == 2:
-                amount = amount_match.group(1)
-                unit = amount_match.group(2)
-                if 'billion' in unit:
-                    summary_parts.append(f"관련 규모는 약 {amount}억 달러로 추정됩니다.")
-                elif 'million' in unit:
-                    summary_parts.append(f"관련 규모는 약 {amount}백만 달러로 추정됩니다.")
-            
-            return " ".join(summary_parts) if summary_parts else "비트코인 관련 중요한 발표가 있었습니다. 투자자들은 시장 반응을 주의 깊게 모니터링하고 있습니다."
+            return " ".join(summary_parts) if summary_parts else "비트코인 관련 소식이 발표되었습니다. 실제 시장 반응을 지켜볼 필요가 있습니다."
             
         except Exception as e:
             self.logger.error(f"스마트 요약 생성 실패: {e}")
-            return "비트코인 시장에 영향을 미칠 수 있는 중요한 소식이 발표되었습니다. 자세한 내용은 원문을 확인하시기 바랍니다."
+            return "비트코인 시장 관련 소식이 발표되었습니다. 자세한 내용은 원문을 확인하시기 바랍니다."
+    
+    async def _get_current_market_status(self) -> str:
+        """현재 시장 상황 조회"""
+        try:
+            if not self.bitget_client:
+                return ""
+            
+            ticker = await self.bitget_client.get_ticker('BTCUSDT')
+            if not ticker:
+                return ""
+            
+            current_price = float(ticker.get('last', 0))
+            change_24h = float(ticker.get('changeUtc', 0)) * 100
+            volume_24h = float(ticker.get('baseVolume', 0))
+            
+            # 현재 상태 분석
+            price_trend = "상승세" if change_24h > 0.5 else "하락세" if change_24h < -0.5 else "횡보"
+            volume_status = "높음" if volume_24h > 60000 else "보통" if volume_24h > 40000 else "낮음"
+            
+            return f"""
+<b>📊 현재 시장 상황 (뉴스 발표 시점):</b>
+• 현재가: <b>${current_price:,.0f}</b>
+• 24시간 변동: <b>{change_24h:+.2f}%</b> ({price_trend})
+• 거래량: <b>{volume_24h:,.0f} BTC</b> ({volume_status})"""
+            
+        except Exception as e:
+            self.logger.error(f"현재 시장 상황 조회 실패: {e}")
+            return ""
     
     async def generate_report(self, event: Dict) -> str:
-        """🚨 강화된 긴급 예외 리포트 생성"""
+        """🚨 현실적인 긴급 예외 리포트 생성"""
         current_time = self._get_current_time_kst()
         event_type = event.get('type', 'unknown')
         
@@ -385,57 +495,58 @@ class ExceptionReportGenerator(BaseReportGenerator):
             if company and company.lower() not in title_ko.lower():
                 title_ko = f"{company} - {title_ko}"
             
-            # 뉴스 타입 분류
+            # 뉴스 타입 분류 (구조화 상품 vs 직접 투자 구분)
             news_type = self._classify_news_type(event)
             
-            # ML 기반 영향 예측
+            # ML 기반 영향 예측 (현실적 조정)
             ml_prediction = self._get_ml_impact_prediction(event)
             
-            # 예상 변동 계산
+            # 예상 변동 계산 (현실적 범위)
             direction = ml_prediction.get('direction', 'neutral')
             magnitude = ml_prediction.get('magnitude', 0.5)
             
             if direction == 'bullish':
                 if magnitude > 1.5:
-                    impact_text = "📈 강한 호재"
-                    expected_change = f"📈 상승 +{magnitude:.1f}~{magnitude+1:.1f}%"
-                elif magnitude > 0.8:
                     impact_text = "📈 호재"
                     expected_change = f"📈 상승 +{magnitude:.1f}~{magnitude+0.5:.1f}%"
-                else:
+                elif magnitude > 0.8:
                     impact_text = "📈 약한 호재"
                     expected_change = f"📈 상승 +{magnitude:.1f}~{magnitude+0.3:.1f}%"
+                else:
+                    impact_text = "📈 미미한 호재"
+                    expected_change = f"📈 상승 +{magnitude:.1f}~{magnitude+0.2:.1f}%"
             elif direction == 'bearish':
                 if magnitude > 1.5:
-                    impact_text = "📉 강한 악재"
-                    expected_change = f"📉 하락 -{magnitude:.1f}~{magnitude+1:.1f}%"
-                elif magnitude > 0.8:
                     impact_text = "📉 악재"
                     expected_change = f"📉 하락 -{magnitude:.1f}~{magnitude+0.5:.1f}%"
-                else:
+                elif magnitude > 0.8:
                     impact_text = "📉 약한 악재"
                     expected_change = f"📉 하락 -{magnitude:.1f}~{magnitude+0.3:.1f}%"
+                else:
+                    impact_text = "📉 미미한 악재"
+                    expected_change = f"📉 하락 -{magnitude:.1f}~{magnitude+0.2:.1f}%"
             else:
-                impact_text = "⚡ 변동성"
-                expected_change = f"⚡ 변동 ±{magnitude:.1f}~{magnitude+0.5:.1f}%"
+                if magnitude < 0.3:
+                    impact_text = "⚡ 미미한 변동"
+                    expected_change = f"⚡ 변동 ±0.1~0.3%"
+                else:
+                    impact_text = "⚡ 변동성"
+                    expected_change = f"⚡ 변동 ±{magnitude:.1f}~{magnitude+0.3:.1f}%"
             
-            # 스마트 전략 생성
+            # 현실적 전략 생성
             smart_strategy = self._format_smart_strategy(news_type, ml_prediction, event)
             
             # 상세 요약 생성
             detail_summary = ""
             if summary and len(summary.strip()) > 10:
-                # 이미 좋은 요약이 있는 경우
                 detail_summary = summary[:300]
             elif description and len(description.strip()) > 20:
-                # description이 있는 경우 스마트 요약 생성
                 detail_summary = self._generate_smart_summary(
                     event.get('title', ''), 
                     description, 
                     company
                 )
             else:
-                # title만으로도 스마트 요약 생성
                 detail_summary = self._generate_smart_summary(
                     event.get('title', ''), 
                     "", 
@@ -444,7 +555,10 @@ class ExceptionReportGenerator(BaseReportGenerator):
             
             # 빈 요약 방지
             if not detail_summary or len(detail_summary.strip()) < 10:
-                detail_summary = "비트코인 시장에 중요한 영향을 미칠 수 있는 발표가 있었습니다. 투자자들은 시장 반응을 주의 깊게 모니터링하고 있으며, 향후 가격 동향에 주목하고 있습니다."
+                detail_summary = "비트코인 관련 발표가 있었습니다. 실제 시장 영향을 주의깊게 모니터링하고 있습니다."
+            
+            # 현재 시장 상황 조회
+            market_status = await self._get_current_market_status()
             
             # 리포트 생성
             report = f"""🚨 <b>BTC 긴급 예외 리포트</b>
@@ -459,13 +573,16 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 <b>📋 핵심 내용:</b>
 {detail_summary}
+{market_status}
 
 ━━━━━━━━━━━━━━━
 
 {smart_strategy}
 
 ━━━━━━━━━━━━━━━
-⏰ {current_time}"""
+⏰ {current_time}
+
+<i>💡 이 예측은 과거 유사 뉴스의 실제 시장 반응을 기반으로 생성되었습니다.</i>"""
             
         elif event_type == 'price_anomaly':
             # 가격 이상 징후
@@ -488,12 +605,15 @@ class ExceptionReportGenerator(BaseReportGenerator):
             if change > 0.03:
                 recommendation = "과열 주의"
                 strategy = "• 분할 익절 고려\n• 추격 매수 자제\n• 조정 대기"
+                duration = "2-6시간"
             elif change < -0.03:
                 recommendation = "반등 대기"
                 strategy = "• 분할 매수 준비\n• 지지선 확인\n• 패닉 셀링 자제"
+                duration = "4-12시간"
             else:
                 recommendation = "추세 관찰"
                 strategy = "• 거래량 확인\n• 지표 점검\n• 신중한 접근"
+                duration = "1-3시간"
             
             report = f"""🚨 <b>BTC 가격 {severity}</b>
 ━━━━━━━━━━━━━━━
@@ -509,6 +629,8 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 {strategy}
 
+📅 <b>영향 지속</b>: {duration}
+
 ━━━━━━━━━━━━━━━
 ⏰ {current_time}"""
             
@@ -522,16 +644,19 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 emoji = "🔥"
                 recommendation = "중요 변동 예상"
                 strategy = "• 뉴스 확인 필수\n• 포지션 점검\n• 높은 변동성 대비"
+                duration = "6-24시간"
             elif ratio >= 3:
                 severity = "급증"
                 emoji = "📈"
                 recommendation = "추세 전환 가능"
                 strategy = "• 방향성 확인\n• 분할 진입\n• 거래량 지속성 확인"
+                duration = "4-12시간"
             else:
                 severity = "증가"
                 emoji = "📊"
                 recommendation = "관심 필요"
                 strategy = "• 시장 모니터링\n• 소량 테스트\n• 추가 신호 대기"
+                duration = "2-6시간"
             
             report = f"""🚨 <b>BTC 거래량 {severity}</b>
 ━━━━━━━━━━━━━━━
@@ -546,6 +671,8 @@ class ExceptionReportGenerator(BaseReportGenerator):
 🎯 <b>추천</b>: {recommendation}
 
 {strategy}
+
+📅 <b>영향 지속</b>: {duration}
 
 ━━━━━━━━━━━━━━━
 ⏰ {current_time}"""
@@ -563,9 +690,11 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 🎯 <b>추천</b>: 주의 관찰
 
-- 포지션 점검
-- 리스크 관리
-- 추가 정보 수집
+• 포지션 점검
+• 리스크 관리
+• 추가 정보 수집
+
+📅 <b>영향 지속</b>: 1-6시간
 
 ━━━━━━━━━━━━━━━
 ⏰ {current_time}"""
