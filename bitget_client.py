@@ -255,11 +255,91 @@ class BitgetClient:
             logger.debug(f"플랜 주문 조회 응답: {response}")
             
             orders = response if isinstance(response, list) else []
+            
+            # 상세 정보 로깅
+            for order in orders:
+                logger.info(f"예약 주문: {order.get('planOrderId')} - {order.get('side')} {order.get('size')} @ trigger: {order.get('triggerPrice')}")
+            
             return orders
             
         except Exception as e:
             logger.error(f"플랜 주문 조회 실패: {e}")
             return []
+    
+    async def get_plan_order_history(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
+        """플랜 주문 히스토리 조회 (V2 API)"""
+        symbol = symbol or self.config.symbol
+        endpoint = "/api/v2/mix/order/orders-plan-history"
+        params = {
+            'symbol': symbol,
+            'productType': 'USDT-FUTURES',
+            'pageSize': str(limit)
+        }
+        
+        if start_time:
+            params['startTime'] = str(start_time)
+        if end_time:
+            params['endTime'] = str(end_time)
+        
+        try:
+            response = await self._request('GET', endpoint, params=params)
+            
+            # 응답이 dict이고 orderList가 있는 경우
+            if isinstance(response, dict) and 'orderList' in response:
+                return response['orderList']
+            # 응답이 리스트인 경우
+            elif isinstance(response, list):
+                return response
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"플랜 주문 히스토리 조회 실패: {e}")
+            return []
+    
+    async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
+        """모든 플랜 주문과 TP/SL 조회 (통합)"""
+        try:
+            symbol = symbol or self.config.symbol
+            
+            # 1. 일반 플랜 주문 조회
+            plan_orders = await self.get_plan_orders(symbol)
+            
+            # 2. TP/SL 주문 조회 (profit-loss 타입)
+            tp_sl_endpoint = "/api/v2/mix/order/orders-plan-pending"
+            tp_sl_params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES',
+                'planType': 'profit_loss'  # TP/SL 주문
+            }
+            
+            tp_sl_orders = []
+            try:
+                tp_sl_response = await self._request('GET', tp_sl_endpoint, params=tp_sl_params)
+                tp_sl_orders = tp_sl_response if isinstance(tp_sl_response, list) else []
+                logger.info(f"TP/SL 주문 조회: {len(tp_sl_orders)}건")
+            except Exception as e:
+                logger.warning(f"TP/SL 주문 조회 실패: {e}")
+            
+            # 3. 통합 결과
+            result = {
+                'plan_orders': plan_orders,
+                'tp_sl_orders': tp_sl_orders,
+                'total_count': len(plan_orders) + len(tp_sl_orders)
+            }
+            
+            logger.info(f"전체 예약 주문: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"전체 플랜 주문 조회 실패: {e}")
+            return {
+                'plan_orders': [],
+                'tp_sl_orders': [],
+                'total_count': 0,
+                'error': str(e)
+            }
     
     async def get_account_info(self) -> Dict:
         """계정 정보 조회 (V2 API)"""
