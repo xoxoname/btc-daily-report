@@ -59,11 +59,12 @@ class MirrorTradingSystem:
         self.processed_orders: Set[str] = set()
         self.last_order_check = datetime.now()
         
-        # 예약 주문 추적
+        # 예약 주문 추적 - 개선된 관리
         self.mirrored_plan_orders: Dict[str, Dict] = {}
         self.processed_plan_orders: Set[str] = set()
         self.startup_plan_orders: Set[str] = set()
         self.startup_plan_orders_processed: bool = False
+        self.already_mirrored_plan_orders: Set[str] = set()  # 🔥 이미 복제된 예약 주문 추적
         
         # 예약주문 취소 감지
         self.last_plan_order_ids: Set[str] = set()
@@ -84,7 +85,7 @@ class MirrorTradingSystem:
         self.MIN_MARGIN = 1.0
         self.DAILY_REPORT_HOUR = 9
         
-        # 성과 추적
+        # 성과 추적 - 개선된 통계
         self.daily_stats = {
             'total_mirrored': 0,
             'successful_mirrors': 0,
@@ -97,7 +98,8 @@ class MirrorTradingSystem:
             'plan_order_mirrors': 0,
             'plan_order_cancels': 0,
             'startup_plan_mirrors': 0,
-            'plan_order_skipped': 0,
+            'plan_order_skipped_already_mirrored': 0,  # 🔥 이미 복제된 주문 스킵
+            'plan_order_skipped_trigger_price': 0,     # 🔥 트리거 가격 문제로 스킵
             'errors': []
         }
         
@@ -113,6 +115,9 @@ class MirrorTradingSystem:
             await self._record_startup_positions()
             await self._record_startup_plan_orders()
             await self._record_startup_position_tp_sl()
+            
+            # 🔥 게이트에 이미 복제된 예약 주문 확인
+            await self._check_already_mirrored_plan_orders()
             
             # 시작 시 기존 예약 주문 복제
             await self._mirror_startup_plan_orders()
@@ -139,6 +144,34 @@ class MirrorTradingSystem:
             )
             raise
     
+    async def _check_already_mirrored_plan_orders(self):
+        """🔥 게이트에 이미 복제된 예약 주문 확인"""
+        try:
+            self.logger.info("🔥 게이트에 이미 복제된 예약 주문 확인 시작")
+            
+            # 게이트의 현재 예약 주문 조회
+            gate_plan_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+            
+            self.logger.info(f"게이트 현재 예약 주문: {len(gate_plan_orders)}개")
+            
+            for gate_order in gate_plan_orders:
+                gate_order_id = gate_order.get('id', '')
+                trigger_price = gate_order.get('trigger', {}).get('price', '')
+                
+                if gate_order_id and trigger_price:
+                    # 이미 복제된 주문으로 기록
+                    # 실제로는 비트겟 주문 ID를 모르므로, 트리거 가격을 기준으로 매칭
+                    self.already_mirrored_plan_orders.add(f"gate_{gate_order_id}")
+                    self.logger.info(f"이미 복제된 예약 주문 발견: Gate ID {gate_order_id}, 트리거가 ${trigger_price}")
+            
+            if gate_plan_orders:
+                self.logger.info(f"✅ 총 {len(gate_plan_orders)}개의 이미 복제된 예약 주문 확인")
+            else:
+                self.logger.info("📝 게이트에 복제된 예약 주문이 없음")
+                
+        except Exception as e:
+            self.logger.error(f"이미 복제된 예약 주문 확인 실패: {e}")
+    
     async def _record_startup_plan_orders(self):
         """시작 시 존재하는 예약 주문 기록"""
         try:
@@ -161,7 +194,7 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 예약 주문 기록 실패: {e}")
     
     async def _mirror_startup_plan_orders(self):
-        """시작 시 기존 예약 주문 복제"""
+        """시작 시 기존 예약 주문 복제 - 개선된 스킵 로직"""
         try:
             self.logger.info("🔥 시작 시 기존 예약 주문 복제 시작")
             
@@ -177,7 +210,8 @@ class MirrorTradingSystem:
             
             mirrored_count = 0
             failed_count = 0
-            skipped_count = 0
+            skipped_already_mirrored_count = 0
+            skipped_trigger_price_count = 0
             
             for order in all_orders:
                 try:
@@ -189,13 +223,23 @@ class MirrorTradingSystem:
                     if self.has_startup_positions and order_id in self.startup_position_tp_sl:
                         continue
                     
+                    # 🔥 이미 복제된 예약 주문인지 확인 (트리거 가격 매칭)
+                    result = await self._check_if_already_mirrored(order)
+                    
+                    if result == "already_mirrored":
+                        skipped_already_mirrored_count += 1
+                        self.logger.info(f"⏭️ 이미 복제된 예약 주문 스킵: {order_id}")
+                        continue
+                    
                     # 예약 주문 복제 실행
                     result = await self._process_startup_plan_order(order)
                     
-                    if result == "skipped":
-                        skipped_count += 1
-                    else:
+                    if result == "skipped_trigger_price":
+                        skipped_trigger_price_count += 1
+                    elif result == "success":
                         mirrored_count += 1
+                    else:
+                        failed_count += 1
                     
                     self.processed_plan_orders.add(order_id)
                     await asyncio.sleep(0.5)
@@ -206,7 +250,8 @@ class MirrorTradingSystem:
                     continue
             
             self.daily_stats['startup_plan_mirrors'] = mirrored_count
-            self.daily_stats['plan_order_skipped'] = skipped_count
+            self.daily_stats['plan_order_skipped_already_mirrored'] = skipped_already_mirrored_count
+            self.daily_stats['plan_order_skipped_trigger_price'] = skipped_trigger_price_count
             self.startup_plan_orders_processed = True
             
             position_mode_text = "포지션 없음 - 모든 예약 주문 복제" if not self.has_startup_positions else "포지션 있음 - 클로즈 TP/SL 제외하고 복제"
@@ -214,7 +259,8 @@ class MirrorTradingSystem:
             await self.telegram.send_message(
                 f"🔥✅ 시작 시 기존 예약 주문 복제 완료\n"
                 f"성공: {mirrored_count}개\n"
-                f"스킵: {skipped_count}개 (트리거 가격 문제)\n"
+                f"이미 복제됨: {skipped_already_mirrored_count}개\n"
+                f"트리거 가격 문제: {skipped_trigger_price_count}개\n"
                 f"실패: {failed_count}개\n"
                 f"🔥 모드: {position_mode_text}"
             )
@@ -223,8 +269,45 @@ class MirrorTradingSystem:
             self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
             self.startup_plan_orders_processed = True
     
+    async def _check_if_already_mirrored(self, bitget_order: Dict) -> str:
+        """🔥 예약 주문이 이미 복제되었는지 확인"""
+        try:
+            # 트리거 가격 추출
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if bitget_order.get(price_field):
+                    trigger_price = float(bitget_order.get(price_field))
+                    break
+            
+            if trigger_price == 0:
+                return "unknown"
+            
+            # 게이트의 현재 예약 주문 조회
+            gate_plan_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+            
+            # 트리거 가격이 유사한 주문이 있는지 확인 (±1% 오차 허용)
+            for gate_order in gate_plan_orders:
+                gate_trigger_price = 0
+                trigger_info = gate_order.get('trigger', {})
+                if trigger_info and 'price' in trigger_info:
+                    try:
+                        gate_trigger_price = float(trigger_info['price'])
+                    except:
+                        continue
+                
+                if gate_trigger_price > 0:
+                    price_diff_percent = abs(trigger_price - gate_trigger_price) / trigger_price * 100
+                    if price_diff_percent <= 1.0:  # 1% 오차 허용
+                        return "already_mirrored"
+            
+            return "not_mirrored"
+            
+        except Exception as e:
+            self.logger.error(f"예약 주문 복제 확인 실패: {e}")
+            return "unknown"
+    
     async def _process_startup_plan_order(self, bitget_order: Dict):
-        """시작 시 예약 주문 복제 처리"""
+        """시작 시 예약 주문 복제 처리 - 개선된 스킵 로직"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -243,8 +326,8 @@ class MirrorTradingSystem:
             # 트리거 가격 유효성 검증
             is_valid, skip_reason = await self._validate_trigger_price(trigger_price, side)
             if not is_valid:
-                self.logger.warning(f"⏭️ 시작 시 예약 주문 스킵됨: {order_id} - {skip_reason}")
-                return "skipped"
+                self.logger.warning(f"⏭️ 시작 시 예약 주문 스킵됨 (트리거 가격 문제): {order_id} - {skip_reason}")
+                return "skipped_trigger_price"
             
             # 실제 달러 마진 비율 동적 계산
             margin_ratio_result = await self._calculate_dynamic_margin_ratio(
@@ -542,7 +625,7 @@ class MirrorTradingSystem:
                 
                 # 통계 업데이트
                 if skipped_orders_count > 0:
-                    self.daily_stats['plan_order_skipped'] += skipped_orders_count
+                    self.daily_stats['plan_order_skipped_trigger_price'] += skipped_orders_count
                 
                 # 오래된 주문 ID 정리
                 if len(self.processed_plan_orders) > 500:
@@ -1003,7 +1086,7 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 포지션 기록 실패: {e}")
     
     async def _log_account_status(self):
-        """계정 상태 로깅"""
+        """계정 상태 로깅 - 개선된 메시지"""
         try:
             bitget_account = await self.bitget.get_account_info()
             bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
@@ -1034,7 +1117,7 @@ class MirrorTradingSystem:
                 f"📊 기존 항목:\n"
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.startup_plan_orders)}개 (시작 시 복제)\n"
-                f"• 복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n\n"
+                f"• 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n\n"
                 f"🔥🔥🔥 예약 주문 복제 정책:\n"
                 f"• {position_mode_text}\n"
                 f"• 보유 포지션: {len(self.startup_positions)}개\n"
@@ -1391,7 +1474,7 @@ class MirrorTradingSystem:
             self.logger.error(f"포지션 종료 처리 실패: {e}")
     
     async def monitor_sync_status(self):
-        """포지션 동기화 상태 모니터링"""
+        """포지션 동기화 상태 모니터링 - 개선된 메시지"""
         while self.monitoring:
             try:
                 await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
@@ -1413,11 +1496,15 @@ class MirrorTradingSystem:
                     if self._generate_position_id(pos) not in self.startup_positions
                 )
                 
+                # 🔥 개선된 상태 표시
+                current_mirrored_plan_orders = len(self.mirrored_plan_orders)
+                
                 if mirrored_bitget_count != len(gate_active):
                     self.logger.warning(
                         f"⚠️ 포지션 불일치 감지\n"
                         f"비트겟: {mirrored_bitget_count}\n"
-                        f"게이트: {len(gate_active)}"
+                        f"게이트: {len(gate_active)}\n"
+                        f"현재 복제된 예약 주문: {current_mirrored_plan_orders}개"
                     )
                 
             except Exception as e:
@@ -1443,7 +1530,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(3600)
     
     async def _create_daily_report(self) -> str:
-        """일일 리포트 생성"""
+        """일일 리포트 생성 - 개선된 통계"""
         try:
             bitget_account = await self.bitget.get_account_info()
             gate_account = await self.gate.get_account_balance()
@@ -1466,7 +1553,8 @@ class MirrorTradingSystem:
 - 신규 예약 주문 미러링: {self.daily_stats['plan_order_mirrors']}회
 - 예약 주문 취소 동기화: {self.daily_stats['plan_order_cancels']}회
 - 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개
-- 스킵된 예약 주문: {self.daily_stats['plan_order_skipped']}개
+- 이미 복제됨으로 스킵: {self.daily_stats['plan_order_skipped_already_mirrored']}개
+- 트리거 가격 문제로 스킵: {self.daily_stats['plan_order_skipped_trigger_price']}개
 
 ⚡ 실시간 포지션 미러링
 - 주문 체결 기반: {self.daily_stats['order_mirrors']}회
@@ -1487,7 +1575,7 @@ class MirrorTradingSystem:
 
 🔄 현재 미러링 상태
 - 활성 포지션: {len(self.mirrored_positions)}개
-- 활성 예약 주문: {len(self.mirrored_plan_orders)}개
+- 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개
 - 실패 기록: {len(self.failed_mirrors)}건
 
 💰💰💰 실제 달러 마진 비율 동적 계산 (핵심)
@@ -1512,7 +1600,7 @@ class MirrorTradingSystem:
             return f"📊 일일 리포트 생성 실패\n오류: {str(e)}"
     
     def _reset_daily_stats(self):
-        """일일 통계 초기화"""
+        """일일 통계 초기화 - 개선된 통계"""
         self.daily_stats = {
             'total_mirrored': 0,
             'successful_mirrors': 0,
@@ -1525,7 +1613,8 @@ class MirrorTradingSystem:
             'plan_order_mirrors': 0,
             'plan_order_cancels': 0,
             'startup_plan_mirrors': 0,
-            'plan_order_skipped': 0,
+            'plan_order_skipped_already_mirrored': 0,
+            'plan_order_skipped_trigger_price': 0,
             'errors': []
         }
         self.failed_mirrors.clear()
