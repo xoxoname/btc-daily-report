@@ -701,3 +701,9 @@ class ExceptionReportGenerator(BaseReportGenerator):
                         summary_parts.append("비트코인 시장에 영향을 미칠 수 있는 발표가 있었다.")
                         summary_parts.append("투자자들은 이번 소식의 실제 시장 영향을 면밀히 분석하고 있다.")
                         summary_parts.append("단기 변동성은 있겠지만 장기 트렌드에는 큰 변화가 없을 것으로 전망된다.")
+            
+            return " ".join(summary_parts[:3]) if summary_parts else "비트코인 관련 소식이 발표되었다. 시장 반응을 지켜볼 필요가 있다. 투자자들은 신중한 접근이 필요하다."
+            
+        except Exception as e:
+            self.logger.error(f"스마트 요약 생성 실패: {e}")
+            return "비트코인 시장 관련 소식이 발표되었다. 자세한 내용은 원문을 확인하시기 바란다. 실제 시장 반응을 면밀히 분석할 필요가 있다."
