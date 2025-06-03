@@ -407,7 +407,7 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 포지션 TP/SL 기록 실패: {e}")
     
     async def monitor_plan_orders(self):
-        """🔥🔥 예약 주문 모니터링 - 시작 시 처리 완료 후 신규만 감지"""
+        """🔥🔥 예약 주문 모니터링 - 개선된 디버깅 및 복제 로직"""
         self.logger.info("🔥🔥 예약 주문 실제 달러 마진 비율 동적 계산 복제 모니터링 시작")
         consecutive_errors = 0
         
@@ -415,6 +415,7 @@ class MirrorTradingSystem:
             try:
                 # 🔥 시작 시 예약 주문 처리 완료 대기
                 if not self.startup_plan_orders_processed:
+                    self.logger.debug("🔍 시작 시 예약 주문 처리 완료 대기 중...")
                     await asyncio.sleep(1)
                     continue
                 
@@ -425,12 +426,17 @@ class MirrorTradingSystem:
                 
                 all_current_orders = current_plan_orders + current_tp_sl_orders
                 
+                self.logger.debug(f"🔍 현재 예약 주문 조회: 일반 {len(current_plan_orders)}개, TP/SL {len(current_tp_sl_orders)}개")
+                
                 # 🔥🔥 현재 존재하는 예약주문 ID 집합
                 current_order_ids = set()
                 for order in all_current_orders:
                     order_id = order.get('orderId', order.get('planOrderId', ''))
                     if order_id:
                         current_order_ids.add(order_id)
+                
+                self.logger.debug(f"🔍 현재 예약 주문 ID들: {current_order_ids}")
+                self.logger.debug(f"🔍 이전 예약 주문 ID들: {self.last_plan_order_ids}")
                 
                 # 🔥🔥 취소된 예약 주문 감지
                 canceled_order_ids = self.last_plan_order_ids - current_order_ids
@@ -445,7 +451,10 @@ class MirrorTradingSystem:
                 for order in all_current_orders:
                     order_id = order.get('orderId', order.get('planOrderId', ''))
                     if not order_id:
+                        self.logger.debug(f"🔍 예약 주문 ID가 없습니다: {order}")
                         continue
+                    
+                    self.logger.debug(f"🔍 예약 주문 처리 중: {order_id}")
                     
                     # 🔥 기존 포지션 TP/SL 필터링
                     if order_id in self.startup_position_tp_sl:
@@ -454,6 +463,7 @@ class MirrorTradingSystem:
                     
                     # 이미 처리된 주문은 스킵
                     if order_id in self.processed_plan_orders:
+                        self.logger.debug(f"이미 처리된 예약 주문 스킵: {order_id}")
                         continue
                     
                     # 🔥🔥 시작 시 존재했던 주문인지 확인 (이미 복제됨)
@@ -463,16 +473,32 @@ class MirrorTradingSystem:
                         self.logger.debug(f"시작 시 예약 주문 processed에 추가: {order_id}")
                         continue
                     
-                    # 새로운 예약 주문 감지
+                    # 🔥🔥 새로운 예약 주문 감지!
                     self.logger.info(f"🆕🔥 새로운 예약 주문 감지: {order_id}")
                     self.logger.info(f"상세: {order.get('side', order.get('tradeSide'))} {order.get('size')} @ trigger: {order.get('triggerPrice', order.get('price'))}")
                     
-                    # 예약 주문 복제 실행
-                    await self._process_new_plan_order(order)
-                    
-                    # 처리 완료 표시
-                    self.processed_plan_orders.add(order_id)
-                    new_orders_count += 1
+                    # 🔥🔥 예약 주문 복제 실행
+                    try:
+                        await self._process_new_plan_order(order)
+                        
+                        # 처리 완료 표시
+                        self.processed_plan_orders.add(order_id)
+                        new_orders_count += 1
+                        
+                        self.logger.info(f"✅ 새로운 예약 주문 복제 처리 완료: {order_id}")
+                        
+                    except Exception as e:
+                        self.logger.error(f"❌ 새로운 예약 주문 복제 실패: {order_id} - {e}")
+                        self.logger.error(f"상세 오류: {traceback.format_exc()}")
+                        
+                        # 처리 실패해도 processed에 추가하여 반복 시도 방지
+                        self.processed_plan_orders.add(order_id)
+                        
+                        await self.telegram.send_message(
+                            f"❌ 예약 주문 복제 실패\n"
+                            f"비트겟 ID: {order_id}\n"
+                            f"오류: {str(e)[:200]}"
+                        )
                 
                 # 🔥🔥 현재 상태를 다음 비교를 위해 저장
                 self.last_plan_order_ids = current_order_ids.copy()
@@ -483,10 +509,18 @@ class MirrorTradingSystem:
                 if canceled_order_ids:
                     self.logger.info(f"🚫🚫 {len(canceled_order_ids)}개의 예약 주문 취소를 처리했습니다")
                 
+                # 상태 로깅 (디버깅용)
+                self.logger.debug(f"🔍 상태 요약:")
+                self.logger.debug(f"  - 현재 예약 주문: {len(current_order_ids)}개")
+                self.logger.debug(f"  - 복제된 예약 주문: {len(self.mirrored_plan_orders)}개")
+                self.logger.debug(f"  - 처리된 예약 주문: {len(self.processed_plan_orders)}개")
+                self.logger.debug(f"  - 시작 시 예약 주문: {len(self.startup_plan_orders)}개")
+                
                 # 오래된 주문 ID 정리 (메모리 절약)
                 if len(self.processed_plan_orders) > 500:
                     recent_orders = list(self.processed_plan_orders)[-250:]
                     self.processed_plan_orders = set(recent_orders)
+                    self.logger.info("🔄 오래된 처리 기록 정리 완료")
                 
                 consecutive_errors = 0
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL)
@@ -494,6 +528,7 @@ class MirrorTradingSystem:
             except Exception as e:
                 consecutive_errors += 1
                 self.logger.error(f"예약 주문 모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
+                self.logger.error(f"상세 오류: {traceback.format_exc()}")
                 
                 if consecutive_errors >= 5:
                     await self.telegram.send_message(
@@ -642,6 +677,8 @@ class MirrorTradingSystem:
             
             # Gate.io에 예약 주문 생성
             try:
+                self.logger.info(f"🔥🔥 Gate.io 예약 주문 생성 시작...")
+                
                 gate_order = await self.gate.create_price_triggered_order(
                     trigger_type=gate_trigger_type,
                     trigger_price=str(trigger_price),
@@ -649,6 +686,8 @@ class MirrorTradingSystem:
                     contract=self.GATE_CONTRACT,
                     size=gate_size
                 )
+                
+                self.logger.info(f"✅ Gate.io 예약 주문 생성 성공: {gate_order}")
                 
                 # 미러링 성공 기록
                 self.mirrored_plan_orders[order_id] = {
@@ -688,19 +727,18 @@ class MirrorTradingSystem:
                 
             except Exception as e:
                 self.logger.error(f"게이트 예약 주문 생성 실패: {e}")
-                await self.telegram.send_message(
-                    f"❌ 예약 주문 복제 실패\n"
-                    f"비트겟 ID: {order_id}\n"
-                    f"오류: {str(e)[:200]}"
-                )
+                self.logger.error(f"상세 오류: {traceback.format_exc()}")
+                raise  # 예외를 다시 던져서 호출자에서 처리하도록
                 
         except Exception as e:
             self.logger.error(f"예약 주문 복제 처리 중 오류: {e}")
+            self.logger.error(f"상세 오류: {traceback.format_exc()}")
             self.daily_stats['errors'].append({
                 'time': datetime.now().isoformat(),
                 'error': str(e),
                 'plan_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', 'unknown'))
             })
+            raise  # 예외를 다시 던져서 호출자에서 처리하도록
     
     async def _calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
         """🔥🔥🔥 실제 달러 마진 비율 동적 계산 - 매 주문마다 새로 계산"""
