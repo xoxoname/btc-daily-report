@@ -39,8 +39,9 @@ class Config:
         self.CRYPTOCOMPARE_API_KEY = os.getenv('CRYPTOCOMPARE_API_KEY')
         self.GLASSNODE_API_KEY = os.getenv('GLASSNODE_API_KEY')
         
-        # OpenAI 설정
+        # AI API 설정
         self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+        self.ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')  # Claude API 추가
         
         # 설정 검증
         self._validate_config()
@@ -105,6 +106,7 @@ class Config:
         # 선택 API들
         optional_apis = {
             'OpenAI GPT': self.OPENAI_API_KEY,
+            'Claude (Anthropic)': self.ANTHROPIC_API_KEY,
             'NewsAPI': self.NEWSAPI_KEY,
             'NewsData': self.NEWSDATA_KEY,
             'Alpha Vantage': self.ALPHA_VANTAGE_KEY,
@@ -132,6 +134,16 @@ class Config:
             for api in missing:
                 print(f"  • {api}")
         
+        # AI 번역 우선순위 표시
+        if self.ANTHROPIC_API_KEY and self.OPENAI_API_KEY:
+            print(f"\n🤖 AI 번역 설정: Claude 우선, GPT 백업")
+        elif self.ANTHROPIC_API_KEY:
+            print(f"\n🤖 AI 번역 설정: Claude만 사용")
+        elif self.OPENAI_API_KEY:
+            print(f"\n🤖 AI 번역 설정: GPT만 사용")
+        else:
+            print(f"\n⚠️  AI 번역 미설정 (번역 기능 제한)")
+        
         # 운영 모드별 추가 정보
         if self.MIRROR_TRADING_MODE:
             print("\n💡 미러 트레이딩 설정:")
@@ -156,8 +168,10 @@ class Config:
                 print("  GATE_API_SECRET=your_gate_secret")
         
         print("\n💡 추가 API 설정 방법:")
-        print("  .env 파일 또는 환경변수에 추가:")
+        print("  환경변수에 추가:")
         
+        if not self.ANTHROPIC_API_KEY:
+            print("  ANTHROPIC_API_KEY=your_key (Claude 번역 활성화)")
         if not self.OPENAI_API_KEY:
             print("  OPENAI_API_KEY=your_key (GPT 분석 활성화)")
         if not self.NEWSAPI_KEY:
@@ -178,6 +192,7 @@ class Config:
             'bitget': bool(self.BITGET_API_KEY),
             'gate': bool(self.GATE_API_KEY),
             'openai': bool(self.OPENAI_API_KEY),
+            'anthropic': bool(self.ANTHROPIC_API_KEY),
             'newsapi': bool(self.NEWSAPI_KEY),
             'newsdata': bool(self.NEWSDATA_KEY),
             'alpha_vantage': bool(self.ALPHA_VANTAGE_KEY),
@@ -196,7 +211,9 @@ class Config:
                 'gate': bool(self.GATE_API_KEY) if self.MIRROR_TRADING_MODE else False
             },
             'features': {
-                'ai_analysis': bool(self.OPENAI_API_KEY),
+                'ai_analysis': bool(self.OPENAI_API_KEY or self.ANTHROPIC_API_KEY),
+                'claude_translation': bool(self.ANTHROPIC_API_KEY),
+                'gpt_analysis': bool(self.OPENAI_API_KEY),
                 'news_collection': any([self.NEWSAPI_KEY, self.NEWSDATA_KEY, self.ALPHA_VANTAGE_KEY]),
                 'market_data': any([self.COINGECKO_API_KEY, self.CRYPTOCOMPARE_API_KEY]),
                 'onchain_data': bool(self.GLASSNODE_API_KEY)
