@@ -25,11 +25,15 @@ class RealisticNewsCollector:
         self.company_news_count = {}  # 회사별 뉴스 카운트
         self.news_first_seen = {}  # 뉴스 최초 발견 시간
         
-        # 중복 방지 데이터 파일 경로
+        # 🔥🔥 중복 방지 데이터 파일 경로 (더 엄격한 파일 관리)
         self.persistence_file = 'news_duplicates.json'
+        self.processed_reports_file = 'processed_critical_reports.json'  # 새로 추가
         
         # 전송된 뉴스 제목 캐시 (중복 방지 강화) - 초기화
         self.sent_news_titles = {}
+        
+        # 🔥🔥 크리티컬 리포트 중복 방지 (강화)
+        self.sent_critical_reports = {}  # 전송된 크리티컬 리포트 기록
         
         # 🔥🔥 번역 사용량 추적 - 크리티컬 리포트만 번역
         self.translation_cache = {}  # 번역 캐시
@@ -100,6 +104,10 @@ class RealisticNewsCollector:
             'bitcoin all time high', 'bitcoin ath', 'bitcoin tumbles', 'bitcoin soars',
             '비트코인 폭락', '비트코인 급등', '비트코인 급락', 'bitcoin reaches',
             'bitcoin hits', 'bitcoin falls below', 'bitcoin crosses',
+            
+            # 🔥🔥 가격 이정표 관련 (새로 추가)
+            'bitcoin crosses 100k', 'bitcoin hits 100000', 'bitcoin 100k milestone',
+            'bitcoin google search', 'bitcoin interest low', 'bitcoin searches unchanged',
             
             # 대량 비트코인 이동
             'whale alert bitcoin', 'large bitcoin transfer', 'bitcoin moved exchange',
@@ -184,6 +192,10 @@ class RealisticNewsCollector:
             'microstrategy_purchase': {'avg_impact': 0.7, 'duration_hours': 8, 'confidence': 0.85},
             'large_corp_purchase': {'avg_impact': 1.2, 'duration_hours': 12, 'confidence': 0.8},
             'small_corp_purchase': {'avg_impact': 0.3, 'duration_hours': 4, 'confidence': 0.6},
+            
+            # 가격 이정표 (새로 추가)
+            'price_milestone': {'avg_impact': 0.2, 'duration_hours': 8, 'confidence': 0.6},
+            'price_milestone_low_interest': {'avg_impact': 0.1, 'duration_hours': 4, 'confidence': 0.5},
             
             # 규제 관련
             'sec_lawsuit': {'avg_impact': -1.5, 'duration_hours': 8, 'confidence': 0.8},
@@ -272,6 +284,9 @@ class RealisticNewsCollector:
         # 중복 방지 데이터 로드
         self._load_duplicate_data()
         
+        # 🔥🔥 크리티컬 리포트 중복 방지 데이터 로드
+        self._load_critical_reports()
+        
         logger.info(f"🔥🔥 번역 최적화 뉴스 수집기 초기화 완료")
         logger.info(f"🧠 GPT API: {'활성화' if self.openai_client else '비활성화'} (주력 - 크리티컬 리포트만 번역)")
         logger.info(f"🤖 Claude API: {'활성화' if self.anthropic_client else '비활성화'} (보조 - 크리티컬 리포트만 번역)")
@@ -281,6 +296,7 @@ class RealisticNewsCollector:
         logger.info(f"📈 가격 패턴: {len(self.historical_patterns)}개 시나리오")
         logger.info(f"📡 RSS 소스: {len(self.rss_feeds)}개 (확장)")
         logger.info(f"💾 중복 방지: 처리된 뉴스 {len(self.processed_news_hashes)}개")
+        logger.info(f"🚨 크리티컬 리포트 중복 방지: {len(self.sent_critical_reports)}개")
     
     def _load_duplicate_data(self):
         """중복 방지 데이터 파일에서 로드"""
@@ -307,12 +323,12 @@ class RealisticNewsCollector:
                 
                 # 뉴스 제목 캐시 로드
                 title_data = data.get('sent_news_titles', {})
-                cutoff_time = current_time - timedelta(hours=3)  # 3시간 이내 데이터만 유지
+                cutoff_time = current_time - timedelta(hours=6)  # 6시간 이내 데이터만 유지 (더 엄격하게)
                 
                 for title_hash, time_str in title_data.items():
                     try:
                         sent_time = datetime.fromisoformat(time_str)
-                        if sent_time > cutoff_time:  # 3시간 이내 데이터만 유지
+                        if sent_time > cutoff_time:  # 6시간 이내 데이터만 유지
                             self.sent_news_titles[title_hash] = sent_time
                     except:
                         continue
@@ -329,6 +345,30 @@ class RealisticNewsCollector:
             self.processed_news_hashes = set()
             self.emergency_alerts_sent = {}
             self.sent_news_titles = {}
+    
+    def _load_critical_reports(self):
+        """🔥🔥 크리티컬 리포트 중복 방지 데이터 로드"""
+        try:
+            if os.path.exists(self.processed_reports_file):
+                with open(self.processed_reports_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                current_time = datetime.now()
+                cutoff_time = current_time - timedelta(hours=4)  # 4시간 이내만 유지 (더 엄격)
+                
+                for item in data:
+                    try:
+                        report_time = datetime.fromisoformat(item['time'])
+                        if report_time > cutoff_time:
+                            self.sent_critical_reports[item['hash']] = report_time
+                    except:
+                        continue
+                
+                logger.info(f"크리티컬 리포트 중복 방지 데이터 로드: {len(self.sent_critical_reports)}개")
+                
+        except Exception as e:
+            logger.warning(f"크리티컬 리포트 데이터 로드 실패: {e}")
+            self.sent_critical_reports = {}
     
     def _save_duplicate_data(self):
         """중복 방지 데이터를 파일에 저장"""
@@ -356,6 +396,24 @@ class RealisticNewsCollector:
             
         except Exception as e:
             logger.error(f"중복 방지 데이터 저장 실패: {e}")
+    
+    def _save_critical_reports(self):
+        """🔥🔥 크리티컬 리포트 중복 방지 데이터 저장"""
+        try:
+            data_to_save = []
+            for report_hash, report_time in self.sent_critical_reports.items():
+                data_to_save.append({
+                    'hash': report_hash,
+                    'time': report_time.isoformat()
+                })
+            
+            with open(self.processed_reports_file, 'w', encoding='utf-8') as f:
+                json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+                
+            logger.debug(f"크리티컬 리포트 데이터 저장 완료: {len(self.sent_critical_reports)}개")
+            
+        except Exception as e:
+            logger.error(f"크리티컬 리포트 데이터 저장 실패: {e}")
     
     def _reset_translation_count_if_needed(self):
         """필요시 번역 카운트 리셋"""
@@ -599,7 +657,7 @@ class RealisticNewsCollector:
         return True
     
     def _generate_content_hash(self, title: str, description: str = "") -> str:
-        """뉴스 내용의 해시 생성 (중복 체크용) - 더 엄격하게"""
+        """🔥🔥 뉴스 내용의 해시 생성 (중복 체크용) - 더 엄격하게"""
         # 제목과 설명에서 핵심 내용 추출
         content = f"{title} {description[:200]}".lower()
         
@@ -615,13 +673,21 @@ class RealisticNewsCollector:
         # 액션 키워드 추출
         action_keywords = []
         actions = ['bought', 'purchased', 'acquired', 'adds', 'buys', 'sells', 'sold', 
-                  'announced', 'launches', 'approves', 'rejects', 'bans', 'raises', 'cuts']
+                  'announced', 'launches', 'approves', 'rejects', 'bans', 'raises', 'cuts',
+                  'crosses', 'hits', 'breaks', 'reaches']  # 가격 관련 추가
         for action in actions:
             if action in content:
                 action_keywords.append(action)
         
         # BTC 수량 추출
         btc_amounts = re.findall(r'(\d+(?:,\d+)*)\s*(?:btc|bitcoin)', content)
+        
+        # 🔥🔥 가격 관련 키워드 추출 (새로 추가)
+        price_keywords = []
+        price_terms = ['100k', '100000', 'milestone', 'search', 'google', 'interest']
+        for term in price_terms:
+            if term in content:
+                price_keywords.append(term)
         
         # 고유 식별자 생성
         unique_parts = []
@@ -631,6 +697,8 @@ class RealisticNewsCollector:
             unique_parts.append('_'.join(sorted(action_keywords)))
         if btc_amounts:
             unique_parts.append('_'.join(btc_amounts))
+        if price_keywords:  # 새로 추가
+            unique_parts.append('_'.join(sorted(price_keywords)))
         
         # 해시 생성
         if unique_parts:
@@ -643,8 +711,8 @@ class RealisticNewsCollector:
         
         return hashlib.md5(hash_content.encode()).hexdigest()
     
-    def _is_duplicate_emergency(self, article: Dict, time_window: int = 30) -> bool:
-        """긴급 알림이 중복인지 확인 (30분 이내로 단축)"""
+    def _is_duplicate_emergency(self, article: Dict, time_window: int = 240) -> bool:
+        """🔥🔥 긴급 알림이 중복인지 확인 (4시간 이내로 연장 - 크리티컬만 엄격 관리)"""
         try:
             current_time = datetime.now()
             content_hash = self._generate_content_hash(
@@ -652,14 +720,36 @@ class RealisticNewsCollector:
                 article.get('description', '')
             )
             
-            # 시간이 지난 알림 제거
+            # 🔥🔥 크리티컬 리포트 중복 체크 (더 엄격)
+            if content_hash in self.sent_critical_reports:
+                last_sent = self.sent_critical_reports[content_hash]
+                time_since_last = current_time - last_sent
+                
+                if time_since_last < timedelta(minutes=time_window):
+                    logger.info(f"🔄 중복 크리티컬 리포트 방지: {article.get('title', '')[:50]}... (마지막 전송: {time_since_last})")
+                    return True
+            
+            # 새로운 크리티컬 리포트로 기록
+            self.sent_critical_reports[content_hash] = current_time
+            
+            # 🔥🔥 오래된 크리티컬 리포트 기록 정리
+            cutoff_time = current_time - timedelta(hours=6)
+            self.sent_critical_reports = {
+                k: v for k, v in self.sent_critical_reports.items()
+                if v > cutoff_time
+            }
+            
+            # 파일에 저장
+            self._save_critical_reports()
+            
+            # 시간이 지난 알림 제거 (기존 로직)
             cutoff_time = current_time - timedelta(minutes=time_window)
             self.emergency_alerts_sent = {
                 k: v for k, v in self.emergency_alerts_sent.items()
                 if v > cutoff_time
             }
             
-            # 중복 체크
+            # 중복 체크 (기존 로직)
             if content_hash in self.emergency_alerts_sent:
                 logger.info(f"🔄 중복 긴급 알림 방지: {article.get('title', '')[:50]}...")
                 return True
@@ -716,6 +806,7 @@ class RealisticNewsCollector:
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
         logger.info(f"📡 RSS 소스: {len(self.rss_feeds)}개")
         logger.info(f"💰 번역 정책: 크리티컬 리포트 전송 시에만")
+        logger.info(f"🚨 중복 방지: 크리티컬 리포트 4시간 기억")
         
         # 회사별 뉴스 카운트 초기화
         self.company_news_count = {}
@@ -913,6 +1004,7 @@ class RealisticNewsCollector:
             ('bitcoin', 'ban', 'china'),
             ('bitcoin', 'all', 'time', 'high'),
             ('bitcoin', 'crash', 'below'),
+            ('bitcoin', 'crosses', '100k'),  # 새로 추가
             
             # 기업 구매
             ('tesla', 'bitcoin', 'purchase'),
@@ -1049,6 +1141,10 @@ class RealisticNewsCollector:
             'large_corp_purchase': ['billion', 'bitcoin', 'purchase', 'acquired'],
             'small_corp_purchase': ['million', 'bitcoin', 'bought', 'adds'],
             
+            # 🔥🔥 가격 이정표 (새로 추가)
+            'price_milestone': ['bitcoin', 'crosses', '100k', 'milestone'],
+            'price_milestone_low_interest': ['bitcoin', '100k', 'search', 'google'],
+            
             # 규제
             'sec_lawsuit': ['sec', 'lawsuit', 'bitcoin', 'crypto'],
             'china_ban': ['china', 'ban', 'bitcoin', 'cryptocurrency'],
@@ -1102,8 +1198,15 @@ class RealisticNewsCollector:
     
     def _estimate_price_impact_by_keywords(self, content: str) -> str:
         """키워드 기반 가격 영향 추정"""
+        # 🔥🔥 가격 이정표 관련 (새로 추가)
+        if any(word in content for word in ['bitcoin crosses 100k', 'bitcoin hits 100000', 'bitcoin 100k milestone']):
+            if any(word in content for word in ['google search', 'search unchanged', 'interest low']):
+                return '📊 미미한 반응 +0.05~0.2% (4시간 내)'
+            else:
+                return '📈 상승 0.1~0.4% (8시간 내)'
+        
         # ETF 관련 (가장 높은 영향)
-        if any(word in content for word in ['etf approved', 'etf approval', 'sec approves bitcoin']):
+        elif any(word in content for word in ['etf approved', 'etf approval', 'sec approves bitcoin']):
             return '🚀 상승 2.5~4.0% (24시간 내)'
         elif any(word in content for word in ['etf rejected', 'etf denial', 'sec rejects bitcoin']):
             return '🔻 하락 2.0~3.5% (12시간 내)'
@@ -1216,7 +1319,9 @@ class RealisticNewsCollector:
         """강화된 뉴스 타입 분류"""
         content = (title + " " + description).lower()
         
-        if any(word in content for word in ['etf approved', 'etf rejected', 'etf filing']):
+        if any(word in content for word in ['crosses', '100k', 'milestone']) and 'bitcoin' in content:
+            return 'price_milestone'
+        elif any(word in content for word in ['etf approved', 'etf rejected', 'etf filing']):
             return 'etf'
         elif any(word in content for word in ['fed rate', 'fomc', 'powell', 'interest rate']):
             return 'fed_policy'
@@ -1241,6 +1346,19 @@ class RealisticNewsCollector:
             content = (title + " " + description).lower()
             summary_parts = []
             
+            # 🔥🔥 비트코인 가격 관련 특별 처리 - 더 정교하게
+            if any(word in content for word in ['crosses', '100k', '$100', 'milestone']) and 'bitcoin' in content:
+                if any(word in content for word in ['search', 'google', 'interest', 'attention']):
+                    summary_parts.append("비트코인이 10만 달러를 돌파했지만 구글 검색량은 예상보다 낮은 수준을 보이고 있다.")
+                    summary_parts.append("이는 기관 투자자 중심의 상승으로 일반 투자자들의 관심은 아직 제한적임을 시사한다.")
+                    summary_parts.append("향후 소매 투자자들의 FOMO가 본격화될 경우 추가 상승 여력이 있을 것으로 분석된다.")
+                else:
+                    summary_parts.append("비트코인이 10만 달러 이정표를 돌파하며 역사적인 순간을 기록했다.")
+                    summary_parts.append("심리적 저항선 돌파로 단기적인 상승 모멘텀이 형성될 수 있다.")
+                    summary_parts.append("하지만 과열 구간에서는 수익 실현 압박도 동시에 증가할 것으로 예상된다.")
+                
+                return " ".join(summary_parts)
+            
             # 구조화 상품 특별 처리
             if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']):
                 if 'sberbank' in content:
@@ -1252,13 +1370,6 @@ class RealisticNewsCollector:
                     summary_parts.append("직접적인 비트코인 수요보다는 간접적 노출 제공에 중점을 둔 상품으로 평가된다.")
                     summary_parts.append("시장에 미치는 실질적 영향은 제한적일 것으로 전망된다.")
                 
-                return " ".join(summary_parts)
-            
-            # 비트코인 관련 키워드 분석
-            if 'crosses' in content and ('100k' in content or '$100' in content):
-                summary_parts.append("비트코인이 10만 달러를 돌파했지만 구글 검색량은 예상보다 낮은 수준을 보이고 있다.")
-                summary_parts.append("이는 기관 투자자 중심의 상승으로 일반 투자자들의 관심은 아직 제한적임을 시사한다.")
-                summary_parts.append("향후 소매 투자자들의 FOMO가 본격화될 경우 추가 상승 여력이 있을 것으로 분석된다.")
                 return " ".join(summary_parts)
             
             # 기업명과 행동 매칭
@@ -1681,7 +1792,7 @@ class RealisticNewsCollector:
         try:
             url = "https://newsapi.org/v2/everything"
             params = {
-                'q': '(bitcoin OR btc OR "bitcoin etf" OR "fed rate" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing" OR "powell speech" OR "fomc decision" OR "cpi report" OR "unemployment rate" OR "sec bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "blackrock bitcoin" OR "russia bitcoin" OR "ukraine war" OR "china sanctions") AND NOT ("altcoin only" OR "how to mine" OR "price prediction tutorial")',
+                'q': '(bitcoin OR btc OR "bitcoin etf" OR "fed rate" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing" OR "powell speech" OR "fomc decision" OR "cpi report" OR "unemployment rate" OR "sec bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "blackrock bitcoin" OR "russia bitcoin" OR "ukraine war" OR "china sanctions" OR "bitcoin crosses 100k" OR "bitcoin 100000") AND NOT ("altcoin only" OR "how to mine" OR "price prediction tutorial")',
                 'language': 'en',
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
@@ -1753,7 +1864,7 @@ class RealisticNewsCollector:
             url = "https://newsdata.io/api/1/news"
             params = {
                 'apikey': self.newsdata_key,
-                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin" OR "fed rate decision" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing" OR "powell speech" OR "fomc decision" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "sec bitcoin" OR "ukraine war" OR "china sanctions"',
+                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin" OR "fed rate decision" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing" OR "powell speech" OR "fomc decision" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "sec bitcoin" OR "ukraine war" OR "china sanctions" OR "bitcoin crosses 100k"',
                 'language': 'en',
                 'category': 'business,top,politics',  # 카테고리 확장
                 'size': 50  # 30 → 50으로 증가
@@ -1983,7 +2094,18 @@ class RealisticNewsCollector:
             self.last_summary_reset = datetime.now()
             self.news_first_seen = {}
             self.claude_cooldown_until = None
+            
+            # 🔥🔥 크리티컬 리포트 중복 방지 데이터도 정리
+            current_time = datetime.now()
+            cutoff_time = current_time - timedelta(hours=12)
+            self.sent_critical_reports = {
+                k: v for k, v in self.sent_critical_reports.items()
+                if v > cutoff_time
+            }
+            self._save_critical_reports()
+            
             logger.info(f"🔄 일일 리셋 완료 (GPT: {self.max_gpt_translations_per_15min}/15분, Claude: {self.max_claude_translations_per_15min}/15분, 요약: {self.max_summaries_per_15min}/15분)")
+            logger.info(f"🚨 크리티컬 리포트 중복 방지: {len(self.sent_critical_reports)}개 유지")
     
     async def get_recent_news_enhanced(self, hours: int = 12) -> List[Dict]:
         """🔥🔥 강화된 최근 뉴스 가져오기"""
@@ -2040,6 +2162,7 @@ class RealisticNewsCollector:
         try:
             # 중복 방지 데이터 저장
             self._save_duplicate_data()
+            self._save_critical_reports()
             
             if self.session:
                 await self.session.close()
@@ -2048,5 +2171,6 @@ class RealisticNewsCollector:
                 logger.info(f"📝 최종 GPT 요약: {self.summary_count}")
                 logger.info(f"⚠️ Claude 에러: {self.claude_error_count}회")
                 logger.info(f"💰 번역 정책: 크리티컬 리포트 전송 시에만")
+                logger.info(f"🚨 크리티컬 리포트 중복 방지: {len(self.sent_critical_reports)}개 기록")
         except Exception as e:
             logger.error(f"세션 종료 중 오류: {e}")
