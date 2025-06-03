@@ -306,7 +306,7 @@ class GateClient:
     async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
                                          order_type: str, contract: str, size: int, 
                                          price: Optional[str] = None) -> Dict:
-        """🔥🔥 가격 트리거 주문 생성 (TP/SL) - size 정수 타입 수정
+        """🔥🔥🔥 가격 트리거 주문 생성 (TP/SL) - strategy_type 정수형 수정
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
@@ -330,35 +330,36 @@ class GateClient:
             if order_type == "limit" and price:
                 initial_data["price"] = str(price)
             
-            # 🔥🔥 트리거 주문 데이터 구조
+            # 🔥🔥🔥 트리거 주문 데이터 구조 - strategy_type과 price_type을 정수로 수정
             data = {
                 "initial": initial_data,
                 "trigger": {
-                    "strategy_type": "0",  # 가격 트리거
-                    "price_type": "0",     # 최종가격
+                    "strategy_type": 0,  # 🔥🔥🔥 정수 0으로 수정 (문자열 "0"에서 변경)
+                    "price_type": 0,     # 🔥🔥🔥 정수 0으로 수정 (문자열 "0"에서 변경)
                     "price": str(trigger_price),
                     "rule": trigger_type   # ge(>=) 또는 le(<=)
                 }
             }
             
-            logger.info(f"🔥🔥 Gate.io 가격 트리거 주문 생성 (size 정수 수정): {data}")
+            logger.info(f"🔥🔥🔥 Gate.io 가격 트리거 주문 생성 (strategy_type 정수형 수정): {data}")
             response = await self._request('POST', endpoint, data=data)
-            logger.info(f"✅✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
+            logger.info(f"✅✅✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
-            logger.error(f"❌❌ 가격 트리거 주문 생성 실패: {e}")
+            logger.error(f"❌❌❌ 가격 트리거 주문 생성 실패: {e}")
             logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size} (타입: {type(size)})")
             
-            # 🔥🔥 상세 디버깅 정보
+            # 🔥🔥🔥 상세 디버깅 정보
             if "AUTO_INVALID_REQUEST_BODY" in str(e) or "cannot unmarshal string into Go struct" in str(e):
-                logger.error(f"🚨 타입 불일치 오류 - size가 정수가 아님!")
+                logger.error(f"🚨🚨🚨 타입 불일치 오류 감지!")
                 logger.error(f"   - 계약: {contract}")
                 logger.error(f"   - 수량: {size} (타입: {type(size)})")
                 logger.error(f"   - 트리거가: {trigger_price} (타입: {type(trigger_price)})")
                 logger.error(f"   - 트리거 타입: {trigger_type}")
                 logger.error(f"   - 주문 타입: {order_type}")
                 logger.error(f"   - 최종 데이터: {data}")
+                logger.error(f"🔥🔥🔥 strategy_type과 price_type를 정수형으로 수정했습니다!")
             
             raise
     
