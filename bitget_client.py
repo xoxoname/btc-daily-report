@@ -285,158 +285,159 @@ class BitgetClient:
             return []
     
     async def get_plan_orders_v2_pending(self, symbol: str = None) -> List[Dict]:
-        """V2 API로 대기중인 전체 주문 조회하여 예약 주문 필터링 - NoneType 오류 수정"""
+        """🔥🔥 V2 API로 대기중인 전체 주문 조회하여 예약 주문 필터링 - 완전 개선"""
         try:
             symbol = symbol or self.config.symbol
             
-            # 모든 대기중인 주문 조회
-            endpoint = "/api/v2/mix/order/orders-pending"
-            params = {
-                'symbol': symbol,
-                'productType': 'USDT-FUTURES'
-            }
+            # 🔥🔥 여러 엔드포인트를 시도하여 예약 주문 찾기
+            endpoints_to_try = [
+                "/api/v2/mix/order/orders-pending",  # 기본 대기 주문
+                "/api/v2/mix/plan/orders-pending",   # 플랜 주문 전용 (있다면)
+                "/api/v2/mix/order/orders-plan-pending"  # 다른 가능한 엔드포인트
+            ]
             
-            response = await self._request('GET', endpoint, params=params)
-            logger.info(f"V2 대기 주문 조회 응답: {response}")
+            all_found_orders = []
             
-            # 🔥 NoneType 오류 수정 - 강화된 null 체크
-            if response is None:
-                logger.warning("V2 대기 주문 조회 응답이 None입니다")
-                return []
-            
-            if not response:
-                logger.warning("V2 대기 주문 조회 응답이 빈 값입니다")
-                return []
-            
-            # entrustedList에서 주문 목록 추출
-            orders = []
-            if isinstance(response, dict):
-                if 'entrustedList' in response:
-                    orders_raw = response['entrustedList']
-                    # 🔥 entrustedList가 None인 경우 체크
-                    if orders_raw is None:
-                        logger.info("V2 응답의 entrustedList가 None입니다")
-                        return []
-                    elif isinstance(orders_raw, list):
-                        orders = orders_raw
+            for endpoint in endpoints_to_try:
+                try:
+                    params = {
+                        'symbol': symbol,
+                        'productType': 'USDT-FUTURES'
+                    }
+                    
+                    logger.info(f"🔍 예약 주문 조회 시도: {endpoint}")
+                    response = await self._request('GET', endpoint, params=params)
+                    logger.info(f"📋 {endpoint} 응답: {response}")
+                    
+                    if response is None:
+                        logger.info(f"{endpoint}: 응답이 None")
+                        continue
+                    
+                    # 응답에서 주문 목록 추출
+                    orders = []
+                    if isinstance(response, dict):
+                        # 다양한 필드명 시도
+                        for field_name in ['entrustedList', 'orderList', 'planList', 'data', 'list']:
+                            if field_name in response:
+                                orders_raw = response[field_name]
+                                if orders_raw is None:
+                                    logger.info(f"{endpoint}: {field_name}이 None")
+                                    continue
+                                elif isinstance(orders_raw, list):
+                                    orders = orders_raw
+                                    logger.info(f"✅ {endpoint}: {field_name}에서 {len(orders)}개 주문 발견")
+                                    break
+                    elif isinstance(response, list):
+                        orders = response
+                        logger.info(f"✅ {endpoint}: 직접 리스트에서 {len(orders)}개 주문 발견")
+                    
+                    if orders:
+                        all_found_orders.extend(orders)
+                        logger.info(f"🎯 {endpoint}에서 발견: {len(orders)}개 주문")
+                        
+                        # 발견된 주문들 상세 로깅
+                        for i, order in enumerate(orders):
+                            if order is None:
+                                continue
+                            
+                            order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
+                            order_type = order.get('orderType', order.get('planType', 'unknown'))
+                            side = order.get('side', order.get('tradeSide', 'unknown'))
+                            trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
+                            
+                            logger.info(f"  📝 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 트리거가={trigger_price}")
+                        
+                        # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 다른 엔드포인트는 시도하지 않음
+                        break
                     else:
-                        logger.warning(f"entrustedList가 예상과 다른 타입입니다: {type(orders_raw)}")
-                        return []
-                elif 'data' in response:
-                    orders_raw = response['data']
-                    # 🔥 data가 None인 경우 체크
-                    if orders_raw is None:
-                        logger.info("V2 응답의 data가 None입니다")
-                        return []
-                    elif isinstance(orders_raw, list):
-                        orders = orders_raw
-                    else:
-                        logger.warning(f"data가 예상과 다른 타입입니다: {type(orders_raw)}")
-                        return []
-                else:
-                    logger.info("V2 응답에 entrustedList나 data가 없습니다")
-                    return []
-            elif isinstance(response, list):
-                orders = response
-            else:
-                logger.warning(f"V2 응답 형식이 예상과 다름: {type(response)}")
-                return []
+                        logger.info(f"{endpoint}: 주문이 없음")
+                        
+                except Exception as e:
+                    logger.warning(f"{endpoint} 조회 실패: {e}")
+                    continue
             
-            # orders가 None이거나 비어있는 경우 체크
-            if orders is None:
-                logger.info("V2에서 조회된 주문 목록이 None입니다")
-                return []
-            
-            if not orders:
-                logger.info("V2에서 조회된 주문이 없습니다")
-                return []
-            
-            # 예약 주문(트리거가 있는 주문) 및 TP/SL이 있는 주문 필터링
+            # 🔥🔥 모든 주문에서 예약 주문(트리거가 있는 주문) 필터링
             plan_orders = []
-            for order in orders:
-                # 🔥 각 주문에 대해서도 None 체크
+            for order in all_found_orders:
                 if order is None:
-                    logger.warning("주문 데이터가 None입니다. 스킵")
                     continue
                     
                 if not isinstance(order, dict):
-                    logger.warning(f"주문 데이터가 dict가 아닙니다: {type(order)}. 스킵")
                     continue
                     
                 is_plan_order = False
                 order_type = order.get('orderType', '').lower() if order.get('orderType') else ''
                 
-                # 1. 기본 트리거 조건들
+                # 🔥🔥 예약 주문 판별 조건들 (더 포괄적으로)
                 if (order.get('triggerPrice') or 
+                    order.get('executePrice') or
                     order.get('planType') or 
-                    order.get('triggerType')):
+                    order.get('triggerType') or
+                    'trigger' in order_type or
+                    'plan' in order_type):
                     is_plan_order = True
-                    logger.info(f"V2에서 기본 트리거 예약 주문 발견: {order.get('orderId')}")
+                    logger.info(f"🎯 트리거 예약 주문 발견: {order.get('orderId', order.get('planOrderId'))}")
                 
-                # 2. TP/SL이 설정된 일반 주문도 예약 주문으로 분류
+                # TP/SL이 설정된 일반 주문도 예약 주문으로 분류
                 elif (order.get('presetStopSurplusPrice') or 
                       order.get('presetStopLossPrice') or
                       order.get('presetStopSurplusExecutePrice') or
                       order.get('presetStopLossExecutePrice')):
                     is_plan_order = True
-                    logger.info(f"V2에서 TP/SL 설정된 예약 주문 발견: {order.get('orderId')}")
-                    logger.info(f"  - TP 가격: {order.get('presetStopSurplusPrice')}")
-                    logger.info(f"  - SL 가격: {order.get('presetStopLossPrice')}")
-                
-                # 3. 특정 주문 타입들도 예약 주문으로 분류
-                elif order_type in ['trigger_market', 'trigger_limit', 'plan_limit', 'plan_market']:
-                    is_plan_order = True
-                    logger.info(f"V2에서 특수 타입 예약 주문 발견: {order.get('orderId')} (타입: {order_type})")
+                    logger.info(f"🎯 TP/SL 설정된 예약 주문 발견: {order.get('orderId')}")
                 
                 if is_plan_order:
                     plan_orders.append(order)
-                    logger.info(f"V2 예약 주문 상세: {json.dumps(order, ensure_ascii=False, indent=2)}")
+                    logger.info(f"📋 예약 주문 상세: {json.dumps(order, ensure_ascii=False, indent=2)}")
             
-            logger.info(f"V2에서 총 {len(plan_orders)}개의 예약 주문 발견")
+            logger.info(f"🔥🔥 총 {len(plan_orders)}개의 예약 주문 발견됨")
             return plan_orders
             
         except Exception as e:
-            logger.error(f"V2 대기 주문 조회 실패: {e}")
+            logger.error(f"V2 예약 주문 조회 실패: {e}")
             logger.error(f"상세 오류: {traceback.format_exc()}")
             return []
     
     async def get_all_trigger_orders(self, symbol: str = None) -> List[Dict]:
-        """모든 트리거 주문 조회 (다양한 방법 시도) - 개선된 버전"""
+        """🔥🔥 모든 트리거 주문 조회 - 완전 개선된 버전"""
         all_orders = []
         symbol = symbol or self.config.symbol
         
-        # 1. V1 일반 예약 주문
+        logger.info(f"🔍🔍 모든 트리거 주문 조회 시작: {symbol}")
+        
+        # 🔥🔥 1. V2 API 우선 시도 (가장 신뢰할 만함)
+        try:
+            v2_orders = await self.get_plan_orders_v2_pending(symbol)
+            if v2_orders:
+                all_orders.extend(v2_orders)
+                logger.info(f"✅ V2에서 {len(v2_orders)}개 예약 주문 발견")
+            else:
+                logger.info("⚠️ V2에서 예약 주문을 찾지 못함")
+        except Exception as e:
+            logger.warning(f"V2 예약 주문 조회 실패: {e}")
+        
+        # 🔥🔥 2. V1 일반 예약 주문
         try:
             v1_orders = await self.get_plan_orders_v1(symbol)
-            if v1_orders:  # None 체크 추가
+            if v1_orders:
                 all_orders.extend(v1_orders)
-                logger.info(f"V1 일반 예약 주문: {len(v1_orders)}건")
+                logger.info(f"✅ V1 일반에서 {len(v1_orders)}개 예약 주문 발견")
         except Exception as e:
             logger.warning(f"V1 일반 예약 주문 조회 실패: {e}")
         
-        # 2. V1 TP/SL 주문
+        # 🔥🔥 3. V1 TP/SL 주문
         try:
             v1_tp_sl = await self.get_plan_orders_v1(symbol, 'profit_loss')
-            if v1_tp_sl:  # None 체크 추가
+            if v1_tp_sl:
                 all_orders.extend(v1_tp_sl)
-                logger.info(f"V1 TP/SL 주문: {len(v1_tp_sl)}건")
+                logger.info(f"✅ V1 TP/SL에서 {len(v1_tp_sl)}개 주문 발견")
         except Exception as e:
             logger.warning(f"V1 TP/SL 주문 조회 실패: {e}")
         
-        # 3. V2 대기 주문에서 트리거 주문 찾기 (개선된 로직)
-        try:
-            v2_trigger = await self.get_plan_orders_v2_pending(symbol)
-            if v2_trigger:  # None 체크 추가
-                all_orders.extend(v2_trigger)
-                logger.info(f"V2 트리거 주문: {len(v2_trigger)}건")
-        except Exception as e:
-            logger.warning(f"V2 트리거 주문 조회 실패: {e}")
-        
-        # 중복 제거 (더 정확한 ID 매칭)
+        # 🔥🔥 중복 제거 (더 정확한 ID 매칭)
         seen = set()
         unique_orders = []
         for order in all_orders:
-            # 🔥 각 주문 None 체크
             if order is None:
                 continue
                 
@@ -449,9 +450,22 @@ class BitgetClient:
             if order_id and order_id not in seen:
                 seen.add(order_id)
                 unique_orders.append(order)
-                logger.info(f"고유 예약 주문 추가: {order_id}")
+                logger.info(f"📝 고유 예약 주문 추가: {order_id}")
         
-        logger.info(f"총 고유한 트리거 주문: {len(unique_orders)}건")
+        logger.info(f"🔥🔥 최종 발견된 고유한 트리거 주문: {len(unique_orders)}건")
+        
+        # 🔥🔥 발견된 주문들의 상세 정보 로깅
+        if unique_orders:
+            logger.info("📋📋 발견된 예약 주문 목록:")
+            for i, order in enumerate(unique_orders, 1):
+                order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
+                side = order.get('side', order.get('tradeSide', 'unknown'))
+                trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
+                size = order.get('size', 'unknown')
+                logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}")
+        else:
+            logger.warning("⚠️⚠️ 예약 주문을 전혀 찾지 못했습니다!")
+        
         return unique_orders
     
     async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
@@ -475,9 +489,11 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """모든 플랜 주문과 TP/SL 조회 (통합) - 개선된 분류"""
+        """🔥🔥 모든 플랜 주문과 TP/SL 조회 - 완전 개선된 분류"""
         try:
             symbol = symbol or self.config.symbol
+            
+            logger.info(f"🔍🔍 모든 예약 주문 및 TP/SL 조회 시작: {symbol}")
             
             # 모든 트리거 주문 조회
             all_orders = await self.get_all_trigger_orders(symbol)
@@ -487,7 +503,6 @@ class BitgetClient:
             plan_orders = []
             
             for order in all_orders:
-                # 🔥 None 체크 추가
                 if order is None:
                     continue
                     
@@ -511,10 +526,10 @@ class BitgetClient:
                 
                 if is_tp_sl:
                     tp_sl_orders.append(order)
-                    logger.info(f"TP/SL 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
+                    logger.info(f"📊 TP/SL 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
                 else:
                     plan_orders.append(order)
-                    logger.info(f"일반 예약 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
+                    logger.info(f"📈 일반 예약 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
             
             # 통합 결과
             result = {
@@ -523,30 +538,30 @@ class BitgetClient:
                 'total_count': len(all_orders)
             }
             
-            logger.info(f"전체 예약 주문 분류 완료: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
+            logger.info(f"🔥🔥 전체 예약 주문 분류 완료: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
             
             # 각 카테고리별 상세 로깅
             if plan_orders:
-                logger.info("=== 일반 예약 주문 목록 ===")
+                logger.info("📈📈 일반 예약 주문 목록:")
                 for i, order in enumerate(plan_orders, 1):
                     order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
                     side = order.get('side', order.get('tradeSide', 'unknown'))
                     price = order.get('price', order.get('triggerPrice', 'unknown'))
                     tp_price = order.get('presetStopSurplusPrice', '')
                     sl_price = order.get('presetStopLossPrice', '')
-                    logger.info(f"{i}. ID: {order_id}, 방향: {side}, 가격: {price}")
+                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 가격: {price}")
                     if tp_price:
-                        logger.info(f"   TP 설정: {tp_price}")
+                        logger.info(f"     TP 설정: {tp_price}")
                     if sl_price:
-                        logger.info(f"   SL 설정: {sl_price}")
+                        logger.info(f"     SL 설정: {sl_price}")
             
             if tp_sl_orders:
-                logger.info("=== TP/SL 주문 목록 ===")
+                logger.info("📊📊 TP/SL 주문 목록:")
                 for i, order in enumerate(tp_sl_orders, 1):
                     order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
                     side = order.get('side', order.get('tradeSide', 'unknown'))
                     trigger_price = order.get('triggerPrice', 'unknown')
-                    logger.info(f"{i}. ID: {order_id}, 방향: {side}, 트리거가: {trigger_price}")
+                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 트리거가: {trigger_price}")
             
             return result
             
