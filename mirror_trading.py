@@ -73,6 +73,17 @@ class MirrorTradingSystem:
         self.startup_position_tp_sl: Set[str] = set()
         self.has_startup_positions: bool = False
         
+        # 🔥🔥🔥 시세 차이 관리 - 새로 추가
+        self.bitget_current_price: float = 0.0
+        self.gate_current_price: float = 0.0
+        self.price_diff_percent: float = 0.0
+        self.last_price_update: datetime = datetime.min
+        
+        # 🔥🔥🔥 동기화 허용 오차 - 새로 추가
+        self.SYNC_TOLERANCE_MINUTES = 5  # 5분 허용 오차
+        self.MAX_PRICE_DIFF_PERCENT = 1.0  # 1% 가격 차이 허용
+        self.POSITION_SYNC_RETRY_COUNT = 3  # 포지션 동기화 재시도 횟수
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -100,16 +111,21 @@ class MirrorTradingSystem:
             'startup_plan_mirrors': 0,
             'plan_order_skipped_already_mirrored': 0,  # 🔥 이미 복제된 주문 스킵
             'plan_order_skipped_trigger_price': 0,     # 🔥 트리거 가격 문제로 스킵
+            'price_adjustments': 0,  # 🔥🔥🔥 시세 차이로 인한 가격 조정 횟수
+            'sync_tolerance_used': 0,  # 🔥🔥🔥 동기화 허용 오차 사용 횟수
             'errors': []
         }
         
         self.monitoring = True
-        self.logger.info("🔥 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 초기화 완료")
+        self.logger.info("🔥🔥🔥 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 초기화 완료")
     
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🚀 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 시작")
+            self.logger.info("🚀🔥🔥🔥 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 시작")
+            
+            # 🔥🔥🔥 시세 차이 초기 확인
+            await self._update_current_prices()
             
             # 초기 포지션 및 예약 주문 기록
             await self._record_startup_positions()
@@ -131,6 +147,7 @@ class MirrorTradingSystem:
                 self.monitor_order_fills(),
                 self.monitor_positions(),
                 self.monitor_sync_status(),
+                self.monitor_price_differences(),  # 🔥🔥🔥 새로 추가
                 self.generate_daily_reports()
             ]
             
@@ -143,6 +160,74 @@ class MirrorTradingSystem:
                 f"오류: {str(e)[:200]}"
             )
             raise
+    
+    async def _update_current_prices(self):
+        """🔥🔥🔥 양쪽 거래소 현재 시세 업데이트"""
+        try:
+            # 비트겟 현재가
+            bitget_ticker = await self.bitget.get_ticker(self.SYMBOL)
+            if bitget_ticker:
+                self.bitget_current_price = float(bitget_ticker.get('last', 0))
+            
+            # 게이트 현재가
+            try:
+                gate_contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
+                if 'last_price' in gate_contract_info:
+                    self.gate_current_price = float(gate_contract_info['last_price'])
+                elif 'mark_price' in gate_contract_info:
+                    self.gate_current_price = float(gate_contract_info['mark_price'])
+            except:
+                # 게이트 가격 조회 실패 시 비트겟 가격 사용
+                self.gate_current_price = self.bitget_current_price
+            
+            # 가격 차이 계산
+            if self.bitget_current_price > 0 and self.gate_current_price > 0:
+                self.price_diff_percent = abs(self.bitget_current_price - self.gate_current_price) / self.bitget_current_price * 100
+            else:
+                self.price_diff_percent = 0.0
+            
+            self.last_price_update = datetime.now()
+            
+            # 큰 차이 발생 시 로깅
+            if self.price_diff_percent > self.MAX_PRICE_DIFF_PERCENT:
+                self.logger.warning(f"🔥⚠️ 거래소 간 시세 차이 큼: 비트겟 ${self.bitget_current_price:,.2f}, 게이트 ${self.gate_current_price:,.2f} (차이: {self.price_diff_percent:.2f}%)")
+            
+        except Exception as e:
+            self.logger.error(f"시세 업데이트 실패: {e}")
+    
+    async def monitor_price_differences(self):
+        """🔥🔥🔥 거래소 간 시세 차이 모니터링"""
+        consecutive_errors = 0
+        
+        while self.monitoring:
+            try:
+                await self._update_current_prices()
+                
+                # 1시간마다 시세 차이 리포트
+                if (datetime.now() - self.last_price_update).total_seconds() > 3600:
+                    if self.price_diff_percent > 0.5:  # 0.5% 이상 차이
+                        await self.telegram.send_message(
+                            f"📊 거래소 간 시세 차이 리포트\n"
+                            f"비트겟: ${self.bitget_current_price:,.2f}\n"
+                            f"게이트: ${self.gate_current_price:,.2f}\n"
+                            f"차이: {self.price_diff_percent:.2f}%\n"
+                            f"{'⚠️ 큰 차이 감지' if self.price_diff_percent > self.MAX_PRICE_DIFF_PERCENT else '✅ 정상 범위'}"
+                        )
+                
+                consecutive_errors = 0
+                await asyncio.sleep(60)  # 1분마다 체크
+                
+            except Exception as e:
+                consecutive_errors += 1
+                self.logger.error(f"시세 차이 모니터링 오류 (연속 {consecutive_errors}회): {e}")
+                
+                if consecutive_errors >= 5:
+                    await self.telegram.send_message(
+                        f"⚠️ 시세 차이 모니터링 시스템 오류\n"
+                        f"연속 {consecutive_errors}회 실패"
+                    )
+                
+                await asyncio.sleep(120)  # 오류 시 2분 대기
     
     async def _check_already_mirrored_plan_orders(self):
         """🔥 게이트에 이미 복제된 예약 주문 확인"""
@@ -212,6 +297,7 @@ class MirrorTradingSystem:
             failed_count = 0
             skipped_already_mirrored_count = 0
             skipped_trigger_price_count = 0
+            price_adjusted_count = 0
             
             for order in all_orders:
                 try:
@@ -231,8 +317,11 @@ class MirrorTradingSystem:
                         self.logger.info(f"⏭️ 이미 복제된 예약 주문 스킵: {order_id}")
                         continue
                     
-                    # 예약 주문 복제 실행
-                    result = await self._process_startup_plan_order(order)
+                    # 예약 주문 복제 실행 - 🔥🔥🔥 시세 차이 대응 강화
+                    result, price_adjusted = await self._process_startup_plan_order_with_price_adjustment(order)
+                    
+                    if price_adjusted:
+                        price_adjusted_count += 1
                     
                     if result == "skipped_trigger_price":
                         skipped_trigger_price_count += 1
@@ -252,16 +341,18 @@ class MirrorTradingSystem:
             self.daily_stats['startup_plan_mirrors'] = mirrored_count
             self.daily_stats['plan_order_skipped_already_mirrored'] = skipped_already_mirrored_count
             self.daily_stats['plan_order_skipped_trigger_price'] = skipped_trigger_price_count
+            self.daily_stats['price_adjustments'] = price_adjusted_count
             self.startup_plan_orders_processed = True
             
             position_mode_text = "포지션 없음 - 모든 예약 주문 복제" if not self.has_startup_positions else "포지션 있음 - 클로즈 TP/SL 제외하고 복제"
             
             await self.telegram.send_message(
-                f"🔥✅ 시작 시 기존 예약 주문 복제 완료\n"
+                f"🔥✅ 시작 시 기존 예약 주문 복제 완료 (시세 차이 대응 강화)\n"
                 f"성공: {mirrored_count}개\n"
                 f"이미 복제됨: {skipped_already_mirrored_count}개\n"
                 f"트리거 가격 문제: {skipped_trigger_price_count}개\n"
                 f"실패: {failed_count}개\n"
+                f"🔥🔥🔥 시세 차이로 가격 조정: {price_adjusted_count}개\n"
                 f"🔥 모드: {position_mode_text}"
             )
             
@@ -306,36 +397,44 @@ class MirrorTradingSystem:
             self.logger.error(f"예약 주문 복제 확인 실패: {e}")
             return "unknown"
     
-    async def _process_startup_plan_order(self, bitget_order: Dict):
-        """시작 시 예약 주문 복제 처리 - 개선된 스킵 로직"""
+    async def _process_startup_plan_order_with_price_adjustment(self, bitget_order: Dict) -> Tuple[str, bool]:
+        """🔥🔥🔥 시작 시 예약 주문 복제 처리 - 시세 차이 대응 강화"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
             size = float(bitget_order.get('size', 0))
             
             # 트리거 가격 추출
-            trigger_price = 0
+            original_trigger_price = 0
             for price_field in ['triggerPrice', 'price', 'executePrice']:
                 if bitget_order.get(price_field):
-                    trigger_price = float(bitget_order.get(price_field))
+                    original_trigger_price = float(bitget_order.get(price_field))
                     break
             
-            if trigger_price == 0:
-                return "failed"
+            if original_trigger_price == 0:
+                return "failed", False
+            
+            # 🔥🔥🔥 현재 시세 업데이트
+            await self._update_current_prices()
+            
+            # 🔥🔥🔥 게이트 기준으로 트리거 가격 조정
+            adjusted_trigger_price, price_adjusted = await self._adjust_trigger_price_for_gate(
+                original_trigger_price, side
+            )
             
             # 🔥🔥🔥 개선된 트리거 가격 유효성 검증 - 더 관대한 기준
-            is_valid, skip_reason = await self._validate_trigger_price_improved(trigger_price, side)
+            is_valid, skip_reason = await self._validate_trigger_price_improved(adjusted_trigger_price, side)
             if not is_valid:
                 self.logger.warning(f"⏭️ 시작 시 예약 주문 스킵됨 (트리거 가격 문제): {order_id} - {skip_reason}")
-                return "skipped_trigger_price"
+                return "skipped_trigger_price", price_adjusted
             
-            # 실제 달러 마진 비율 동적 계산
+            # 실제 달러 마진 비율 동적 계산 - 조정된 트리거 가격 사용
             margin_ratio_result = await self._calculate_dynamic_margin_ratio(
-                size, trigger_price, bitget_order
+                size, adjusted_trigger_price, bitget_order
             )
             
             if not margin_ratio_result['success']:
-                return "failed"
+                return "failed", price_adjusted
             
             margin_ratio = margin_ratio_result['margin_ratio']
             bitget_leverage = margin_ratio_result['leverage']
@@ -352,11 +451,11 @@ class MirrorTradingSystem:
                 gate_margin = gate_available * 0.95
             
             if gate_margin < self.MIN_MARGIN:
-                return "failed"
+                return "failed", price_adjusted
             
-            # 게이트 계약 수 계산
+            # 게이트 계약 수 계산 - 조정된 트리거 가격 사용
             gate_notional_value = gate_margin * bitget_leverage
-            gate_size = int(gate_notional_value / (trigger_price * 0.0001))
+            gate_size = int(gate_notional_value / (adjusted_trigger_price * 0.0001))
             
             if gate_size == 0:
                 gate_size = 1
@@ -364,8 +463,8 @@ class MirrorTradingSystem:
             # 🔥🔥🔥 개선된 방향 처리 - close_long이 올바르게 처리되도록
             gate_size = await self._calculate_gate_order_size_improved(side, gate_size)
             
-            # 🔥🔥 수정된 Gate.io 트리거 타입 변환 - 트리거가와 현재가 관계로 결정
-            gate_trigger_type = await self._determine_gate_trigger_type(trigger_price)
+            # 🔥🔥 수정된 Gate.io 트리거 타입 변환 - 게이트 현재가 기준
+            gate_trigger_type = await self._determine_gate_trigger_type_improved(adjusted_trigger_price)
             
             # 게이트 레버리지 설정
             try:
@@ -374,10 +473,10 @@ class MirrorTradingSystem:
             except Exception as e:
                 self.logger.error(f"시작 시 레버리지 설정 실패: {e}")
             
-            # Gate.io에 예약 주문 생성
+            # Gate.io에 예약 주문 생성 - 조정된 트리거 가격 사용
             gate_order = await self.gate.create_price_triggered_order(
                 trigger_type=gate_trigger_type,
-                trigger_price=str(trigger_price),
+                trigger_price=str(adjusted_trigger_price),
                 order_type="market",
                 contract=self.GATE_CONTRACT,
                 size=gate_size
@@ -393,43 +492,77 @@ class MirrorTradingSystem:
                 'size': gate_size,
                 'margin_ratio': margin_ratio,
                 'leverage': bitget_leverage,
-                'is_startup_order': True
+                'is_startup_order': True,
+                'original_trigger_price': original_trigger_price,  # 🔥🔥🔥 원본 가격 기록
+                'adjusted_trigger_price': adjusted_trigger_price,  # 🔥🔥🔥 조정된 가격 기록
+                'price_adjusted': price_adjusted
             }
             
-            return "success"
+            # 가격 조정 로깅
+            if price_adjusted:
+                self.logger.info(f"🔥🔥🔥 시세 차이로 트리거 가격 조정: {order_id}")
+                self.logger.info(f"   원본: ${original_trigger_price:,.2f} → 조정: ${adjusted_trigger_price:,.2f}")
+                self.logger.info(f"   비트겟 시세: ${self.bitget_current_price:,.2f}, 게이트 시세: ${self.gate_current_price:,.2f}")
+            
+            return "success", price_adjusted
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 처리 실패: {e}")
-            return "failed"
+            return "failed", False
     
-    async def _determine_gate_trigger_type(self, trigger_price: float) -> str:
-        """🔥🔥 수정된 Gate.io 트리거 타입 결정 - 트리거가와 현재가 관계로 판단"""
+    async def _adjust_trigger_price_for_gate(self, bitget_trigger_price: float, side: str) -> Tuple[float, bool]:
+        """🔥🔥🔥 게이트 기준으로 트리거 가격 조정"""
         try:
-            # 게이트 현재 시장가 조회
-            current_price = None
-            try:
-                contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
-                if 'last_price' in contract_info:
-                    current_price = float(contract_info['last_price'])
-                elif 'mark_price' in contract_info:
-                    current_price = float(contract_info['mark_price'])
-            except:
-                pass
+            # 시세 차이가 크지 않으면 조정하지 않음
+            if self.price_diff_percent <= 0.3:  # 0.3% 이하 차이면 조정 안함
+                return bitget_trigger_price, False
             
-            # 현재가를 찾을 수 없으면 비트겟 현재가 사용
-            if current_price is None:
+            # 시세 차이 비율 계산
+            if self.bitget_current_price > 0:
+                price_ratio = self.gate_current_price / self.bitget_current_price
+            else:
+                return bitget_trigger_price, False
+            
+            # 게이트 기준으로 트리거 가격 조정
+            adjusted_price = bitget_trigger_price * price_ratio
+            
+            # 조정 폭이 너무 크면 원본 사용
+            adjustment_percent = abs(adjusted_price - bitget_trigger_price) / bitget_trigger_price * 100
+            if adjustment_percent > 2.0:  # 2% 이상 조정이 필요하면 원본 사용
+                return bitget_trigger_price, False
+            
+            return adjusted_price, True
+            
+        except Exception as e:
+            self.logger.error(f"트리거 가격 조정 실패: {e}")
+            return bitget_trigger_price, False
+    
+    async def _determine_gate_trigger_type_improved(self, trigger_price: float) -> str:
+        """🔥🔥🔥 수정된 Gate.io 트리거 타입 결정 - 게이트 현재가 기준"""
+        try:
+            # 게이트 현재가 사용 (이미 _update_current_prices에서 업데이트됨)
+            current_price = self.gate_current_price
+            
+            # 게이트 현재가가 없으면 다시 조회
+            if current_price == 0:
                 try:
-                    bitget_ticker = await self.bitget.get_ticker(self.SYMBOL)
-                    if bitget_ticker:
-                        current_price = float(bitget_ticker.get('last', 0))
+                    contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
+                    if 'last_price' in contract_info:
+                        current_price = float(contract_info['last_price'])
+                    elif 'mark_price' in contract_info:
+                        current_price = float(contract_info['mark_price'])
                 except:
                     pass
             
-            if current_price is None or current_price == 0:
+            # 여전히 현재가를 찾을 수 없으면 비트겟 현재가 사용
+            if current_price == 0:
+                current_price = self.bitget_current_price
+            
+            if current_price == 0:
                 # 폴백: 기본값으로 ge 사용
                 return "ge"
             
-            # 🔥🔥 핵심 수정: 트리거가와 현재가 관계로만 판단
+            # 🔥🔥🔥 핵심: 게이트 현재가 기준으로 트리거 타입 결정
             if trigger_price > current_price:
                 return "ge"  # 트리거가가 더 높으면 ge (>=)
             else:
@@ -442,22 +575,14 @@ class MirrorTradingSystem:
     async def _validate_trigger_price_improved(self, trigger_price: float, side: str) -> Tuple[bool, str]:
         """🔥🔥🔥 개선된 트리거 가격 유효성 검증 - 더 관대한 기준"""
         try:
-            # 게이트 현재 시장가 조회
-            contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
+            # 게이트 현재가 사용
+            current_price = self.gate_current_price
             
-            current_price = None
-            if 'last_price' in contract_info:
-                current_price = float(contract_info['last_price'])
-            elif 'mark_price' in contract_info:
-                current_price = float(contract_info['mark_price'])
+            # 게이트 현재가가 없으면 비트겟 현재가 사용
+            if current_price == 0:
+                current_price = self.bitget_current_price
             
-            # 현재가를 찾을 수 없으면 비트겟 현재가 사용
-            if current_price is None:
-                bitget_ticker = await self.bitget.get_ticker(self.SYMBOL)
-                if bitget_ticker:
-                    current_price = float(bitget_ticker.get('last', 0))
-            
-            if current_price is None or current_price == 0:
+            if current_price == 0:
                 return False, "현재 시장가를 조회할 수 없음"
             
             # 🔥🔥🔥 핵심 수정: 매우 관대한 검증 로직
@@ -618,7 +743,7 @@ class MirrorTradingSystem:
                     
                     # 새로운 예약 주문 감지
                     try:
-                        result = await self._process_new_plan_order(order)
+                        result = await self._process_new_plan_order_with_price_adjustment(order)
                         
                         if result == "skipped":
                             skipped_orders_count += 1
@@ -665,38 +790,47 @@ class MirrorTradingSystem:
                 
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
     
-    async def _process_new_plan_order(self, bitget_order: Dict):
-        """새로운 예약 주문 복제 - 실제 달러 마진 비율 동적 계산"""
+    async def _process_new_plan_order_with_price_adjustment(self, bitget_order: Dict):
+        """🔥🔥🔥 새로운 예약 주문 복제 - 시세 차이 대응 강화"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
             size = float(bitget_order.get('size', 0))
             
             # 트리거 가격 추출
-            trigger_price = 0
+            original_trigger_price = 0
             for price_field in ['triggerPrice', 'price', 'executePrice']:
                 if bitget_order.get(price_field):
-                    trigger_price = float(bitget_order.get(price_field))
+                    original_trigger_price = float(bitget_order.get(price_field))
                     break
             
-            if trigger_price == 0:
+            if original_trigger_price == 0:
                 return "failed"
             
+            # 🔥🔥🔥 현재 시세 업데이트
+            await self._update_current_prices()
+            
+            # 🔥🔥🔥 게이트 기준으로 트리거 가격 조정
+            adjusted_trigger_price, price_adjusted = await self._adjust_trigger_price_for_gate(
+                original_trigger_price, side
+            )
+            
             # 🔥🔥🔥 개선된 트리거 가격 유효성 검증 - 더 관대한 기준
-            is_valid, skip_reason = await self._validate_trigger_price_improved(trigger_price, side)
+            is_valid, skip_reason = await self._validate_trigger_price_improved(adjusted_trigger_price, side)
             if not is_valid:
                 await self.telegram.send_message(
                     f"⏭️ 예약 주문 스킵됨 (트리거 가격 문제)\n"
                     f"비트겟 ID: {order_id}\n"
                     f"방향: {side.upper()}\n"
-                    f"트리거가: ${trigger_price:,.2f}\n"
+                    f"원본 트리거가: ${original_trigger_price:,.2f}\n"
+                    f"조정 트리거가: ${adjusted_trigger_price:,.2f}\n"
                     f"스킵 사유: {skip_reason}"
                 )
                 return "skipped"
             
-            # 실제 달러 마진 비율 동적 계산
+            # 실제 달러 마진 비율 동적 계산 - 조정된 트리거 가격 사용
             margin_ratio_result = await self._calculate_dynamic_margin_ratio(
-                size, trigger_price, bitget_order
+                size, adjusted_trigger_price, bitget_order
             )
             
             if not margin_ratio_result['success']:
@@ -721,9 +855,9 @@ class MirrorTradingSystem:
             if gate_margin < self.MIN_MARGIN:
                 return "failed"
             
-            # 게이트 계약 수 계산
+            # 게이트 계약 수 계산 - 조정된 트리거 가격 사용
             gate_notional_value = gate_margin * bitget_leverage
-            gate_size = int(gate_notional_value / (trigger_price * 0.0001))
+            gate_size = int(gate_notional_value / (adjusted_trigger_price * 0.0001))
             
             if gate_size == 0:
                 gate_size = 1
@@ -731,8 +865,8 @@ class MirrorTradingSystem:
             # 🔥🔥🔥 개선된 방향 처리 - close_long이 올바르게 처리되도록
             gate_size = await self._calculate_gate_order_size_improved(side, gate_size)
             
-            # 🔥🔥 수정된 Gate.io 트리거 타입 변환 - 트리거가와 현재가 관계로 결정
-            gate_trigger_type = await self._determine_gate_trigger_type(trigger_price)
+            # 🔥🔥 수정된 Gate.io 트리거 타입 변환 - 게이트 현재가 기준
+            gate_trigger_type = await self._determine_gate_trigger_type_improved(adjusted_trigger_price)
             
             # 게이트 레버리지 설정
             try:
@@ -741,11 +875,11 @@ class MirrorTradingSystem:
             except Exception as e:
                 self.logger.error(f"❌ 게이트 레버리지 설정 실패: {e}")
             
-            # Gate.io에 예약 주문 생성
+            # Gate.io에 예약 주문 생성 - 조정된 트리거 가격 사용
             try:
                 gate_order = await self.gate.create_price_triggered_order(
                     trigger_type=gate_trigger_type,
-                    trigger_price=str(trigger_price),
+                    trigger_price=str(adjusted_trigger_price),
                     order_type="market",
                     contract=self.GATE_CONTRACT,
                     size=gate_size
@@ -763,19 +897,30 @@ class MirrorTradingSystem:
                     'leverage': bitget_leverage,
                     'bitget_required_margin': bitget_required_margin,
                     'gate_total_equity': gate_total_equity,
-                    'bitget_total_equity': bitget_total_equity
+                    'bitget_total_equity': bitget_total_equity,
+                    'original_trigger_price': original_trigger_price,  # 🔥🔥🔥 원본 가격 기록
+                    'adjusted_trigger_price': adjusted_trigger_price,  # 🔥🔥🔥 조정된 가격 기록
+                    'price_adjusted': price_adjusted
                 }
                 
                 self.daily_stats['plan_order_mirrors'] += 1
                 
+                if price_adjusted:
+                    self.daily_stats['price_adjustments'] += 1
+                
+                # 성공 메시지 - 가격 조정 여부 포함
+                price_adjustment_text = ""
+                if price_adjusted:
+                    price_adjustment_text = f"\n🔥🔥🔥 시세 차이로 가격 조정됨:\n원본: ${original_trigger_price:,.2f} → 조정: ${adjusted_trigger_price:,.2f}\n비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f}"
+                
                 await self.telegram.send_message(
-                    f"🔥✅ 예약 주문 실제 달러 마진 비율 동적 계산 복제 성공\n"
+                    f"🔥✅ 예약 주문 실제 달러 마진 비율 동적 계산 복제 성공 (시세 차이 대응)\n"
                     f"비트겟 ID: {order_id}\n"
                     f"게이트 ID: {gate_order.get('id')}\n"
                     f"방향: {side.upper()}\n"
-                    f"트리거가: ${trigger_price:,.2f}\n"
+                    f"트리거가: ${adjusted_trigger_price:,.2f}\n"
                     f"트리거 타입: {gate_trigger_type.upper()}\n"
-                    f"게이트 수량: {gate_size}\n\n"
+                    f"게이트 수량: {gate_size}{price_adjustment_text}\n\n"
                     f"💰 실제 달러 마진 동적 비율 복제:\n"
                     f"비트겟 실제 마진: ${bitget_required_margin:,.2f}\n"
                     f"실제 마진 비율: {margin_ratio*100:.2f}%\n"
@@ -1101,11 +1246,16 @@ class MirrorTradingSystem:
             
             position_mode_text = "포지션 없음 - 모든 예약 주문 복제" if not self.has_startup_positions else "포지션 있음 - 클로즈 TP/SL 제외하고 복제"
             
+            # 🔥🔥🔥 시세 차이 정보 추가
+            price_diff_text = ""
+            if self.price_diff_percent > 0:
+                price_diff_text = f"\n\n🔥🔥🔥 거래소 간 시세 차이:\n비트겟: ${self.bitget_current_price:,.2f}\n게이트: ${self.gate_current_price:,.2f}\n차이: {self.price_diff_percent:.2f}%\n{'⚠️ 큰 차이 감지 - 자동 조정됨' if self.price_diff_percent > self.MAX_PRICE_DIFF_PERCENT else '✅ 정상 범위'}"
+            
             await self.telegram.send_message(
-                f"🔥🔥🔥 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시작\n\n"
+                f"🔥🔥🔥 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시작\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f} (레버리지: {bitget_leverage}x)\n"
-                f"• 게이트: ${gate_equity:,.2f}\n\n"
+                f"• 게이트: ${gate_equity:,.2f}{price_diff_text}\n\n"
                 f"🔥🔥🔥 핵심 원리:\n"
                 f"매 주문/포지션마다 실제 달러 투입금 비율을 새로 계산!\n\n"
                 f"💰💰💰 실제 달러 마진 비율 동적 계산 원리:\n"
@@ -1114,6 +1264,12 @@ class MirrorTradingSystem:
                 f"3️⃣ 실제 마진 비율 = 실제 마진 ÷ 비트겟 총 자산\n"
                 f"4️⃣ 게이트 투입 마진 = 게이트 총 자산 × 동일 비율\n"
                 f"5️⃣ 매 거래마다 실시간으로 비율을 새로 계산\n\n"
+                f"🔥🔥🔥 새로운 시세 차이 대응 기능:\n"
+                f"• 실시간 거래소 간 시세 모니터링\n"
+                f"• 시세 차이 0.3% 이상 시 트리거 가격 자동 조정\n"
+                f"• 게이트 기준 현재가로 정확한 트리거 타입 결정\n"
+                f"• 최대 2% 조정 허용, 초과 시 원본 가격 사용\n"
+                f"• 동기화 허용 오차 {self.SYNC_TOLERANCE_MINUTES}분 적용\n\n"
                 f"🔥🔥🔥 개선된 트리거 가격 검증:\n"
                 f"• 최소 차이 기준 완화: 0.1% → 0.01%\n"
                 f"• 최대 차이 기준 완화: 50% → 100%\n"
@@ -1132,11 +1288,13 @@ class MirrorTradingSystem:
                 f"• 제외할 클로즈 TP/SL: {len(self.startup_position_tp_sl)}개\n\n"
                 f"⚡ 감지 주기:\n"
                 f"• 예약 주문: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
-                f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n\n"
+                f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n"
+                f"• 시세 차이 모니터링: 1분마다\n\n"
                 f"💡 예시:\n"
                 f"비트겟 총 자산 $10,000에서 $200 마진 투입 (2%)\n"
                 f"→ 게이트 총 자산 $1,000에서 $20 마진 투입 (동일 2%)\n"
-                f"→ 매 거래마다 실시간으로 이 비율을 새로 계산!"
+                f"→ 매 거래마다 실시간으로 이 비율을 새로 계산!\n"
+                f"→ 시세 차이 발생 시 트리거 가격 자동 조정!"
             )
             
         except Exception as e:
@@ -1482,7 +1640,9 @@ class MirrorTradingSystem:
             self.logger.error(f"포지션 종료 처리 실패: {e}")
     
     async def monitor_sync_status(self):
-        """포지션 동기화 상태 모니터링 - 개선된 메시지"""
+        """🔥🔥🔥 포지션 동기화 상태 모니터링 - 시세 차이 대응 강화"""
+        sync_retry_count = 0
+        
         while self.monitoring:
             try:
                 await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
@@ -1504,16 +1664,74 @@ class MirrorTradingSystem:
                     if self._generate_position_id(pos) not in self.startup_positions
                 )
                 
-                # 🔥 개선된 상태 표시
+                # 🔥🔥🔥 개선된 동기화 체크 - 허용 오차 적용
+                position_diff = mirrored_bitget_count - len(gate_active)
                 current_mirrored_plan_orders = len(self.mirrored_plan_orders)
                 
-                if mirrored_bitget_count != len(gate_active):
-                    self.logger.warning(
-                        f"⚠️ 포지션 불일치 감지\n"
-                        f"비트겟: {mirrored_bitget_count}\n"
-                        f"게이트: {len(gate_active)}\n"
-                        f"현재 복제된 예약 주문: {current_mirrored_plan_orders}개"
-                    )
+                # 🔥🔥🔥 허용 오차 내인지 확인
+                sync_tolerance_met = False
+                
+                if position_diff != 0:
+                    # 최근 체결된 주문이 있는지 확인 (허용 오차 시간 내)
+                    now = datetime.now()
+                    recent_orders = []
+                    
+                    try:
+                        recent_bitget_orders = await self.bitget.get_recent_filled_orders(
+                            symbol=self.SYMBOL, 
+                            minutes=self.SYNC_TOLERANCE_MINUTES
+                        )
+                        recent_orders.extend(recent_bitget_orders)
+                    except:
+                        pass
+                    
+                    # 최근 주문이 있으면 허용 오차 적용
+                    if recent_orders:
+                        sync_tolerance_met = True
+                        sync_retry_count = 0
+                        self.daily_stats['sync_tolerance_used'] += 1
+                        
+                        self.logger.info(
+                            f"🔥✅ 동기화 허용 오차 적용 (최근 {self.SYNC_TOLERANCE_MINUTES}분 내 주문 있음)\n"
+                            f"비트겟: {mirrored_bitget_count}, 게이트: {len(gate_active)}\n"
+                            f"차이: {position_diff}, 최근 주문: {len(recent_orders)}건"
+                        )
+                
+                # 🔥🔥🔥 허용 오차를 초과하거나 지속적인 불일치 시에만 경고
+                if not sync_tolerance_met and position_diff != 0:
+                    sync_retry_count += 1
+                    
+                    if sync_retry_count >= self.POSITION_SYNC_RETRY_COUNT:
+                        # 시세 차이 정보 포함한 경고
+                        await self._update_current_prices()
+                        
+                        price_diff_info = ""
+                        if self.price_diff_percent > 0.5:
+                            price_diff_info = f"\n🔥 시세 차이: {self.price_diff_percent:.2f}% (비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f})"
+                        
+                        await self.telegram.send_message(
+                            f"🔥⚠️ 포지션 동기화 불일치 감지 (시세 차이 고려)\n"
+                            f"비트겟 신규: {mirrored_bitget_count}개\n"
+                            f"게이트 활성: {len(gate_active)}개\n"
+                            f"차이: {position_diff}개\n"
+                            f"복제된 예약 주문: {current_mirrored_plan_orders}개\n"
+                            f"연속 감지: {sync_retry_count}회{price_diff_info}\n\n"
+                            f"🔥🔥🔥 가능한 원인:\n"
+                            f"• 거래소 간 시세 차이로 체결 타이밍 상이\n"
+                            f"• 예약 주문 트리거 가격 차이\n"
+                            f"• 네트워크 지연 또는 일시적 API 오류\n"
+                            f"• 허용 오차({self.SYNC_TOLERANCE_MINUTES}분) 초과한 지속적 불일치"
+                        )
+                        
+                        sync_retry_count = 0  # 리셋
+                    else:
+                        self.logger.debug(
+                            f"🔥 포지션 불일치 감지 중... ({sync_retry_count}/{self.POSITION_SYNC_RETRY_COUNT})\n"
+                            f"비트겟: {mirrored_bitget_count}, 게이트: {len(gate_active)}, 차이: {position_diff}"
+                        )
+                else:
+                    # 동기화 상태 정상
+                    sync_retry_count = 0
                 
             except Exception as e:
                 self.logger.error(f"동기화 모니터링 오류: {e}")
@@ -1552,7 +1770,20 @@ class MirrorTradingSystem:
                 success_rate = (self.daily_stats['successful_mirrors'] / 
                               self.daily_stats['total_mirrored']) * 100
             
-            report = f"""📊 일일 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 리포트
+            # 🔥🔥🔥 시세 차이 정보 추가
+            await self._update_current_prices()
+            price_diff_text = ""
+            if self.price_diff_percent > 0:
+                price_diff_text = f"""
+
+🔥🔥🔥 거래소 간 시세 차이:
+- 비트겟: ${self.bitget_current_price:,.2f}
+- 게이트: ${self.gate_current_price:,.2f}
+- 차이: {self.price_diff_percent:.2f}%
+- 가격 조정: {self.daily_stats['price_adjustments']}회
+- 동기화 허용 오차 사용: {self.daily_stats['sync_tolerance_used']}회"""
+            
+            report = f"""📊 일일 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 리포트
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
@@ -1584,11 +1815,17 @@ class MirrorTradingSystem:
 🔄 현재 미러링 상태
 - 활성 포지션: {len(self.mirrored_positions)}개
 - 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개
-- 실패 기록: {len(self.failed_mirrors)}건
+- 실패 기록: {len(self.failed_mirrors)}건{price_diff_text}
 
 💰💰💰 실제 달러 마진 비율 동적 계산 (핵심)
 - 매 예약주문마다 실제 마진 비율을 새로 계산
 - 미리 정해진 비율 없음 - 완전 동적 계산
+
+🔥🔥🔥 시세 차이 대응 강화 (새로운 핵심 기능)
+- 실시간 거래소 간 시세 모니터링
+- 0.3% 이상 차이 시 트리거 가격 자동 조정
+- 게이트 기준 현재가로 정확한 트리거 타입 결정
+- 동기화 허용 오차 {self.SYNC_TOLERANCE_MINUTES}분 적용
 
 🔥🔥🔥 개선된 트리거 검증 (핵심)
 - 최소 차이: 0.1% → 0.01% (10배 완화)
@@ -1603,7 +1840,7 @@ class MirrorTradingSystem:
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
             
-            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥 완전한 실제 달러 마진 비율 동적 계산 + 개선된 방향 처리!"
+            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥 완전한 시세 차이 대응 + 실제 달러 마진 비율 동적 계산 + 개선된 방향 처리!"
             
             return report
             
@@ -1627,6 +1864,8 @@ class MirrorTradingSystem:
             'startup_plan_mirrors': 0,
             'plan_order_skipped_already_mirrored': 0,
             'plan_order_skipped_trigger_price': 0,
+            'price_adjustments': 0,  # 🔥🔥🔥 시세 차이로 인한 가격 조정 횟수
+            'sync_tolerance_used': 0,  # 🔥🔥🔥 동기화 허용 오차 사용 횟수
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -1658,9 +1897,9 @@ class MirrorTradingSystem:
         try:
             final_report = await self._create_daily_report()
             await self.telegram.send_message(
-                f"🛑 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 종료\n\n{final_report}"
+                f"🛑 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 종료\n\n{final_report}"
             )
         except:
             pass
         
-        self.logger.info("실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 시스템 중지")
+        self.logger.info("🔥🔥🔥 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 시스템 중지")
