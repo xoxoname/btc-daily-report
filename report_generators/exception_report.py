@@ -6,6 +6,8 @@ import pytz
 import re
 import sys
 import os
+import hashlib
+import json
 
 # ML 예측기 임포트
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,8 +32,15 @@ class ExceptionReportGenerator(BaseReportGenerator):
             except Exception as e:
                 self.logger.error(f"ML 예측기 초기화 실패: {e}")
         
-        # 뉴스 발표 시점 기록 저장소
-        self.news_initial_data = {}  # 뉴스별 초기 데이터 저장
+        # 🔥🔥 뉴스 발표 시점 기록 저장소 - 파일로 영구 저장
+        self.news_initial_data = {}
+        self.news_data_file = 'news_initial_data.json'
+        self.processed_reports = set()  # 처리된 리포트 해시
+        self.processed_reports_file = 'processed_reports.json'
+        
+        # 기존 데이터 로드
+        self._load_news_data()
+        self._load_processed_reports()
         
         # 현실적인 뉴스 반응 패턴 데이터 (실제 과거 데이터 기반)
         self.news_reaction_patterns = {
@@ -123,6 +132,14 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 'actual_impact': 'medium',
                 'typical_range': (0.2, 0.8)
             },
+            'price_milestone': {  # 가격 돌파 관련 (새로 추가)
+                'immediate': '+0.05~0.3%',
+                'pattern': '심리적 저항선 돌파 후 단기 상승',
+                'duration': '4-12시간',
+                'strategy': '돌파 확인 후 단기 추격, 과열 주의',
+                'actual_impact': 'low',
+                'typical_range': (0.05, 0.3)
+            },
             'macro_economic_general': {  # 일반 거시경제
                 'immediate': '+0.1~0.4%',
                 'pattern': '제한적 반응, 단기간 영향',
@@ -142,9 +159,133 @@ class ExceptionReportGenerator(BaseReportGenerator):
             'sberbank', '스베르방크', 'jpmorgan', 'goldman sachs'
         ]
     
+    def _load_news_data(self):
+        """뉴스 초기 데이터 로드"""
+        try:
+            if os.path.exists(self.news_data_file):
+                with open(self.news_data_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # 문자열을 datetime으로 변환
+                for key, value in data.items():
+                    if 'time' in value:
+                        value['time'] = datetime.fromisoformat(value['time'])
+                
+                self.news_initial_data = data
+                
+                # 24시간 이상 된 데이터 정리
+                cutoff_time = datetime.now() - timedelta(hours=24)
+                self.news_initial_data = {
+                    k: v for k, v in self.news_initial_data.items()
+                    if v.get('time', datetime.now()) > cutoff_time
+                }
+                
+                self.logger.info(f"뉴스 초기 데이터 로드: {len(self.news_initial_data)}개")
+        except Exception as e:
+            self.logger.error(f"뉴스 데이터 로드 실패: {e}")
+            self.news_initial_data = {}
+    
+    def _save_news_data(self):
+        """뉴스 초기 데이터 저장"""
+        try:
+            # datetime을 문자열로 변환하여 저장
+            data_to_save = {}
+            for key, value in self.news_initial_data.items():
+                new_value = value.copy()
+                if 'time' in new_value and isinstance(new_value['time'], datetime):
+                    new_value['time'] = new_value['time'].isoformat()
+                data_to_save[key] = new_value
+            
+            with open(self.news_data_file, 'w', encoding='utf-8') as f:
+                json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error(f"뉴스 데이터 저장 실패: {e}")
+    
+    def _load_processed_reports(self):
+        """처리된 리포트 해시 로드"""
+        try:
+            if os.path.exists(self.processed_reports_file):
+                with open(self.processed_reports_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # 시간 기반 필터링 (6시간 이내만 유지)
+                cutoff_time = datetime.now() - timedelta(hours=6)
+                
+                valid_reports = []
+                for item in data:
+                    try:
+                        report_time = datetime.fromisoformat(item['time'])
+                        if report_time > cutoff_time:
+                            valid_reports.append(item['hash'])
+                    except:
+                        continue
+                
+                self.processed_reports = set(valid_reports)
+                self.logger.info(f"처리된 리포트 해시 로드: {len(self.processed_reports)}개")
+        except Exception as e:
+            self.logger.error(f"처리된 리포트 로드 실패: {e}")
+            self.processed_reports = set()
+    
+    def _save_processed_reports(self):
+        """처리된 리포트 해시 저장"""
+        try:
+            current_time = datetime.now()
+            data_to_save = []
+            
+            for report_hash in self.processed_reports:
+                data_to_save.append({
+                    'hash': report_hash,
+                    'time': current_time.isoformat()
+                })
+            
+            with open(self.processed_reports_file, 'w', encoding='utf-8') as f:
+                json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error(f"처리된 리포트 저장 실패: {e}")
+    
+    def _generate_report_hash(self, event: Dict) -> str:
+        """리포트 고유 해시 생성"""
+        if event.get('type') == 'critical_news':
+            title = event.get('title', '')
+            published_at = event.get('published_at', '')
+            
+            # 제목과 발행시간을 조합한 해시
+            content = f"{title}_{published_at}"
+            return hashlib.md5(content.encode()).hexdigest()
+        else:
+            # 다른 타입의 이벤트
+            content = f"{event.get('type', '')}_{event.get('description', '')}_{datetime.now().strftime('%Y%m%d%H')}"
+            return hashlib.md5(content.encode()).hexdigest()
+    
+    def _is_duplicate_report(self, event: Dict) -> bool:
+        """중복 리포트 체크"""
+        report_hash = self._generate_report_hash(event)
+        
+        if report_hash in self.processed_reports:
+            self.logger.info(f"중복 리포트 감지 - 전송 생략: {event.get('title', '')[:50]}...")
+            return True
+        
+        # 새로운 리포트로 기록
+        self.processed_reports.add(report_hash)
+        
+        # 크기 제한 (최대 1000개)
+        if len(self.processed_reports) > 1000:
+            # 오래된 것부터 제거 (단순하게 일부 제거)
+            self.processed_reports = set(list(self.processed_reports)[-500:])
+        
+        # 파일에 저장
+        self._save_processed_reports()
+        
+        return False
+    
     def _classify_news_type(self, article: Dict) -> str:
         """뉴스 타입 분류 - 구조화 상품 vs 직접 투자 + 거시경제 구분"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
+        
+        # 🔥🔥 가격 돌파/이정표 관련 (새로 추가)
+        if any(word in content for word in ['crosses', '100k', '$100,000', 'milestone', 'breaks', 'hits']):
+            if any(word in content for word in ['search', 'google', 'interest', 'attention']):
+                return 'price_milestone'
         
         # ETF 관련
         if 'etf' in content:
@@ -235,7 +376,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
             return '30분-2시간'
         
         # 지연 반응 (저영향)
-        elif any(word in content for word in ['structured', 'bonds', 'linked']):
+        elif any(word in content for word in ['structured', 'bonds', 'linked', 'milestone', 'crosses']):
             return '1-4시간 (미미)'
         
         # 일반
@@ -258,14 +399,15 @@ class ExceptionReportGenerator(BaseReportGenerator):
             'positive_keywords': len(re.findall(r'approved|launch|bought|partnership|adoption', content)),
             'is_structured_product': any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']),  
             'is_direct_investment': any(word in content for word in ['bought', 'purchased', 'acquired']) and not any(word in content for word in ['structured', 'bonds', 'linked']),
-            'is_macro_economic': any(word in content for word in ['fed', 'tariffs', 'inflation', 'trade']),  # 새로 추가
+            'is_macro_economic': any(word in content for word in ['fed', 'tariffs', 'inflation', 'trade']),
+            'is_price_milestone': any(word in content for word in ['crosses', '100k', 'milestone', 'breaks', 'hits']),  # 새로 추가
         }
         
         return features
     
     def _calculate_sentiment_score(self, content: str) -> float:
         """간단한 감정 점수 계산"""
-        positive_words = ['approved', 'launched', 'bought', 'partnership', 'adoption', 'positive', 'surge', 'rally']
+        positive_words = ['approved', 'launched', 'bought', 'partnership', 'adoption', 'positive', 'surge', 'rally', 'breaks', 'crosses']
         negative_words = ['banned', 'rejected', 'hack', 'stolen', 'crash', 'plunge', 'lawsuit', 'prohibited']
         
         pos_count = sum(1 for word in positive_words if word in content)
@@ -347,6 +489,12 @@ class ExceptionReportGenerator(BaseReportGenerator):
             strategy_lines.append("• 헤지 수요로 점진적 상승")
             strategy_lines.append("• 장기 보유 관점에서 유리")
             
+        elif news_type == 'price_milestone':  # 새로 추가
+            strategy_lines.append("🎯 <b>가격 돌파 - 심리적 효과</b>")
+            strategy_lines.append("• 일반 투자자 관심도가 핵심")
+            strategy_lines.append("• FOMO 확산 시 추가 상승 가능")
+            strategy_lines.append("• 검색량/소셜 활동 모니터링 필요")
+            
         elif direction == 'bearish' and confidence > 0.6:
             strategy_lines.append("🎯 <b>방어 및 역매매 시나리오</b>")
             strategy_lines.append("• 기존 포지션 부분 청산")
@@ -369,6 +517,8 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 strategy_lines.append(f"📅 <b>영향 지속</b>: 2-6시간 (미미)")
             elif news_type in ['etf_approval', 'etf_rejection']:
                 strategy_lines.append(f"📅 <b>영향 지속</b>: 12-24시간")
+            elif news_type == 'price_milestone':
+                strategy_lines.append(f"📅 <b>영향 지속</b>: 4-12시간 (FOMO 의존)")
             else:
                 strategy_lines.append(f"📅 <b>영향 지속</b>: 6-12시간")
         
@@ -391,11 +541,17 @@ class ExceptionReportGenerator(BaseReportGenerator):
             content = (title + " " + description).lower()
             summary_parts = []
             
-            # 비트코인 가격 관련 특별 처리 (새로 추가)
-            if 'crosses' in content and ('100k' in content or '$100' in content):
-                summary_parts.append("비트코인이 10만 달러를 돌파했지만 구글 검색량은 예상보다 낮은 수준을 보이고 있다.")
-                summary_parts.append("이는 기관 투자자 중심의 상승으로 일반 투자자들의 관심은 아직 제한적임을 시사한다.")
-                summary_parts.append("향후 소매 투자자들의 FOMO가 본격화될 경우 추가 상승 여력이 있을 것으로 분석된다.")
+            # 🔥🔥 비트코인 가격 관련 특별 처리 - 더 정교하게
+            if any(word in content for word in ['crosses', '100k', '$100', 'milestone']) and 'bitcoin' in content:
+                if any(word in content for word in ['search', 'google', 'interest', 'attention']):
+                    summary_parts.append("비트코인이 10만 달러를 돌파했지만 구글 검색량은 예상보다 낮은 수준을 보이고 있다.")
+                    summary_parts.append("이는 기관 투자자 중심의 상승으로 일반 투자자들의 관심은 아직 제한적임을 시사한다.")
+                    summary_parts.append("향후 소매 투자자들의 FOMO가 본격화될 경우 추가 상승 여력이 있을 것으로 분석된다.")
+                else:
+                    summary_parts.append("비트코인이 10만 달러 이정표를 돌파하며 역사적인 순간을 기록했다.")
+                    summary_parts.append("심리적 저항선 돌파로 단기적인 상승 모멘텀이 형성될 수 있다.")
+                    summary_parts.append("하지만 과열 구간에서는 수익 실현 압박도 동시에 증가할 것으로 예상된다.")
+                
                 return " ".join(summary_parts)
             
             # 구조화 상품 특별 처리
@@ -446,7 +602,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
                             summary_parts.append("세계 최대 자산운용사의 움직임이 시장에 주목받고 있다.")
                             summary_parts.append("기관 투자자들의 비트코인 관심도가 높아지고 있음을 시사한다.")
             
-            # 거시경제 패턴 처리 (새로 추가)
+            # 거시경제 패턴 처리
             if not summary_parts:
                 # 관세 관련
                 if any(word in content for word in ['trump', 'tariffs', 'trade war']):
@@ -516,10 +672,13 @@ class ExceptionReportGenerator(BaseReportGenerator):
             time_diff = current_time - news_pub_time
             minutes_passed = int(time_diff.total_seconds() / 60)
             
-            # 뉴스 해시 생성
-            news_hash = f"news_{news_pub_time.timestamp()}"
+            if minutes_passed < 0:  # 미래 시간인 경우
+                return ""
             
-            # 뉴스 발표 시점의 가격 데이터가 있는지 확인
+            # 뉴스 해시 생성 (더 고유하게)
+            news_hash = f"news_{int(news_pub_time.timestamp())}"
+            
+            # 🔥🔥 뉴스 발표 시점의 가격 데이터가 있는지 확인
             if news_hash in self.news_initial_data:
                 initial_data = self.news_initial_data[news_hash]
                 initial_price = initial_data['price']
@@ -531,52 +690,73 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 # 거래량 변동률 계산
                 volume_change_pct = ((current_volume - initial_volume) / initial_volume) * 100 if initial_volume > 0 else 0
                 
-                # 변동 정도 분류
-                if abs(price_change_pct) >= 2.0:
+                # 🔥🔥 변동 정도 분류 (더 세밀하게)
+                if abs(price_change_pct) >= 3.0:
                     price_desc = "급등" if price_change_pct > 0 else "급락"
-                elif abs(price_change_pct) >= 1.0:
+                    emoji = "🚀" if price_change_pct > 0 else "📉"
+                elif abs(price_change_pct) >= 1.5:
+                    price_desc = "강한 상승" if price_change_pct > 0 else "강한 하락"
+                    emoji = "📈" if price_change_pct > 0 else "📉"
+                elif abs(price_change_pct) >= 0.8:
                     price_desc = "상승" if price_change_pct > 0 else "하락"
+                    emoji = "⬆️" if price_change_pct > 0 else "⬇️"
                 elif abs(price_change_pct) >= 0.3:
                     price_desc = "약 상승" if price_change_pct > 0 else "약 하락"
+                    emoji = "↗️" if price_change_pct > 0 else "↘️"
                 elif abs(price_change_pct) >= 0.1:
                     price_desc = "소폭 상승" if price_change_pct > 0 else "소폭 하락"
+                    emoji = "➡️" if price_change_pct > 0 else "➡️"
                 else:
                     price_desc = "횡보"
+                    emoji = "➡️"
                 
                 # 거래량 변동 분류
-                if volume_change_pct >= 20:
+                if volume_change_pct >= 50:
+                    volume_desc = "거래량 폭증"
+                elif volume_change_pct >= 25:
                     volume_desc = "거래량 급증"
                 elif volume_change_pct >= 10:
                     volume_desc = "거래량 증가"
-                elif volume_change_pct <= -20:
+                elif volume_change_pct <= -30:
                     volume_desc = "거래량 급감"
-                elif volume_change_pct <= -10:
+                elif volume_change_pct <= -15:
                     volume_desc = "거래량 감소"
                 else:
                     volume_desc = "거래량 보통"
                 
-                # 시간 표현
+                # 🔥🔥 시간 표현 (더 정확하게)
                 if minutes_passed < 60:
                     time_desc = f"{minutes_passed}분 전"
-                else:
+                elif minutes_passed < 1440:  # 24시간 미만
                     hours_passed = minutes_passed // 60
                     remaining_minutes = minutes_passed % 60
                     if remaining_minutes > 0:
                         time_desc = f"{hours_passed}시간 {remaining_minutes}분 전"
                     else:
                         time_desc = f"{hours_passed}시간 전"
+                else:  # 24시간 이상
+                    days_passed = minutes_passed // 1440
+                    remaining_hours = (minutes_passed % 1440) // 60
+                    if remaining_hours > 0:
+                        time_desc = f"{days_passed}일 {remaining_hours}시간 전"
+                    else:
+                        time_desc = f"{days_passed}일 전"
                 
-                return f"최초 보도 후 변동: <b>{price_change_pct:+.2f}%</b>({time_desc}/{price_desc}, {volume_desc})"
+                return f"{emoji} 최초 보도 후 변동: <b>{price_change_pct:+.2f}%</b> ({time_desc}/{price_desc}, {volume_desc})"
                 
             else:
-                # 뉴스 발표 시점 데이터 저장 (향후 참조용)
+                # 🔥🔥 뉴스 발표 시점 데이터 저장 (향후 참조용)
                 self.news_initial_data[news_hash] = {
                     'price': current_price,
                     'volume': current_volume,
-                    'time': news_pub_time
+                    'time': news_pub_time,
+                    'created_at': current_time
                 }
                 
-                return f"최초 보도 후 변동: <b>데이터 수집 중</b> (실시간 모니터링 시작)"
+                # 파일에 저장
+                self._save_news_data()
+                
+                return f"📊 최초 보도 후 변동: <b>데이터 수집 중</b> (실시간 모니터링 시작)"
         
         except Exception as e:
             self.logger.error(f"가격 변동 계산 오류: {e}")
@@ -602,7 +782,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 self.logger.warning(f"현재가 데이터 오류: {current_price}")
                 return ""
             
-            # 뉴스 발표 후 변동률 계산
+            # 🔥🔥 뉴스 발표 후 변동률 계산
             price_change_info = ""
             if news_time:
                 price_change_info = await self._get_price_change_since_news(news_time)
@@ -668,7 +848,12 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 return "영향 소멸"
     
     async def generate_report(self, event: Dict) -> str:
-        """🚨 현실적인 긴급 예외 리포트 생성 - 정확한 시간 표시 + 실제 시장 변동"""
+        """🚨 현실적인 긴급 예외 리포트 생성 - 정확한 시간 표시 + 실제 시장 변동 + 중복 방지"""
+        
+        # 🔥🔥 중복 리포트 체크
+        if self._is_duplicate_report(event):
+            return ""  # 빈 문자열 반환하여 전송하지 않음
+        
         current_time = self._get_current_time_kst()
         event_type = event.get('type', 'unknown')
         
@@ -703,13 +888,19 @@ class ExceptionReportGenerator(BaseReportGenerator):
                     time_diff = current_kst - news_pub_time
                     minutes_diff = int(time_diff.total_seconds() / 60)
                     
-                    if minutes_diff < 5:
+                    if minutes_diff < 0:  # 미래 시간 방지
+                        detection_time = f"{detection_time} (즉시 감지)"
+                    elif minutes_diff < 5:
                         detection_time = f"{detection_time} (즉시 감지)"
                     elif minutes_diff < 60:
                         detection_time = f"{detection_time} ({minutes_diff}분 전 발행)"
                     else:
                         hours_diff = int(minutes_diff / 60)
-                        detection_time = f"{detection_time} ({hours_diff}시간 전 발행)"
+                        if hours_diff < 24:
+                            detection_time = f"{detection_time} ({hours_diff}시간 전 발행)"
+                        else:
+                            days_diff = int(hours_diff / 24)
+                            detection_time = f"{detection_time} ({days_diff}일 전 발행)"
                         
                 except:
                     detection_time = f"{detection_time} (즉시 감지)"
