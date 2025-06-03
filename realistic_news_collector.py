@@ -1,4 +1,509 @@
-import aiohttp
+async def monitor_reddit_enhanced(self):
+        """🔥🔥 강화된 Reddit 모니터링 - 5분마다"""
+        reddit_subreddits = [
+            {'name': 'Bitcoin', 'threshold': 300, 'weight': 9},  # 임계값 낮춤
+            {'name': 'CryptoCurrency', 'threshold': 800, 'weight': 8},
+            {'name': 'BitcoinMarkets', 'threshold': 200, 'weight': 9},
+            {'name': 'investing', 'threshold': 1000, 'weight': 7},  # 추가
+            {'name': 'Economics', 'threshold': 500, 'weight': 7},  # 추가
+        ]
+        
+        while True:
+            try:
+                for sub_info in reddit_subreddits:
+                    try:
+                        url = f"https://www.reddit.com/r/{sub_info['name']}/hot.json?limit=15"
+                        
+                        async with self.session.get(url, headers={'User-Agent': 'Bitcoin Monitor Bot 1.0'}) as response:
+                            if response.status == 200:
+                                data = await response.json()
+                                posts = data['data']['children']
+                                
+                                for post in posts:
+                                    post_data = post['data']
+                                    
+                                    if post_data['ups'] > sub_info['threshold']:
+                                        article = {
+                                            'title': post_data['title'],
+                                            'title_ko': post_data['title'],
+                                            'description': post_data.get('selftext', '')[:1600],
+                                            'url': f"https://reddit.com{post_data['permalink']}",
+                                            'source': f"Reddit r/{sub_info['name']}",
+                                            'published_at': datetime.fromtimestamp(post_data['created_utc']).isoformat(),
+                                            'upvotes': post_data['ups'],
+                                            'weight': sub_info['weight'],
+                                            'category': 'social'
+                                        }
+                                        
+                                        if self._is_bitcoin_or_macro_related_enhanced(article):
+                                            # 기업명 추출
+                                            company = self._extract_company_from_content(
+                                                article['title'],
+                                                article.get('description', '')
+                                            )
+                                            if company:
+                                                article['company'] = company
+                                            
+                                            if self._is_critical_news_enhanced(article):
+                                                # Reddit에서는 번역 거의 사용 안함 (리포트 전송 시에만)
+                                                if self._should_translate_for_emergency_report(article):
+                                                    article['title_ko'] = await self.translate_text(article['title'])
+                                                
+                                                # Reddit에서는 요약 거의 사용 안함
+                                                if self._should_use_gpt_summary(article):
+                                                    summary = await self.summarize_article_enhanced(
+                                                        article['title'],
+                                                        article.get('description', '')
+                                                    )
+                                                    if summary:
+                                                        article['summary'] = summary
+                                                
+                                                if not self._is_duplicate_emergency(article):
+                                                    article['expected_change'] = self._estimate_price_impact_enhanced(article)
+                                                    await self._trigger_emergency_alert_enhanced(article)
+                                            
+                                            elif self._is_important_news_enhanced(article):
+                                                await self._add_to_news_buffer_enhanced(article)
+                    
+                    except Exception as e:
+                        logger.warning(f"Reddit 오류 {sub_info['name']}: {str(e)[:50]}")
+                
+                await asyncio.sleep(300)  # 5분마다
+                
+            except Exception as e:
+                logger.error(f"Reddit 모니터링 오류: {e}")
+                await asyncio.sleep(600)
+    
+    async def aggressive_api_rotation_enhanced(self):
+        """🔥🔥 강화된 API 순환 사용"""
+        while True:
+            try:
+                self._reset_daily_usage()
+                
+                # NewsAPI (더 자주)
+                if self.newsapi_key and self.api_usage['newsapi_today'] < self.api_limits['newsapi']:
+                    try:
+                        await self._call_newsapi_enhanced()
+                        self.api_usage['newsapi_today'] += 1
+                        logger.info(f"✅ NewsAPI 호출 ({self.api_usage['newsapi_today']}/{self.api_limits['newsapi']})")
+                    except Exception as e:
+                        logger.error(f"NewsAPI 오류: {str(e)[:100]}")
+                
+                await asyncio.sleep(600)  # 10분 대기
+                
+                # NewsData API
+                if self.newsdata_key and self.api_usage['newsdata_today'] < self.api_limits['newsdata']:
+                    try:
+                        await self._call_newsdata_enhanced()
+                        self.api_usage['newsdata_today'] += 1
+                        logger.info(f"✅ NewsData 호출 ({self.api_usage['newsdata_today']}/{self.api_limits['newsdata']})")
+                    except Exception as e:
+                        logger.error(f"NewsData 오류: {str(e)[:100]}")
+                
+                await asyncio.sleep(600)  # 10분 대기
+                
+                # Alpha Vantage
+                if self.alpha_vantage_key and self.api_usage['alpha_vantage_today'] < self.api_limits['alpha_vantage']:
+                    try:
+                        await self._call_alpha_vantage_enhanced()
+                        self.api_usage['alpha_vantage_today'] += 1
+                        logger.info(f"✅ Alpha Vantage 호출 ({self.api_usage['alpha_vantage_today']}/{self.api_limits['alpha_vantage']})")
+                    except Exception as e:
+                        logger.error(f"Alpha Vantage 오류: {str(e)[:100]}")
+                
+                await asyncio.sleep(1200)  # 20분 대기
+                
+            except Exception as e:
+                logger.error(f"API 순환 오류: {e}")
+                await asyncio.sleep(1800)
+    
+    async def _call_newsapi_enhanced(self):
+        """🔥🔥 강화된 NewsAPI 호출"""
+        try:
+            url = "https://newsapi.org/v2/everything"
+            params = {
+                'q': '(bitcoin OR btc OR "bitcoin etf" OR "fed rate" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing" OR "powell speech" OR "fomc decision" OR "cpi report" OR "unemployment rate" OR "sec bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "blackrock bitcoin" OR "russia bitcoin" OR "ukraine war" OR "china sanctions" OR "bitcoin crosses 100k" OR "bitcoin 100000") AND NOT ("altcoin only" OR "how to mine" OR "price prediction tutorial")',
+                'language': 'en',
+                'sortBy': 'publishedAt',
+                'apiKey': self.newsapi_key,
+                'pageSize': 100,  # 50 → 100으로 증가
+                'from': (datetime.now() - timedelta(hours=3)).isoformat()  # 6시간 → 3시간으로 단축 (더 빠른 감지)
+            }
+            
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    articles = data.get('articles', [])
+                    
+                    processed = 0
+                    critical_found = 0
+                    for article in articles:
+                        formatted_article = {
+                            'title': article.get('title', ''),
+                            'title_ko': article.get('title', ''),
+                            'description': article.get('description', '')[:1600],
+                            'url': article.get('url', ''),
+                            'source': f"NewsAPI ({article.get('source', {}).get('name', 'Unknown')})",
+                            'published_at': article.get('publishedAt', ''),
+                            'weight': 9,
+                            'category': 'api'
+                        }
+                        
+                        if self._is_bitcoin_or_macro_related_enhanced(formatted_article):
+                            # 기업명 추출
+                            company = self._extract_company_from_content(
+                                formatted_article['title'],
+                                formatted_article.get('description', '')
+                            )
+                            if company:
+                                formatted_article['company'] = company
+                            
+                            # 번역은 리포트 전송 시에만
+                            formatted_article['title_ko'] = formatted_article['title']
+                            
+                            if self._is_critical_news_enhanced(formatted_article):
+                                # 요약 (선택적)
+                                if self._should_use_gpt_summary(formatted_article):
+                                    summary = await self.summarize_article_enhanced(
+                                        formatted_article['title'],
+                                        formatted_article.get('description', '')
+                                    )
+                                    if summary:
+                                        formatted_article['summary'] = summary
+                                
+                                if not self._is_duplicate_emergency(formatted_article):
+                                    formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
+                                    await self._trigger_emergency_alert_enhanced(formatted_article)
+                                processed += 1
+                                critical_found += 1
+                            elif self._is_important_news_enhanced(formatted_article):
+                                await self._add_to_news_buffer_enhanced(formatted_article)
+                                processed += 1
+                    
+                    if processed > 0:
+                        logger.info(f"🔥 NewsAPI: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
+                else:
+                    logger.warning(f"NewsAPI 응답 오류: {response.status}")
+        
+        except Exception as e:
+            logger.error(f"NewsAPI 호출 오류: {e}")
+    
+    async def _call_newsdata_enhanced(self):
+        """🔥🔥 강화된 NewsData API 호출"""
+        try:
+            url = "https://newsdata.io/api/1/news"
+            params = {
+                'apikey': self.newsdata_key,
+                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin" OR "fed rate decision" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing" OR "powell speech" OR "fomc decision" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "sec bitcoin" OR "ukraine war" OR "china sanctions" OR "bitcoin crosses 100k"',
+                'language': 'en',
+                'category': 'business,top,politics',  # 카테고리 확장
+                'size': 50  # 30 → 50으로 증가
+            }
+            
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    articles = data.get('results', [])
+                    
+                    processed = 0
+                    critical_found = 0
+                    for article in articles:
+                        formatted_article = {
+                            'title': article.get('title', ''),
+                            'title_ko': article.get('title', ''),
+                            'description': article.get('description', '')[:1600],
+                            'url': article.get('link', ''),
+                            'source': f"NewsData ({article.get('source_id', 'Unknown')})",
+                            'published_at': article.get('pubDate', ''),
+                            'weight': 8,
+                            'category': 'api'
+                        }
+                        
+                        if self._is_bitcoin_or_macro_related_enhanced(formatted_article):
+                            # 기업명 추출
+                            company = self._extract_company_from_content(
+                                formatted_article['title'],
+                                formatted_article.get('description', '')
+                            )
+                            if company:
+                                formatted_article['company'] = company
+                            
+                            # 번역은 리포트 전송 시에만
+                            formatted_article['title_ko'] = formatted_article['title']
+                            
+                            if self._is_critical_news_enhanced(formatted_article):
+                                # 요약 (선택적)
+                                if self._should_use_gpt_summary(formatted_article):
+                                    summary = await self.summarize_article_enhanced(
+                                        formatted_article['title'],
+                                        formatted_article.get('description', '')
+                                    )
+                                    if summary:
+                                        formatted_article['summary'] = summary
+                                
+                                if not self._is_duplicate_emergency(formatted_article):
+                                    formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
+                                    await self._trigger_emergency_alert_enhanced(formatted_article)
+                                processed += 1
+                                critical_found += 1
+                            elif self._is_important_news_enhanced(formatted_article):
+                                await self._add_to_news_buffer_enhanced(formatted_article)
+                                processed += 1
+                    
+                    if processed > 0:
+                        logger.info(f"🔥 NewsData: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
+                else:
+                    logger.warning(f"NewsData 응답 오류: {response.status}")
+        
+        except Exception as e:
+            logger.error(f"NewsData 호출 오류: {e}")
+    
+    async def _call_alpha_vantage_enhanced(self):
+        """🔥🔥 강화된 Alpha Vantage API 호출"""
+        try:
+            url = "https://www.alphavantage.co/query"
+            params = {
+                'function': 'NEWS_SENTIMENT',
+                'tickers': 'CRYPTO:BTC,TSLA,MSTR',  # 티커 확장
+                'topics': 'financial_markets,technology,earnings,economy',  # 토픽 확장
+                'apikey': self.alpha_vantage_key,
+                'sort': 'LATEST',
+                'limit': 50  # 20 → 50으로 증가
+            }
+            
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    articles = data.get('feed', [])
+                    
+                    processed = 0
+                    critical_found = 0
+                    for article in articles:
+                        formatted_article = {
+                            'title': article.get('title', ''),
+                            'title_ko': article.get('title', ''),
+                            'description': article.get('summary', '')[:1600],
+                            'url': article.get('url', ''),
+                            'source': f"Alpha Vantage ({article.get('source', 'Unknown')})",
+                            'published_at': article.get('time_published', ''),
+                            'weight': 9,
+                            'category': 'api',
+                            'sentiment': article.get('overall_sentiment_label', 'Neutral')
+                        }
+                        
+                        if self._is_bitcoin_or_macro_related_enhanced(formatted_article):
+                            # 기업명 추출
+                            company = self._extract_company_from_content(
+                                formatted_article['title'],
+                                formatted_article.get('description', '')
+                            )
+                            if company:
+                                formatted_article['company'] = company
+                            
+                            # 번역은 리포트 전송 시에만
+                            formatted_article['title_ko'] = formatted_article['title']
+                            
+                            if self._is_critical_news_enhanced(formatted_article):
+                                # 요약 (선택적)
+                                if self._should_use_gpt_summary(formatted_article):
+                                    summary = await self.summarize_article_enhanced(
+                                        formatted_article['title'],
+                                        formatted_article.get('description', '')
+                                    )
+                                    if summary:
+                                        formatted_article['summary'] = summary
+                                
+                                if not self._is_duplicate_emergency(formatted_article):
+                                    formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
+                                    await self._trigger_emergency_alert_enhanced(formatted_article)
+                                processed += 1
+                                critical_found += 1
+                            elif self._is_important_news_enhanced(formatted_article):
+                                await self._add_to_news_buffer_enhanced(formatted_article)
+                                processed += 1
+                    
+                    if processed > 0:
+                        logger.info(f"🔥 Alpha Vantage: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
+                else:
+                    logger.warning(f"Alpha Vantage 응답 오류: {response.status}")
+        
+        except Exception as e:
+            logger.error(f"Alpha Vantage 호출 오류: {e}")
+    
+    async def _parse_rss_feed_enhanced(self, feed_info: Dict) -> List[Dict]:
+        """🔥🔥 강화된 RSS 피드 파싱"""
+        articles = []
+        try:
+            async with self.session.get(
+                feed_info['url'], 
+                timeout=aiohttp.ClientTimeout(total=12),
+                headers={'User-Agent': 'Mozilla/5.0 (compatible; BitcoinNewsBot/2.0)'}
+            ) as response:
+                if response.status == 200:
+                    content = await response.text()
+                    feed = feedparser.parse(content)
+                    
+                    if feed.entries:
+                        # 더 많은 기사 처리
+                        limit = min(25, max(10, feed_info['weight']))
+                        
+                        for entry in feed.entries[:limit]:
+                            try:
+                                # 발행 시간 처리
+                                pub_time = datetime.now().isoformat()
+                                if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                                    pub_time = datetime(*entry.published_parsed[:6]).isoformat()
+                                elif hasattr(entry, 'published'):
+                                    try:
+                                        from dateutil import parser
+                                        pub_time = parser.parse(entry.published).isoformat()
+                                    except:
+                                        pass
+                                
+                                article = {
+                                    'title': entry.get('title', '').strip(),
+                                    'description': entry.get('summary', '').strip()[:1600],
+                                    'url': entry.get('link', '').strip(),
+                                    'source': feed_info['source'],
+                                    'published_at': pub_time,
+                                    'weight': feed_info['weight'],
+                                    'category': feed_info.get('category', 'unknown')
+                                }
+                                
+                                if article['title'] and article['url']:
+                                    articles.append(article)
+                                        
+                            except Exception as e:
+                                logger.debug(f"기사 파싱 오류: {str(e)[:50]}")
+                                continue
+        
+        except asyncio.TimeoutError:
+            logger.debug(f"⏰ {feed_info['source']}: 타임아웃")
+        except Exception as e:
+            logger.debug(f"❌ {feed_info['source']}: {str(e)[:50]}")
+        
+        return articles
+    
+    def _extract_company_from_content(self, title: str, description: str = "") -> str:
+        """컨텐츠에서 기업명 추출"""
+        content = (title + " " + description).lower()
+        
+        # 중요 기업 확인
+        found_companies = []
+        for company in self.important_companies:
+            if company.lower() in content:
+                # 원래 대소문자 유지
+                for original in self.important_companies:
+                    if original.lower() == company.lower():
+                        found_companies.append(original)
+                        break
+        
+        # 첫 번째 발견된 기업 반환
+        if found_companies:
+            return found_companies[0]
+        
+        return ""
+    
+    def _reset_daily_usage(self):
+        """일일 사용량 리셋"""
+        today = datetime.now().date()
+        if today > self.api_usage['last_reset']:
+            old_usage = dict(self.api_usage)
+            self.api_usage.update({
+                'newsapi_today': 0,
+                'newsdata_today': 0,
+                'alpha_vantage_today': 0,
+                'last_reset': today
+            })
+            self.company_news_count = {}
+            self.claude_translation_count = 0
+            self.gpt_translation_count = 0
+            self.claude_error_count = 0
+            self.summary_count = 0
+            self.last_translation_reset = datetime.now()
+            self.last_summary_reset = datetime.now()
+            self.news_first_seen = {}
+            self.claude_cooldown_until = None
+            
+            # 🔥🔥 크리티컬 리포트 중복 방지 데이터도 정리
+            current_time = datetime.now()
+            cutoff_time = current_time - timedelta(hours=12)
+            self.sent_critical_reports = {
+                k: v for k, v in self.sent_critical_reports.items()
+                if v > cutoff_time
+            }
+            self._save_critical_reports()
+            
+            logger.info(f"🔄 일일 리셋 완료 (GPT: {self.max_gpt_translations_per_15min}/15분, Claude: {self.max_claude_translations_per_15min}/15분, 요약: {self.max_summaries_per_15min}/15분)")
+            logger.info(f"🚨 크리티컬 리포트 중복 방지: {len(self.sent_critical_reports)}개 유지")
+    
+    async def get_recent_news_enhanced(self, hours: int = 12) -> List[Dict]:
+        """🔥🔥 강화된 최근 뉴스 가져오기"""
+        try:
+            cutoff_time = datetime.now() - timedelta(hours=hours)
+            recent_news = []
+            seen_hashes = set()
+            
+            # 더 많은 뉴스 반환
+            for article in sorted(self.news_buffer, key=lambda x: (x.get('weight', 0), x.get('published_at', '')), reverse=True):
+                try:
+                    # 시간 체크
+                    if article.get('published_at'):
+                        pub_time_str = article.get('published_at', '')
+                        try:
+                            if 'T' in pub_time_str:
+                                pub_time = datetime.fromisoformat(pub_time_str.replace('Z', ''))
+                            else:
+                                from dateutil import parser
+                                pub_time = parser.parse(pub_time_str)
+                            
+                            if pub_time > cutoff_time:
+                                # 중복 체크
+                                content_hash = self._generate_content_hash(article.get('title', ''), '')
+                                if content_hash not in seen_hashes:
+                                    recent_news.append(article)
+                                    seen_hashes.add(content_hash)
+                        except:
+                            pass
+                except:
+                    pass
+            
+            # 정렬: 가중치 → 시간
+            recent_news.sort(key=lambda x: (x.get('weight', 0), x.get('published_at', '')), reverse=True)
+            
+            logger.info(f"🔥 최근 {hours}시간 뉴스: {len(recent_news)}개 (총 버퍼: {len(self.news_buffer)}개)")
+            
+            return recent_news[:25]  # 15 → 25개로 증가
+            
+        except Exception as e:
+            logger.error(f"최근 뉴스 조회 오류: {e}")
+            return []
+    
+    async def get_recent_news(self, hours: int = 12) -> List[Dict]:
+        """최근 뉴스 가져오기 (호환성을 위한 래퍼)"""
+        return await self.get_recent_news_enhanced(hours)
+    
+    def _is_critical_news(self, article: Dict) -> bool:
+        """기존 호환성을 위한 메서드"""
+        return self._is_critical_news_enhanced(article)
+    
+    async def close(self):
+        """세션 종료"""
+        try:
+            # 중복 방지 데이터 저장
+            self._save_duplicate_data()
+            self._save_critical_reports()
+            
+            if self.session:
+                await self.session.close()
+                logger.info("🔚 번역 최적화 뉴스 수집기 세션 종료")
+                logger.info(f"🧠 최종 GPT 번역: {self.gpt_translation_count}, Claude 번역: {self.claude_translation_count}")
+                logger.info(f"📝 최종 GPT 요약: {self.summary_count}")
+                logger.info(f"⚠️ Claude 에러: {self.claude_error_count}회")
+                logger.info(f"💰 번역 정책: 크리티컬 리포트 전송 시에만")
+                logger.info(f"🚨 크리티컬 리포트 중복 방지: {len(self.sent_critical_reports)}개 기록")
+        except Exception as e:
+            logger.error(f"세션 종료 중 오류: {e}")import aiohttp
 import asyncio
 from datetime import datetime, timedelta
 import logging
@@ -41,8 +546,8 @@ class RealisticNewsCollector:
         self.gpt_translation_count = 0  # GPT 번역 횟수 
         self.claude_error_count = 0  # Claude 에러 횟수 추가
         self.last_translation_reset = datetime.now()
-        self.max_claude_translations_per_15min = 8  # 크리티컬만 번역하므로 증가
-        self.max_gpt_translations_per_15min = 20  # 크리티컬만 번역하므로 증가
+        self.max_claude_translations_per_15min = 15  # 크리티컬만 번역하므로 증가
+        self.max_gpt_translations_per_15min = 30  # 크리티컬만 번역하므로 증가
         self.translation_reset_interval = 900  # 15분
         self.claude_cooldown_until = None  # Claude 일시 중단 시간
         self.claude_cooldown_duration = 300  # 5분 쿨다운
@@ -66,7 +571,7 @@ class RealisticNewsCollector:
         
         # GPT 요약 사용량 제한
         self.summary_count = 0
-        self.max_summaries_per_15min = 15  # 크리티컬만 요약하므로 적당히
+        self.max_summaries_per_15min = 20  # 크리티컬만 요약하므로 적당히
         self.last_summary_reset = datetime.now()
         
         # 모든 API 키들
@@ -236,7 +741,11 @@ class RealisticNewsCollector:
             # 기관/은행 관련
             'bank_adoption': {'avg_impact': 1.0, 'duration_hours': 10, 'confidence': 0.75},
             'bank_restriction': {'avg_impact': -0.8, 'duration_hours': 6, 'confidence': 0.7},
-            'pension_entry': {'avg_impact': 0.8, 'duration_hours': 8, 'confidence': 0.7}
+            'pension_entry': {'avg_impact': 0.8, 'duration_hours': 8, 'confidence': 0.7},
+            
+            # AI 예측 관련 (새로 추가)
+            'ai_prediction': {'avg_impact': 0.05, 'duration_hours': 2, 'confidence': 0.3},
+            'energy_crisis_prediction': {'avg_impact': 0.1, 'duration_hours': 4, 'confidence': 0.4}
         }
         
         # RSS 피드 - 더 많은 소스 추가
@@ -1092,7 +1601,7 @@ class RealisticNewsCollector:
         return any(conditions)
     
     def _estimate_price_impact_enhanced(self, article: Dict) -> str:
-        """🔥🔥 강화된 현실적 가격 영향 추정"""
+        """🔥🔥 강화된 현실적 가격 영향 추정 - 동적 분석"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
         # 🔥 1. 과거 패턴 기반 예측 (우선)
@@ -1112,17 +1621,17 @@ class RealisticNewsCollector:
                 range_modifier = 0.4
             
             if impact > 0:
-                min_impact = impact * (1 - range_modifier)
+                min_impact = max(0.05, impact * (1 - range_modifier))
                 max_impact = impact * (1 + range_modifier)
                 direction = "📈 상승"
                 emoji = "🚀" if impact >= 2.0 else "📈"
             else:
-                min_impact = abs(impact) * (1 - range_modifier)
+                min_impact = max(0.05, abs(impact) * (1 - range_modifier))
                 max_impact = abs(impact) * (1 + range_modifier)
                 direction = "📉 하락"
                 emoji = "🔻" if abs(impact) >= 2.0 else "📉"
             
-            return f"{emoji} {direction} {min_impact:.1f}~{max_impact:.1f}% ({duration}시간 내)"
+            return f"{emoji} {direction} {min_impact:.2f}~{max_impact:.2f}% ({duration}시간 내)"
         
         # 🔥 2. 키워드 기반 세밀한 분석
         return self._estimate_price_impact_by_keywords(content)
@@ -1144,6 +1653,10 @@ class RealisticNewsCollector:
             # 🔥🔥 가격 이정표 (새로 추가)
             'price_milestone': ['bitcoin', 'crosses', '100k', 'milestone'],
             'price_milestone_low_interest': ['bitcoin', '100k', 'search', 'google'],
+            
+            # AI 예측 관련 (새로 추가)
+            'ai_prediction': ['ai', 'predicts', 'bitcoin', 'price'],
+            'energy_crisis_prediction': ['energy', 'crisis', 'bitcoin', 'boom'],
             
             # 규제
             'sec_lawsuit': ['sec', 'lawsuit', 'bitcoin', 'crypto'],
@@ -1187,74 +1700,78 @@ class RealisticNewsCollector:
             'pension_entry': ['pension', 'fund', 'bitcoin', 'allocation']
         }
         
-        # 더 정확한 매칭 (최소 3개 키워드 일치)
+        # 더 정확한 매칭 (최소 2개 키워드 일치로 낮춤)
         for pattern_name, keywords in patterns.items():
             matches = sum(1 for keyword in keywords if keyword in content)
-            if matches >= 3:  # 최소 3개 키워드 매칭
+            if matches >= 2:  # 최소 2개 키워드 매칭으로 낮춤
                 logger.info(f"🎯 패턴 매칭: {pattern_name} ({matches}/{len(keywords)} 키워드)")
                 return pattern_name
         
         return None
     
     def _estimate_price_impact_by_keywords(self, content: str) -> str:
-        """키워드 기반 가격 영향 추정"""
+        """키워드 기반 가격 영향 추정 - 동적 분석"""
+        # 🔥🔥 AI 예측 관련 (새로 추가)
+        if any(word in content for word in ['ai based', 'ai predicts', 'energy crisis boom']):
+            return '⚡ 변동 ±0.05~0.15% (2시간 내)'
+        
         # 🔥🔥 가격 이정표 관련 (새로 추가)
         if any(word in content for word in ['bitcoin crosses 100k', 'bitcoin hits 100000', 'bitcoin 100k milestone']):
             if any(word in content for word in ['google search', 'search unchanged', 'interest low']):
-                return '📊 미미한 반응 +0.05~0.2% (4시간 내)'
+                return '📊 미미한 반응 +0.05~0.20% (4시간 내)'
             else:
-                return '📈 상승 0.1~0.4% (8시간 내)'
+                return '📈 상승 0.10~0.40% (8시간 내)'
         
         # ETF 관련 (가장 높은 영향)
         elif any(word in content for word in ['etf approved', 'etf approval', 'sec approves bitcoin']):
-            return '🚀 상승 2.5~4.0% (24시간 내)'
+            return '🚀 상승 2.50~4.00% (24시간 내)'
         elif any(word in content for word in ['etf rejected', 'etf denial', 'sec rejects bitcoin']):
-            return '🔻 하락 2.0~3.5% (12시간 내)'
+            return '🔻 하락 2.00~3.50% (12시간 내)'
         
         # Fed 관련
         elif any(word in content for word in ['fed raises rates', 'rate hike', 'hawkish fed']):
-            return '📉 하락 0.8~1.5% (6시간 내)'
+            return '📉 하락 0.80~1.50% (6시간 내)'
         elif any(word in content for word in ['fed cuts rates', 'rate cut', 'dovish fed']):
-            return '📈 상승 1.0~2.0% (8시간 내)'
+            return '📈 상승 1.00~2.00% (8시간 내)'
         
         # 인플레이션
         elif any(word in content for word in ['inflation above', 'cpi exceeds', 'high inflation']):
-            return '📈 상승 0.8~1.8% (6시간 내)'
+            return '📈 상승 0.80~1.80% (6시간 내)'
         elif any(word in content for word in ['inflation below', 'cpi falls', 'low inflation']):
-            return '📉 하락 0.3~0.8% (4시간 내)'
+            return '📉 하락 0.30~0.80% (4시간 내)'
         
         # 기업 구매
         elif any(word in content for word in ['tesla bought bitcoin', 'tesla bitcoin purchase']):
-            return '🚀 상승 1.5~3.0% (18시간 내)'
+            return '🚀 상승 1.50~3.00% (18시간 내)'
         elif any(word in content for word in ['microstrategy bought bitcoin', 'saylor bitcoin']):
-            return '📈 상승 0.5~1.2% (8시간 내)'
+            return '📈 상승 0.50~1.20% (8시간 내)'
         
         # 규제
         elif any(word in content for word in ['china bans bitcoin', 'bitcoin banned']):
-            return '🔻 하락 3.0~5.0% (24시간 내)'
+            return '🔻 하락 3.00~5.00% (24시간 내)'
         elif any(word in content for word in ['regulatory clarity', 'bitcoin approved']):
-            return '📈 상승 1.2~2.5% (12시간 내)'
+            return '📈 상승 1.20~2.50% (12시간 내)'
         
         # 지정학
         elif any(word in content for word in ['war escalation', 'conflict escalates']):
-            return '📈 상승 0.8~2.0% (12시간 내)'
+            return '📈 상승 0.80~2.00% (12시간 내)'
         elif any(word in content for word in ['peace talks', 'ceasefire']):
-            return '📉 하락 0.2~0.8% (6시간 내)'
+            return '📉 하락 0.20~0.80% (6시간 내)'
         
         # 무역
         elif any(word in content for word in ['new tariffs', 'trade war']):
-            return '📉 하락 0.5~1.2% (6시간 내)'
+            return '📉 하락 0.50~1.20% (6시간 내)'
         elif any(word in content for word in ['trade deal', 'trade agreement']):
-            return '📈 상승 0.4~1.0% (8시간 내)'
+            return '📈 상승 0.40~1.00% (8시간 내)'
         
         # 해킹/보안
         elif any(word in content for word in ['billion stolen', 'major hack']):
-            return '🔻 하락 1.5~3.0% (8시간 내)'
+            return '🔻 하락 1.50~3.00% (8시간 내)'
         elif any(word in content for word in ['million stolen', 'minor hack']):
-            return '📉 하락 0.3~0.8% (4시간 내)'
+            return '📉 하락 0.30~0.80% (4시간 내)'
         
         # 기본값 (보수적)
-        return '⚡ 변동 ±0.2~0.8% (단기)'
+        return '⚡ 변동 ±0.20~0.80% (단기)'
     
     async def summarize_article_enhanced(self, title: str, description: str, max_length: int = 200) -> str:
         """🔥🔥 개선된 요약 - 기본 요약 우선, GPT는 백업"""
@@ -1286,25 +1803,23 @@ class RealisticNewsCollector:
             response = await self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": f"비트코인 투자 전문가입니다. 3문장으로 요약하세요.\n\n1문장: 핵심 사실\n2문장: 중요성\n3문장: 시장 영향\n\n뉴스 타입: {news_type}"},
-                    {"role": "user", "content": f"3문장 요약 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:800]}"}
+                    {"role": "system", "content": f"비트코인 투자 전문가입니다. 다음 뉴스를 정확하고 객관적으로 3문장으로 요약하세요.\n\n1문장: 핵심 사실\n2문장: 중요성/배경\n3문장: 시장 영향\n\n뉴스 타입: {news_type}"},
+                    {"role": "user", "content": f"다음 뉴스를 정확히 3문장으로 요약해주세요 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:800]}"}
                 ],
                 max_tokens=250,
-                temperature=0.2,
+                temperature=0.1,  # 더 객관적으로
                 timeout=15.0
             )
             
             summary = response.choices[0].message.content.strip()
             
+            # 3문장으로 제한
+            sentences = summary.split('.')
+            if len(sentences) > 3:
+                summary = '. '.join(sentences[:3]) + '.'
+            
             if len(summary) > max_length:
-                sentences = summary.split('.')
-                result = ""
-                for sentence in sentences[:3]:
-                    if len(result + sentence + ".") <= max_length - 3:
-                        result += sentence + "."
-                    else:
-                        break
-                summary = result.strip() or summary[:max_length-3] + "..."
+                summary = summary[:max_length-3] + "..."
             
             self.summary_count += 1
             logger.info(f"📝 GPT 요약 완료 ({self.summary_count}/{self.max_summaries_per_15min})")
@@ -1319,7 +1834,9 @@ class RealisticNewsCollector:
         """강화된 뉴스 타입 분류"""
         content = (title + " " + description).lower()
         
-        if any(word in content for word in ['crosses', '100k', 'milestone']) and 'bitcoin' in content:
+        if any(word in content for word in ['ai predicts', 'energy crisis', 'boom']):
+            return 'ai_prediction'
+        elif any(word in content for word in ['crosses', '100k', 'milestone']) and 'bitcoin' in content:
             return 'price_milestone'
         elif any(word in content for word in ['etf approved', 'etf rejected', 'etf filing']):
             return 'etf'
@@ -1345,6 +1862,19 @@ class RealisticNewsCollector:
         try:
             content = (title + " " + description).lower()
             summary_parts = []
+            
+            # 🔥🔥 AI 예측 관련 특별 처리 (새로 추가)
+            if any(word in content for word in ['ai based', 'ai predicts', 'energy crisis']) and 'bitcoin' in content:
+                if 'energy crisis' in content and '250000' in content:
+                    summary_parts.append("AI 기반 예측에 따르면 에너지 위기가 비트코인 가격을 25만 달러까지 상승시킬 수 있다고 한다.")
+                    summary_parts.append("하지만 이는 추측성 예측에 불과하며 실제 시장 요인들과는 거리가 있을 수 있다.")
+                    summary_parts.append("투자자들은 이런 예측보다는 실제 시장 동향과 펀더멘털에 집중하는 것이 바람직하다.")
+                else:
+                    summary_parts.append("AI 기반 비트코인 가격 예측이 발표되었다.")
+                    summary_parts.append("예측 모델의 정확성과 신뢰도는 검증이 필요한 상황이다.")
+                    summary_parts.append("시장은 이런 예측보다는 실제 수급과 규제 동향에 더 민감하게 반응한다.")
+                
+                return " ".join(summary_parts)
             
             # 🔥🔥 비트코인 가격 관련 특별 처리 - 더 정교하게
             if any(word in content for word in ['crosses', '100k', '$100', 'milestone']) and 'bitcoin' in content:
@@ -1450,15 +1980,26 @@ class RealisticNewsCollector:
                 
                 # 기본 케이스
                 else:
-                    summary_parts.append("비트코인 시장에 영향을 미칠 수 있는 발표가 있었다.")
-                    summary_parts.append("투자자들은 이번 소식의 실제 시장 영향을 면밀히 분석하고 있다.")
-                    summary_parts.append("단기 변동성은 있겠지만 장기 트렌드에는 큰 변화가 없을 것으로 전망된다.")
+                    # 실제 뉴스 내용을 분석해서 요약
+                    if 'bitcoin' in content:
+                        if any(word in content for word in ['prediction', 'forecast', 'expects']):
+                            summary_parts.append("비트코인 가격에 대한 새로운 예측이 발표되었다.")
+                            summary_parts.append("예측의 근거와 신뢰도에 대한 검증이 필요한 상황이다.")
+                            summary_parts.append("투자자들은 예측보다는 실제 시장 펀더멘털에 집중하는 것이 바람직하다.")
+                        else:
+                            summary_parts.append("비트코인 시장에 영향을 미칠 수 있는 발표가 있었다.")
+                            summary_parts.append("투자자들은 이번 소식의 실제 시장 영향을 면밀히 분석하고 있다.")
+                            summary_parts.append("단기 변동성은 있겠지만 장기 트렌드에는 큰 변화가 없을 것으로 전망된다.")
+                    else:
+                        summary_parts.append("거시경제 관련 중요한 발표가 있었다.")
+                        summary_parts.append("이번 발표가 비트코인 시장에 미치는 영향을 분석하고 있다.")
+                        summary_parts.append("투자자들은 변화하는 시장 환경에 따른 전략 조정을 검토 중이다.")
             
-            return " ".join(summary_parts[:3]) if summary_parts else "비트코인 관련 소식이 발표되었다. 시장 반응을 지켜볼 필요가 있다. 투자자들은 신중한 접근이 필요하다."
+            return " ".join(summary_parts[:3]) if summary_parts else "시장 관련 소식이 발표되었다. 실제 영향을 분석해야 한다. 투자자들은 신중한 접근이 필요하다."
             
         except Exception as e:
             logger.error(f"스마트 요약 생성 실패: {e}")
-            return "비트코인 시장 관련 소식이 발표되었다. 자세한 내용은 원문을 확인하시기 바란다. 실제 시장 반응을 면밀히 분석할 필요가 있다."
+            return "시장 관련 소식이 발표되었다. 자세한 내용은 원문을 확인하시기 바란다. 실제 시장 반응을 면밀히 분석할 필요가 있다."
     
     async def _trigger_emergency_alert_enhanced(self, article: Dict):
         """🔥🔥 강화된 긴급 알림 트리거 - 리포트 전송 시에만 번역"""
@@ -1535,6 +2076,10 @@ class RealisticNewsCollector:
         """🔥🔥 강화된 뉴스 영향도 판단"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         expected_change = self._estimate_price_impact_enhanced(article)
+        
+        # 🔥🔥 AI 예측 특별 처리 (새로 추가)
+        if any(word in content for word in ['ai predicts', 'energy crisis boom', 'ai based']):
+            return "💭 추측성 예측"
         
         # 예상 변동률에 따른 영향도 (더 세밀하게)
         if '🚀' in expected_change or any(x in expected_change for x in ['3%', '4%', '5%']):
@@ -1667,510 +2212,3 @@ class RealisticNewsCollector:
         
         # 80% 이상 유사하면 중복 (더 엄격하게)
         return similarity > 0.8
-    
-    async def monitor_reddit_enhanced(self):
-        """🔥🔥 강화된 Reddit 모니터링 - 5분마다"""
-        reddit_subreddits = [
-            {'name': 'Bitcoin', 'threshold': 300, 'weight': 9},  # 임계값 낮춤
-            {'name': 'CryptoCurrency', 'threshold': 800, 'weight': 8},
-            {'name': 'BitcoinMarkets', 'threshold': 200, 'weight': 9},
-            {'name': 'investing', 'threshold': 1000, 'weight': 7},  # 추가
-            {'name': 'Economics', 'threshold': 500, 'weight': 7},  # 추가
-        ]
-        
-        while True:
-            try:
-                for sub_info in reddit_subreddits:
-                    try:
-                        url = f"https://www.reddit.com/r/{sub_info['name']}/hot.json?limit=15"
-                        
-                        async with self.session.get(url, headers={'User-Agent': 'Bitcoin Monitor Bot 1.0'}) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                posts = data['data']['children']
-                                
-                                for post in posts:
-                                    post_data = post['data']
-                                    
-                                    if post_data['ups'] > sub_info['threshold']:
-                                        article = {
-                                            'title': post_data['title'],
-                                            'title_ko': post_data['title'],
-                                            'description': post_data.get('selftext', '')[:1600],
-                                            'url': f"https://reddit.com{post_data['permalink']}",
-                                            'source': f"Reddit r/{sub_info['name']}",
-                                            'published_at': datetime.fromtimestamp(post_data['created_utc']).isoformat(),
-                                            'upvotes': post_data['ups'],
-                                            'weight': sub_info['weight'],
-                                            'category': 'social'
-                                        }
-                                        
-                                        if self._is_bitcoin_or_macro_related_enhanced(article):
-                                            # 기업명 추출
-                                            company = self._extract_company_from_content(
-                                                article['title'],
-                                                article.get('description', '')
-                                            )
-                                            if company:
-                                                article['company'] = company
-                                            
-                                            if self._is_critical_news_enhanced(article):
-                                                # Reddit에서는 번역 거의 사용 안함 (리포트 전송 시에만)
-                                                if self._should_translate_for_emergency_report(article):
-                                                    article['title_ko'] = await self.translate_text(article['title'])
-                                                
-                                                # Reddit에서는 요약 거의 사용 안함
-                                                if self._should_use_gpt_summary(article):
-                                                    summary = await self.summarize_article_enhanced(
-                                                        article['title'],
-                                                        article.get('description', '')
-                                                    )
-                                                    if summary:
-                                                        article['summary'] = summary
-                                                
-                                                if not self._is_duplicate_emergency(article):
-                                                    article['expected_change'] = self._estimate_price_impact_enhanced(article)
-                                                    await self._trigger_emergency_alert_enhanced(article)
-                                            
-                                            elif self._is_important_news_enhanced(article):
-                                                await self._add_to_news_buffer_enhanced(article)
-                    
-                    except Exception as e:
-                        logger.warning(f"Reddit 오류 {sub_info['name']}: {str(e)[:50]}")
-                
-                await asyncio.sleep(300)  # 5분마다
-                
-            except Exception as e:
-                logger.error(f"Reddit 모니터링 오류: {e}")
-                await asyncio.sleep(600)
-    
-    async def aggressive_api_rotation_enhanced(self):
-        """🔥🔥 강화된 API 순환 사용"""
-        while True:
-            try:
-                self._reset_daily_usage()
-                
-                # NewsAPI (더 자주)
-                if self.newsapi_key and self.api_usage['newsapi_today'] < self.api_limits['newsapi']:
-                    try:
-                        await self._call_newsapi_enhanced()
-                        self.api_usage['newsapi_today'] += 1
-                        logger.info(f"✅ NewsAPI 호출 ({self.api_usage['newsapi_today']}/{self.api_limits['newsapi']})")
-                    except Exception as e:
-                        logger.error(f"NewsAPI 오류: {str(e)[:100]}")
-                
-                await asyncio.sleep(600)  # 10분 대기
-                
-                # NewsData API
-                if self.newsdata_key and self.api_usage['newsdata_today'] < self.api_limits['newsdata']:
-                    try:
-                        await self._call_newsdata_enhanced()
-                        self.api_usage['newsdata_today'] += 1
-                        logger.info(f"✅ NewsData 호출 ({self.api_usage['newsdata_today']}/{self.api_limits['newsdata']})")
-                    except Exception as e:
-                        logger.error(f"NewsData 오류: {str(e)[:100]}")
-                
-                await asyncio.sleep(600)  # 10분 대기
-                
-                # Alpha Vantage
-                if self.alpha_vantage_key and self.api_usage['alpha_vantage_today'] < self.api_limits['alpha_vantage']:
-                    try:
-                        await self._call_alpha_vantage_enhanced()
-                        self.api_usage['alpha_vantage_today'] += 1
-                        logger.info(f"✅ Alpha Vantage 호출 ({self.api_usage['alpha_vantage_today']}/{self.api_limits['alpha_vantage']})")
-                    except Exception as e:
-                        logger.error(f"Alpha Vantage 오류: {str(e)[:100]}")
-                
-                await asyncio.sleep(1200)  # 20분 대기
-                
-            except Exception as e:
-                logger.error(f"API 순환 오류: {e}")
-                await asyncio.sleep(1800)
-    
-    async def _call_newsapi_enhanced(self):
-        """🔥🔥 강화된 NewsAPI 호출"""
-        try:
-            url = "https://newsapi.org/v2/everything"
-            params = {
-                'q': '(bitcoin OR btc OR "bitcoin etf" OR "fed rate" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing" OR "powell speech" OR "fomc decision" OR "cpi report" OR "unemployment rate" OR "sec bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "blackrock bitcoin" OR "russia bitcoin" OR "ukraine war" OR "china sanctions" OR "bitcoin crosses 100k" OR "bitcoin 100000") AND NOT ("altcoin only" OR "how to mine" OR "price prediction tutorial")',
-                'language': 'en',
-                'sortBy': 'publishedAt',
-                'apiKey': self.newsapi_key,
-                'pageSize': 100,  # 50 → 100으로 증가
-                'from': (datetime.now() - timedelta(hours=3)).isoformat()  # 6시간 → 3시간으로 단축 (더 빠른 감지)
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    articles = data.get('articles', [])
-                    
-                    processed = 0
-                    critical_found = 0
-                    for article in articles:
-                        formatted_article = {
-                            'title': article.get('title', ''),
-                            'title_ko': article.get('title', ''),
-                            'description': article.get('description', '')[:1600],
-                            'url': article.get('url', ''),
-                            'source': f"NewsAPI ({article.get('source', {}).get('name', 'Unknown')})",
-                            'published_at': article.get('publishedAt', ''),
-                            'weight': 9,
-                            'category': 'api'
-                        }
-                        
-                        if self._is_bitcoin_or_macro_related_enhanced(formatted_article):
-                            # 기업명 추출
-                            company = self._extract_company_from_content(
-                                formatted_article['title'],
-                                formatted_article.get('description', '')
-                            )
-                            if company:
-                                formatted_article['company'] = company
-                            
-                            # 번역은 리포트 전송 시에만
-                            formatted_article['title_ko'] = formatted_article['title']
-                            
-                            if self._is_critical_news_enhanced(formatted_article):
-                                # 요약 (선택적)
-                                if self._should_use_gpt_summary(formatted_article):
-                                    summary = await self.summarize_article_enhanced(
-                                        formatted_article['title'],
-                                        formatted_article.get('description', '')
-                                    )
-                                    if summary:
-                                        formatted_article['summary'] = summary
-                                
-                                if not self._is_duplicate_emergency(formatted_article):
-                                    formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
-                                    await self._trigger_emergency_alert_enhanced(formatted_article)
-                                processed += 1
-                                critical_found += 1
-                            elif self._is_important_news_enhanced(formatted_article):
-                                await self._add_to_news_buffer_enhanced(formatted_article)
-                                processed += 1
-                    
-                    if processed > 0:
-                        logger.info(f"🔥 NewsAPI: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
-                else:
-                    logger.warning(f"NewsAPI 응답 오류: {response.status}")
-        
-        except Exception as e:
-            logger.error(f"NewsAPI 호출 오류: {e}")
-    
-    async def _call_newsdata_enhanced(self):
-        """🔥🔥 강화된 NewsData API 호출"""
-        try:
-            url = "https://newsdata.io/api/1/news"
-            params = {
-                'apikey': self.newsdata_key,
-                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin" OR "fed rate decision" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing" OR "powell speech" OR "fomc decision" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "sec bitcoin" OR "ukraine war" OR "china sanctions" OR "bitcoin crosses 100k"',
-                'language': 'en',
-                'category': 'business,top,politics',  # 카테고리 확장
-                'size': 50  # 30 → 50으로 증가
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    articles = data.get('results', [])
-                    
-                    processed = 0
-                    critical_found = 0
-                    for article in articles:
-                        formatted_article = {
-                            'title': article.get('title', ''),
-                            'title_ko': article.get('title', ''),
-                            'description': article.get('description', '')[:1600],
-                            'url': article.get('link', ''),
-                            'source': f"NewsData ({article.get('source_id', 'Unknown')})",
-                            'published_at': article.get('pubDate', ''),
-                            'weight': 8,
-                            'category': 'api'
-                        }
-                        
-                        if self._is_bitcoin_or_macro_related_enhanced(formatted_article):
-                            # 기업명 추출
-                            company = self._extract_company_from_content(
-                                formatted_article['title'],
-                                formatted_article.get('description', '')
-                            )
-                            if company:
-                                formatted_article['company'] = company
-                            
-                            # 번역은 리포트 전송 시에만
-                            formatted_article['title_ko'] = formatted_article['title']
-                            
-                            if self._is_critical_news_enhanced(formatted_article):
-                                # 요약 (선택적)
-                                if self._should_use_gpt_summary(formatted_article):
-                                    summary = await self.summarize_article_enhanced(
-                                        formatted_article['title'],
-                                        formatted_article.get('description', '')
-                                    )
-                                    if summary:
-                                        formatted_article['summary'] = summary
-                                
-                                if not self._is_duplicate_emergency(formatted_article):
-                                    formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
-                                    await self._trigger_emergency_alert_enhanced(formatted_article)
-                                processed += 1
-                                critical_found += 1
-                            elif self._is_important_news_enhanced(formatted_article):
-                                await self._add_to_news_buffer_enhanced(formatted_article)
-                                processed += 1
-                    
-                    if processed > 0:
-                        logger.info(f"🔥 NewsData: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
-                else:
-                    logger.warning(f"NewsData 응답 오류: {response.status}")
-        
-        except Exception as e:
-            logger.error(f"NewsData 호출 오류: {e}")
-    
-    async def _call_alpha_vantage_enhanced(self):
-        """🔥🔥 강화된 Alpha Vantage API 호출"""
-        try:
-            url = "https://www.alphavantage.co/query"
-            params = {
-                'function': 'NEWS_SENTIMENT',
-                'tickers': 'CRYPTO:BTC,TSLA,MSTR',  # 티커 확장
-                'topics': 'financial_markets,technology,earnings,economy',  # 토픽 확장
-                'apikey': self.alpha_vantage_key,
-                'sort': 'LATEST',
-                'limit': 50  # 20 → 50으로 증가
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    articles = data.get('feed', [])
-                    
-                    processed = 0
-                    critical_found = 0
-                    for article in articles:
-                        formatted_article = {
-                            'title': article.get('title', ''),
-                            'title_ko': article.get('title', ''),
-                            'description': article.get('summary', '')[:1600],
-                            'url': article.get('url', ''),
-                            'source': f"Alpha Vantage ({article.get('source', 'Unknown')})",
-                            'published_at': article.get('time_published', ''),
-                            'weight': 9,
-                            'category': 'api',
-                            'sentiment': article.get('overall_sentiment_label', 'Neutral')
-                        }
-                        
-                        if self._is_bitcoin_or_macro_related_enhanced(formatted_article):
-                            # 기업명 추출
-                            company = self._extract_company_from_content(
-                                formatted_article['title'],
-                                formatted_article.get('description', '')
-                            )
-                            if company:
-                                formatted_article['company'] = company
-                            
-                            # 번역은 리포트 전송 시에만
-                            formatted_article['title_ko'] = formatted_article['title']
-                            
-                            if self._is_critical_news_enhanced(formatted_article):
-                                # 요약 (선택적)
-                                if self._should_use_gpt_summary(formatted_article):
-                                    summary = await self.summarize_article_enhanced(
-                                        formatted_article['title'],
-                                        formatted_article.get('description', '')
-                                    )
-                                    if summary:
-                                        formatted_article['summary'] = summary
-                                
-                                if not self._is_duplicate_emergency(formatted_article):
-                                    formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
-                                    await self._trigger_emergency_alert_enhanced(formatted_article)
-                                processed += 1
-                                critical_found += 1
-                            elif self._is_important_news_enhanced(formatted_article):
-                                await self._add_to_news_buffer_enhanced(formatted_article)
-                                processed += 1
-                    
-                    if processed > 0:
-                        logger.info(f"🔥 Alpha Vantage: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
-                else:
-                    logger.warning(f"Alpha Vantage 응답 오류: {response.status}")
-        
-        except Exception as e:
-            logger.error(f"Alpha Vantage 호출 오류: {e}")
-    
-    async def _parse_rss_feed_enhanced(self, feed_info: Dict) -> List[Dict]:
-        """🔥🔥 강화된 RSS 피드 파싱"""
-        articles = []
-        try:
-            async with self.session.get(
-                feed_info['url'], 
-                timeout=aiohttp.ClientTimeout(total=12),
-                headers={'User-Agent': 'Mozilla/5.0 (compatible; BitcoinNewsBot/2.0)'}
-            ) as response:
-                if response.status == 200:
-                    content = await response.text()
-                    feed = feedparser.parse(content)
-                    
-                    if feed.entries:
-                        # 더 많은 기사 처리
-                        limit = min(25, max(10, feed_info['weight']))
-                        
-                        for entry in feed.entries[:limit]:
-                            try:
-                                # 발행 시간 처리
-                                pub_time = datetime.now().isoformat()
-                                if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                                    pub_time = datetime(*entry.published_parsed[:6]).isoformat()
-                                elif hasattr(entry, 'published'):
-                                    try:
-                                        from dateutil import parser
-                                        pub_time = parser.parse(entry.published).isoformat()
-                                    except:
-                                        pass
-                                
-                                article = {
-                                    'title': entry.get('title', '').strip(),
-                                    'description': entry.get('summary', '').strip()[:1600],
-                                    'url': entry.get('link', '').strip(),
-                                    'source': feed_info['source'],
-                                    'published_at': pub_time,
-                                    'weight': feed_info['weight'],
-                                    'category': feed_info.get('category', 'unknown')
-                                }
-                                
-                                if article['title'] and article['url']:
-                                    articles.append(article)
-                                        
-                            except Exception as e:
-                                logger.debug(f"기사 파싱 오류: {str(e)[:50]}")
-                                continue
-        
-        except asyncio.TimeoutError:
-            logger.debug(f"⏰ {feed_info['source']}: 타임아웃")
-        except Exception as e:
-            logger.debug(f"❌ {feed_info['source']}: {str(e)[:50]}")
-        
-        return articles
-    
-    def _extract_company_from_content(self, title: str, description: str = "") -> str:
-        """컨텐츠에서 기업명 추출"""
-        content = (title + " " + description).lower()
-        
-        # 중요 기업 확인
-        found_companies = []
-        for company in self.important_companies:
-            if company.lower() in content:
-                # 원래 대소문자 유지
-                for original in self.important_companies:
-                    if original.lower() == company.lower():
-                        found_companies.append(original)
-                        break
-        
-        # 첫 번째 발견된 기업 반환
-        if found_companies:
-            return found_companies[0]
-        
-        return ""
-    
-    def _reset_daily_usage(self):
-        """일일 사용량 리셋"""
-        today = datetime.now().date()
-        if today > self.api_usage['last_reset']:
-            old_usage = dict(self.api_usage)
-            self.api_usage.update({
-                'newsapi_today': 0,
-                'newsdata_today': 0,
-                'alpha_vantage_today': 0,
-                'last_reset': today
-            })
-            self.company_news_count = {}
-            self.claude_translation_count = 0
-            self.gpt_translation_count = 0
-            self.claude_error_count = 0
-            self.summary_count = 0
-            self.last_translation_reset = datetime.now()
-            self.last_summary_reset = datetime.now()
-            self.news_first_seen = {}
-            self.claude_cooldown_until = None
-            
-            # 🔥🔥 크리티컬 리포트 중복 방지 데이터도 정리
-            current_time = datetime.now()
-            cutoff_time = current_time - timedelta(hours=12)
-            self.sent_critical_reports = {
-                k: v for k, v in self.sent_critical_reports.items()
-                if v > cutoff_time
-            }
-            self._save_critical_reports()
-            
-            logger.info(f"🔄 일일 리셋 완료 (GPT: {self.max_gpt_translations_per_15min}/15분, Claude: {self.max_claude_translations_per_15min}/15분, 요약: {self.max_summaries_per_15min}/15분)")
-            logger.info(f"🚨 크리티컬 리포트 중복 방지: {len(self.sent_critical_reports)}개 유지")
-    
-    async def get_recent_news_enhanced(self, hours: int = 12) -> List[Dict]:
-        """🔥🔥 강화된 최근 뉴스 가져오기"""
-        try:
-            cutoff_time = datetime.now() - timedelta(hours=hours)
-            recent_news = []
-            seen_hashes = set()
-            
-            # 더 많은 뉴스 반환
-            for article in sorted(self.news_buffer, key=lambda x: (x.get('weight', 0), x.get('published_at', '')), reverse=True):
-                try:
-                    # 시간 체크
-                    if article.get('published_at'):
-                        pub_time_str = article.get('published_at', '')
-                        try:
-                            if 'T' in pub_time_str:
-                                pub_time = datetime.fromisoformat(pub_time_str.replace('Z', ''))
-                            else:
-                                from dateutil import parser
-                                pub_time = parser.parse(pub_time_str)
-                            
-                            if pub_time > cutoff_time:
-                                # 중복 체크
-                                content_hash = self._generate_content_hash(article.get('title', ''), '')
-                                if content_hash not in seen_hashes:
-                                    recent_news.append(article)
-                                    seen_hashes.add(content_hash)
-                        except:
-                            pass
-                except:
-                    pass
-            
-            # 정렬: 가중치 → 시간
-            recent_news.sort(key=lambda x: (x.get('weight', 0), x.get('published_at', '')), reverse=True)
-            
-            logger.info(f"🔥 최근 {hours}시간 뉴스: {len(recent_news)}개 (총 버퍼: {len(self.news_buffer)}개)")
-            
-            return recent_news[:25]  # 15 → 25개로 증가
-            
-        except Exception as e:
-            logger.error(f"최근 뉴스 조회 오류: {e}")
-            return []
-    
-    async def get_recent_news(self, hours: int = 12) -> List[Dict]:
-        """최근 뉴스 가져오기 (호환성을 위한 래퍼)"""
-        return await self.get_recent_news_enhanced(hours)
-    
-    def _is_critical_news(self, article: Dict) -> bool:
-        """기존 호환성을 위한 메서드"""
-        return self._is_critical_news_enhanced(article)
-    
-    async def close(self):
-        """세션 종료"""
-        try:
-            # 중복 방지 데이터 저장
-            self._save_duplicate_data()
-            self._save_critical_reports()
-            
-            if self.session:
-                await self.session.close()
-                logger.info("🔚 번역 최적화 뉴스 수집기 세션 종료")
-                logger.info(f"🧠 최종 GPT 번역: {self.gpt_translation_count}, Claude 번역: {self.claude_translation_count}")
-                logger.info(f"📝 최종 GPT 요약: {self.summary_count}")
-                logger.info(f"⚠️ Claude 에러: {self.claude_error_count}회")
-                logger.info(f"💰 번역 정책: 크리티컬 리포트 전송 시에만")
-                logger.info(f"🚨 크리티컬 리포트 중복 방지: {len(self.sent_critical_reports)}개 기록")
-        except Exception as e:
-            logger.error(f"세션 종료 중 오류: {e}")
