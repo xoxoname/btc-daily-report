@@ -240,18 +240,18 @@ class BitgetClient:
             logger.error(f"최근 체결 주문 조회 실패: {e}")
             return []
     
-    async def get_plan_orders_v2_working(self, symbol: str = None) -> List[Dict]:
-        """🔥 V2 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
+    async def get_plan_orders_v2_enhanced(self, symbol: str = None) -> List[Dict]:
+        """🔥🔥🔥 강화된 V2 API 예약 주문 조회 - TP/SL 설정 정보 포함"""
         try:
             symbol = symbol or self.config.symbol
             
-            logger.info(f"🔍 V2 API 예약 주문 조회 시작: {symbol}")
+            logger.info(f"🔥🔥🔥 강화된 V2 API 예약 주문 조회 시작: {symbol}")
             
             all_found_orders = []
             
-            # 🔥 실제 작동하는 V2 엔드포인트만 사용
+            # 실제 작동하는 V2 엔드포인트
             working_endpoints = [
-                "/api/v2/mix/order/orders-pending",          # ✅ 작동 확인됨
+                "/api/v2/mix/order/orders-pending",
             ]
             
             for endpoint in working_endpoints:
@@ -271,7 +271,6 @@ class BitgetClient:
                     # 응답에서 주문 목록 추출
                     orders = []
                     if isinstance(response, dict):
-                        # entrustedList가 작동하는 필드명
                         if 'entrustedList' in response:
                             orders_raw = response['entrustedList']
                             if isinstance(orders_raw, list):
@@ -282,21 +281,67 @@ class BitgetClient:
                         logger.info(f"✅ {endpoint}: 직접 리스트에서 {len(orders)}개 주문 발견")
                     
                     if orders:
-                        all_found_orders.extend(orders)
-                        logger.info(f"🎯 {endpoint}에서 발견: {len(orders)}개 주문")
-                        
-                        # 발견된 주문들 상세 로깅
-                        for i, order in enumerate(orders):
+                        # 🔥🔥🔥 각 주문의 TP/SL 설정 정보 강화하여 추출
+                        enhanced_orders = []
+                        for order in orders:
                             if order is None:
                                 continue
                             
-                            order_id = order.get('orderId', order.get('planOrderId', order.get('id', 'unknown')))
+                            enhanced_order = order.copy()
+                            
+                            # 🔥🔥🔥 TP/SL 설정 정보 강화된 추출
+                            tp_price = 0
+                            sl_price = 0
+                            
+                            # 여러 필드명으로 TP 가격 추출
+                            for tp_field in ['presetStopSurplusPrice', 'stopSurplusPrice', 'tpPrice', 'takeProfitPrice']:
+                                if order.get(tp_field):
+                                    try:
+                                        tp_price = float(order.get(tp_field))
+                                        if tp_price > 0:
+                                            enhanced_order['extracted_tp_price'] = tp_price
+                                            logger.info(f"🎯 TP 설정 감지: {order.get('orderId', 'unknown')} - TP ${tp_price:,.2f} (필드: {tp_field})")
+                                            break
+                                    except:
+                                        continue
+                            
+                            # 여러 필드명으로 SL 가격 추출
+                            for sl_field in ['presetStopLossPrice', 'stopLossPrice', 'slPrice', 'stopLossPrice']:
+                                if order.get(sl_field):
+                                    try:
+                                        sl_price = float(order.get(sl_field))
+                                        if sl_price > 0:
+                                            enhanced_order['extracted_sl_price'] = sl_price
+                                            logger.info(f"🛡️ SL 설정 감지: {order.get('orderId', 'unknown')} - SL ${sl_price:,.2f} (필드: {sl_field})")
+                                            break
+                                    except:
+                                        continue
+                            
+                            # 🔥🔥🔥 TP/SL 설정 여부 플래그 추가
+                            enhanced_order['has_tp_setting'] = tp_price > 0
+                            enhanced_order['has_sl_setting'] = sl_price > 0
+                            
+                            # 🔥🔥🔥 주문 타입 명확화
                             order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
+                            enhanced_order['classified_type'] = 'plan_order_with_tp' if tp_price > 0 else 'plan_order'
+                            
+                            enhanced_orders.append(enhanced_order)
+                            
+                            order_id = order.get('orderId', order.get('planOrderId', order.get('id', 'unknown')))
                             side = order.get('side', order.get('tradeSide', 'unknown'))
                             trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
                             size = order.get('size', order.get('volume', 'unknown'))
                             
-                            logger.info(f"  📝 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}")
+                            tp_sl_text = ""
+                            if tp_price > 0:
+                                tp_sl_text += f" TP:${tp_price:,.2f}"
+                            if sl_price > 0:
+                                tp_sl_text += f" SL:${sl_price:,.2f}"
+                            
+                            logger.info(f"  📝 강화된 주문 정보: ID={order_id}, 방향={side}, 크기={size}, 트리거가={trigger_price}{tp_sl_text}")
+                        
+                        all_found_orders.extend(enhanced_orders)
+                        logger.info(f"🎯 {endpoint}에서 강화된 주문 {len(enhanced_orders)}개 추가")
                         
                         # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
                         break
@@ -324,11 +369,21 @@ class BitgetClient:
                     unique_orders.append(order)
                     logger.debug(f"📝 V2 고유 예약 주문 추가: {order_id}")
             
-            logger.info(f"🔥 V2 API에서 최종 발견된 고유한 예약 주문: {len(unique_orders)}건")
+            logger.info(f"🔥🔥🔥 V2 API에서 최종 발견된 강화된 예약 주문: {len(unique_orders)}건")
+            
+            # 🔥🔥🔥 TP/SL 설정이 있는 주문 통계
+            tp_orders = [o for o in unique_orders if o.get('has_tp_setting')]
+            sl_orders = [o for o in unique_orders if o.get('has_sl_setting')]
+            
+            if tp_orders:
+                logger.info(f"🎯 TP 설정이 있는 예약 주문: {len(tp_orders)}개")
+            if sl_orders:
+                logger.info(f"🛡️ SL 설정이 있는 예약 주문: {len(sl_orders)}개")
+            
             return unique_orders
             
         except Exception as e:
-            logger.error(f"V2 예약 주문 조회 실패: {e}")
+            logger.error(f"강화된 V2 예약 주문 조회 실패: {e}")
             return []
     
     async def get_plan_orders_v1_working(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
@@ -344,7 +399,7 @@ class BitgetClient:
             
             # 🔥 실제 작동하는 V1 엔드포인트만 사용
             working_endpoints = [
-                "/api/mix/v1/plan/currentPlan",              # ✅ 작동 확인됨 (비어있을 뿐)
+                "/api/mix/v1/plan/currentPlan",
             ]
             
             for endpoint in working_endpoints:
@@ -434,20 +489,20 @@ class BitgetClient:
             return []
     
     async def get_all_trigger_orders(self, symbol: str = None) -> List[Dict]:
-        """🔥 모든 트리거 주문 조회 - 작동하는 엔드포인트만 사용"""
+        """🔥🔥🔥 모든 트리거 주문 조회 - 강화된 TP/SL 설정 감지"""
         all_orders = []
         symbol = symbol or self.config.symbol
         
-        logger.info(f"🔍 모든 트리거 주문 조회 시작: {symbol}")
+        logger.info(f"🔥🔥🔥 모든 트리거 주문 조회 시작 (강화된 TP/SL 감지): {symbol}")
         
-        # 🔥 1. V2 API 조회 (우선)
+        # 🔥🔥🔥 1. V2 API 조회 (우선) - 강화된 버전 사용
         try:
-            v2_orders = await self.get_plan_orders_v2_working(symbol)
+            v2_orders = await self.get_plan_orders_v2_enhanced(symbol)
             if v2_orders:
                 all_orders.extend(v2_orders)
-                logger.info(f"✅ V2에서 {len(v2_orders)}개 예약 주문 발견")
+                logger.info(f"✅ 강화된 V2에서 {len(v2_orders)}개 예약 주문 발견")
         except Exception as e:
-            logger.warning(f"V2 예약 주문 조회 실패: {e}")
+            logger.warning(f"강화된 V2 예약 주문 조회 실패: {e}")
         
         # 🔥 2. V1 일반 예약 주문
         try:
@@ -484,28 +539,37 @@ class BitgetClient:
                 unique_orders.append(order)
                 logger.debug(f"📝 최종 고유 예약 주문 추가: {order_id}")
         
-        logger.info(f"🔥 최종 발견된 고유한 트리거 주문: {len(unique_orders)}건")
+        logger.info(f"🔥🔥🔥 최종 발견된 강화된 트리거 주문: {len(unique_orders)}건")
         
-        # 🔥🔥🔥 수정: 예약 주문이 없을 때 경고 로그 제거
+        # 🔥🔥🔥 강화된 로깅 - TP/SL 설정 포함
         if unique_orders:
-            logger.info("📋 발견된 예약 주문 목록:")
+            logger.info("📋 발견된 예약 주문 목록 (TP/SL 설정 포함):")
             for i, order in enumerate(unique_orders, 1):
                 order_id = order.get('orderId', order.get('planOrderId', order.get('id', 'unknown')))
                 side = order.get('side', order.get('tradeSide', 'unknown'))
                 trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
                 size = order.get('size', order.get('volume', 'unknown'))
                 order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
-                logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}, 타입: {order_type}")
+                
+                # 🔥🔥🔥 강화된 TP/SL 정보 표시
+                tp_sl_info = ""
+                if order.get('has_tp_setting'):
+                    tp_price = order.get('extracted_tp_price', order.get('presetStopSurplusPrice', 0))
+                    tp_sl_info += f" 🎯TP:${tp_price:,.2f}"
+                if order.get('has_sl_setting'):
+                    sl_price = order.get('extracted_sl_price', order.get('presetStopLossPrice', 0))
+                    tp_sl_info += f" 🛡️SL:${sl_price:,.2f}"
+                
+                logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}, 타입: {order_type}{tp_sl_info}")
         else:
-            # 🔥🔥🔥 수정: WARNING → DEBUG로 변경하여 빨간 로그 제거
             logger.debug("📝 현재 예약 주문이 없습니다.")
         
         return unique_orders
     
     async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """플랜 주문(예약 주문) 조회 - 모든 방법 시도"""
+        """플랜 주문(예약 주문) 조회 - 강화된 TP/SL 감지 사용"""
         try:
-            # 모든 트리거 주문 조회
+            # 강화된 모든 트리거 주문 조회
             all_orders = await self.get_all_trigger_orders(symbol)
             
             # plan_type이 지정되면 필터링
@@ -523,13 +587,13 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """🔥 모든 플랜 주문과 TP/SL 조회 - 개선된 분류"""
+        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 강화된 TP/SL 설정 감지"""
         try:
             symbol = symbol or self.config.symbol
             
-            logger.info(f"🔍 모든 예약 주문 및 TP/SL 조회 시작: {symbol}")
+            logger.info(f"🔥🔥🔥 모든 예약 주문 및 TP/SL 조회 시작 (강화된 TP/SL 감지): {symbol}")
             
-            # 모든 트리거 주문 조회 (개선된 방식)
+            # 강화된 모든 트리거 주문 조회
             all_orders = await self.get_all_trigger_orders(symbol)
             
             # TP/SL과 일반 예약주문 분류
@@ -551,18 +615,23 @@ class BitgetClient:
                     order.get('reduceOnly') == 'true'):
                     is_tp_sl = True
                 
-                # TP/SL 가격이 설정된 경우도 확인
-                elif (order.get('presetStopSurplusPrice') or 
-                      order.get('presetStopLossPrice')):
-                    # 이 경우는 일반 주문에 TP/SL이 설정된 것이므로 plan_orders로 분류
-                    pass
-                
                 if is_tp_sl:
                     tp_sl_orders.append(order)
                     logger.info(f"📊 TP/SL 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
                 else:
                     plan_orders.append(order)
-                    logger.info(f"📈 일반 예약 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
+                    order_id = order.get('orderId', order.get('planOrderId'))
+                    
+                    # 🔥🔥🔥 강화된 TP/SL 설정 정보 로깅
+                    tp_sl_settings = ""
+                    if order.get('has_tp_setting'):
+                        tp_price = order.get('extracted_tp_price', 0)
+                        tp_sl_settings += f" 🎯TP:${tp_price:,.2f}"
+                    if order.get('has_sl_setting'):
+                        sl_price = order.get('extracted_sl_price', 0)
+                        tp_sl_settings += f" 🛡️SL:${sl_price:,.2f}"
+                    
+                    logger.info(f"📈 일반 예약 주문 분류: {order_id} - {order.get('side', order.get('tradeSide'))}{tp_sl_settings}")
             
             # 통합 결과
             result = {
@@ -571,22 +640,26 @@ class BitgetClient:
                 'total_count': len(all_orders)
             }
             
-            logger.info(f"🔥 전체 예약 주문 분류 완료: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
+            logger.info(f"🔥🔥🔥 전체 예약 주문 분류 완료 (강화된 TP/SL 감지): 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
             
             # 각 카테고리별 상세 로깅
             if plan_orders:
-                logger.info("📈 일반 예약 주문 목록:")
+                logger.info("📈 일반 예약 주문 목록 (강화된 TP/SL 설정 포함):")
                 for i, order in enumerate(plan_orders, 1):
                     order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
                     side = order.get('side', order.get('tradeSide', 'unknown'))
                     price = order.get('price', order.get('triggerPrice', 'unknown'))
-                    tp_price = order.get('presetStopSurplusPrice', '')
-                    sl_price = order.get('presetStopLossPrice', '')
-                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 가격: {price}")
-                    if tp_price:
-                        logger.info(f"     TP 설정: {tp_price}")
-                    if sl_price:
-                        logger.info(f"     SL 설정: {sl_price}")
+                    
+                    # 🔥🔥🔥 강화된 TP/SL 설정 표시
+                    tp_sl_detail = ""
+                    if order.get('has_tp_setting'):
+                        tp_price = order.get('extracted_tp_price', 0)
+                        tp_sl_detail += f"\n     🎯 TP 설정: ${tp_price:,.2f}"
+                    if order.get('has_sl_setting'):
+                        sl_price = order.get('extracted_sl_price', 0)
+                        tp_sl_detail += f"\n     🛡️ SL 설정: ${sl_price:,.2f}"
+                    
+                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 가격: {price}{tp_sl_detail}")
             
             if tp_sl_orders:
                 logger.info("📊 TP/SL 주문 목록:")
