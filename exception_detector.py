@@ -292,7 +292,7 @@ class ExceptionDetector:
         return anomalies
     
     async def check_short_term_volatility(self) -> Optional[Dict]:
-        """단기 변동성 감지 (5분, 15분 단위)"""
+        """단기 변동성 감지 (5분, 15분 단위) - division by zero 오류 수정"""
         try:
             if not self.bitget_client:
                 return None
@@ -335,6 +335,12 @@ class ExceptionDetector:
             if len(five_min_prices) >= 2:
                 min_price_5min = min(five_min_prices)
                 max_price_5min = max(five_min_prices)
+                
+                # division by zero 방지
+                if min_price_5min <= 0:
+                    self.logger.warning(f"최소 가격이 0이하: {min_price_5min}")
+                    return None
+                
                 change_5min = ((max_price_5min - min_price_5min) / min_price_5min) * 100
                 
                 if change_5min >= self.short_term_threshold:
