@@ -306,7 +306,7 @@ class GateClient:
     async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
                                          order_type: str, contract: str, size: int, 
                                          price: Optional[str] = None) -> Dict:
-        """🔥🔥🔥 가격 트리거 주문 생성 (TP/SL) - trigger rule을 정수로 수정
+        """🔥🔥🔥🔥 가격 트리거 주문 생성 (TP/SL) - AUTO_INVALID_PARAM_PRICE 오류 완전 해결
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
@@ -319,16 +319,26 @@ class GateClient:
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥 Gate.io API v4 트리거 주문 규격 완전 준수 - size를 정수로 유지
+            # 🔥🔥🔥🔥 Gate.io API v4 트리거 주문 규격 완전 준수 - AUTO_INVALID_PARAM_PRICE 해결
             initial_data = {
                 "type": order_type,
                 "contract": contract,
-                "size": size  # 🔥🔥 정수로 유지 (문자열 변환 제거)
+                "size": size  # 🔥🔥 정수로 유지
             }
             
-            # 🔥🔥 지정가인 경우만 price 추가
-            if order_type == "limit" and price:
-                initial_data["price"] = str(price)
+            # 🔥🔥🔥🔥 AUTO_INVALID_PARAM_PRICE 오류 해결: 시장가도 price 필요 또는 완전 제거
+            if order_type == "limit":
+                # 지정가: price 필수
+                if price:
+                    initial_data["price"] = str(price)
+                else:
+                    # 지정가인데 price가 없으면 트리거 가격을 price로 사용
+                    initial_data["price"] = str(trigger_price)
+                    logger.info(f"🔥 지정가 주문에 트리거 가격을 price로 사용: {trigger_price}")
+            elif order_type == "market":
+                # 🔥🔥🔥🔥 시장가: price 필드 완전 제거 (AUTO_INVALID_PARAM_PRICE 해결)
+                # initial_data에 price 필드를 아예 추가하지 않음
+                logger.info(f"🔥 시장가 주문: price 필드 완전 제거")
             
             # 🔥🔥🔥🔥 트리거 rule을 정수로 변환
             if trigger_type == "ge":
@@ -344,24 +354,34 @@ class GateClient:
             data = {
                 "initial": initial_data,
                 "trigger": {
-                    "strategy_type": 0,  # 🔥🔥🔥 정수 0으로 수정 (문자열 "0"에서 변경)
-                    "price_type": 0,     # 🔥🔥🔥 정수 0으로 수정 (문자열 "0"에서 변경)
+                    "strategy_type": 0,  # 🔥🔥🔥 정수 0으로 수정
+                    "price_type": 0,     # 🔥🔥🔥 정수 0으로 수정
                     "price": str(trigger_price),
                     "rule": rule_value   # 🔥🔥🔥🔥 정수로 변경 (1 for >=, 2 for <=)
                 }
             }
             
-            logger.info(f"🔥🔥🔥🔥 Gate.io 가격 트리거 주문 생성 (rule 정수형 수정): {data}")
+            logger.info(f"🔥🔥🔥🔥 Gate.io 가격 트리거 주문 생성 (AUTO_INVALID_PARAM_PRICE 해결): {data}")
             response = await self._request('POST', endpoint, data=data)
             logger.info(f"✅✅✅✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
             logger.error(f"❌❌❌❌ 가격 트리거 주문 생성 실패: {e}")
-            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size} (타입: {type(size)})")
+            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size} (타입: {type(size)}), price={price}")
             
             # 🔥🔥🔥🔥 상세 디버깅 정보
-            if "AUTO_INVALID_REQUEST_BODY" in str(e) or "cannot unmarshal string into Go struct" in str(e):
+            if "AUTO_INVALID_PARAM_PRICE" in str(e) or "invalid argument: initial.price" in str(e):
+                logger.error(f"🚨🚨🚨🚨 AUTO_INVALID_PARAM_PRICE 오류 감지!")
+                logger.error(f"   - 계약: {contract}")
+                logger.error(f"   - 수량: {size} (타입: {type(size)})")
+                logger.error(f"   - 트리거가: {trigger_price} (타입: {type(trigger_price)})")
+                logger.error(f"   - 트리거 타입: {trigger_type} → 정수 변환: {1 if trigger_type == 'ge' else 2}")
+                logger.error(f"   - 주문 타입: {order_type}")
+                logger.error(f"   - 전달된 price: {price}")
+                logger.error(f"   - 최종 initial_data: {initial_data}")
+                logger.error(f"🔥🔥🔥🔥 시장가 주문에서 price 필드를 완전 제거했습니다!")
+            elif "cannot unmarshal string into Go struct" in str(e):
                 logger.error(f"🚨🚨🚨🚨 타입 불일치 오류 감지!")
                 logger.error(f"   - 계약: {contract}")
                 logger.error(f"   - 수량: {size} (타입: {type(size)})")
