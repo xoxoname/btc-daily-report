@@ -98,8 +98,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             position_info = await self._get_position_info()
             account_info = await self._get_account_info()
             
-            # 🔥🔥 Account Bills가 실패하므로 대안 방법 사용
-            today_pnl = await self._get_today_realized_pnl_alternative()
+            # 🔥🔥 수정된 오늘 실현손익 조회 - 중복 제거 및 수수료 차감
+            today_pnl = await self._get_today_realized_pnl_corrected()
             
             # 개선된 7일 손익 조회 - Account Bills 우회
             self.logger.info("=== Bitget 7일 손익 조회 시작 (Account Bills 우회) ===")
@@ -145,13 +145,185 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             self.logger.info(f"Bitget 데이터 구성 완료:")
             self.logger.info(f"  - 7일 손익: ${result['weekly_profit']['total']:.2f} (소스: {source})")
-            self.logger.info(f"  - 오늘 실현손익: ${result['today_pnl']:.2f}")
+            self.logger.info(f"  - 오늘 실현손익 (수정): ${result['today_pnl']:.2f}")
             self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f} ({cumulative_roi:+.1f}%)")
             
             return result
         except Exception as e:
             self.logger.error(f"Bitget 데이터 조회 실패: {e}")
             return self._get_empty_exchange_data('Bitget')
+    
+    async def _get_today_realized_pnl_corrected(self) -> float:
+        """🔥🔥🔥 수정된 오늘 실현손익 계산 - 중복 제거 및 수수료 포함"""
+        try:
+            kst = pytz.timezone('Asia/Seoul')
+            now = datetime.now(kst)
+            
+            # 🔥 정확한 KST 오늘 0시 계산
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # UTC로 변환하여 타임스탬프 생성
+            start_time_utc = today_start.astimezone(pytz.UTC)
+            end_time_utc = now.astimezone(pytz.UTC)
+            
+            start_timestamp = int(start_time_utc.timestamp() * 1000)
+            end_timestamp = int(end_time_utc.timestamp() * 1000)
+            
+            self.logger.info(f"🔥🔥🔥 수정된 오늘 실현손익 조회:")
+            self.logger.info(f"  - KST 시작: {today_start.strftime('%Y-%m-%d %H:%M:%S')}")
+            self.logger.info(f"  - KST 종료: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            self.logger.info(f"  - UTC 타임스탬프: {start_timestamp} ~ {end_timestamp}")
+            
+            # 🔥🔥 개선된 거래 내역 조회 - 중복 제거 및 수수료 정확히 계산
+            today_pnl = await self._get_today_pnl_from_fills_corrected(start_timestamp, end_timestamp)
+            
+            self.logger.info(f"🔥 수정된 오늘 실현 손익: ${today_pnl:.2f}")
+            return today_pnl
+            
+        except Exception as e:
+            self.logger.error(f"수정된 오늘 실현 손익 조회 실패: {e}")
+            return 0.0
+    
+    async def _get_today_pnl_from_fills_corrected(self, start_time: int, end_time: int) -> float:
+        """🔥🔥🔥 거래 내역에서 오늘 실현 손익 추출 - 중복 제거 및 수수료 정확 계산"""
+        try:
+            # 거래 내역 조회
+            fills = await self.bitget_client.get_trade_fills(
+                symbol=self.config.symbol,
+                start_time=start_time,
+                end_time=end_time,
+                limit=100
+            )
+            
+            self.logger.info(f"🔥 조회된 오늘 거래 내역: {len(fills)}건")
+            
+            # 🔥🔥 중복 제거 - fillId 기준
+            unique_fills = []
+            seen_fill_ids = set()
+            
+            for fill in fills:
+                fill_id = fill.get('fillId') or fill.get('tradeId') or fill.get('id')
+                if fill_id and fill_id not in seen_fill_ids:
+                    seen_fill_ids.add(fill_id)
+                    unique_fills.append(fill)
+                elif not fill_id:
+                    # fillId가 없는 경우 다른 조합으로 중복 체크
+                    composite_key = f"{fill.get('cTime')}_{fill.get('size')}_{fill.get('price')}_{fill.get('side')}"
+                    if composite_key not in seen_fill_ids:
+                        seen_fill_ids.add(composite_key)
+                        unique_fills.append(fill)
+            
+            self.logger.info(f"🔥 중복 제거 후 거래 내역: {len(unique_fills)}건")
+            
+            total_pnl = 0.0
+            total_fees = 0.0
+            profit_trades = 0
+            
+            for i, fill in enumerate(unique_fills):
+                try:
+                    # 🔥🔥 실현 손익 추출 (여러 필드 시도)
+                    profit = 0.0
+                    profit_fields = ['profit', 'realizedPL', 'realizedPnl', 'pnl', 'realizedProfit']
+                    
+                    for field in profit_fields:
+                        if field in fill and fill[field] is not None:
+                            try:
+                                profit = float(fill[field])
+                                if profit != 0:
+                                    self.logger.debug(f"거래 {i+1}: {field}에서 손익 ${profit:.4f} 발견")
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # 🔥🔥 수수료 정확히 추출
+                    fee = self._extract_fee_accurately(fill)
+                    
+                    # 🔥🔥 순 실현손익 = 실현손익 - 수수료
+                    net_profit = profit - fee
+                    
+                    if profit != 0 or fee != 0:
+                        total_pnl += net_profit
+                        total_fees += fee
+                        profit_trades += 1
+                        
+                        # 상세 로깅
+                        fill_time = fill.get('cTime', 0)
+                        kst = pytz.timezone('Asia/Seoul')
+                        time_str = datetime.fromtimestamp(int(fill_time)/1000, tz=kst).strftime('%H:%M:%S') if fill_time else 'N/A'
+                        
+                        self.logger.info(f"🔥 거래 {i+1} ({time_str}): 실현손익 ${profit:.4f} - 수수료 ${fee:.4f} = 순손익 ${net_profit:.4f}")
+                
+                except Exception as fill_error:
+                    self.logger.warning(f"거래 내역 {i+1} 파싱 오류: {fill_error}")
+                    continue
+            
+            self.logger.info(f"🔥🔥🔥 오늘 실현손익 최종 계산:")
+            self.logger.info(f"  - 총 실현손익: ${total_pnl + total_fees:.4f}")
+            self.logger.info(f"  - 총 수수료: ${total_fees:.4f}")
+            self.logger.info(f"  - 순 실현손익: ${total_pnl:.4f}")
+            self.logger.info(f"  - 수익 거래: {profit_trades}건")
+            
+            return total_pnl
+            
+        except Exception as e:
+            self.logger.error(f"수정된 거래 내역 오늘 손익 조회 실패: {e}")
+            return 0.0
+    
+    def _extract_fee_accurately(self, fill: dict) -> float:
+        """🔥🔥🔥 거래에서 수수료 정확히 추출"""
+        total_fee = 0.0
+        
+        try:
+            # 🔥 1. feeDetail 배열 확인 (가장 정확한 방법)
+            fee_detail = fill.get('feeDetail', [])
+            if isinstance(fee_detail, list) and fee_detail:
+                for fee_info in fee_detail:
+                    if isinstance(fee_info, dict):
+                        fee_amount = fee_info.get('totalFee') or fee_info.get('fee') or fee_info.get('amount')
+                        if fee_amount:
+                            try:
+                                fee_value = abs(float(fee_amount))
+                                total_fee += fee_value
+                                self.logger.debug(f"feeDetail에서 수수료 발견: ${fee_value:.6f}")
+                            except (ValueError, TypeError):
+                                continue
+                
+                if total_fee > 0:
+                    return total_fee
+            
+            # 🔥 2. 직접 fee 필드들 확인
+            fee_fields = ['fee', 'fees', 'totalFee', 'tradeFee', 'commission', 'feeAmount']
+            for field in fee_fields:
+                if field in fill and fill[field] is not None:
+                    try:
+                        fee_value = abs(float(fill[field]))
+                        if fee_value > 0:
+                            self.logger.debug(f"{field}에서 수수료 발견: ${fee_value:.6f}")
+                            return fee_value
+                    except (ValueError, TypeError):
+                        continue
+            
+            # 🔥 3. 수수료율 기반 계산 (마지막 수단)
+            if total_fee == 0:
+                size = fill.get('size') or fill.get('amount')
+                price = fill.get('price') or fill.get('fillPrice')
+                fee_rate = fill.get('feeRate')
+                
+                if size and price and fee_rate:
+                    try:
+                        trade_value = float(size) * float(price)
+                        calculated_fee = trade_value * abs(float(fee_rate))
+                        if calculated_fee > 0:
+                            self.logger.debug(f"수수료율 계산: {trade_value} * {fee_rate} = ${calculated_fee:.6f}")
+                            return calculated_fee
+                    except (ValueError, TypeError):
+                        pass
+            
+            return total_fee
+            
+        except Exception as e:
+            self.logger.warning(f"수수료 추출 오류: {e}")
+            return 0.0
     
     async def _get_today_realized_pnl_alternative(self) -> float:
         """🔥🔥 Account Bills 우회 - 거래 내역 기반으로만 오늘 실현손익 계산"""
