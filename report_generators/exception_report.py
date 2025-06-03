@@ -609,7 +609,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 return "영향 소멸"
     
     async def generate_report(self, event: Dict) -> str:
-        """🚨 현실적인 긴급 예외 리포트 생성"""
+        """🚨 현실적인 긴급 예외 리포트 생성 - 즉시 감지 표시"""
         current_time = self._get_current_time_kst()
         event_type = event.get('type', 'unknown')
         
@@ -621,9 +621,8 @@ class ExceptionReportGenerator(BaseReportGenerator):
             company = event.get('company', '')
             published_at = event.get('published_at', '')
             
-            # 발행 시각 처리
-            pub_time = None
-            pub_time_str = ""
+            # 🔥🔥 발행 시간을 즉시 감지로 변경
+            detection_time = "즉시 감지"
             if published_at:
                 try:
                     if 'T' in published_at:
@@ -636,11 +635,22 @@ class ExceptionReportGenerator(BaseReportGenerator):
                         pub_time = pytz.UTC.localize(pub_time)
                     
                     kst_time = pub_time.astimezone(pytz.timezone('Asia/Seoul'))
-                    pub_time_str = kst_time.strftime('%Y-%m-%d %H:%M')
+                    
+                    # 발행 시간과 현재 시간의 차이 계산
+                    current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+                    time_diff = current_kst - kst_time
+                    minutes_diff = int(time_diff.total_seconds() / 60)
+                    
+                    if minutes_diff < 5:
+                        detection_time = "즉시 감지"
+                    elif minutes_diff < 60:
+                        detection_time = f"{minutes_diff}분 전 발행 → 즉시 감지"
+                    else:
+                        hours_diff = int(minutes_diff / 60)
+                        detection_time = f"{hours_diff}시간 전 발행 → 즉시 감지"
+                        
                 except:
-                    pub_time_str = "시간 정보 없음"
-            else:
-                pub_time_str = "시간 정보 없음"
+                    detection_time = "즉시 감지"
             
             # 기업명이 있으면 제목에 포함
             if company and company.lower() not in title_ko.lower():
@@ -700,11 +710,21 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 detail_summary = "비트코인 관련 발표가 있었다. 실제 시장 영향을 주의깊게 모니터링하고 있다. 투자자들은 신중한 접근이 필요하다."
             
             # 현재 시장 상황 조회 (실제 뉴스 후 변동률 포함)
+            pub_time = None
+            try:
+                if published_at and 'T' in published_at:
+                    pub_time = datetime.fromisoformat(published_at.replace('Z', ''))
+                elif published_at:
+                    from dateutil import parser
+                    pub_time = parser.parse(published_at)
+            except:
+                pass
+            
             market_status = await self._get_current_market_status(pub_time)
             
             # 리포트 생성
             report = f"""🚨 <b>BTC 긴급 예외 리포트</b>
-📅 발행: {pub_time_str}
+📅 감지: {detection_time}
 ━━━━━━━━━━━━━━━
 
 📰 <b>{title_ko}</b>
