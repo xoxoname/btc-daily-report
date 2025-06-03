@@ -487,6 +487,94 @@ class ExceptionReportGenerator(BaseReportGenerator):
             self.logger.error(f"스마트 요약 생성 실패: {e}")
             return "비트코인 시장 관련 소식이 발표되었다. 자세한 내용은 원문을 확인하시기 바란다. 실제 시장 반응을 면밀히 분석할 필요가 있다."
     
+    async def _get_price_change_since_news(self, news_pub_time: datetime) -> str:
+        """뉴스 발표 후 실제 가격 변동 계산"""
+        try:
+            if not self.bitget_client:
+                return ""
+            
+            # 현재 시장 데이터 조회
+            current_ticker = await self.bitget_client.get_ticker('BTCUSDT')
+            if not current_ticker:
+                return ""
+            
+            current_price = float(current_ticker.get('last', 0))
+            current_volume = float(current_ticker.get('baseVolume', 0))
+            current_time = datetime.now()
+            
+            if current_price <= 0:
+                return ""
+            
+            # 뉴스 발표 시점과 현재 시점의 시간 차이 계산
+            time_diff = current_time - news_pub_time
+            minutes_passed = int(time_diff.total_seconds() / 60)
+            
+            # 뉴스 해시 생성
+            news_hash = f"news_{news_pub_time.timestamp()}"
+            
+            # 뉴스 발표 시점의 가격 데이터가 있는지 확인
+            if news_hash in self.news_initial_data:
+                initial_data = self.news_initial_data[news_hash]
+                initial_price = initial_data['price']
+                initial_volume = initial_data['volume']
+                
+                # 가격 변동률 계산
+                price_change_pct = ((current_price - initial_price) / initial_price) * 100
+                
+                # 거래량 변동률 계산
+                volume_change_pct = ((current_volume - initial_volume) / initial_volume) * 100 if initial_volume > 0 else 0
+                
+                # 변동 정도 분류
+                if abs(price_change_pct) >= 2.0:
+                    price_desc = "급등" if price_change_pct > 0 else "급락"
+                elif abs(price_change_pct) >= 1.0:
+                    price_desc = "상승" if price_change_pct > 0 else "하락"
+                elif abs(price_change_pct) >= 0.3:
+                    price_desc = "약 상승" if price_change_pct > 0 else "약 하락"
+                elif abs(price_change_pct) >= 0.1:
+                    price_desc = "소폭 상승" if price_change_pct > 0 else "소폭 하락"
+                else:
+                    price_desc = "횡보"
+                
+                # 거래량 변동 분류
+                if volume_change_pct >= 20:
+                    volume_desc = "거래량 급증"
+                elif volume_change_pct >= 10:
+                    volume_desc = "거래량 증가"
+                elif volume_change_pct <= -20:
+                    volume_desc = "거래량 급감"
+                elif volume_change_pct <= -10:
+                    volume_desc = "거래량 감소"
+                else:
+                    volume_desc = "거래량 보통"
+                
+                # 시간 표현
+                if minutes_passed < 60:
+                    time_desc = f"{minutes_passed}분 전"
+                else:
+                    hours_passed = minutes_passed // 60
+                    remaining_minutes = minutes_passed % 60
+                    if remaining_minutes > 0:
+                        time_desc = f"{hours_passed}시간 {remaining_minutes}분 전"
+                    else:
+                        time_desc = f"{hours_passed}시간 전"
+                
+                return f"최초 보도 후 변동: <b>{price_change_pct:+.2f}%</b>({time_desc}/{price_desc}, {volume_desc})"
+                
+            else:
+                # 뉴스 발표 시점 데이터 저장 (향후 참조용)
+                self.news_initial_data[news_hash] = {
+                    'price': current_price,
+                    'volume': current_volume,
+                    'time': news_pub_time
+                }
+                
+                return f"최초 보도 후 변동: <b>데이터 수집 중</b> (실시간 모니터링 시작)"
+        
+        except Exception as e:
+            self.logger.error(f"가격 변동 계산 오류: {e}")
+            return ""
+    
     async def _get_current_market_status(self, news_time: datetime = None) -> str:
         """현재 시장 상황 조회 - 실제 API 데이터 사용 및 뉴스 후 변동률 계산"""
         try:
@@ -508,42 +596,9 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 return ""
             
             # 뉴스 발표 후 변동률 계산
+            price_change_info = ""
             if news_time:
-                news_hash = f"news_{news_time.timestamp()}"
-                
-                # 뉴스 발표 시점의 가격 데이터가 있는지 확인
-                if news_hash in self.news_initial_data:
-                    initial_data = self.news_initial_data[news_hash]
-                    initial_price = initial_data['price']
-                    initial_volume = initial_data['volume']
-                    
-                    # 실제 변동률 계산
-                    price_change_since_news = ((current_price - initial_price) / initial_price) * 100
-                    volume_change_since_news = ((volume_24h - initial_volume) / initial_volume) * 100 if initial_volume > 0 else 0
-                    
-                    # 시간 경과 계산
-                    time_elapsed = datetime.now() - news_time
-                    minutes_elapsed = int(time_elapsed.total_seconds() / 60)
-                    
-                    # 시장 반응 분석
-                    reaction_analysis = self._analyze_market_reaction(price_change_since_news, volume_change_since_news, minutes_elapsed)
-                    
-                else:
-                    # 뉴스 발표 시점 데이터 없음 - 현재 데이터로 초기화
-                    self.news_initial_data[news_hash] = {
-                        'price': current_price,
-                        'volume': volume_24h,
-                        'time': datetime.now()
-                    }
-                    price_change_since_news = 0
-                    volume_change_since_news = 0
-                    minutes_elapsed = 0
-                    reaction_analysis = "데이터 수집 중"
-            else:
-                price_change_since_news = 0
-                volume_change_since_news = 0
-                minutes_elapsed = 0
-                reaction_analysis = "실시간 모니터링"
+                price_change_info = await self._get_price_change_since_news(news_time)
             
             # 현재 상태 분석
             if abs(change_24h) >= 3.0:
@@ -563,11 +618,8 @@ class ExceptionReportGenerator(BaseReportGenerator):
 • 시장 추세: <b>{price_trend}</b>
 • 거래량: <b>{volume_24h:,.0f} BTC</b> ({volume_status})"""
             
-            if minutes_elapsed > 0:
-                market_status += f"""
-• 뉴스 후 변동: <b>{price_change_since_news:+.2f}%</b> ({minutes_elapsed}분 경과)
-• 뉴스 후 거래량: <b>{volume_change_since_news:+.1f}%</b> 변화
-• 시장 반응: <b>{reaction_analysis}</b>"""
+            if price_change_info:
+                market_status += f"\n• {price_change_info}"
             
             return market_status
             
@@ -609,7 +661,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 return "영향 소멸"
     
     async def generate_report(self, event: Dict) -> str:
-        """🚨 현실적인 긴급 예외 리포트 생성 - 즉시 감지 표시"""
+        """🚨 현실적인 긴급 예외 리포트 생성 - 정확한 시간 표시"""
         current_time = self._get_current_time_kst()
         event_type = event.get('type', 'unknown')
         
@@ -621,8 +673,12 @@ class ExceptionReportGenerator(BaseReportGenerator):
             company = event.get('company', '')
             published_at = event.get('published_at', '')
             
-            # 🔥🔥 발행 시간을 즉시 감지로 변경
-            detection_time = "즉시 감지"
+            # 🔥🔥 정확한 감지 시간 표시 (시:분 형식)
+            current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+            detection_time = current_kst.strftime('%H:%M')
+            
+            # 발행 시간 처리
+            news_pub_time = None
             if published_at:
                 try:
                     if 'T' in published_at:
@@ -634,23 +690,24 @@ class ExceptionReportGenerator(BaseReportGenerator):
                     if pub_time.tzinfo is None:
                         pub_time = pytz.UTC.localize(pub_time)
                     
-                    kst_time = pub_time.astimezone(pytz.timezone('Asia/Seoul'))
+                    news_pub_time = pub_time.astimezone(pytz.timezone('Asia/Seoul'))
                     
                     # 발행 시간과 현재 시간의 차이 계산
-                    current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
-                    time_diff = current_kst - kst_time
+                    time_diff = current_kst - news_pub_time
                     minutes_diff = int(time_diff.total_seconds() / 60)
                     
                     if minutes_diff < 5:
-                        detection_time = "즉시 감지"
+                        detection_time = f"{detection_time} (즉시 감지)"
                     elif minutes_diff < 60:
-                        detection_time = f"{minutes_diff}분 전 발행 → 즉시 감지"
+                        detection_time = f"{detection_time} ({minutes_diff}분 전 발행)"
                     else:
                         hours_diff = int(minutes_diff / 60)
-                        detection_time = f"{hours_diff}시간 전 발행 → 즉시 감지"
+                        detection_time = f"{detection_time} ({hours_diff}시간 전 발행)"
                         
                 except:
-                    detection_time = "즉시 감지"
+                    detection_time = f"{detection_time} (즉시 감지)"
+            else:
+                detection_time = f"{detection_time} (즉시 감지)"
             
             # 기업명이 있으면 제목에 포함
             if company and company.lower() not in title_ko.lower():
@@ -710,17 +767,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 detail_summary = "비트코인 관련 발표가 있었다. 실제 시장 영향을 주의깊게 모니터링하고 있다. 투자자들은 신중한 접근이 필요하다."
             
             # 현재 시장 상황 조회 (실제 뉴스 후 변동률 포함)
-            pub_time = None
-            try:
-                if published_at and 'T' in published_at:
-                    pub_time = datetime.fromisoformat(published_at.replace('Z', ''))
-                elif published_at:
-                    from dateutil import parser
-                    pub_time = parser.parse(published_at)
-            except:
-                pass
-            
-            market_status = await self._get_current_market_status(pub_time)
+            market_status = await self._get_current_market_status(news_pub_time)
             
             # 리포트 생성
             report = f"""🚨 <b>BTC 긴급 예외 리포트</b>
@@ -742,7 +789,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
 {smart_strategy}
 
 ━━━━━━━━━━━━━━━
-⏰ {current_time}
+⏰ {current_kst.strftime('%Y-%m-%d %H:%M')}
 
 <i>💡 이 예측은 과거 유사 뉴스의 실제 시장 반응을 기반으로 생성되었습니다.</i>"""
             
@@ -750,6 +797,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
             # 가격 이상 징후
             change = event.get('change_24h', 0)
             current_price = event.get('current_price', 0)
+            current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
             
             if abs(change) >= 0.05:  # 5% 이상
                 severity = "급변동"
@@ -794,12 +842,13 @@ class ExceptionReportGenerator(BaseReportGenerator):
 📅 <b>영향 지속</b>: {duration}
 
 ━━━━━━━━━━━━━━━
-⏰ {current_time}"""
+⏰ {current_kst.strftime('%Y-%m-%d %H:%M')}"""
             
         elif event_type == 'volume_anomaly':
             # 거래량 이상
             ratio = event.get('ratio', 0)
             volume = event.get('volume_24h', 0)
+            current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
             
             if ratio >= 5:
                 severity = "폭증"
@@ -837,11 +886,12 @@ class ExceptionReportGenerator(BaseReportGenerator):
 📅 <b>영향 지속</b>: {duration}
 
 ━━━━━━━━━━━━━━━
-⏰ {current_time}"""
+⏰ {current_kst.strftime('%Y-%m-%d %H:%M')}"""
             
         else:
             # 기타 이벤트
             description = event.get('description', '이상 신호 감지')
+            current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
             
             report = f"""🚨 <b>BTC 이상 신호</b>
 ━━━━━━━━━━━━━━━
@@ -859,6 +909,6 @@ class ExceptionReportGenerator(BaseReportGenerator):
 📅 <b>영향 지속</b>: 1-6시간
 
 ━━━━━━━━━━━━━━━
-⏰ {current_time}"""
+⏰ {current_kst.strftime('%Y-%m-%d %H:%M')}"""
         
         return report
