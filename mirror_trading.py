@@ -561,571 +561,6 @@ class MirrorTradingSystem:
         while self.monitoring:
             try:
                 bitget_positions = await self.bitget.get_positions(self.SYMBOL)
-                
-                active_position_ids = set()
-                
-                for pos in bitget_positions:
-                    if float(pos.get('total', 0)) > 0:
-                        pos_id = self._generate_position_id(pos)
-                        active_position_ids.add(pos_id)
-                        await self._process_position(pos)
-                
-                # 종료된 포지션 처리
-                closed_positions = set(self.mirrored_positions.keys()) - active_position_ids
-                for pos_id in closed_positions:
-                    if pos_id not in self.startup_positions:
-                        await self._handle_position_close(pos_id)
-                
-                consecutive_errors = 0
-                await asyncio.sleep(self.CHECK_INTERVAL)
-                
-            except Exception as e:
-                consecutive_errors += 1
-                self.logger.error(f"포지션 모니터링 중 오류: {e}")
-                
-                if consecutive_errors >= 5:
-                    await self.telegram.send_message(
-                        f"⚠️ 포지션 모니터링 오류\n"
-                        f"연속 {consecutive_errors}회 실패"
-                    )
-                
-                await asyncio.sleep(self.CHECK_INTERVAL * 2)
-
-    async def _process_position(self, bitget_pos: Dict):
-        """포지션 처리"""
-        try:
-            pos_id = self._generate_position_id(bitget_pos)
-            
-            if pos_id in self.startup_positions:
-                return
-            
-            current_size = float(bitget_pos.get('total', 0))
-            
-            if pos_id not in self.mirrored_positions:
-                await asyncio.sleep(2)
-                
-                if pos_id not in self.mirrored_positions:
-                    result = await self._mirror_new_position(bitget_pos)
-                    
-                    if result.success:
-                        self.mirrored_positions[pos_id] = await self._create_position_info(bitget_pos)
-                        self.position_sizes[pos_id] = current_size
-                        self.daily_stats['successful_mirrors'] += 1
-                        self.daily_stats['position_mirrors'] += 1
-                        
-                        leverage = bitget_pos.get('leverage', 'N/A')
-                        await self.telegram.send_message(
-                            f"✅ 포지션 기반 미러링 성공\n"
-                            f"방향: {bitget_pos.get('holdSide', '')}\n"
-                            f"진입가: ${float(bitget_pos.get('openPriceAvg', 0)):,.2f}\n"
-                            f"🔧 레버리지: {leverage}x"
-                        )
-                        
-                        # 🔥🔥🔥 TP 설정 미러링 - 포지션 진입 시 TP 자동 감지 및 설정
-                        await self._mirror_position_tp_settings(bitget_pos, pos_id)
-                        
-                    else:
-                        self.failed_mirrors.append(result)
-                        self.daily_stats['failed_mirrors'] += 1
-                    
-                    self.daily_stats['total_mirrored'] += 1
-            else:
-                last_size = self.position_sizes.get(pos_id, 0)
-                
-                # 부분 청산 감지
-                if current_size < last_size * 0.95:
-                    reduction_ratio = 1 - (current_size / last_size)
-                    await self._handle_partial_close(pos_id, bitget_pos, reduction_ratio)
-                    self.position_sizes[pos_id] = current_size
-                    self.daily_stats['partial_closes'] += 1
-                
-        except Exception as e:
-            self.logger.error(f"포지션 처리 중 오류: {e}")
-            self.daily_stats['errors'].append({
-                'time': datetime.now().isoformat(),
-                'error': str(e),
-                'position': self._generate_position_id(bitget_pos)
-            })
-
-    async def _mirror_position_tp_settings(self, bitget_pos: Dict, pos_id: str):
-        """🔥🔥🔥 포지션 진입 시 TP 설정 미러링"""
-        try:
-            self.logger.info(f"🔥🔥🔥 포지션 TP 설정 미러링 시작: {pos_id}")
-            
-            # 비트겟에서 해당 포지션의 TP 주문들 찾기
-            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-            tp_sl_orders = plan_data.get('tp_sl_orders', [])
-            
-            position_side = bitget_pos.get('holdSide', '').lower()
-            position_size = float(bitget_pos.get('total', 0))
-            entry_price = float(bitget_pos.get('openPriceAvg', 0))
-            
-            tp_orders_found = []
-            
-            # 해당 포지션의 TP 주문들 찾기
-            for tp_order in tp_sl_orders:
-                trade_side = tp_order.get('tradeSide', tp_order.get('side', '')).lower()
-                reduce_only = tp_order.get('reduceOnly', False)
-                
-                # TP 주문인지 확인 (close 방향이고 reduce_only인 경우)
-                is_tp_order = False
-                if position_side == 'long' and trade_side in ['close_long', 'sell'] and reduce_only:
-                    is_tp_order = True
-                elif position_side == 'short' and trade_side in ['close_short', 'buy'] and reduce_only:
-                    is_tp_order = True
-                
-                if is_tp_order:
-                    tp_orders_found.append(tp_order)
-            
-            if not tp_orders_found:
-                self.logger.info(f"📝 포지션 {pos_id}에 TP 설정이 없음")
-                return
-            
-            # 게이트에서 동일한 TP 설정 생성
-            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
-            gate_pos = None
-            for gpos in gate_positions:
-                if gpos.get('size', 0) != 0:
-                    gate_pos = gpos
-                    break
-            
-            if not gate_pos:
-                self.logger.warning(f"⚠️ 게이트에서 미러링된 포지션을 찾을 수 없음: {pos_id}")
-                return
-            
-            gate_size = int(gate_pos['size'])
-            mirrored_tp_count = 0
-            
-            for tp_order in tp_orders_found:
-                try:
-                    tp_order_id = tp_order.get('orderId', tp_order.get('planOrderId', ''))
-                    tp_trigger_price = 0
-                    
-                    # TP 트리거 가격 추출
-                    for price_field in ['triggerPrice', 'price', 'executePrice']:
-                        if tp_order.get(price_field):
-                            tp_trigger_price = float(tp_order.get(price_field))
-                            break
-                    
-                    if tp_trigger_price == 0:
-                        continue
-                    
-                    # 🔥🔥🔥 시세 차이 대응 - TP 가격도 조정
-                    adjusted_tp_price, price_adjusted = await self._adjust_trigger_price_for_gate(
-                        tp_trigger_price, trade_side
-                    )
-                    
-                    # TP 트리거 타입 결정
-                    gate_trigger_type = await self._determine_gate_trigger_type_improved(adjusted_tp_price)
-                    
-                    # TP 수량 계산 (포지션 크기에 비례)
-                    tp_size = tp_order.get('size', position_size)
-                    tp_ratio = float(tp_size) / position_size if position_size > 0 else 1.0
-                    gate_tp_size = int(abs(gate_size) * tp_ratio)
-                    
-                    # TP 방향 설정
-                    if gate_size > 0:  # 롱 포지션
-                        gate_tp_size = -gate_tp_size  # 매도
-                    else:  # 숏 포지션
-                        gate_tp_size = abs(gate_tp_size)  # 매수
-                    
-                    # 게이트에 TP 주문 생성
-                    gate_tp_order = await self.gate.create_price_triggered_order(
-                        trigger_type=gate_trigger_type,
-                        trigger_price=str(adjusted_tp_price),
-                        order_type="market",
-                        contract=self.GATE_CONTRACT,
-                        size=gate_tp_size
-                    )
-                    
-                    # TP 미러링 기록
-                    self.mirrored_tp_orders[tp_order_id] = gate_tp_order.get('id')
-                    
-                    if pos_id not in self.position_tp_tracking:
-                        self.position_tp_tracking[pos_id] = []
-                    self.position_tp_tracking[pos_id].append(gate_tp_order.get('id'))
-                    
-                    mirrored_tp_count += 1
-                    self.daily_stats['tp_mirrors'] += 1
-                    self.daily_stats['tp_mirror_success'] += 1
-                    
-                    # 가격 조정 로깅
-                    price_adj_text = ""
-                    if price_adjusted:
-                        price_adj_text = f"\n🔥 시세 차이로 가격 조정: ${tp_trigger_price:,.2f} → ${adjusted_tp_price:,.2f}"
-                        self.daily_stats['price_adjustments'] += 1
-                    
-                    self.logger.info(f"✅ TP 미러링 성공: 비트겟 {tp_order_id} → 게이트 {gate_tp_order.get('id')}")
-                    
-                except Exception as e:
-                    self.logger.error(f"❌ TP 주문 미러링 실패: {tp_order.get('orderId', 'unknown')} - {e}")
-                    self.daily_stats['tp_mirror_failed'] += 1
-                    continue
-            
-            if mirrored_tp_count > 0:
-                await self.telegram.send_message(
-                    f"🎯✅ TP 설정 미러링 완료\n"
-                    f"포지션: {position_side.upper()}\n"
-                    f"미러링된 TP: {mirrored_tp_count}개\n"
-                    f"게이트 포지션 크기: {gate_size}\n"
-                    f"진입가: ${entry_price:,.2f}"
-                )
-            
-        except Exception as e:
-            self.logger.error(f"TP 설정 미러링 실패: {e}")
-
-    async def monitor_tp_orders(self):
-        """🔥🔥🔥 TP 주문 모니터링 - 취소/수정 감지"""
-        consecutive_errors = 0
-        
-        while self.monitoring:
-            try:
-                # 비트겟의 현재 TP/SL 주문들 조회
-                plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-                current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
-                
-                current_tp_order_ids = set()
-                for order in current_tp_sl_orders:
-                    order_id = order.get('orderId', order.get('planOrderId', ''))
-                    if order_id:
-                        current_tp_order_ids.add(order_id)
-                
-                # 취소된 TP 주문 감지
-                canceled_tp_ids = set(self.mirrored_tp_orders.keys()) - current_tp_order_ids
-                
-                for canceled_tp_id in canceled_tp_ids:
-                    await self._handle_tp_order_cancel(canceled_tp_id)
-                
-                consecutive_errors = 0
-                await asyncio.sleep(self.ORDER_CHECK_INTERVAL)
-                
-            except Exception as e:
-                consecutive_errors += 1
-                self.logger.error(f"TP 주문 모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
-                
-                if consecutive_errors >= 5:
-                    await self.telegram.send_message(
-                        f"⚠️ TP 주문 모니터링 시스템 오류\n"
-                        f"연속 {consecutive_errors}회 실패"
-                    )
-                
-                await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
-
-    async def _handle_tp_order_cancel(self, bitget_tp_id: str):
-        """🔥🔥🔥 TP 주문 취소 처리"""
-        try:
-            self.logger.info(f"🔥🔥🔥 TP 주문 취소 처리 시작: {bitget_tp_id}")
-            
-            if bitget_tp_id not in self.mirrored_tp_orders:
-                return
-            
-            gate_tp_id = self.mirrored_tp_orders[bitget_tp_id]
-            
-            try:
-                # 게이트에서 TP 주문 취소
-                await self.gate.cancel_price_triggered_order(gate_tp_id)
-                
-                await self.telegram.send_message(
-                    f"🎯🚫 TP 주문 취소 동기화 완료\n"
-                    f"비트겟 TP ID: {bitget_tp_id}\n"
-                    f"게이트 TP ID: {gate_tp_id}"
-                )
-                
-                self.logger.info(f"✅ TP 주문 취소 성공: {gate_tp_id}")
-                
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "not found" in error_msg or "order not exist" in error_msg:
-                    self.logger.info(f"✅ TP 주문이 이미 취소/체결됨: {gate_tp_id}")
-                else:
-                    self.logger.error(f"❌ TP 주문 취소 실패: {gate_tp_id} - {e}")
-            
-            # 추적에서 제거
-            del self.mirrored_tp_orders[bitget_tp_id]
-            
-            # 포지션 TP 추적에서도 제거
-            for pos_id, tp_list in self.position_tp_tracking.items():
-                if gate_tp_id in tp_list:
-                    tp_list.remove(gate_tp_id)
-                    break
-            
-        except Exception as e:
-            self.logger.error(f"TP 주문 취소 처리 중 오류: {e}")
-
-    async def _mirror_new_position(self, bitget_pos: Dict) -> MirrorResult:
-        """새로운 포지션 미러링"""
-        retry_count = 0
-        
-        while retry_count < self.MAX_RETRIES:
-            try:
-                margin_ratio = await self._calculate_margin_ratio(bitget_pos)
-                
-                if margin_ratio is None:
-                    return MirrorResult(
-                        success=False,
-                        action="new_position",
-                        bitget_data=bitget_pos,
-                        error="마진 비율 계산 실패"
-                    )
-                
-                gate_account = await self.gate.get_account_balance()
-                gate_available = float(gate_account.get('available', 0))
-                gate_margin = gate_available * margin_ratio
-                
-                if gate_margin < self.MIN_MARGIN:
-                    return MirrorResult(
-                        success=False,
-                        action="new_position",
-                        bitget_data=bitget_pos,
-                        error=f"게이트 마진 부족: ${gate_margin:.2f}"
-                    )
-                
-                leverage = int(float(bitget_pos.get('leverage', 1)))
-                
-                # 게이트 레버리지 설정
-                try:
-                    await self.gate.set_leverage(self.GATE_CONTRACT, leverage)
-                    await asyncio.sleep(0.5)
-                except Exception as e:
-                    self.logger.error(f"❌ 게이트 레버리지 설정 실패: {e}")
-                
-                side = bitget_pos.get('holdSide', '').lower()
-                current_price = float(bitget_pos.get('markPrice', bitget_pos.get('openPriceAvg', 0)))
-                
-                contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
-                quanto_multiplier = float(contract_info.get('quanto_multiplier', 0.0001))
-                
-                notional_value = gate_margin * leverage
-                gate_size = int(notional_value / (current_price * quanto_multiplier))
-                
-                if gate_size == 0:
-                    gate_size = 1
-                
-                if side == 'short':
-                    gate_size = -gate_size
-                
-                # 진입 주문
-                order_result = await self.gate.place_order(
-                    contract=self.GATE_CONTRACT,
-                    size=gate_size,
-                    price=None,
-                    reduce_only=False
-                )
-                
-                await asyncio.sleep(1)
-                tp_sl_result = await self._set_gate_tp_sl(bitget_pos, gate_size)
-                
-                self.daily_stats['total_volume'] += abs(notional_value)
-                
-                return MirrorResult(
-                    success=True,
-                    action="new_position",
-                    bitget_data=bitget_pos,
-                    gate_data={
-                        'order': order_result,
-                        'size': gate_size,
-                        'margin': gate_margin,
-                        'leverage': leverage,
-                        'tp_sl': tp_sl_result
-                    }
-                )
-                
-            except Exception as e:
-                retry_count += 1
-                error_msg = str(e)
-                
-                if retry_count < self.MAX_RETRIES:
-                    wait_time = 2 ** retry_count
-                    await asyncio.sleep(wait_time)
-                else:
-                    return MirrorResult(
-                        success=False,
-                        action="new_position",
-                        bitget_data=bitget_pos,
-                        error=f"최대 재시도 횟수 초과: {error_msg}"
-                    )
-
-    async def _calculate_margin_ratio(self, bitget_pos: Dict) -> Optional[float]:
-        """비트겟 포지션의 마진 비율 계산"""
-        try:
-            bitget_account = await self.bitget.get_account_info()
-            total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
-            position_margin = float(bitget_pos.get('marginSize', bitget_pos.get('margin', 0)))
-            
-            if total_equity <= 0 or position_margin <= 0:
-                return None
-            
-            margin_ratio = position_margin / total_equity
-            
-            return margin_ratio
-            
-        except Exception as e:
-            self.logger.error(f"마진 비율 계산 실패: {e}")
-            return None
-
-    async def _set_gate_tp_sl(self, bitget_pos: Dict, gate_size: int) -> Dict:
-        """게이트에 TP/SL 설정 - 간소화"""
-        try:
-            # 기본 TP/SL만 설정
-            entry_price = float(bitget_pos.get('openPriceAvg', 0))
-            side = bitget_pos.get('holdSide', '').lower()
-            
-            tp_orders = []
-            sl_orders = []
-            
-            if side == 'long':
-                tp_price = entry_price * 1.02  # 2% TP
-                sl_price = entry_price * 0.98  # 2% SL
-                
-                if abs(gate_size) > 0:
-                    tp_order = await self.gate.create_price_triggered_order(
-                        trigger_type="ge",
-                        trigger_price=str(tp_price),
-                        order_type="market",
-                        contract=self.GATE_CONTRACT,
-                        size=-abs(gate_size)
-                    )
-                    tp_orders.append(tp_order)
-                    
-                    sl_order = await self.gate.create_price_triggered_order(
-                        trigger_type="le",
-                        trigger_price=str(sl_price),
-                        order_type="market",
-                        contract=self.GATE_CONTRACT,
-                        size=-abs(gate_size)
-                    )
-                    sl_orders.append(sl_order)
-            else:
-                tp_price = entry_price * 0.98  # 2% TP
-                sl_price = entry_price * 1.02  # 2% SL
-                
-                if abs(gate_size) > 0:
-                    tp_order = await self.gate.create_price_triggered_order(
-                        trigger_type="le",
-                        trigger_price=str(tp_price),
-                        order_type="market",
-                        contract=self.GATE_CONTRACT,
-                        size=abs(gate_size)
-                    )
-                    tp_orders.append(tp_order)
-                    
-                    sl_order = await self.gate.create_price_triggered_order(
-                        trigger_type="ge",
-                        trigger_price=str(sl_price),
-                        order_type="market",
-                        contract=self.GATE_CONTRACT,
-                        size=abs(gate_size)
-                    )
-                    sl_orders.append(sl_order)
-            
-            return {
-                'tp_orders': tp_orders,
-                'sl_orders': sl_orders
-            }
-            
-        except Exception as e:
-            self.logger.error(f"TP/SL 설정 실패: {e}")
-            return {'tp_orders': [], 'sl_orders': []}
-
-    async def _handle_partial_close(self, pos_id: str, bitget_pos: Dict, reduction_ratio: float):
-        """부분 청산 처리"""
-        try:
-            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
-            
-            if not gate_positions or gate_positions[0].get('size', 0) == 0:
-                return
-            
-            gate_pos = gate_positions[0]
-            current_gate_size = int(gate_pos['size'])
-            close_size = int(abs(current_gate_size) * reduction_ratio)
-            
-            if close_size == 0:
-                return
-            
-            if current_gate_size > 0:
-                close_size = -close_size
-            else:
-                close_size = close_size
-            
-            result = await self.gate.place_order(
-                contract=self.GATE_CONTRACT,
-                size=close_size,
-                price=None,
-                reduce_only=True
-            )
-            
-            await self.telegram.send_message(
-                f"📉 부분 청산 완료\n"
-                f"비율: {reduction_ratio*100:.1f}%\n"
-                f"수량: {abs(close_size)} 계약"
-            )
-            
-        except Exception as e:
-            self.logger.error(f"부분 청산 처리 실패: {e}")
-
-    async def _handle_position_close(self, pos_id: str):
-        """포지션 종료 처리"""
-        try:
-            result = await self.gate.close_position(self.GATE_CONTRACT)
-            
-            # TP/SL 주문 취소
-            if pos_id in self.tp_sl_orders:
-                orders = self.tp_sl_orders[pos_id]
-                
-                for order_id in orders.get('tp', []):
-                    try:
-                        await self.gate.cancel_price_triggered_order(order_id)
-                    except:
-                        pass
-                
-                for order_id in orders.get('sl', []):
-                    try:
-                        await self.gate.cancel_price_triggered_order(order_id)
-                    except:
-                        pass
-                
-                del self.tp_sl_orders[pos_id]
-            
-            # 🔥🔥🔥 포지션별 TP 주문도 취소
-            if pos_id in self.position_tp_tracking:
-                for tp_order_id in self.position_tp_tracking[pos_id]:
-                    try:
-                        await self.gate.cancel_price_triggered_order(tp_order_id)
-                    except:
-                        pass
-                del self.position_tp_tracking[pos_id]
-            
-            # 상태 정리
-            if pos_id in self.mirrored_positions:
-                del self.mirrored_positions[pos_id]
-            if pos_id in self.position_sizes:
-                del self.position_sizes[pos_id]
-            
-            self.daily_stats['full_closes'] += 1
-            
-            await self.telegram.send_message(
-                f"✅ 포지션 종료 완료\n"
-                f"포지션 ID: {pos_id}"
-            )
-            
-        except Exception as e:
-            self.logger.error(f"포지션 종료 처리 실패: {e}")
-
-    async def monitor_sync_status(self):
-        """🔥🔥🔥 포지션 동기화 상태 모니터링 - 수정된 카운팅 로직"""
-        sync_retry_count = 0
-        
-        while self.monitoring:
-            try:
-                await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
-                
-                # 🔥🔥🔥 경고 억제 시간 체크
-                now = datetime.now()
-                if now < self.sync_warning_suppressed_until:
-                    self.logger.debug("🔕 동기화 경고 억제 중")
-                    continue
-                
-                bitget_positions = await self.bitget.get_positions(self.SYMBOL)
                 bitget_active = [
                     pos for pos in bitget_positions 
                     if float(pos.get('total', 0)) > 0
@@ -1839,7 +1274,6 @@ class MirrorTradingSystem:
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 처리 실패: {e}")
-            return {'result': 'failed', 'price_adjusted': False, 'tp_created': False}
 
     async def _adjust_trigger_price_for_gate(self, bitget_trigger_price: float, side: str) -> Tuple[float, bool]:
         """🔥🔥🔥 게이트 기준으로 트리거 가격 조정"""
@@ -2649,8 +2083,7 @@ class MirrorTradingSystem:
             )
             
         except Exception as e:
-            self.logger.error(f"예약 주문 TP 제거 처리 실패: {e}")약 주문 복제 실패: {e}")
-            self.startup_plan_orders_processed = True
+            self.logger.error(f"예약 주문 TP 제거 처리 실패: {e}")
 
     async def _check_if_already_mirrored(self, bitget_order: Dict) -> str:
         """🔥 예약 주문이 이미 복제되었는지 확인"""
@@ -2884,4 +2317,570 @@ class MirrorTradingSystem:
             return {'result': 'success', 'price_adjusted': price_adjusted, 'tp_created': tp_created}
             
         except Exception as e:
-            self.logger.error(f"시작 시 예
+            self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
+            return {'result': 'failed', 'price_adjusted': False, 'tp_created': False}
+                
+                active_position_ids = set()
+                
+                for pos in bitget_positions:
+                    if float(pos.get('total', 0)) > 0:
+                        pos_id = self._generate_position_id(pos)
+                        active_position_ids.add(pos_id)
+                        await self._process_position(pos)
+                
+                # 종료된 포지션 처리
+                closed_positions = set(self.mirrored_positions.keys()) - active_position_ids
+                for pos_id in closed_positions:
+                    if pos_id not in self.startup_positions:
+                        await self._handle_position_close(pos_id)
+                
+                consecutive_errors = 0
+                await asyncio.sleep(self.CHECK_INTERVAL)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                self.logger.error(f"포지션 모니터링 중 오류: {e}")
+                
+                if consecutive_errors >= 5:
+                    await self.telegram.send_message(
+                        f"⚠️ 포지션 모니터링 오류\n"
+                        f"연속 {consecutive_errors}회 실패"
+                    )
+                
+                await asyncio.sleep(self.CHECK_INTERVAL * 2)
+
+    async def _process_position(self, bitget_pos: Dict):
+        """포지션 처리"""
+        try:
+            pos_id = self._generate_position_id(bitget_pos)
+            
+            if pos_id in self.startup_positions:
+                return
+            
+            current_size = float(bitget_pos.get('total', 0))
+            
+            if pos_id not in self.mirrored_positions:
+                await asyncio.sleep(2)
+                
+                if pos_id not in self.mirrored_positions:
+                    result = await self._mirror_new_position(bitget_pos)
+                    
+                    if result.success:
+                        self.mirrored_positions[pos_id] = await self._create_position_info(bitget_pos)
+                        self.position_sizes[pos_id] = current_size
+                        self.daily_stats['successful_mirrors'] += 1
+                        self.daily_stats['position_mirrors'] += 1
+                        
+                        leverage = bitget_pos.get('leverage', 'N/A')
+                        await self.telegram.send_message(
+                            f"✅ 포지션 기반 미러링 성공\n"
+                            f"방향: {bitget_pos.get('holdSide', '')}\n"
+                            f"진입가: ${float(bitget_pos.get('openPriceAvg', 0)):,.2f}\n"
+                            f"🔧 레버리지: {leverage}x"
+                        )
+                        
+                        # 🔥🔥🔥 TP 설정 미러링 - 포지션 진입 시 TP 자동 감지 및 설정
+                        await self._mirror_position_tp_settings(bitget_pos, pos_id)
+                        
+                    else:
+                        self.failed_mirrors.append(result)
+                        self.daily_stats['failed_mirrors'] += 1
+                    
+                    self.daily_stats['total_mirrored'] += 1
+            else:
+                last_size = self.position_sizes.get(pos_id, 0)
+                
+                # 부분 청산 감지
+                if current_size < last_size * 0.95:
+                    reduction_ratio = 1 - (current_size / last_size)
+                    await self._handle_partial_close(pos_id, bitget_pos, reduction_ratio)
+                    self.position_sizes[pos_id] = current_size
+                    self.daily_stats['partial_closes'] += 1
+                
+        except Exception as e:
+            self.logger.error(f"포지션 처리 중 오류: {e}")
+            self.daily_stats['errors'].append({
+                'time': datetime.now().isoformat(),
+                'error': str(e),
+                'position': self._generate_position_id(bitget_pos)
+            })
+
+    async def _mirror_position_tp_settings(self, bitget_pos: Dict, pos_id: str):
+        """🔥🔥🔥 포지션 진입 시 TP 설정 미러링"""
+        try:
+            self.logger.info(f"🔥🔥🔥 포지션 TP 설정 미러링 시작: {pos_id}")
+            
+            # 비트겟에서 해당 포지션의 TP 주문들 찾기
+            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            tp_sl_orders = plan_data.get('tp_sl_orders', [])
+            
+            position_side = bitget_pos.get('holdSide', '').lower()
+            position_size = float(bitget_pos.get('total', 0))
+            entry_price = float(bitget_pos.get('openPriceAvg', 0))
+            
+            tp_orders_found = []
+            
+            # 해당 포지션의 TP 주문들 찾기
+            for tp_order in tp_sl_orders:
+                trade_side = tp_order.get('tradeSide', tp_order.get('side', '')).lower()
+                reduce_only = tp_order.get('reduceOnly', False)
+                
+                # TP 주문인지 확인 (close 방향이고 reduce_only인 경우)
+                is_tp_order = False
+                if position_side == 'long' and trade_side in ['close_long', 'sell'] and reduce_only:
+                    is_tp_order = True
+                elif position_side == 'short' and trade_side in ['close_short', 'buy'] and reduce_only:
+                    is_tp_order = True
+                
+                if is_tp_order:
+                    tp_orders_found.append(tp_order)
+            
+            if not tp_orders_found:
+                self.logger.info(f"📝 포지션 {pos_id}에 TP 설정이 없음")
+                return
+            
+            # 게이트에서 동일한 TP 설정 생성
+            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+            gate_pos = None
+            for gpos in gate_positions:
+                if gpos.get('size', 0) != 0:
+                    gate_pos = gpos
+                    break
+            
+            if not gate_pos:
+                self.logger.warning(f"⚠️ 게이트에서 미러링된 포지션을 찾을 수 없음: {pos_id}")
+                return
+            
+            gate_size = int(gate_pos['size'])
+            mirrored_tp_count = 0
+            
+            for tp_order in tp_orders_found:
+                try:
+                    tp_order_id = tp_order.get('orderId', tp_order.get('planOrderId', ''))
+                    tp_trigger_price = 0
+                    
+                    # TP 트리거 가격 추출
+                    for price_field in ['triggerPrice', 'price', 'executePrice']:
+                        if tp_order.get(price_field):
+                            tp_trigger_price = float(tp_order.get(price_field))
+                            break
+                    
+                    if tp_trigger_price == 0:
+                        continue
+                    
+                    # 🔥🔥🔥 시세 차이 대응 - TP 가격도 조정
+                    adjusted_tp_price, price_adjusted = await self._adjust_trigger_price_for_gate(
+                        tp_trigger_price, trade_side
+                    )
+                    
+                    # TP 트리거 타입 결정
+                    gate_trigger_type = await self._determine_gate_trigger_type_improved(adjusted_tp_price)
+                    
+                    # TP 수량 계산 (포지션 크기에 비례)
+                    tp_size = tp_order.get('size', position_size)
+                    tp_ratio = float(tp_size) / position_size if position_size > 0 else 1.0
+                    gate_tp_size = int(abs(gate_size) * tp_ratio)
+                    
+                    # TP 방향 설정
+                    if gate_size > 0:  # 롱 포지션
+                        gate_tp_size = -gate_tp_size  # 매도
+                    else:  # 숏 포지션
+                        gate_tp_size = abs(gate_tp_size)  # 매수
+                    
+                    # 게이트에 TP 주문 생성
+                    gate_tp_order = await self.gate.create_price_triggered_order(
+                        trigger_type=gate_trigger_type,
+                        trigger_price=str(adjusted_tp_price),
+                        order_type="market",
+                        contract=self.GATE_CONTRACT,
+                        size=gate_tp_size
+                    )
+                    
+                    # TP 미러링 기록
+                    self.mirrored_tp_orders[tp_order_id] = gate_tp_order.get('id')
+                    
+                    if pos_id not in self.position_tp_tracking:
+                        self.position_tp_tracking[pos_id] = []
+                    self.position_tp_tracking[pos_id].append(gate_tp_order.get('id'))
+                    
+                    mirrored_tp_count += 1
+                    self.daily_stats['tp_mirrors'] += 1
+                    self.daily_stats['tp_mirror_success'] += 1
+                    
+                    # 가격 조정 로깅
+                    price_adj_text = ""
+                    if price_adjusted:
+                        price_adj_text = f"\n🔥 시세 차이로 가격 조정: ${tp_trigger_price:,.2f} → ${adjusted_tp_price:,.2f}"
+                        self.daily_stats['price_adjustments'] += 1
+                    
+                    self.logger.info(f"✅ TP 미러링 성공: 비트겟 {tp_order_id} → 게이트 {gate_tp_order.get('id')}")
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ TP 주문 미러링 실패: {tp_order.get('orderId', 'unknown')} - {e}")
+                    self.daily_stats['tp_mirror_failed'] += 1
+                    continue
+            
+            if mirrored_tp_count > 0:
+                await self.telegram.send_message(
+                    f"🎯✅ TP 설정 미러링 완료\n"
+                    f"포지션: {position_side.upper()}\n"
+                    f"미러링된 TP: {mirrored_tp_count}개\n"
+                    f"게이트 포지션 크기: {gate_size}\n"
+                    f"진입가: ${entry_price:,.2f}"
+                )
+            
+        except Exception as e:
+            self.logger.error(f"TP 설정 미러링 실패: {e}")
+
+    async def monitor_tp_orders(self):
+        """🔥🔥🔥 TP 주문 모니터링 - 취소/수정 감지"""
+        consecutive_errors = 0
+        
+        while self.monitoring:
+            try:
+                # 비트겟의 현재 TP/SL 주문들 조회
+                plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+                current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
+                
+                current_tp_order_ids = set()
+                for order in current_tp_sl_orders:
+                    order_id = order.get('orderId', order.get('planOrderId', ''))
+                    if order_id:
+                        current_tp_order_ids.add(order_id)
+                
+                # 취소된 TP 주문 감지
+                canceled_tp_ids = set(self.mirrored_tp_orders.keys()) - current_tp_order_ids
+                
+                for canceled_tp_id in canceled_tp_ids:
+                    await self._handle_tp_order_cancel(canceled_tp_id)
+                
+                consecutive_errors = 0
+                await asyncio.sleep(self.ORDER_CHECK_INTERVAL)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                self.logger.error(f"TP 주문 모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
+                
+                if consecutive_errors >= 5:
+                    await self.telegram.send_message(
+                        f"⚠️ TP 주문 모니터링 시스템 오류\n"
+                        f"연속 {consecutive_errors}회 실패"
+                    )
+                
+                await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
+
+    async def _handle_tp_order_cancel(self, bitget_tp_id: str):
+        """🔥🔥🔥 TP 주문 취소 처리"""
+        try:
+            self.logger.info(f"🔥🔥🔥 TP 주문 취소 처리 시작: {bitget_tp_id}")
+            
+            if bitget_tp_id not in self.mirrored_tp_orders:
+                return
+            
+            gate_tp_id = self.mirrored_tp_orders[bitget_tp_id]
+            
+            try:
+                # 게이트에서 TP 주문 취소
+                await self.gate.cancel_price_triggered_order(gate_tp_id)
+                
+                await self.telegram.send_message(
+                    f"🎯🚫 TP 주문 취소 동기화 완료\n"
+                    f"비트겟 TP ID: {bitget_tp_id}\n"
+                    f"게이트 TP ID: {gate_tp_id}"
+                )
+                
+                self.logger.info(f"✅ TP 주문 취소 성공: {gate_tp_id}")
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "not found" in error_msg or "order not exist" in error_msg:
+                    self.logger.info(f"✅ TP 주문이 이미 취소/체결됨: {gate_tp_id}")
+                else:
+                    self.logger.error(f"❌ TP 주문 취소 실패: {gate_tp_id} - {e}")
+            
+            # 추적에서 제거
+            del self.mirrored_tp_orders[bitget_tp_id]
+            
+            # 포지션 TP 추적에서도 제거
+            for pos_id, tp_list in self.position_tp_tracking.items():
+                if gate_tp_id in tp_list:
+                    tp_list.remove(gate_tp_id)
+                    break
+            
+        except Exception as e:
+            self.logger.error(f"TP 주문 취소 처리 중 오류: {e}")
+
+    async def _mirror_new_position(self, bitget_pos: Dict) -> MirrorResult:
+        """새로운 포지션 미러링"""
+        retry_count = 0
+        
+        while retry_count < self.MAX_RETRIES:
+            try:
+                margin_ratio = await self._calculate_margin_ratio(bitget_pos)
+                
+                if margin_ratio is None:
+                    return MirrorResult(
+                        success=False,
+                        action="new_position",
+                        bitget_data=bitget_pos,
+                        error="마진 비율 계산 실패"
+                    )
+                
+                gate_account = await self.gate.get_account_balance()
+                gate_available = float(gate_account.get('available', 0))
+                gate_margin = gate_available * margin_ratio
+                
+                if gate_margin < self.MIN_MARGIN:
+                    return MirrorResult(
+                        success=False,
+                        action="new_position",
+                        bitget_data=bitget_pos,
+                        error=f"게이트 마진 부족: ${gate_margin:.2f}"
+                    )
+                
+                leverage = int(float(bitget_pos.get('leverage', 1)))
+                
+                # 게이트 레버리지 설정
+                try:
+                    await self.gate.set_leverage(self.GATE_CONTRACT, leverage)
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    self.logger.error(f"❌ 게이트 레버리지 설정 실패: {e}")
+                
+                side = bitget_pos.get('holdSide', '').lower()
+                current_price = float(bitget_pos.get('markPrice', bitget_pos.get('openPriceAvg', 0)))
+                
+                contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
+                quanto_multiplier = float(contract_info.get('quanto_multiplier', 0.0001))
+                
+                notional_value = gate_margin * leverage
+                gate_size = int(notional_value / (current_price * quanto_multiplier))
+                
+                if gate_size == 0:
+                    gate_size = 1
+                
+                if side == 'short':
+                    gate_size = -gate_size
+                
+                # 진입 주문
+                order_result = await self.gate.place_order(
+                    contract=self.GATE_CONTRACT,
+                    size=gate_size,
+                    price=None,
+                    reduce_only=False
+                )
+                
+                await asyncio.sleep(1)
+                tp_sl_result = await self._set_gate_tp_sl(bitget_pos, gate_size)
+                
+                self.daily_stats['total_volume'] += abs(notional_value)
+                
+                return MirrorResult(
+                    success=True,
+                    action="new_position",
+                    bitget_data=bitget_pos,
+                    gate_data={
+                        'order': order_result,
+                        'size': gate_size,
+                        'margin': gate_margin,
+                        'leverage': leverage,
+                        'tp_sl': tp_sl_result
+                    }
+                )
+                
+            except Exception as e:
+                retry_count += 1
+                error_msg = str(e)
+                
+                if retry_count < self.MAX_RETRIES:
+                    wait_time = 2 ** retry_count
+                    await asyncio.sleep(wait_time)
+                else:
+                    return MirrorResult(
+                        success=False,
+                        action="new_position",
+                        bitget_data=bitget_pos,
+                        error=f"최대 재시도 횟수 초과: {error_msg}"
+                    )
+
+    async def _calculate_margin_ratio(self, bitget_pos: Dict) -> Optional[float]:
+        """비트겟 포지션의 마진 비율 계산"""
+        try:
+            bitget_account = await self.bitget.get_account_info()
+            total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
+            position_margin = float(bitget_pos.get('marginSize', bitget_pos.get('margin', 0)))
+            
+            if total_equity <= 0 or position_margin <= 0:
+                return None
+            
+            margin_ratio = position_margin / total_equity
+            
+            return margin_ratio
+            
+        except Exception as e:
+            self.logger.error(f"마진 비율 계산 실패: {e}")
+            return None
+
+    async def _set_gate_tp_sl(self, bitget_pos: Dict, gate_size: int) -> Dict:
+        """게이트에 TP/SL 설정 - 간소화"""
+        try:
+            # 기본 TP/SL만 설정
+            entry_price = float(bitget_pos.get('openPriceAvg', 0))
+            side = bitget_pos.get('holdSide', '').lower()
+            
+            tp_orders = []
+            sl_orders = []
+            
+            if side == 'long':
+                tp_price = entry_price * 1.02  # 2% TP
+                sl_price = entry_price * 0.98  # 2% SL
+                
+                if abs(gate_size) > 0:
+                    tp_order = await self.gate.create_price_triggered_order(
+                        trigger_type="ge",
+                        trigger_price=str(tp_price),
+                        order_type="market",
+                        contract=self.GATE_CONTRACT,
+                        size=-abs(gate_size)
+                    )
+                    tp_orders.append(tp_order)
+                    
+                    sl_order = await self.gate.create_price_triggered_order(
+                        trigger_type="le",
+                        trigger_price=str(sl_price),
+                        order_type="market",
+                        contract=self.GATE_CONTRACT,
+                        size=-abs(gate_size)
+                    )
+                    sl_orders.append(sl_order)
+            else:
+                tp_price = entry_price * 0.98  # 2% TP
+                sl_price = entry_price * 1.02  # 2% SL
+                
+                if abs(gate_size) > 0:
+                    tp_order = await self.gate.create_price_triggered_order(
+                        trigger_type="le",
+                        trigger_price=str(tp_price),
+                        order_type="market",
+                        contract=self.GATE_CONTRACT,
+                        size=abs(gate_size)
+                    )
+                    tp_orders.append(tp_order)
+                    
+                    sl_order = await self.gate.create_price_triggered_order(
+                        trigger_type="ge",
+                        trigger_price=str(sl_price),
+                        order_type="market",
+                        contract=self.GATE_CONTRACT,
+                        size=abs(gate_size)
+                    )
+                    sl_orders.append(sl_order)
+            
+            return {
+                'tp_orders': tp_orders,
+                'sl_orders': sl_orders
+            }
+            
+        except Exception as e:
+            self.logger.error(f"TP/SL 설정 실패: {e}")
+            return {'tp_orders': [], 'sl_orders': []}
+
+    async def _handle_partial_close(self, pos_id: str, bitget_pos: Dict, reduction_ratio: float):
+        """부분 청산 처리"""
+        try:
+            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+            
+            if not gate_positions or gate_positions[0].get('size', 0) == 0:
+                return
+            
+            gate_pos = gate_positions[0]
+            current_gate_size = int(gate_pos['size'])
+            close_size = int(abs(current_gate_size) * reduction_ratio)
+            
+            if close_size == 0:
+                return
+            
+            if current_gate_size > 0:
+                close_size = -close_size
+            else:
+                close_size = close_size
+            
+            result = await self.gate.place_order(
+                contract=self.GATE_CONTRACT,
+                size=close_size,
+                price=None,
+                reduce_only=True
+            )
+            
+            await self.telegram.send_message(
+                f"📉 부분 청산 완료\n"
+                f"비율: {reduction_ratio*100:.1f}%\n"
+                f"수량: {abs(close_size)} 계약"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"부분 청산 처리 실패: {e}")
+
+    async def _handle_position_close(self, pos_id: str):
+        """포지션 종료 처리"""
+        try:
+            result = await self.gate.close_position(self.GATE_CONTRACT)
+            
+            # TP/SL 주문 취소
+            if pos_id in self.tp_sl_orders:
+                orders = self.tp_sl_orders[pos_id]
+                
+                for order_id in orders.get('tp', []):
+                    try:
+                        await self.gate.cancel_price_triggered_order(order_id)
+                    except:
+                        pass
+                
+                for order_id in orders.get('sl', []):
+                    try:
+                        await self.gate.cancel_price_triggered_order(order_id)
+                    except:
+                        pass
+                
+                del self.tp_sl_orders[pos_id]
+            
+            # 🔥🔥🔥 포지션별 TP 주문도 취소
+            if pos_id in self.position_tp_tracking:
+                for tp_order_id in self.position_tp_tracking[pos_id]:
+                    try:
+                        await self.gate.cancel_price_triggered_order(tp_order_id)
+                    except:
+                        pass
+                del self.position_tp_tracking[pos_id]
+            
+            # 상태 정리
+            if pos_id in self.mirrored_positions:
+                del self.mirrored_positions[pos_id]
+            if pos_id in self.position_sizes:
+                del self.position_sizes[pos_id]
+            
+            self.daily_stats['full_closes'] += 1
+            
+            await self.telegram.send_message(
+                f"✅ 포지션 종료 완료\n"
+                f"포지션 ID: {pos_id}"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"포지션 종료 처리 실패: {e}")
+
+    async def monitor_sync_status(self):
+        """🔥🔥🔥 포지션 동기화 상태 모니터링 - 수정된 카운팅 로직"""
+        sync_retry_count = 0
+        
+        while self.monitoring:
+            try:
+                await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
+                
+                # 🔥🔥🔥 경고 억제 시간 체크
+                now = datetime.now()
+                if now < self.sync_warning_suppressed_until:
+                    self.logger.debug("🔕 동기화 경고 억제 중")
+                    continue
+                
+                bitget_positions = await self.bitget.get_positions(self.SYMBOL)
