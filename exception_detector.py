@@ -8,7 +8,7 @@ import re
 logger = logging.getLogger(__name__)
 
 class ExceptionDetector:
-    """예외 상황 감지 및 알림 - 정확성 향상 + 실제 시장 반응 체크"""
+    """예외 상황 감지 및 알림 - 정확성 향상 + 실제 시장 반응 체크 + 가격 데이터 검증 강화"""
     
     def __init__(self, bitget_client=None, telegram_bot=None):
         self.bitget_client = bitget_client
@@ -36,9 +36,12 @@ class ExceptionDetector:
         self.exception_content_cache = {}
         self.cache_expiry = timedelta(hours=6)
         
-        # 가격 이력
+        # 🔥🔥 가격 이력 및 검증 강화
         self.price_history = []
         self.max_price_history = 20
+        self.last_valid_price = None  # 마지막 유효한 가격 저장
+        self.price_validation_threshold = 1000  # 최소 유효 가격 ($1000)
+        self.max_price_change_ratio = 0.5  # 최대 50% 가격 변동률 (오류 감지용)
         
         # 단기 변동성 체크
         self.short_term_threshold = 1.0  # 5분 내 1% 변동
@@ -50,7 +53,85 @@ class ExceptionDetector:
         # 뉴스 후 시장 반응 추적
         self.news_market_reactions = {}  # 뉴스별 실제 시장 반응 기록
         
-        self.logger.info(f"예외 감지기 초기화 완료 - 가격 {self.PRICE_CHANGE_THRESHOLD}%, 거래량 {self.VOLUME_SPIKE_THRESHOLD}배")
+        # 가격 데이터 오류 추적
+        self.price_error_count = 0
+        self.max_price_errors = 5  # 최대 연속 오류 허용
+        self.last_price_error_time = None
+        
+        self.logger.info(f"예외 감지기 초기화 완료 - 가격 {self.PRICE_CHANGE_THRESHOLD}%, 거래량 {self.VOLUME_SPIKE_THRESHOLD}배, 가격 검증 강화")
+    
+    def _validate_price_data(self, price_data: Dict) -> Optional[float]:
+        """🔥🔥 가격 데이터 검증 및 정제 - 오류 방지 강화"""
+        try:
+            if not price_data:
+                self.logger.debug("가격 데이터가 None 또는 빈 값")
+                return None
+            
+            # 'last' 필드에서 현재가 추출
+            current_price = None
+            if 'last' in price_data:
+                try:
+                    current_price = float(price_data['last'])
+                except (ValueError, TypeError):
+                    self.logger.warning(f"'last' 필드 변환 실패: {price_data.get('last')}")
+            
+            # 'close' 필드 백업
+            if current_price is None and 'close' in price_data:
+                try:
+                    current_price = float(price_data['close'])
+                except (ValueError, TypeError):
+                    self.logger.warning(f"'close' 필드 변환 실패: {price_data.get('close')}")
+            
+            # 'price' 필드 백업
+            if current_price is None and 'price' in price_data:
+                try:
+                    current_price = float(price_data['price'])
+                except (ValueError, TypeError):
+                    self.logger.warning(f"'price' 필드 변환 실패: {price_data.get('price')}")
+            
+            # 가격이 여전히 None이거나 0이면
+            if current_price is None or current_price <= 0:
+                self.price_error_count += 1
+                self.last_price_error_time = datetime.now()
+                
+                if self.price_error_count <= 3:  # 처음 몇 번만 로그
+                    self.logger.warning(f"유효하지 않은 가격 데이터: {current_price} (오류 {self.price_error_count}회)")
+                    self.logger.debug(f"원본 데이터: {price_data}")
+                
+                # 마지막 유효한 가격이 있으면 사용
+                if self.last_valid_price and self.last_valid_price > self.price_validation_threshold:
+                    self.logger.debug(f"마지막 유효 가격 사용: ${self.last_valid_price:,.0f}")
+                    return self.last_valid_price
+                
+                return None
+            
+            # 최소 가격 임계값 체크 (비트코인은 보통 $1000 이상)
+            if current_price < self.price_validation_threshold:
+                self.logger.warning(f"가격이 임계값보다 낮음: ${current_price:,.2f} < ${self.price_validation_threshold}")
+                return None
+            
+            # 최대 가격 체크 (비현실적인 가격 방지 - 예: $1,000,000 이상)
+            if current_price > 1_000_000:
+                self.logger.warning(f"가격이 비현실적으로 높음: ${current_price:,.2f}")
+                return None
+            
+            # 급격한 가격 변동 체크 (API 오류 방지)
+            if self.last_valid_price and self.last_valid_price > 0:
+                change_ratio = abs(current_price - self.last_valid_price) / self.last_valid_price
+                if change_ratio > self.max_price_change_ratio:
+                    self.logger.warning(f"급격한 가격 변동 감지: {change_ratio*100:.1f}% (${self.last_valid_price:,.0f} → ${current_price:,.0f})")
+                    # 너무 급격한 변동은 API 오류일 가능성이 높으므로 마지막 유효 가격 사용
+                    return self.last_valid_price
+            
+            # 모든 검증을 통과하면 유효한 가격으로 저장
+            self.last_valid_price = current_price
+            self.price_error_count = 0  # 오류 카운트 리셋
+            
+            return current_price
+            
+        except Exception as e:
+            self.logger.error(f"가격 데이터 검증 중 오류: {e}")
+            return self.last_valid_price  # 오류 시 마지막 유효 가격 반환
     
     async def check_news_market_reaction(self, news_hash: str, news_time: datetime, 
                                        initial_price: float, initial_volume: float) -> Dict:
@@ -136,7 +217,7 @@ class ExceptionDetector:
             return "반응 없음"
     
     async def _get_current_market_data(self) -> Optional[Dict]:
-        """현재 시장 데이터 조회"""
+        """현재 시장 데이터 조회 - 가격 검증 포함"""
         try:
             if not self.bitget_client:
                 return None
@@ -145,10 +226,18 @@ class ExceptionDetector:
             if not ticker:
                 return None
             
+            # 가격 데이터 검증
+            validated_price = self._validate_price_data(ticker)
+            if validated_price is None:
+                return None
+            
+            volume = float(ticker.get('baseVolume', 0))
+            change_24h = float(ticker.get('changeUtc', 0))
+            
             return {
-                'price': float(ticker.get('last', 0)),
-                'volume': float(ticker.get('baseVolume', 0)),
-                'change_24h': float(ticker.get('changeUtc', 0))
+                'price': validated_price,
+                'volume': volume,
+                'change_24h': change_24h
             }
             
         except Exception as e:
@@ -292,7 +381,7 @@ class ExceptionDetector:
         return anomalies
     
     async def check_short_term_volatility(self) -> Optional[Dict]:
-        """단기 변동성 감지 (5분, 15분 단위) - division by zero 오류 수정"""
+        """단기 변동성 감지 (5분, 15분 단위) - 가격 검증 강화"""
         try:
             if not self.bitget_client:
                 return None
@@ -301,13 +390,12 @@ class ExceptionDetector:
             if not ticker:
                 return None
             
-            current_price = float(ticker.get('last', 0))
-            current_time = datetime.now()
-            
-            # 가격이 0이거나 유효하지 않으면 스킵
-            if current_price <= 0:
-                self.logger.warning(f"유효하지 않은 가격 데이터: {current_price}")
+            # 🔥🔥 가격 데이터 검증
+            current_price = self._validate_price_data(ticker)
+            if current_price is None:
                 return None
+            
+            current_time = datetime.now()
             
             # 가격 이력에 추가
             self.price_history.append({
@@ -336,9 +424,9 @@ class ExceptionDetector:
                 min_price_5min = min(five_min_prices)
                 max_price_5min = max(five_min_prices)
                 
-                # division by zero 방지
+                # 🔥🔥 추가 검증 - 최소 가격이 0보다 커야 함
                 if min_price_5min <= 0:
-                    self.logger.warning(f"최소 가격이 0이하: {min_price_5min}")
+                    self.logger.warning(f"5분 이력에 유효하지 않은 가격: {min_price_5min}")
                     return None
                 
                 change_5min = ((max_price_5min - min_price_5min) / min_price_5min) * 100
@@ -366,7 +454,7 @@ class ExceptionDetector:
         return None
     
     async def check_price_volatility(self) -> Optional[Dict]:
-        """가격 급변동 감지"""
+        """가격 급변동 감지 - 가격 검증 포함"""
         try:
             if not self.bitget_client:
                 return None
@@ -375,7 +463,11 @@ class ExceptionDetector:
             if not ticker:
                 return None
             
-            current_price = float(ticker.get('last', 0))
+            # 🔥🔥 가격 데이터 검증
+            current_price = self._validate_price_data(ticker)
+            if current_price is None:
+                return None
+            
             change_24h = float(ticker.get('changeUtc', 0))
             
             # 24시간 변동률이 임계값 초과
@@ -408,6 +500,11 @@ class ExceptionDetector:
             
             ticker = await self.bitget_client.get_ticker('BTCUSDT')
             if not ticker:
+                return None
+            
+            # 가격 검증 (거래량 검증을 위해)
+            current_price = self._validate_price_data(ticker)
+            if current_price is None:
                 return None
             
             volume_24h = float(ticker.get('baseVolume', 0))
