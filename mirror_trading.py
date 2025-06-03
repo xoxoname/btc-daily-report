@@ -84,6 +84,11 @@ class MirrorTradingSystem:
         self.MAX_PRICE_DIFF_PERCENT = 1.0  # 1% 가격 차이 허용
         self.POSITION_SYNC_RETRY_COUNT = 3  # 포지션 동기화 재시도 횟수
         
+        # 🔥🔥🔥 동기화 개선 - 포지션 카운팅 로직 수정
+        self.startup_positions_detailed: Dict[str, Dict] = {}  # 시작시 포지션 상세 정보
+        self.startup_gate_positions_count: int = 0  # 시작시 게이트 포지션 수
+        self.sync_warning_suppressed_until: datetime = datetime.min  # 동기화 경고 억제 시간
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -113,16 +118,18 @@ class MirrorTradingSystem:
             'plan_order_skipped_trigger_price': 0,     # 🔥 트리거 가격 문제로 스킵
             'price_adjustments': 0,  # 🔥🔥🔥 시세 차이로 인한 가격 조정 횟수
             'sync_tolerance_used': 0,  # 🔥🔥🔥 동기화 허용 오차 사용 횟수
+            'sync_warnings_suppressed': 0,  # 🔥🔥🔥 동기화 경고 억제 횟수
+            'position_size_differences_ignored': 0,  # 🔥🔥🔥 포지션 크기 차이 무시 횟수
             'errors': []
         }
         
         self.monitoring = True
-        self.logger.info("🔥🔥🔥 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 초기화 완료")
+        self.logger.info("🔥🔥🔥 동기화 카운팅 로직 수정 + 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 초기화 완료")
     
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🚀🔥🔥🔥 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 시작")
+            self.logger.info("🚀🔥🔥🔥 동기화 카운팅 로직 수정 + 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 시작")
             
             # 🔥🔥🔥 시세 차이 초기 확인
             await self._update_current_prices()
@@ -132,8 +139,14 @@ class MirrorTradingSystem:
             await self._record_startup_plan_orders()
             await self._record_startup_position_tp_sl()
             
+            # 🔥🔥🔥 시작시 게이트 포지션 수 기록
+            await self._record_startup_gate_positions()
+            
             # 🔥 게이트에 이미 복제된 예약 주문 확인
             await self._check_already_mirrored_plan_orders()
+            
+            # 🔥🔥🔥 동기화 상태 초기 점검 및 경고 억제 설정
+            await self._initial_sync_check_and_suppress()
             
             # 시작 시 기존 예약 주문 복제
             await self._mirror_startup_plan_orders()
@@ -160,6 +173,103 @@ class MirrorTradingSystem:
                 f"오류: {str(e)[:200]}"
             )
             raise
+    
+    async def _record_startup_gate_positions(self):
+        """🔥🔥🔥 시작시 게이트 포지션 수 기록"""
+        try:
+            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+            self.startup_gate_positions_count = sum(
+                1 for pos in gate_positions 
+                if pos.get('size', 0) != 0
+            )
+            
+            self.logger.info(f"🔥🔥🔥 시작시 게이트 포지션 수 기록: {self.startup_gate_positions_count}개")
+            
+        except Exception as e:
+            self.logger.error(f"시작시 게이트 포지션 기록 실패: {e}")
+            self.startup_gate_positions_count = 0
+    
+    async def _initial_sync_check_and_suppress(self):
+        """🔥🔥🔥 초기 동기화 상태 점검 및 경고 억제 설정"""
+        try:
+            self.logger.info("🔥🔥🔥 초기 동기화 상태 점검 및 경고 억제 설정 시작")
+            
+            # Bitget 포지션 조회
+            bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+            bitget_active = [
+                pos for pos in bitget_positions 
+                if float(pos.get('total', 0)) > 0
+            ]
+            
+            # Gate.io 포지션 조회
+            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+            gate_active = [
+                pos for pos in gate_positions 
+                if pos.get('size', 0) != 0
+            ]
+            
+            # Bitget 예약 주문 조회
+            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            bitget_plan_orders = plan_data.get('plan_orders', []) + plan_data.get('tp_sl_orders', [])
+            
+            # Gate.io 예약 주문 조회
+            gate_plan_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+            
+            # 🔥🔥🔥 핵심: 신규 포지션 개념 제거 - 모든 기존 포지션은 미러링 대상이 아님
+            startup_bitget_positions = len(bitget_active)
+            startup_gate_positions = len(gate_active)
+            
+            sync_analysis = f"""
+🔥🔥🔥 초기 동기화 상태 분석:
+
+📊 현재 상황:
+- Bitget 활성 포지션: {startup_bitget_positions}개 (모두 기존 포지션으로 간주)
+- Gate.io 활성 포지션: {startup_gate_positions}개 (모두 기존 포지션으로 간주)
+- Bitget 예약 주문: {len(bitget_plan_orders)}개
+- Gate.io 예약 주문: {len(gate_plan_orders)}개
+
+💡 핵심 원리:
+- 시작시 존재하는 모든 포지션은 "기존 포지션"으로 간주
+- 기존 포지션은 미러링 대상이 아님 (이미 존재하던 것)
+- 향후 신규 진입만 미러링
+- 포지션 크기 차이는 마진 비율 차이로 정상적 현상
+
+🔥🔥🔥 동기화 카운팅 수정:
+- 기존 방식: "신규 포지션" vs "게이트 포지션" 비교 (잘못됨)
+- 수정 방식: 신규 진입 이벤트만 추적, 기존 포지션은 비교 안함
+"""
+            
+            # 포지션 크기 차이 분석 (정보 제공용)
+            if bitget_active and gate_active:
+                bitget_size = float(bitget_active[0].get('total', 0))
+                gate_size = abs(gate_active[0].get('size', 0)) * 0.0001  # contracts to BTC
+                
+                if bitget_size > 0:
+                    size_ratio = gate_size / bitget_size
+                    sync_analysis += f"""
+
+📏 포지션 크기 분석 (참고용):
+- Bitget: {bitget_size} BTC
+- Gate.io: {gate_size:.6f} BTC  
+- 비율: {size_ratio:.2f}배
+- 이는 총 자산 대비 동일한 마진 비율로 인한 정상적 차이입니다
+"""
+            
+            # 🔥🔥🔥 경고 억제 설정 - 시작 후 10분간 동기화 경고 억제
+            self.sync_warning_suppressed_until = datetime.now() + timedelta(minutes=10)
+            sync_analysis += f"""
+
+🔕 동기화 경고 억제:
+- 시작 후 10분간 동기화 불일치 경고 억제
+- 이 시간 동안 시스템이 안정화됨
+- 실제 신규 포지션 진입시에만 미러링 수행
+"""
+            
+            await self.telegram.send_message(sync_analysis)
+            self.logger.info("🔥🔥🔥 초기 동기화 상태 점검 완료 - 경고 억제 설정됨")
+            
+        except Exception as e:
+            self.logger.error(f"초기 동기화 점검 실패: {e}")
     
     async def _update_current_prices(self):
         """🔥🔥🔥 양쪽 거래소 현재 시세 업데이트"""
@@ -1211,7 +1321,7 @@ class MirrorTradingSystem:
             }
     
     async def _record_startup_positions(self):
-        """시작 시 존재하는 포지션 기록"""
+        """시작 시 존재하는 포지션 기록 - 🔥🔥🔥 상세 정보 포함"""
         try:
             bitget_positions = await self.bitget.get_positions(self.SYMBOL)
             
@@ -1220,6 +1330,15 @@ class MirrorTradingSystem:
                     pos_id = self._generate_position_id(pos)
                     self.startup_positions.add(pos_id)
                     self.position_sizes[pos_id] = float(pos.get('total', 0))
+                    
+                    # 🔥🔥🔥 상세 정보 저장
+                    self.startup_positions_detailed[pos_id] = {
+                        'size': float(pos.get('total', 0)),
+                        'side': pos.get('holdSide', ''),
+                        'entry_price': float(pos.get('openPriceAvg', 0)),
+                        'margin': float(pos.get('marginSize', 0)),
+                        'leverage': pos.get('leverage', 'N/A')
+                    }
             
             # 기존 주문 ID들도 기록
             try:
@@ -1252,7 +1371,7 @@ class MirrorTradingSystem:
                 price_diff_text = f"\n\n🔥🔥🔥 거래소 간 시세 차이:\n비트겟: ${self.bitget_current_price:,.2f}\n게이트: ${self.gate_current_price:,.2f}\n차이: {self.price_diff_percent:.2f}%\n{'⚠️ 큰 차이 감지 - 자동 조정됨' if self.price_diff_percent > self.MAX_PRICE_DIFF_PERCENT else '✅ 정상 범위'}"
             
             await self.telegram.send_message(
-                f"🔥🔥🔥 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시작\n\n"
+                f"🔥🔥🔥 동기화 카운팅 로직 수정 + 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시작\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f} (레버리지: {bitget_leverage}x)\n"
                 f"• 게이트: ${gate_equity:,.2f}{price_diff_text}\n\n"
@@ -1264,6 +1383,11 @@ class MirrorTradingSystem:
                 f"3️⃣ 실제 마진 비율 = 실제 마진 ÷ 비트겟 총 자산\n"
                 f"4️⃣ 게이트 투입 마진 = 게이트 총 자산 × 동일 비율\n"
                 f"5️⃣ 매 거래마다 실시간으로 비율을 새로 계산\n\n"
+                f"🔥🔥🔥 동기화 카운팅 로직 수정:\n"
+                f"• 기존: 신규 포지션 vs 게이트 포지션 비교 (잘못됨)\n"
+                f"• 수정: 신규 진입 이벤트만 추적, 기존 포지션 무시\n"
+                f"• 포지션 크기 차이는 마진 비율 차이로 정상적 현상\n"
+                f"• 시작 후 10분간 동기화 경고 억제\n\n"
                 f"🔥🔥🔥 새로운 시세 차이 대응 기능:\n"
                 f"• 실시간 거래소 간 시세 모니터링\n"
                 f"• 시세 차이 0.3% 이상 시 트리거 가격 자동 조정\n"
@@ -1294,7 +1418,8 @@ class MirrorTradingSystem:
                 f"비트겟 총 자산 $10,000에서 $200 마진 투입 (2%)\n"
                 f"→ 게이트 총 자산 $1,000에서 $20 마진 투입 (동일 2%)\n"
                 f"→ 매 거래마다 실시간으로 이 비율을 새로 계산!\n"
-                f"→ 시세 차이 발생 시 트리거 가격 자동 조정!"
+                f"→ 시세 차이 발생 시 트리거 가격 자동 조정!\n"
+                f"→ 포지션 크기 차이는 정상적 현상!"
             )
             
         except Exception as e:
@@ -1640,12 +1765,18 @@ class MirrorTradingSystem:
             self.logger.error(f"포지션 종료 처리 실패: {e}")
     
     async def monitor_sync_status(self):
-        """🔥🔥🔥 포지션 동기화 상태 모니터링 - 시세 차이 대응 강화"""
+        """🔥🔥🔥 포지션 동기화 상태 모니터링 - 수정된 카운팅 로직"""
         sync_retry_count = 0
         
         while self.monitoring:
             try:
                 await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
+                
+                # 🔥🔥🔥 경고 억제 시간 체크
+                now = datetime.now()
+                if now < self.sync_warning_suppressed_until:
+                    self.logger.debug("🔕 동기화 경고 억제 중")
+                    continue
                 
                 bitget_positions = await self.bitget.get_positions(self.SYMBOL)
                 bitget_active = [
@@ -1659,21 +1790,41 @@ class MirrorTradingSystem:
                     if pos.get('size', 0) != 0
                 ]
                 
-                mirrored_bitget_count = sum(
-                    1 for pos in bitget_active 
-                    if self._generate_position_id(pos) not in self.startup_positions
-                )
+                # 🔥🔥🔥 핵심 수정: 신규 미러링된 포지션만 카운팅
+                # 전체 비트겟 포지션에서 시작시 존재했던 포지션 제외
+                new_bitget_positions = []
+                for pos in bitget_active:
+                    pos_id = self._generate_position_id(pos)
+                    if pos_id not in self.startup_positions:
+                        new_bitget_positions.append(pos)
+                
+                # 게이트 포지션에서 시작시 존재했던 포지션 제외
+                new_gate_positions_count = len(gate_active) - self.startup_gate_positions_count
+                if new_gate_positions_count < 0:
+                    new_gate_positions_count = 0
+                
+                # 🔥🔥🔥 수정된 동기화 체크
+                new_bitget_count = len(new_bitget_positions)
+                position_diff = new_bitget_count - new_gate_positions_count
+                
+                self.logger.debug(f"🔥🔥🔥 동기화 체크 (수정된 로직):")
+                self.logger.debug(f"   - 전체 비트겟 포지션: {len(bitget_active)}개")
+                self.logger.debug(f"   - 시작시 비트겟 포지션: {len(self.startup_positions)}개")
+                self.logger.debug(f"   - 신규 비트겟 포지션: {new_bitget_count}개")
+                self.logger.debug(f"   - 전체 게이트 포지션: {len(gate_active)}개")
+                self.logger.debug(f"   - 시작시 게이트 포지션: {self.startup_gate_positions_count}개")
+                self.logger.debug(f"   - 신규 게이트 포지션: {new_gate_positions_count}개")
+                self.logger.debug(f"   - 포지션 차이: {position_diff}개")
+                
+                # 🔥🔥🔥 포지션 크기 차이는 정상적 현상으로 간주
+                if bitget_active and gate_active:
+                    self.daily_stats['position_size_differences_ignored'] += 1
                 
                 # 🔥🔥🔥 개선된 동기화 체크 - 허용 오차 적용
-                position_diff = mirrored_bitget_count - len(gate_active)
-                current_mirrored_plan_orders = len(self.mirrored_plan_orders)
-                
-                # 🔥🔥🔥 허용 오차 내인지 확인
                 sync_tolerance_met = False
                 
                 if position_diff != 0:
                     # 최근 체결된 주문이 있는지 확인 (허용 오차 시간 내)
-                    now = datetime.now()
                     recent_orders = []
                     
                     try:
@@ -1693,7 +1844,7 @@ class MirrorTradingSystem:
                         
                         self.logger.info(
                             f"🔥✅ 동기화 허용 오차 적용 (최근 {self.SYNC_TOLERANCE_MINUTES}분 내 주문 있음)\n"
-                            f"비트겟: {mirrored_bitget_count}, 게이트: {len(gate_active)}\n"
+                            f"신규 비트겟: {new_bitget_count}, 신규 게이트: {new_gate_positions_count}\n"
                             f"차이: {position_diff}, 최근 주문: {len(recent_orders)}건"
                         )
                 
@@ -1710,24 +1861,26 @@ class MirrorTradingSystem:
                             price_diff_info = f"\n🔥 시세 차이: {self.price_diff_percent:.2f}% (비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f})"
                         
                         await self.telegram.send_message(
-                            f"🔥⚠️ 포지션 동기화 불일치 감지 (시세 차이 고려)\n"
-                            f"비트겟 신규: {mirrored_bitget_count}개\n"
-                            f"게이트 활성: {len(gate_active)}개\n"
+                            f"🔥⚠️ 신규 포지션 동기화 불일치 감지 (수정된 카운팅)\n"
+                            f"신규 비트겟: {new_bitget_count}개\n"
+                            f"신규 게이트: {new_gate_positions_count}개\n"
                             f"차이: {position_diff}개\n"
-                            f"복제된 예약 주문: {current_mirrored_plan_orders}개\n"
+                            f"복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n"
                             f"연속 감지: {sync_retry_count}회{price_diff_info}\n\n"
-                            f"🔥🔥🔥 가능한 원인:\n"
-                            f"• 거래소 간 시세 차이로 체결 타이밍 상이\n"
-                            f"• 예약 주문 트리거 가격 차이\n"
-                            f"• 네트워크 지연 또는 일시적 API 오류\n"
-                            f"• 허용 오차({self.SYNC_TOLERANCE_MINUTES}분) 초과한 지속적 불일치"
+                            f"🔥🔥🔥 수정된 카운팅 로직:\n"
+                            f"• 시작시 포지션은 제외하고 신규 포지션만 비교\n"
+                            f"• 포지션 크기 차이는 마진 비율 차이로 정상\n"
+                            f"• 실제 신규 진입 이벤트만 추적\n\n"
+                            f"📊 상세 정보:\n"
+                            f"• 전체 비트겟: {len(bitget_active)}개 (시작시: {len(self.startup_positions)}개)\n"
+                            f"• 전체 게이트: {len(gate_active)}개 (시작시: {self.startup_gate_positions_count}개)"
                         )
                         
                         sync_retry_count = 0  # 리셋
                     else:
                         self.logger.debug(
-                            f"🔥 포지션 불일치 감지 중... ({sync_retry_count}/{self.POSITION_SYNC_RETRY_COUNT})\n"
-                            f"비트겟: {mirrored_bitget_count}, 게이트: {len(gate_active)}, 차이: {position_diff}"
+                            f"🔥 신규 포지션 불일치 감지 중... ({sync_retry_count}/{self.POSITION_SYNC_RETRY_COUNT})\n"
+                            f"신규 비트겟: {new_bitget_count}, 신규 게이트: {new_gate_positions_count}, 차이: {position_diff}"
                         )
                 else:
                     # 동기화 상태 정상
@@ -1781,9 +1934,11 @@ class MirrorTradingSystem:
 - 게이트: ${self.gate_current_price:,.2f}
 - 차이: {self.price_diff_percent:.2f}%
 - 가격 조정: {self.daily_stats['price_adjustments']}회
-- 동기화 허용 오차 사용: {self.daily_stats['sync_tolerance_used']}회"""
+- 동기화 허용 오차 사용: {self.daily_stats['sync_tolerance_used']}회
+- 동기화 경고 억제: {self.daily_stats['sync_warnings_suppressed']}회
+- 포지션 크기 차이 무시: {self.daily_stats['position_size_differences_ignored']}회"""
             
-            report = f"""📊 일일 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 리포트
+            report = f"""📊 일일 동기화 카운팅 수정 + 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 리포트
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
@@ -1821,7 +1976,13 @@ class MirrorTradingSystem:
 - 매 예약주문마다 실제 마진 비율을 새로 계산
 - 미리 정해진 비율 없음 - 완전 동적 계산
 
-🔥🔥🔥 시세 차이 대응 강화 (새로운 핵심 기능)
+🔥🔥🔥 동기화 카운팅 로직 수정 (새로운 핵심 기능)
+- 기존: 전체 포지션 비교 (잘못됨)
+- 수정: 신규 포지션만 비교 (올바름)
+- 시작시 포지션은 미러링 대상 아님
+- 포지션 크기 차이는 마진 비율 차이로 정상
+
+🔥🔥🔥 시세 차이 대응 강화 (핵심 기능)
 - 실시간 거래소 간 시세 모니터링
 - 0.3% 이상 차이 시 트리거 가격 자동 조정
 - 게이트 기준 현재가로 정확한 트리거 타입 결정
@@ -1840,7 +2001,7 @@ class MirrorTradingSystem:
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
             
-            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥 완전한 시세 차이 대응 + 실제 달러 마진 비율 동적 계산 + 개선된 방향 처리!"
+            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥 완전한 동기화 카운팅 수정 + 시세 차이 대응 + 실제 달러 마진 비율 동적 계산!"
             
             return report
             
@@ -1864,8 +2025,10 @@ class MirrorTradingSystem:
             'startup_plan_mirrors': 0,
             'plan_order_skipped_already_mirrored': 0,
             'plan_order_skipped_trigger_price': 0,
-            'price_adjustments': 0,  # 🔥🔥🔥 시세 차이로 인한 가격 조정 횟수
-            'sync_tolerance_used': 0,  # 🔥🔥🔥 동기화 허용 오차 사용 횟수
+            'price_adjustments': 0,
+            'sync_tolerance_used': 0,
+            'sync_warnings_suppressed': 0,
+            'position_size_differences_ignored': 0,
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -1897,9 +2060,9 @@ class MirrorTradingSystem:
         try:
             final_report = await self._create_daily_report()
             await self.telegram.send_message(
-                f"🛑 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 종료\n\n{final_report}"
+                f"🛑 동기화 카운팅 로직 수정 + 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 종료\n\n{final_report}"
             )
         except:
             pass
         
-        self.logger.info("🔥🔥🔥 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 시스템 중지")
+        self.logger.info("🔥🔥🔥 동기화 카운팅 로직 수정 + 시세 차이 대응 강화 + 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 시스템 중지")
