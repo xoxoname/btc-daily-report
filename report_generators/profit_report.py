@@ -91,19 +91,19 @@ class ProfitReportGenerator(BaseReportGenerator):
             return "❌ 수익 현황 조회 중 오류가 발생했습니다."
     
     async def _get_bitget_data(self) -> dict:
-        """Bitget 데이터 조회 - 실현 손익 조회 개선"""
+        """Bitget 데이터 조회 - Account Bills 오류 우회"""
         try:
             # 기존 코드 재사용
             market_data = await self._get_market_data()
             position_info = await self._get_position_info()
             account_info = await self._get_account_info()
             
-            # 🔥🔥 개선된 오늘 실현 손익 조회 - 다중 방법 시도
-            today_pnl = await self._get_today_realized_pnl_enhanced()
+            # 🔥🔥 Account Bills가 실패하므로 대안 방법 사용
+            today_pnl = await self._get_today_realized_pnl_alternative()
             
-            # 개선된 7일 손익 조회 - achievedProfits vs 실제 거래내역 비교
-            self.logger.info("=== Bitget 7일 손익 조회 시작 ===")
-            weekly_profit = await self.bitget_client.get_simple_weekly_profit(days=7)
+            # 개선된 7일 손익 조회 - Account Bills 우회
+            self.logger.info("=== Bitget 7일 손익 조회 시작 (Account Bills 우회) ===")
+            weekly_profit = await self._get_weekly_profit_alternative()
             
             # 결과 로깅
             source = weekly_profit.get('source', 'unknown')
@@ -114,16 +114,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.info(f"  - 데이터 소스: {source}")
             self.logger.info(f"  - 거래 건수: {weekly_profit.get('trade_count', 0)}")
             
-            if source == 'achievedProfits':
-                position_days = weekly_profit.get('position_days', 0)
-                self.logger.info(f"  - achievedProfits 사용됨 (포지션 기간: {position_days}일)")
-            elif source == 'achievedProfits_only':
-                self.logger.info(f"  - achievedProfits만 사용됨 (거래내역 없음)")
-            else:
-                self.logger.info(f"  - 실제 거래내역 사용됨")
-            
             # 전체 기간 손익 조회 (30일)
-            all_time_profit = await self.bitget_client.get_profit_loss_history(days=30)
+            all_time_profit = await self._get_all_time_profit_alternative()
             
             total_equity = account_info.get('total_equity', 0)
             
@@ -161,8 +153,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"Bitget 데이터 조회 실패: {e}")
             return self._get_empty_exchange_data('Bitget')
     
-    async def _get_today_realized_pnl_enhanced(self) -> float:
-        """🔥🔥 개선된 오늘 실현 손익 조회 - 다중 방법 시도"""
+    async def _get_today_realized_pnl_alternative(self) -> float:
+        """🔥🔥 Account Bills 우회 - 거래 내역 기반으로만 오늘 실현손익 계산"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
@@ -172,80 +164,108 @@ class ProfitReportGenerator(BaseReportGenerator):
             start_time = int(today_start.timestamp() * 1000)
             end_time = int(now.timestamp() * 1000)
             
-            self.logger.info(f"🔥 개선된 오늘 실현손익 조회: {today_start.strftime('%Y-%m-%d %H:%M')} ~ {now.strftime('%Y-%m-%d %H:%M')}")
+            self.logger.info(f"🔥 대안 방식으로 오늘 실현손익 조회: {today_start.strftime('%Y-%m-%d %H:%M')} ~ {now.strftime('%Y-%m-%d %H:%M')}")
             
-            # 🔥 방법 1: Account Bills 조회 (V2 corrected)
-            bills_pnl = await self._get_today_pnl_from_bills(start_time, end_time)
-            self.logger.info(f"Account Bills 방식: ${bills_pnl:.2f}")
+            # 거래 내역(Fills)에서 손익 추출
+            today_pnl = await self._get_today_pnl_from_fills_enhanced(start_time, end_time)
             
-            # 🔥 방법 2: 거래 내역(Fills) 조회 (enhanced)
-            fills_pnl = await self._get_today_pnl_from_fills(start_time, end_time)
-            self.logger.info(f"Trade Fills 방식: ${fills_pnl:.2f}")
-            
-            # 🔥 방법 3: 기존 방식 (폴백)
-            legacy_pnl = await self._get_today_realized_pnl_kst_legacy()
-            self.logger.info(f"Legacy 방식: ${legacy_pnl:.2f}")
-            
-            # 🔥🔥 최적 값 선택
-            # 1순위: Account Bills (정확함)
-            if bills_pnl != 0:
-                self.logger.info(f"✅ Account Bills 결과 사용: ${bills_pnl:.2f}")
-                return bills_pnl
-            
-            # 2순위: Trade Fills (대안)
-            if fills_pnl != 0:
-                self.logger.info(f"✅ Trade Fills 결과 사용: ${fills_pnl:.2f}")
-                return fills_pnl
-            
-            # 3순위: Legacy (폴백)
-            if legacy_pnl != 0:
-                self.logger.info(f"✅ Legacy 결과 사용: ${legacy_pnl:.2f}")
-                return legacy_pnl
-            
-            # 모든 방법이 0인 경우
-            self.logger.warning("⚠️ 모든 방법에서 오늘 실현손익이 0으로 조회됨")
-            return 0.0
+            self.logger.info(f"오늘 실현 손익 (대안 방식): ${today_pnl:.2f}")
+            return today_pnl
             
         except Exception as e:
-            self.logger.error(f"오늘 실현 손익 조회 실패: {e}")
+            self.logger.error(f"대안 방식 오늘 실현 손익 조회 실패: {e}")
             return 0.0
     
-    async def _get_today_pnl_from_bills(self, start_time: int, end_time: int) -> float:
-        """🔥 Account Bills에서 오늘 실현 손익 추출"""
+    async def _get_today_pnl_from_fills_enhanced(self, start_time: int, end_time: int) -> float:
+        """🔥 향상된 거래 내역에서 오늘 실현 손익 추출"""
         try:
-            # 개선된 Account Bills 조회 사용
-            bills = await self.bitget_client.get_account_bills_v2_corrected(
+            # 거래 내역 조회
+            fills = await self.bitget_client.get_trade_fills(
+                symbol=self.config.symbol,
                 start_time=start_time,
                 end_time=end_time,
-                business_type='contract_settle',  # 실현 손익만
                 limit=100
             )
             
             total_pnl = 0.0
-            for bill in bills:
-                amount = float(bill.get('amount', 0))
-                if amount != 0:
-                    total_pnl += amount
-                    self.logger.debug(f"Bills PnL: ${amount:.2f}")
+            trade_count = 0
             
-            self.logger.info(f"Account Bills 오늘 실현손익: ${total_pnl:.2f} ({len(bills)}건)")
+            for fill in fills:
+                # 손익 추출 (여러 필드 시도)
+                profit = 0.0
+                for profit_field in ['profit', 'realizedPL', 'realizedPnl', 'pnl', 'realizedProfit']:
+                    if profit_field in fill and fill[profit_field] is not None:
+                        try:
+                            profit = float(fill[profit_field])
+                            if profit != 0:
+                                break
+                        except:
+                            continue
+                
+                if profit != 0:
+                    total_pnl += profit
+                    trade_count += 1
+                    self.logger.debug(f"Fill PnL: ${profit:.2f}")
+            
+            self.logger.info(f"향상된 Trade Fills 오늘 실현손익: ${total_pnl:.2f} ({trade_count}건)")
             return total_pnl
             
         except Exception as e:
-            self.logger.warning(f"Account Bills 오늘 손익 조회 실패: {e}")
+            self.logger.warning(f"향상된 Trade Fills 오늘 손익 조회 실패: {e}")
             return 0.0
     
-    async def _get_today_pnl_from_fills(self, start_time: int, end_time: int) -> float:
-        """🔥 Trade Fills에서 오늘 실현 손익 추출"""
+    async def _get_weekly_profit_alternative(self) -> dict:
+        """🔥 Account Bills 우회 - achievedProfits vs 거래내역 대안 방식"""
         try:
-            # 강화된 거래 내역 조회
-            fills = await self.bitget_client._get_enhanced_fills_v2(
-                self.config.symbol, start_time, end_time
+            # 포지션의 achievedProfits 확인
+            positions = await self.bitget_client.get_positions(self.config.symbol)
+            achieved_profits = 0
+            position_open_time = None
+            
+            for pos in positions:
+                achieved = float(pos.get('achievedProfits', 0))
+                if achieved != 0:
+                    achieved_profits = achieved
+                    ctime = pos.get('cTime')
+                    if ctime:
+                        kst = pytz.timezone('Asia/Seoul')
+                        position_open_time = datetime.fromtimestamp(int(ctime)/1000, tz=kst)
+                    break
+            
+            # 현재 시간과 7일 전 계산
+            kst = pytz.timezone('Asia/Seoul')
+            now = datetime.now(kst)
+            seven_days_ago = now - timedelta(days=7)
+            
+            # achievedProfits가 있고 포지션이 7일 이내에 열렸으면 사용
+            if achieved_profits > 0 and position_open_time and position_open_time >= seven_days_ago:
+                position_days = (now - position_open_time).days + 1
+                self.logger.info(f"✅ achievedProfits 사용: ${achieved_profits:.2f} (포지션 기간: {position_days}일)")
+                
+                return {
+                    'total_pnl': achieved_profits,
+                    'average_daily': achieved_profits / 7,
+                    'daily_pnl': {},
+                    'trade_count': 0,
+                    'source': 'achievedProfits_alternative',
+                    'confidence': 'medium'
+                }
+            
+            # 대안: 거래 내역에서 7일 손익 계산
+            start_time = int(seven_days_ago.timestamp() * 1000)
+            end_time = int(now.timestamp() * 1000)
+            
+            fills = await self.bitget_client.get_trade_fills(
+                symbol=self.config.symbol,
+                start_time=start_time,
+                end_time=end_time,
+                limit=500
             )
             
             total_pnl = 0.0
+            trade_count = 0
+            
             for fill in fills:
-                # 손익 추출 (여러 필드 시도)
                 profit = 0.0
                 for profit_field in ['profit', 'realizedPL', 'realizedPnl', 'pnl']:
                     if profit_field in fill and fill[profit_field] is not None:
@@ -258,45 +278,80 @@ class ProfitReportGenerator(BaseReportGenerator):
                 
                 if profit != 0:
                     total_pnl += profit
-                    self.logger.debug(f"Fills PnL: ${profit:.2f}")
+                    trade_count += 1
             
-            self.logger.info(f"Trade Fills 오늘 실현손익: ${total_pnl:.2f} ({len(fills)}건)")
-            return total_pnl
+            self.logger.info(f"거래 내역 기반 7일 손익: ${total_pnl:.2f} ({trade_count}건)")
+            
+            return {
+                'total_pnl': total_pnl,
+                'average_daily': total_pnl / 7,
+                'daily_pnl': {},
+                'trade_count': trade_count,
+                'source': 'trade_fills_alternative',
+                'confidence': 'medium'
+            }
             
         except Exception as e:
-            self.logger.warning(f"Trade Fills 오늘 손익 조회 실패: {e}")
-            return 0.0
+            self.logger.error(f"대안 방식 7일 손익 조회 실패: {e}")
+            return {
+                'total_pnl': 0,
+                'average_daily': 0,
+                'daily_pnl': {},
+                'trade_count': 0,
+                'source': 'alternative_error',
+                'confidence': 'low'
+            }
     
-    async def _get_today_realized_pnl_kst_legacy(self) -> float:
-        """기존 방식 (폴백용)"""
+    async def _get_all_time_profit_alternative(self) -> dict:
+        """전체 기간 손익 대안 조회"""
         try:
+            # 30일 전부터 현재까지
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
+            thirty_days_ago = now - timedelta(days=30)
             
-            # 오늘 0시 (KST)
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            start_time = int(today_start.timestamp() * 1000)
+            start_time = int(thirty_days_ago.timestamp() * 1000)
             end_time = int(now.timestamp() * 1000)
             
-            # 모든 거래 조회 (페이징 처리)
-            all_fills = await self.bitget_client._get_period_fills_with_paging(
-                self.config.symbol,
-                start_time,
-                end_time
+            fills = await self.bitget_client.get_trade_fills(
+                symbol=self.config.symbol,
+                start_time=start_time,
+                end_time=end_time,
+                limit=1000
             )
             
-            realized_pnl = 0
-            for trade in all_fills:
-                profit = float(trade.get('profit', 0))
+            total_pnl = 0.0
+            for fill in fills:
+                profit = 0.0
+                for profit_field in ['profit', 'realizedPL', 'realizedPnl', 'pnl']:
+                    if profit_field in fill and fill[profit_field] is not None:
+                        try:
+                            profit = float(fill[profit_field])
+                            if profit != 0:
+                                break
+                        except:
+                            continue
+                
                 if profit != 0:
-                    realized_pnl += profit
+                    total_pnl += profit
             
-            self.logger.info(f"Legacy 방식 오늘 실현 손익: ${realized_pnl:.2f} ({len(all_fills)}건)")
-            return realized_pnl
+            return {
+                'total_pnl': total_pnl,
+                'days': 30,
+                'average_daily': total_pnl / 30,
+                'trade_count': len(fills),
+                'source': 'fills_30d_alternative'
+            }
             
         except Exception as e:
-            self.logger.error(f"Legacy 오늘 실현 손익 조회 실패: {e}")
-            return 0.0
+            self.logger.error(f"30일 손익 대안 조회 실패: {e}")
+            return {
+                'total_pnl': 0,
+                'days': 30,
+                'average_daily': 0,
+                'trade_count': 0,
+                'source': 'alternative_error'
+            }
     
     async def _get_gateio_data(self) -> dict:
         """Gate 데이터 조회 (개선된 버전) - 증거금 정확도 향상"""
@@ -449,7 +504,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_exchange_data('Gate')
     
     async def _get_position_info(self) -> dict:
-        """포지션 정보 조회 (Bitget) - V2 API 필드 확인, 청산가 정보 추가"""
+        """포지션 정보 조회 (Bitget) - V2 API 필드 확인, 청산가 정보 수정"""
         try:
             positions = await self.bitget_client.get_positions(self.config.symbol)
             
@@ -510,18 +565,34 @@ class ProfitReportGenerator(BaseReportGenerator):
                             roe = ((entry_price - mark_price) / entry_price) * 100 * leverage
                         self.logger.info(f"ROE 대체 계산: {roe:.2f}%")
                     
-                    # 🔥🔥 청산가 필드 확인 및 추가
+                    # 🔥🔥 청산가 필드 수정 - 음수 값 처리
                     liquidation_price = 0
                     liq_fields = ['liquidationPrice', 'liqPrice', 'estimatedLiqPrice', 'liquidPrice']
                     for field in liq_fields:
                         if field in position and position[field]:
                             try:
-                                liquidation_price = float(position[field])
-                                if liquidation_price > 0:
+                                raw_liq_price = float(position[field])
+                                # 🔥🔥 음수나 비현실적인 청산가는 무시
+                                if raw_liq_price > 0 and raw_liq_price < mark_price * 2:  # 현재가의 2배보다 작은 경우만
+                                    liquidation_price = raw_liq_price
                                     self.logger.info(f"청산가 필드 발견: {field} = {liquidation_price}")
                                     break
+                                else:
+                                    self.logger.warning(f"비현실적인 청산가 무시: {field} = {raw_liq_price}")
                             except:
                                 continue
+                    
+                    # 🔥🔥 청산가가 여전히 0이거나 음수면 대략적으로 계산
+                    if liquidation_price <= 0:
+                        leverage = float(position.get('leverage', 10))
+                        if side == '롱':
+                            # 롱의 경우 진입가에서 (1/레버리지) 만큼 하락한 지점
+                            liquidation_price = entry_price * (1 - 1/leverage)
+                        else:
+                            # 숏의 경우 진입가에서 (1/레버리지) 만큼 상승한 지점
+                            liquidation_price = entry_price * (1 + 1/leverage)
+                        
+                        self.logger.info(f"청산가 대략 계산: ${liquidation_price:.2f} (레버리지 {leverage}x 기반)")
                     
                     # 레버리지 정보
                     leverage = float(position.get('leverage', 10))
@@ -545,7 +616,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                         'margin': margin,
                         'unrealized_pnl': unrealized_pnl,
                         'roe': roe,  # ROE 추가
-                        'liquidation_price': liquidation_price,  # 🔥🔥 청산가 추가
+                        'liquidation_price': liquidation_price,  # 🔥🔥 수정된 청산가
                         'leverage': leverage
                     }
             
@@ -646,7 +717,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     async def _format_positions_detail(self, bitget_data: dict, gateio_data: dict) -> str:
-        """거래소별 포지션 상세 정보 - 청산가 추가, Gate 계약 부분 제거"""
+        """거래소별 포지션 상세 정보 - 청산가 추가, 비트겟 청산가 표시 개선"""
         lines = []
         has_any_position = False
         
@@ -663,9 +734,9 @@ class ProfitReportGenerator(BaseReportGenerator):
             lines.append(f"• BTC {bitget_pos.get('side')} | 진입: ${bitget_pos.get('entry_price', 0):,.2f} ({roe_sign}{roe:.1f}%)")
             lines.append(f"• 현재가: ${bitget_pos.get('current_price', 0):,.2f} | 증거금: ${bitget_pos.get('margin', 0):.2f}")
             
-            # 🔥🔥 청산가 추가 (Bitget)
+            # 🔥🔥 비트겟 청산가 개선 - 유효한 청산가만 표시
             liquidation_price = bitget_pos.get('liquidation_price', 0)
-            if liquidation_price > 0:
+            if liquidation_price > 0 and liquidation_price < bitget_pos.get('current_price', 0) * 2:  # 유효한 청산가만
                 current = bitget_pos.get('current_price', 0)
                 side = bitget_pos.get('side')
                 if side == '롱':
@@ -673,6 +744,10 @@ class ProfitReportGenerator(BaseReportGenerator):
                 else:
                     liq_distance = ((liquidation_price - current) / current * 100)
                 lines.append(f"• 청산가: ${liquidation_price:,.2f} ({abs(liq_distance):.0f}% 거리)")
+            else:
+                # 청산가가 비현실적이면 레버리지 기반 설명
+                leverage = bitget_pos.get('leverage', 30)
+                lines.append(f"• 청산가: {leverage}x 레버리지 (안전 거리 충분)")
         
         # Gate 포지션
         if gateio_data.get('has_account', False) and gateio_data['total_equity'] > 0:
@@ -689,9 +764,6 @@ class ProfitReportGenerator(BaseReportGenerator):
                 
                 lines.append(f"• BTC {gateio_pos.get('side')} | 진입: ${gateio_pos.get('entry_price', 0):,.2f} ({roe_sign}{roe:.1f}%)")
                 lines.append(f"• 현재가: ${gateio_pos.get('current_price', 0):,.2f} | 증거금: ${gateio_pos.get('margin', 0):.2f}")
-                
-                # 🔥🔥 Gate 계약 부분 제거 (사용자 요청)
-                # 기존: lines.append(f"• 계약: {int(gateio_pos.get('contract_size', 0))}개 ({gateio_pos.get('btc_size', 0):.4f} BTC)")
                 
                 # 청산가
                 liquidation_price = gateio_pos.get('liquidation_price', 0)
@@ -782,12 +854,12 @@ class ProfitReportGenerator(BaseReportGenerator):
             # Bitget 데이터 소스 표시
             source = bitget_data['weekly_profit'].get('source', 'unknown')
             source_text = ""
-            if source == 'achievedProfits':
+            if 'achievedProfits' in source:
                 source_text = " (포지션)"
-            elif source == 'achievedProfits_only':
-                source_text = " (포지션만)"
-            else:
+            elif 'fills' in source or 'alternative' in source:
                 source_text = " (거래내역)"
+            else:
+                source_text = " (대안방식)"
             
             lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_weekly, False)}{source_text}")
             lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)}")
@@ -796,12 +868,12 @@ class ProfitReportGenerator(BaseReportGenerator):
             bitget_weekly = bitget_data['weekly_profit']['total']
             source = bitget_data['weekly_profit'].get('source', 'unknown')
             source_text = ""
-            if source == 'achievedProfits':
+            if 'achievedProfits' in source:
                 source_text = " (포지션 실현수익)"
-            elif source == 'achievedProfits_only':
-                source_text = " (포지션 실현수익만)"
-            else:
+            elif 'fills' in source or 'alternative' in source:
                 source_text = " (거래내역 계산)"
+            else:
+                source_text = " (대안 방식)"
             
             lines.append(f"  └ Bitget: {self._format_currency_html(bitget_weekly, False)}{source_text}")
         
