@@ -1568,4 +1568,217 @@ class MirrorTradingSystem:
             new_bitget_orders = [
                 order for order in current_bitget_orders 
                 if (order.get('orderId', order.get('planOrderId', '')) not in self.startup_plan_orders and
-                    order.get('orderId', order.get('planOrder
+                    order.get('orderId', order.get('planOrderId', '')) not in self.startup_position_tp_sl)
+            ]
+            
+            bitget_plan_count = len(new_bitget_orders)
+            gate_plan_count = len(self.mirrored_plan_orders)
+            
+            self.logger.info(f"예약 주문 동기화 상태: 비트겟 {bitget_plan_count}개, 게이트 {gate_plan_count}개 복제됨")
+            
+        except Exception as e:
+            self.logger.error(f"예약 주문 동기화 체크 실패: {e}")
+    
+    async def _analyze_sync_mismatch(self, bitget_positions: List[Dict], gate_positions: List[Dict]):
+        """동기화 불일치 분석"""
+        try:
+            # 비트겟에만 있는 포지션
+            for bitget_pos in bitget_positions:
+                pos_id = self._generate_position_id(bitget_pos)
+                
+                # 시작 시 존재했던 포지션은 제외
+                if pos_id in self.startup_positions:
+                    continue
+                
+                if pos_id not in self.mirrored_positions:
+                    self.logger.warning(f"비트겟에만 존재하는 포지션: {pos_id}")
+                    
+                    # 자동 미러링 시도
+                    result = await self._mirror_new_position(bitget_pos)
+                    if result.success:
+                        self.logger.info(f"동기화 복구 성공: {pos_id}")
+                    else:
+                        await self.telegram.send_message(
+                            f"⚠️ 동기화 문제\n"
+                            f"비트겟 포지션이 게이트에 없습니다\n"
+                            f"포지션: {pos_id}\n"
+                            f"자동 복구 실패: {result.error}"
+                        )
+            
+            # 게이트에만 있는 포지션
+            if len(gate_positions) > 0 and len(self.mirrored_positions) == 0:
+                self.logger.warning("게이트에 추적되지 않는 포지션 존재")
+                
+                # 자동 정리
+                for gate_pos in gate_positions:
+                    if gate_pos.get('size', 0) != 0:
+                        self.logger.info("추적되지 않는 게이트 포지션 종료")
+                        await self.gate.close_position(self.GATE_CONTRACT)
+                        
+                        await self.telegram.send_message(
+                            f"🔄 게이트 단독 포지션 정리\n"
+                            f"대응하는 비트겟 포지션이 없어 종료했습니다"
+                        )
+            
+        except Exception as e:
+            self.logger.error(f"동기화 분석 중 오류: {e}")
+    
+    async def generate_daily_reports(self):
+        """일일 리포트 생성"""
+        while self.monitoring:
+            try:
+                now = datetime.now()
+                
+                # 매일 지정된 시간에 리포트 생성
+                if now.hour == self.DAILY_REPORT_HOUR and now > self.last_report_time + timedelta(hours=23):
+                    report = await self._create_daily_report()
+                    await self.telegram.send_message(report)
+                    
+                    # 통계 초기화
+                    self._reset_daily_stats()
+                    self.last_report_time = now
+                
+                await asyncio.sleep(3600)  # 1시간마다 체크
+                
+            except Exception as e:
+                self.logger.error(f"일일 리포트 생성 오류: {e}")
+                await asyncio.sleep(3600)
+    
+    async def _create_daily_report(self) -> str:
+        """일일 리포트 생성"""
+        try:
+            # 계정 정보 조회
+            bitget_account = await self.bitget.get_account_info()
+            gate_account = await self.gate.get_account_balance()
+            
+            bitget_equity = float(bitget_account.get('accountEquity', 0))
+            gate_equity = float(gate_account.get('total', 0))
+            bitget_leverage = bitget_account.get('crossMarginLeverage', 'N/A')
+            
+            # 성공률 계산
+            success_rate = 0
+            if self.daily_stats['total_mirrored'] > 0:
+                success_rate = (self.daily_stats['successful_mirrors'] / 
+                              self.daily_stats['total_mirrored']) * 100
+            
+            report = f"""📊 일일 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 리포트
+📅 {datetime.now().strftime('%Y-%m-%d')}
+━━━━━━━━━━━━━━━━━━━
+
+🔥🔥🔥 예약 주문 실제 달러 마진 비율 동적 계산 성과
+- 예약 주문 미러링: {self.daily_stats['plan_order_mirrors']}회
+- 예약 주문 취소 동기화: {self.daily_stats['plan_order_cancels']}회
+- 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개
+
+⚡ 실시간 포지션 미러링 (실제 달러 마진 비율 동적 계산)
+- 주문 체결 기반: {self.daily_stats['order_mirrors']}회
+- 포지션 기반: {self.daily_stats['position_mirrors']}회
+- 총 시도: {self.daily_stats['total_mirrored']}회
+- 성공: {self.daily_stats['successful_mirrors']}회
+- 실패: {self.daily_stats['failed_mirrors']}회
+- 성공률: {success_rate:.1f}%
+
+📉 포지션 관리
+- 부분 청산: {self.daily_stats['partial_closes']}회
+- 전체 청산: {self.daily_stats['full_closes']}회
+- 총 거래량: ${self.daily_stats['total_volume']:,.2f}
+
+💰 계정 잔고
+- 비트겟: ${bitget_equity:,.2f} (레버리지: {bitget_leverage}x)
+- 게이트: ${gate_equity:,.2f} (레버리지: 동기화됨)
+
+🔄 현재 미러링 상태
+- 활성 포지션: {len(self.mirrored_positions)}개
+- 활성 예약 주문: {len(self.mirrored_plan_orders)}개
+- 실패 기록: {len(self.failed_mirrors)}건
+
+⚡ 시스템 최적화 (실제 달러 마진 비율 동적 계산)
+- 예약 주문 감지: {self.PLAN_ORDER_CHECK_INTERVAL}초마다
+- 주문 체결 감지: {self.ORDER_CHECK_INTERVAL}초마다
+- 포지션 모니터링: {self.CHECK_INTERVAL}초마다
+
+🔧 레버리지 완전 동기화
+- 비트겟 레버리지 → 게이트 레버리지 (완전 동일)
+- 예약 주문별 정확한 레버리지 추출
+- 3단계 확인 및 재설정 시스템
+- 주문 생성 전 강제 동기화
+
+💰💰💰 실제 달러 마진 비율 동적 계산 (핵심 개선)
+- 매 예약주문마다 실제 마진 비율을 새로 계산
+- 비트겟 실제 마진 = (수량 × 가격) ÷ 레버리지
+- 마진 비율 = 실제 마진 ÷ 비트겟 총 자산
+- 게이트 투입 마진 = 게이트 총 자산 × 동일 비율
+- 미리 정해진 비율 없음 - 완전 동적 계산
+
+🚫🚫 예약주문 취소 동기화 (개선)
+- 비트겟에서 예약주문 취소 → 게이트도 자동 취소
+- 실시간 취소 상태 비교
+- 취소 실패 시 상세 오류 처리
+
+"""
+            
+            # 오류가 있었다면 추가
+            if self.daily_stats['errors']:
+                report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건\n"
+                for i, error in enumerate(self.daily_stats['errors'][-3:], 1):  # 최근 3개만
+                    report += f"{i}. {error['error'][:50]}...\n"
+            
+            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥 실제 달러 마진 비율 동적 계산으로 완벽한 실제 투입 비율 복제!"
+            
+            return report
+            
+        except Exception as e:
+            self.logger.error(f"리포트 생성 실패: {e}")
+            return f"📊 일일 리포트 생성 실패\n오류: {str(e)}"
+    
+    def _reset_daily_stats(self):
+        """일일 통계 초기화"""
+        self.daily_stats = {
+            'total_mirrored': 0,
+            'successful_mirrors': 0,
+            'failed_mirrors': 0,
+            'partial_closes': 0,
+            'full_closes': 0,
+            'total_volume': 0.0,
+            'order_mirrors': 0,
+            'position_mirrors': 0,
+            'plan_order_mirrors': 0,
+            'plan_order_cancels': 0,
+            'errors': []
+        }
+        self.failed_mirrors.clear()
+    
+    def _generate_position_id(self, pos: Dict) -> str:
+        """포지션 고유 ID 생성"""
+        symbol = pos.get('symbol', self.SYMBOL)
+        side = pos.get('holdSide', '')
+        entry_price = pos.get('openPriceAvg', '')
+        return f"{symbol}_{side}_{entry_price}"
+    
+    async def _create_position_info(self, bitget_pos: Dict) -> PositionInfo:
+        """포지션 정보 객체 생성"""
+        return PositionInfo(
+            symbol=bitget_pos.get('symbol', self.SYMBOL),
+            side=bitget_pos.get('holdSide', '').lower(),
+            size=float(bitget_pos.get('total', 0)),
+            entry_price=float(bitget_pos.get('openPriceAvg', 0)),
+            margin=float(bitget_pos.get('marginSize', 0)),
+            leverage=int(float(bitget_pos.get('leverage', 1))),
+            mode='cross' if bitget_pos.get('marginMode') == 'crossed' else 'isolated',
+            unrealized_pnl=float(bitget_pos.get('unrealizedPL', 0))
+        )
+    
+    async def stop(self):
+        """미러 트레이딩 중지"""
+        self.monitoring = False
+        
+        # 최종 리포트 생성
+        try:
+            final_report = await self._create_daily_report()
+            await self.telegram.send_message(
+                f"🛑 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 종료\n\n{final_report}"
+            )
+        except:
+            pass
+        
+        self.logger.info("실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 시스템 중지")
