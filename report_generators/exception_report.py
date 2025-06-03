@@ -30,84 +30,106 @@ class ExceptionReportGenerator(BaseReportGenerator):
             except Exception as e:
                 self.logger.error(f"ML 예측기 초기화 실패: {e}")
         
+        # 뉴스 발표 시점 기록 저장소
+        self.news_initial_data = {}  # 뉴스별 초기 데이터 저장
+        
         # 현실적인 뉴스 반응 패턴 데이터 (실제 과거 데이터 기반)
         self.news_reaction_patterns = {
             'etf_approval': {
-                'immediate': '+2~5%',
+                'immediate': '+1.5~3%',
                 'pattern': '즉시 급등 후 2-4시간 내 수익 실현',
                 'duration': '12-24시간',
                 'strategy': '발표 직후 진입, 과열 시 빠른 익절',
-                'actual_impact': 'high'
+                'actual_impact': 'high',
+                'typical_range': (1.5, 3.0)
             },
             'etf_rejection': {
-                'immediate': '-1~3%',
+                'immediate': '-0.8~2%',
                 'pattern': '즉시 하락 후 6-12시간 내 회복',
                 'duration': '6-12시간',
                 'strategy': '급락 시 분할 매수, 빠른 회복 기대',
-                'actual_impact': 'medium'
+                'actual_impact': 'medium',
+                'typical_range': (-2.0, -0.8)
             },
             'corporate_purchase_direct': {  # 실제 BTC 매입
-                'immediate': '+0.5~2%',
+                'immediate': '+0.3~1.2%',
                 'pattern': '점진적 상승, 며칠간 지속 가능',
                 'duration': '1-3일',
                 'strategy': '분할 매수, 중기 보유 고려',
-                'actual_impact': 'medium'
+                'actual_impact': 'medium',
+                'typical_range': (0.3, 1.2)
             },
             'corporate_structured_product': {  # 구조화 상품 (스베르방크 타입)
-                'immediate': '+0.1~0.5%',
+                'immediate': '+0.05~0.2%',
                 'pattern': '미미한 반응, 수 시간 내 소멸',
                 'duration': '2-6시간',
                 'strategy': '단기 스캘핑만 고려, 장기 영향 없음',
-                'actual_impact': 'minimal'
+                'actual_impact': 'minimal',
+                'typical_range': (0.05, 0.2)
             },
             'regulation_positive': {
-                'immediate': '+0.5~1.5%',
+                'immediate': '+0.3~0.8%',
                 'pattern': '초기 상승 후 안정화',
                 'duration': '6-24시간',
                 'strategy': '단기 스윙, 과열 구간 주의',
-                'actual_impact': 'medium'
+                'actual_impact': 'medium',
+                'typical_range': (0.3, 0.8)
             },
             'regulation_negative': {
-                'immediate': '-1~4%',
+                'immediate': '-0.8~2.5%',
                 'pattern': '급락 후 반등, V자 회복 패턴',
                 'duration': '6-18시간',
                 'strategy': '급락 시 분할 매수, 반등 타이밍 포착',
-                'actual_impact': 'medium'
+                'actual_impact': 'medium',
+                'typical_range': (-2.5, -0.8)
             },
             'banking_adoption': {
-                'immediate': '+0.2~0.8%',
+                'immediate': '+0.1~0.5%',
                 'pattern': '완만한 상승, 기관 관심 지속',
                 'duration': '1-2일',
                 'strategy': '장기 관점 매수, 하락 시 추가 매수',
-                'actual_impact': 'low'
+                'actual_impact': 'low',
+                'typical_range': (0.1, 0.5)
             },
             'hack_incident': {
-                'immediate': '-0.5~2%',
+                'immediate': '-0.3~1.5%',
                 'pattern': '즉시 하락 후 4-8시간 내 회복',
                 'duration': '4-12시간',
                 'strategy': '공포 매도 시 역매매, 단기 반등 기대',
-                'actual_impact': 'low'
+                'actual_impact': 'low',
+                'typical_range': (-1.5, -0.3)
             },
             'fed_rate_decision': {
-                'immediate': '±1~3%',
+                'immediate': '±0.8~2%',
                 'pattern': '방향성 뚜렷, 하루 내 추세 확정',
                 'duration': '12-48시간',
                 'strategy': '방향성 확인 후 추세 추종',
-                'actual_impact': 'high'
+                'actual_impact': 'high',
+                'typical_range': (-2.0, 2.0)
             },
             'trade_tariffs': {  # 새로 추가
-                'immediate': '-0.5~1.5%',
+                'immediate': '-0.3~0.8%',
                 'pattern': '즉시 하락 후 수 시간 내 안정화',
                 'duration': '6-12시간',
                 'strategy': '단기 하락 시 매수 기회, 장기 영향 제한적',
-                'actual_impact': 'medium'
+                'actual_impact': 'medium',
+                'typical_range': (-0.8, -0.3)
             },
             'inflation_data': {  # 새로 추가
-                'immediate': '+0.3~1.2%',
+                'immediate': '+0.2~0.8%',
                 'pattern': '인플레이션 헤지 수요로 완만한 상승',
                 'duration': '12-24시간',
                 'strategy': '헤지 수요 지속 시 추가 매수',
-                'actual_impact': 'medium'
+                'actual_impact': 'medium',
+                'typical_range': (0.2, 0.8)
+            },
+            'macro_economic_general': {  # 일반 거시경제
+                'immediate': '+0.1~0.4%',
+                'pattern': '제한적 반응, 단기간 영향',
+                'duration': '2-8시간',
+                'strategy': '신중한 관망',
+                'actual_impact': 'low',
+                'typical_range': (-0.4, 0.4)
             }
         }
         
@@ -170,7 +192,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
             return 'hack_incident'
         
         else:
-            return 'general'
+            return 'macro_economic_general'
     
     def _get_ml_impact_prediction(self, article: Dict) -> Dict:
         """ML 기반 영향 예측 - 현실적 조정"""
@@ -185,7 +207,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
             prediction = self.ml_predictor.predict_price_impact(features)
             
             # 현실적 조정 (과도한 예측 방지)
-            magnitude = min(prediction.get('magnitude', 0.5), 2.0)  # 최대 2% 제한
+            magnitude = min(prediction.get('magnitude', 0.5), 1.5)  # 최대 1.5% 제한
             confidence = prediction.get('confidence', 0.6)
             
             return {
@@ -258,59 +280,25 @@ class ExceptionReportGenerator(BaseReportGenerator):
         """ML 사용 불가 시 현실적 폴백 예측"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        # 구조화 상품은 영향 미미
-        if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']):
-            return {
-                'direction': 'neutral',
-                'magnitude': 0.3,  # 매우 낮음
-                'confidence': 0.7,
-                'timeframe': '1-4시간 (미미)',
-                'risk_level': 'low'
-            }
+        # 뉴스 타입 분류
+        news_type = self._classify_news_type(article)
+        pattern_info = self.news_reaction_patterns.get(news_type, self.news_reaction_patterns['macro_economic_general'])
         
-        # 거시경제 키워드
-        if any(word in content for word in ['trump tariffs', 'trade war']):
-            return {
-                'direction': 'bearish',
-                'magnitude': 0.8,
-                'confidence': 0.7,
-                'timeframe': '즉시-2시간',
-                'risk_level': 'medium'
-            }
-        elif any(word in content for word in ['inflation', 'cpi']):
-            return {
-                'direction': 'bullish',
-                'magnitude': 0.6,
-                'confidence': 0.6,
-                'timeframe': '1-6시간',
-                'risk_level': 'low'
-            }
+        # 패턴 기반 예측 범위
+        min_impact, max_impact = pattern_info['typical_range']
         
-        # 키워드 기반 간단 예측
-        if any(word in content for word in ['etf approved', 'bought billion']):
-            return {
-                'direction': 'bullish',
-                'magnitude': 1.5,
-                'confidence': 0.8,
-                'timeframe': '즉시-2시간',
-                'risk_level': 'medium'
-            }
-        elif any(word in content for word in ['banned', 'rejected', 'hack']):
-            return {
-                'direction': 'bearish',
-                'magnitude': 1.2,
-                'confidence': 0.7,
-                'timeframe': '즉시-1시간',
-                'risk_level': 'high'
-            }
-        else:
-            return {
-                'direction': 'neutral',
-                'magnitude': 0.5,
-                'confidence': 0.5,
-                'timeframe': '1-6시간',
-                'risk_level': 'low'
-            }
+        # 중간값 계산
+        avg_impact = (min_impact + max_impact) / 2
+        magnitude = abs(avg_impact)
+        direction = 'bullish' if avg_impact > 0 else 'bearish' if avg_impact < 0 else 'neutral'
+        
+        return {
+            'direction': direction,
+            'magnitude': magnitude,
+            'confidence': 0.7,
+            'timeframe': self._get_realistic_timeframe(article),
+            'risk_level': pattern_info['actual_impact']
+        }
     
     def _format_smart_strategy(self, news_type: str, ml_prediction: Dict, article: Dict) -> str:
         """현실적 전략 제안"""
@@ -331,7 +319,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
             strategy_lines.append("• 장기 투자 의사결정에 영향 없음")
             
         elif news_type == 'corporate_purchase_direct':
-            if magnitude > 1.0:
+            if magnitude > 0.8:
                 strategy_lines.append("🎯 <b>직접 매입 - 적극 매수 시나리오</b>")
                 strategy_lines.append("• 실제 BTC 수요 증가")
                 strategy_lines.append("• 분할 매수 후 중기 보유")
@@ -499,12 +487,13 @@ class ExceptionReportGenerator(BaseReportGenerator):
             self.logger.error(f"스마트 요약 생성 실패: {e}")
             return "비트코인 시장 관련 소식이 발표되었다. 자세한 내용은 원문을 확인하시기 바란다. 실제 시장 반응을 면밀히 분석할 필요가 있다."
     
-    async def _get_current_market_status(self) -> str:
-        """현재 시장 상황 조회 - 뉴스 발표 후 변동률 포함"""
+    async def _get_current_market_status(self, news_time: datetime = None) -> str:
+        """현재 시장 상황 조회 - 실제 API 데이터 사용 및 뉴스 후 변동률 계산"""
         try:
             if not self.bitget_client:
                 return ""
             
+            # 현재 시장 데이터 조회
             ticker = await self.bitget_client.get_ticker('BTCUSDT')
             if not ticker:
                 return ""
@@ -515,39 +504,109 @@ class ExceptionReportGenerator(BaseReportGenerator):
             
             # 현재가 0 문제 해결
             if current_price <= 0:
-                self.logger.warning(f"현재가 데이터 오류: {current_price}, 기본값 사용")
-                current_price = 96000  # 기본값 설정
+                self.logger.warning(f"현재가 데이터 오류: {current_price}")
+                return ""
+            
+            # 뉴스 발표 후 변동률 계산
+            if news_time:
+                news_hash = f"news_{news_time.timestamp()}"
+                
+                # 뉴스 발표 시점의 가격 데이터가 있는지 확인
+                if news_hash in self.news_initial_data:
+                    initial_data = self.news_initial_data[news_hash]
+                    initial_price = initial_data['price']
+                    initial_volume = initial_data['volume']
+                    
+                    # 실제 변동률 계산
+                    price_change_since_news = ((current_price - initial_price) / initial_price) * 100
+                    volume_change_since_news = ((volume_24h - initial_volume) / initial_volume) * 100 if initial_volume > 0 else 0
+                    
+                    # 시간 경과 계산
+                    time_elapsed = datetime.now() - news_time
+                    minutes_elapsed = int(time_elapsed.total_seconds() / 60)
+                    
+                    # 시장 반응 분석
+                    reaction_analysis = self._analyze_market_reaction(price_change_since_news, volume_change_since_news, minutes_elapsed)
+                    
+                else:
+                    # 뉴스 발표 시점 데이터 없음 - 현재 데이터로 초기화
+                    self.news_initial_data[news_hash] = {
+                        'price': current_price,
+                        'volume': volume_24h,
+                        'time': datetime.now()
+                    }
+                    price_change_since_news = 0
+                    volume_change_since_news = 0
+                    minutes_elapsed = 0
+                    reaction_analysis = "데이터 수집 중"
+            else:
+                price_change_since_news = 0
+                volume_change_since_news = 0
+                minutes_elapsed = 0
+                reaction_analysis = "실시간 모니터링"
             
             # 현재 상태 분석
-            price_trend = "상승세" if change_24h > 0.5 else "하락세" if change_24h < -0.5 else "횡보"
-            volume_status = "높음" if volume_24h > 60000 else "보통" if volume_24h > 40000 else "낮음"
+            if abs(change_24h) >= 3.0:
+                price_trend = "급등세" if change_24h > 0 else "급락세"
+            elif abs(change_24h) >= 1.0:
+                price_trend = "상승세" if change_24h > 0 else "하락세"
+            elif abs(change_24h) >= 0.3:
+                price_trend = "약한 상승" if change_24h > 0 else "약한 하락"
+            else:
+                price_trend = "횡보"
             
-            # 시간 정보 추가 (뉴스 발표 후 경과 시간 시뮬레이션)
-            from datetime import datetime
-            now = datetime.now()
+            volume_status = "매우 높음" if volume_24h > 80000 else "높음" if volume_24h > 60000 else "보통" if volume_24h > 40000 else "낮음"
             
-            # 뉴스 발표 후 경과 시간 (실제로는 뉴스 발표 시간과 현재 시간 차이를 계산해야 함)
-            # 여기서는 시뮬레이션으로 12-18분 전으로 설정
-            import random
-            minutes_ago = random.randint(12, 18)
+            market_status = f"""
+<b>📊 현재 시장 상황 (실시간 API 데이터):</b>
+• 현재가: <b>${current_price:,.0f}</b> (24시간: {change_24h:+.2f}%)
+• 시장 추세: <b>{price_trend}</b>
+• 거래량: <b>{volume_24h:,.0f} BTC</b> ({volume_status})"""
             
-            # 뉴스 발표 후 변동률 (시뮬레이션 - 실제로는 뉴스 발표 시점 가격과 비교)
-            news_impact_change = random.uniform(-0.8, 1.2)  # -0.8%~+1.2% 범위
-            news_trend = "상승" if news_impact_change > 0.2 else "하락" if news_impact_change < -0.2 else "횡보"
+            if minutes_elapsed > 0:
+                market_status += f"""
+• 뉴스 후 변동: <b>{price_change_since_news:+.2f}%</b> ({minutes_elapsed}분 경과)
+• 뉴스 후 거래량: <b>{volume_change_since_news:+.1f}%</b> 변화
+• 시장 반응: <b>{reaction_analysis}</b>"""
             
-            # 뉴스 발표 후 거래량 변화 (시뮬레이션)
-            volume_change = random.uniform(-15, 25)  # -15%~+25% 범위
-            volume_trend = "증가" if volume_change > 5 else "감소" if volume_change < -5 else "보통"
-            
-            return f"""
-<b>📊 현재 시장 상황 (뉴스 발표 시점):</b>
-• 현재가: <b>${current_price:,.0f}</b>
-• 뉴스 후 변동: <b>{news_impact_change:+.2f}%</b> ({minutes_ago}분 전/{news_trend})
-• 뉴스 후 거래량: <b>{volume_24h:,.0f} BTC</b> ({minutes_ago}분 전/{volume_trend})"""
+            return market_status
             
         except Exception as e:
             self.logger.error(f"현재 시장 상황 조회 실패: {e}")
             return ""
+    
+    def _analyze_market_reaction(self, price_change: float, volume_change: float, minutes_elapsed: int) -> str:
+        """시장 반응 분석"""
+        abs_price_change = abs(price_change)
+        
+        # 시간대별 반응 분석
+        if minutes_elapsed <= 30:  # 30분 이내
+            if abs_price_change >= 2.0:
+                return "즉각 강한 반응" if price_change > 0 else "즉각 강한 매도"
+            elif abs_price_change >= 1.0:
+                return "즉각 중간 반응" if price_change > 0 else "즉각 중간 매도"
+            elif abs_price_change >= 0.3:
+                return "약간 반응" if price_change > 0 else "약간 매도"
+            else:
+                return "반응 미미"
+        
+        elif minutes_elapsed <= 120:  # 2시간 이내
+            if abs_price_change >= 1.5:
+                return "지속적 강한 반응" if price_change > 0 else "지속적 강한 매도"
+            elif abs_price_change >= 0.8:
+                return "지속적 반응" if price_change > 0 else "지속적 매도"
+            elif abs_price_change >= 0.3:
+                return "완만한 반응" if price_change > 0 else "완만한 매도"
+            else:
+                return "제한적 반응"
+        
+        else:  # 2시간 이후
+            if abs_price_change >= 1.0:
+                return "장기간 영향" if price_change > 0 else "장기간 부정적"
+            elif abs_price_change >= 0.5:
+                return "일부 영향 지속" if price_change > 0 else "일부 부정적 지속"
+            else:
+                return "영향 소멸"
     
     async def generate_report(self, event: Dict) -> str:
         """🚨 현실적인 긴급 예외 리포트 생성"""
@@ -562,7 +621,8 @@ class ExceptionReportGenerator(BaseReportGenerator):
             company = event.get('company', '')
             published_at = event.get('published_at', '')
             
-            # 발행 시각 포맷팅
+            # 발행 시각 처리
+            pub_time = None
             pub_time_str = ""
             if published_at:
                 try:
@@ -596,33 +656,25 @@ class ExceptionReportGenerator(BaseReportGenerator):
             direction = ml_prediction.get('direction', 'neutral')
             magnitude = ml_prediction.get('magnitude', 0.5)
             
+            # 패턴 기반 현실적 범위 조정
+            pattern_info = self.news_reaction_patterns.get(news_type, self.news_reaction_patterns['macro_economic_general'])
+            min_impact, max_impact = pattern_info['typical_range']
+            
+            # ML 예측과 패턴 정보 결합
             if direction == 'bullish':
-                if magnitude > 1.5:
-                    impact_text = "📈 호재"
-                    expected_change = f"📈 상승 +{magnitude:.1f}~{magnitude+0.5:.1f}%"
-                elif magnitude > 0.8:
-                    impact_text = "📈 약한 호재"
-                    expected_change = f"📈 상승 +{magnitude:.1f}~{magnitude+0.3:.1f}%"
-                else:
-                    impact_text = "📈 미미한 호재"
-                    expected_change = f"📈 상승 +{magnitude:.1f}~{magnitude+0.2:.1f}%"
+                adjusted_min = max(min_impact, 0.05)  # 최소 0.05%
+                adjusted_max = min(max_impact, magnitude + 0.3)
+                impact_text = "📈 호재" if adjusted_max > 0.8 else "📈 약한 호재" if adjusted_max > 0.3 else "📈 미미한 호재"
+                expected_change = f"📈 상승 +{adjusted_min:.2f}~{adjusted_max:.2f}%"
             elif direction == 'bearish':
-                if magnitude > 1.5:
-                    impact_text = "📉 악재"
-                    expected_change = f"📉 하락 -{magnitude:.1f}~{magnitude+0.5:.1f}%"
-                elif magnitude > 0.8:
-                    impact_text = "📉 약한 악재"
-                    expected_change = f"📉 하락 -{magnitude:.1f}~{magnitude+0.3:.1f}%"
-                else:
-                    impact_text = "📉 미미한 악재"
-                    expected_change = f"📉 하락 -{magnitude:.1f}~{magnitude+0.2:.1f}%"
+                adjusted_min = max(abs(max_impact), 0.05)  # 최소 0.05%
+                adjusted_max = min(abs(min_impact), magnitude + 0.3)
+                impact_text = "📉 악재" if adjusted_max > 0.8 else "📉 약한 악재" if adjusted_max > 0.3 else "📉 미미한 악재"
+                expected_change = f"📉 하락 -{adjusted_min:.2f}~{adjusted_max:.2f}%"
             else:
-                if magnitude < 0.3:
-                    impact_text = "⚡ 미미한 변동"
-                    expected_change = f"⚡ 변동 ±0.1~0.3%"
-                else:
-                    impact_text = "⚡ 변동성"
-                    expected_change = f"⚡ 변동 ±{magnitude:.1f}~{magnitude+0.3:.1f}%"
+                adjusted_range = min(magnitude, 0.4)
+                impact_text = "⚡ 미미한 변동" if adjusted_range < 0.2 else "⚡ 변동성"
+                expected_change = f"⚡ 변동 ±{adjusted_range/2:.2f}~{adjusted_range:.2f}%"
             
             # 현실적 전략 생성
             smart_strategy = self._format_smart_strategy(news_type, ml_prediction, event)
@@ -647,8 +699,8 @@ class ExceptionReportGenerator(BaseReportGenerator):
             if not detail_summary or len(detail_summary.strip()) < 10:
                 detail_summary = "비트코인 관련 발표가 있었다. 실제 시장 영향을 주의깊게 모니터링하고 있다. 투자자들은 신중한 접근이 필요하다."
             
-            # 현재 시장 상황 조회 (뉴스 발표 후 변동률 포함)
-            market_status = await self._get_current_market_status()
+            # 현재 시장 상황 조회 (실제 뉴스 후 변동률 포함)
+            market_status = await self._get_current_market_status(pub_time)
             
             # 리포트 생성
             report = f"""🚨 <b>BTC 긴급 예외 리포트</b>
