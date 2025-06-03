@@ -598,80 +598,34 @@ class MirrorTradingSystem:
                 self.logger.debug(f"   - 신규 게이트 포지션: {new_gate_positions_count}개")
                 self.logger.debug(f"   - 포지션 차이: {position_diff}개")
                 
-                # 🔥🔥🔥 포지션 크기 차이는 정상적 현상으로 간주
-                if bitget_active and gate_active:
-                    self.daily_stats['position_size_differences_ignored'] += 1
+                # 실제 포지션 처리
+                active_position_ids = set()
                 
-                # 🔥🔥🔥 개선된 동기화 체크 - 허용 오차 적용
-                sync_tolerance_met = False
+                for pos in bitget_active:
+                    pos_id = self._generate_position_id(pos)
+                    active_position_ids.add(pos_id)
+                    await self._process_position(pos)
                 
-                if position_diff != 0:
-                    # 최근 체결된 주문이 있는지 확인 (허용 오차 시간 내)
-                    recent_orders = []
-                    
-                    try:
-                        recent_bitget_orders = await self.bitget.get_recent_filled_orders(
-                            symbol=self.SYMBOL, 
-                            minutes=self.SYNC_TOLERANCE_MINUTES
-                        )
-                        recent_orders.extend(recent_bitget_orders)
-                    except:
-                        pass
-                    
-                    # 최근 주문이 있으면 허용 오차 적용
-                    if recent_orders:
-                        sync_tolerance_met = True
-                        sync_retry_count = 0
-                        self.daily_stats['sync_tolerance_used'] += 1
-                        
-                        self.logger.info(
-                            f"🔥✅ 동기화 허용 오차 적용 (최근 {self.SYNC_TOLERANCE_MINUTES}분 내 주문 있음)\n"
-                            f"신규 비트겟: {new_bitget_count}, 신규 게이트: {new_gate_positions_count}\n"
-                            f"차이: {position_diff}, 최근 주문: {len(recent_orders)}건"
-                        )
+                # 종료된 포지션 처리
+                closed_positions = set(self.mirrored_positions.keys()) - active_position_ids
+                for pos_id in closed_positions:
+                    if pos_id not in self.startup_positions:
+                        await self._handle_position_close(pos_id)
                 
-                # 🔥🔥🔥 허용 오차를 초과하거나 지속적인 불일치 시에만 경고
-                if not sync_tolerance_met and position_diff != 0:
-                    sync_retry_count += 1
-                    
-                    if sync_retry_count >= self.POSITION_SYNC_RETRY_COUNT:
-                        # 시세 차이 정보 포함한 경고
-                        await self._update_current_prices()
-                        
-                        price_diff_info = ""
-                        if self.price_diff_percent > 0.5:
-                            price_diff_info = f"\n🔥 시세 차이: {self.price_diff_percent:.2f}% (비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f})"
-                        
-                        await self.telegram.send_message(
-                            f"🔥⚠️ 신규 포지션 동기화 불일치 감지 (예약 주문 TP 복제 완전 강화)\n"
-                            f"신규 비트겟: {new_bitget_count}개\n"
-                            f"신규 게이트: {new_gate_positions_count}개\n"
-                            f"차이: {position_diff}개\n"
-                            f"복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n"
-                            f"복제된 TP 주문: {len(self.mirrored_tp_orders)}개\n"
-                            f"복제된 예약 주문 TP: {len(self.mirrored_plan_order_tp)}개\n"
-                            f"연속 감지: {sync_retry_count}회{price_diff_info}\n\n"
-                            f"🔥🔥🔥 수정된 카운팅 로직:\n"
-                            f"• 시작시 포지션은 제외하고 신규 포지션만 비교\n"
-                            f"• 포지션 크기 차이는 마진 비율 차이로 정상\n"
-                            f"• 실제 신규 진입 이벤트만 추적\n\n"
-                            f"📊 상세 정보:\n"
-                            f"• 전체 비트겟: {len(bitget_active)}개 (시작시: {len(self.startup_positions)}개)\n"
-                            f"• 전체 게이트: {len(gate_active)}개 (시작시: {self.startup_gate_positions_count}개)"
-                        )
-                        
-                        sync_retry_count = 0  # 리셋
-                    else:
-                        self.logger.debug(
-                            f"🔥 신규 포지션 불일치 감지 중... ({sync_retry_count}/{self.POSITION_SYNC_RETRY_COUNT})\n"
-                            f"신규 비트겟: {new_bitget_count}, 신규 게이트: {new_gate_positions_count}, 차이: {position_diff}"
-                        )
-                else:
-                    # 동기화 상태 정상
-                    sync_retry_count = 0
+                consecutive_errors = 0
+                await asyncio.sleep(self.CHECK_INTERVAL)
                 
             except Exception as e:
-                self.logger.error(f"동기화 모니터링 오류: {e}")
+                consecutive_errors += 1
+                self.logger.error(f"포지션 모니터링 중 오류: {e}")
+                
+                if consecutive_errors >= 5:
+                    await self.telegram.send_message(
+                        f"⚠️ 포지션 모니터링 오류\n"
+                        f"연속 {consecutive_errors}회 실패"
+                    )
+                
+                await asyncio.sleep(self.CHECK_INTERVAL * 2)
 
     async def generate_daily_reports(self):
         """일일 리포트 생성"""
@@ -2319,35 +2273,6 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
             return {'result': 'failed', 'price_adjusted': False, 'tp_created': False}
-                
-                active_position_ids = set()
-                
-                for pos in bitget_positions:
-                    if float(pos.get('total', 0)) > 0:
-                        pos_id = self._generate_position_id(pos)
-                        active_position_ids.add(pos_id)
-                        await self._process_position(pos)
-                
-                # 종료된 포지션 처리
-                closed_positions = set(self.mirrored_positions.keys()) - active_position_ids
-                for pos_id in closed_positions:
-                    if pos_id not in self.startup_positions:
-                        await self._handle_position_close(pos_id)
-                
-                consecutive_errors = 0
-                await asyncio.sleep(self.CHECK_INTERVAL)
-                
-            except Exception as e:
-                consecutive_errors += 1
-                self.logger.error(f"포지션 모니터링 중 오류: {e}")
-                
-                if consecutive_errors >= 5:
-                    await self.telegram.send_message(
-                        f"⚠️ 포지션 모니터링 오류\n"
-                        f"연속 {consecutive_errors}회 실패"
-                    )
-                
-                await asyncio.sleep(self.CHECK_INTERVAL * 2)
 
     async def _process_position(self, bitget_pos: Dict):
         """포지션 처리"""
@@ -2884,3 +2809,115 @@ class MirrorTradingSystem:
                     continue
                 
                 bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+                bitget_active = [
+                    pos for pos in bitget_positions 
+                    if float(pos.get('total', 0)) > 0
+                ]
+                
+                gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+                gate_active = [
+                    pos for pos in gate_positions 
+                    if pos.get('size', 0) != 0
+                ]
+                
+                # 🔥🔥🔥 핵심 수정: 신규 미러링된 포지션만 카운팅
+                # 전체 비트겟 포지션에서 시작시 존재했던 포지션 제외
+                new_bitget_positions = []
+                for pos in bitget_active:
+                    pos_id = self._generate_position_id(pos)
+                    if pos_id not in self.startup_positions:
+                        new_bitget_positions.append(pos)
+                
+                # 게이트 포지션에서 시작시 존재했던 포지션 제외
+                new_gate_positions_count = len(gate_active) - self.startup_gate_positions_count
+                if new_gate_positions_count < 0:
+                    new_gate_positions_count = 0
+                
+                # 🔥🔥🔥 수정된 동기화 체크
+                new_bitget_count = len(new_bitget_positions)
+                position_diff = new_bitget_count - new_gate_positions_count
+                
+                self.logger.debug(f"🔥🔥🔥 동기화 체크 (수정된 로직):")
+                self.logger.debug(f"   - 전체 비트겟 포지션: {len(bitget_active)}개")
+                self.logger.debug(f"   - 시작시 비트겟 포지션: {len(self.startup_positions)}개")
+                self.logger.debug(f"   - 신규 비트겟 포지션: {new_bitget_count}개")
+                self.logger.debug(f"   - 전체 게이트 포지션: {len(gate_active)}개")
+                self.logger.debug(f"   - 시작시 게이트 포지션: {self.startup_gate_positions_count}개")
+                self.logger.debug(f"   - 신규 게이트 포지션: {new_gate_positions_count}개")
+                self.logger.debug(f"   - 포지션 차이: {position_diff}개")
+                
+                # 🔥🔥🔥 포지션 크기 차이는 정상적 현상으로 간주
+                if bitget_active and gate_active:
+                    self.daily_stats['position_size_differences_ignored'] += 1
+                
+                # 🔥🔥🔥 개선된 동기화 체크 - 허용 오차 적용
+                sync_tolerance_met = False
+                
+                if position_diff != 0:
+                    # 최근 체결된 주문이 있는지 확인 (허용 오차 시간 내)
+                    recent_orders = []
+                    
+                    try:
+                        recent_bitget_orders = await self.bitget.get_recent_filled_orders(
+                            symbol=self.SYMBOL, 
+                            minutes=self.SYNC_TOLERANCE_MINUTES
+                        )
+                        recent_orders.extend(recent_bitget_orders)
+                    except:
+                        pass
+                    
+                    # 최근 주문이 있으면 허용 오차 적용
+                    if recent_orders:
+                        sync_tolerance_met = True
+                        sync_retry_count = 0
+                        self.daily_stats['sync_tolerance_used'] += 1
+                        
+                        self.logger.info(
+                            f"🔥✅ 동기화 허용 오차 적용 (최근 {self.SYNC_TOLERANCE_MINUTES}분 내 주문 있음)\n"
+                            f"신규 비트겟: {new_bitget_count}, 신규 게이트: {new_gate_positions_count}\n"
+                            f"차이: {position_diff}, 최근 주문: {len(recent_orders)}건"
+                        )
+                
+                # 🔥🔥🔥 허용 오차를 초과하거나 지속적인 불일치 시에만 경고
+                if not sync_tolerance_met and position_diff != 0:
+                    sync_retry_count += 1
+                    
+                    if sync_retry_count >= self.POSITION_SYNC_RETRY_COUNT:
+                        # 시세 차이 정보 포함한 경고
+                        await self._update_current_prices()
+                        
+                        price_diff_info = ""
+                        if self.price_diff_percent > 0.5:
+                            price_diff_info = f"\n🔥 시세 차이: {self.price_diff_percent:.2f}% (비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f})"
+                        
+                        await self.telegram.send_message(
+                            f"🔥⚠️ 신규 포지션 동기화 불일치 감지 (예약 주문 TP 복제 완전 강화)\n"
+                            f"신규 비트겟: {new_bitget_count}개\n"
+                            f"신규 게이트: {new_gate_positions_count}개\n"
+                            f"차이: {position_diff}개\n"
+                            f"복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n"
+                            f"복제된 TP 주문: {len(self.mirrored_tp_orders)}개\n"
+                            f"복제된 예약 주문 TP: {len(self.mirrored_plan_order_tp)}개\n"
+                            f"연속 감지: {sync_retry_count}회{price_diff_info}\n\n"
+                            f"🔥🔥🔥 수정된 카운팅 로직:\n"
+                            f"• 시작시 포지션은 제외하고 신규 포지션만 비교\n"
+                            f"• 포지션 크기 차이는 마진 비율 차이로 정상\n"
+                            f"• 실제 신규 진입 이벤트만 추적\n\n"
+                            f"📊 상세 정보:\n"
+                            f"• 전체 비트겟: {len(bitget_active)}개 (시작시: {len(self.startup_positions)}개)\n"
+                            f"• 전체 게이트: {len(gate_active)}개 (시작시: {self.startup_gate_positions_count}개)"
+                        )
+                        
+                        sync_retry_count = 0  # 리셋
+                    else:
+                        self.logger.debug(
+                            f"🔥 신규 포지션 불일치 감지 중... ({sync_retry_count}/{self.POSITION_SYNC_RETRY_COUNT})\n"
+                            f"신규 비트겟: {new_bitget_count}, 신규 게이트: {new_gate_positions_count}, 차이: {position_diff}"
+                        )
+                else:
+                    # 동기화 상태 정상
+                    sync_retry_count = 0
+                
+            except Exception as e:
+                self.logger.error(f"동기화 모니터링 오류: {e}")
+                await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
