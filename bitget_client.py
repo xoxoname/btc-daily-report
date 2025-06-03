@@ -74,11 +74,10 @@ class BitgetClient:
         headers = self._get_headers(method, request_path, body)
         
         try:
-            logger.info(f"API 요청: {method} {url}")
+            logger.debug(f"API 요청: {method} {url}")
             async with self.session.request(method, url, headers=headers, data=body) as response:
                 response_text = await response.text()
-                logger.info(f"API 응답 상태: {response.status}")
-                logger.debug(f"API 응답 내용: {response_text[:500]}")
+                logger.debug(f"API 응답 상태: {response.status}")
                 
                 response_data = json.loads(response_text)
                 
@@ -241,59 +240,43 @@ class BitgetClient:
             logger.error(f"최근 체결 주문 조회 실패: {e}")
             return []
     
-    async def get_plan_orders_v2_comprehensive(self, symbol: str = None) -> List[Dict]:
-        """🔥🔥🔥 V2 API로 예약 주문 조회 - 완전 개선된 다중 엔드포인트 시도"""
+    async def get_plan_orders_v2_working(self, symbol: str = None) -> List[Dict]:
+        """🔥 V2 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
         try:
             symbol = symbol or self.config.symbol
             
-            logger.info(f"🔍🔍 V2 API 예약 주문 포괄적 조회 시작: {symbol}")
+            logger.info(f"🔍 V2 API 예약 주문 조회 시작: {symbol}")
             
             all_found_orders = []
             
-            # 🔥🔥🔥 V2 API 예약 주문 전용 엔드포인트들
-            v2_endpoints = [
-                # 주요 예약 주문 엔드포인트들
-                "/api/v2/mix/plan/orders-pending",           # V2 예약 주문 전용
-                "/api/v2/mix/plan/currentPlan",              # V2 현재 예약 주문
-                "/api/v2/mix/plan/orders-plan-pending",      # V2 플랜 주문 대기
-                "/api/v2/mix/order/orders-pending",          # V2 일반 대기 주문 (예약 주문 포함 가능)
-                "/api/v2/mix/trigger/orders-pending",        # V2 트리거 주문
-                "/api/v2/mix/plan/pending",                  # V2 예약 대기
-                
-                # 추가 가능한 엔드포인트들
-                "/api/v2/mix/order/plan-orders",             # V2 계획 주문
-                "/api/v2/mix/order/trigger-orders",          # V2 트리거 주문
-                "/api/v2/mix/plan/trigger-pending",          # V2 트리거 대기
-                "/api/v2/mix/plan/list",                     # V2 예약 주문 리스트
+            # 🔥 실제 작동하는 V2 엔드포인트만 사용
+            working_endpoints = [
+                "/api/v2/mix/order/orders-pending",          # ✅ 작동 확인됨
             ]
             
-            for endpoint in v2_endpoints:
+            for endpoint in working_endpoints:
                 try:
                     params = {
                         'symbol': symbol,
                         'productType': 'USDT-FUTURES'
                     }
                     
-                    logger.info(f"🔍 V2 예약 주문 조회 시도: {endpoint}")
+                    logger.info(f"🔍 예약 주문 조회: {endpoint}")
                     response = await self._request('GET', endpoint, params=params)
                     
                     if response is None:
-                        logger.info(f"{endpoint}: 응답이 None")
+                        logger.debug(f"{endpoint}: 응답이 None")
                         continue
                     
                     # 응답에서 주문 목록 추출
                     orders = []
                     if isinstance(response, dict):
-                        # 다양한 필드명 시도
-                        for field_name in ['entrustedList', 'orderList', 'planList', 'data', 'list', 'pending', 'orders', 'planOrders']:
-                            if field_name in response:
-                                orders_raw = response[field_name]
-                                if orders_raw is None:
-                                    continue
-                                elif isinstance(orders_raw, list):
-                                    orders = orders_raw
-                                    logger.info(f"✅ {endpoint}: {field_name}에서 {len(orders)}개 주문 발견")
-                                    break
+                        # entrustedList가 작동하는 필드명
+                        if 'entrustedList' in response:
+                            orders_raw = response['entrustedList']
+                            if isinstance(orders_raw, list):
+                                orders = orders_raw
+                                logger.info(f"✅ {endpoint}: entrustedList에서 {len(orders)}개 주문 발견")
                     elif isinstance(response, list):
                         orders = response
                         logger.info(f"✅ {endpoint}: 직접 리스트에서 {len(orders)}개 주문 발견")
@@ -315,72 +298,56 @@ class BitgetClient:
                             
                             logger.info(f"  📝 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}")
                         
-                        # 주문을 찾았으므로 해당 엔드포인트에서 성공
-                        logger.info(f"🎯🎯 성공한 엔드포인트: {endpoint} - {len(orders)}개 예약 주문 발견")
+                        # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
                         break
                     else:
-                        logger.info(f"{endpoint}: 주문이 없음")
+                        logger.debug(f"{endpoint}: 주문이 없음")
                         
                 except Exception as e:
                     logger.debug(f"{endpoint} 조회 실패: {e}")
                     continue
             
-            # 🔥🔥 중복 제거
+            # 중복 제거
             seen = set()
             unique_orders = []
             for order in all_found_orders:
                 if order is None:
                     continue
                     
-                # 여러 ID 필드 확인
                 order_id = (order.get('orderId') or 
                            order.get('planOrderId') or 
                            order.get('id') or
-                           order.get('clientOid') or
                            str(order.get('cTime', '')))
                 
                 if order_id and order_id not in seen:
                     seen.add(order_id)
                     unique_orders.append(order)
-                    logger.info(f"📝 V2 고유 예약 주문 추가: {order_id}")
+                    logger.debug(f"📝 V2 고유 예약 주문 추가: {order_id}")
             
-            logger.info(f"🔥🔥 V2 API에서 최종 발견된 고유한 예약 주문: {len(unique_orders)}건")
+            logger.info(f"🔥 V2 API에서 최종 발견된 고유한 예약 주문: {len(unique_orders)}건")
             return unique_orders
             
         except Exception as e:
-            logger.error(f"V2 예약 주문 포괄적 조회 실패: {e}")
-            logger.error(f"상세 오류: {traceback.format_exc()}")
+            logger.error(f"V2 예약 주문 조회 실패: {e}")
             return []
     
-    async def get_plan_orders_v1_comprehensive(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """🔥🔥🔥 V1 API로 예약 주문 조회 - 완전 개선된 다중 엔드포인트 시도"""
+    async def get_plan_orders_v1_working(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
+        """🔥 V1 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
         try:
             # V1 API는 다른 심볼 형식을 사용
-            # BTCUSDT -> BTCUSDT_UMCBL
             symbol = symbol or self.config.symbol
             v1_symbol = f"{symbol}_UMCBL"
             
-            logger.info(f"🔍🔍 V1 API 예약 주문 포괄적 조회 시작: {v1_symbol}")
+            logger.info(f"🔍 V1 API 예약 주문 조회 시작: {v1_symbol}")
             
             all_found_orders = []
             
-            # 🔥🔥🔥 V1 API 예약 주문 엔드포인트들
-            v1_endpoints = [
-                # 주요 V1 예약 주문 엔드포인트들
-                "/api/mix/v1/plan/currentPlan",              # V1 현재 예약 주문
-                "/api/mix/v1/plan/pendingOrders",            # V1 대기 주문
-                "/api/mix/v1/plan/planOrders",               # V1 계획 주문
-                "/api/mix/v1/order/plan-orders",             # V1 주문 계획
-                "/api/mix/v1/trigger/currentTrigger",        # V1 현재 트리거
-                "/api/mix/v1/plan/orders",                   # V1 예약 주문들
-                
-                # TP/SL 전용 엔드포인트들
-                "/api/mix/v1/plan/profit-loss",              # V1 손익 계획
-                "/api/mix/v1/plan/stopPlan",                 # V1 스탑 계획
-                "/api/mix/v1/order/profit-loss-orders",      # V1 손익 주문들
+            # 🔥 실제 작동하는 V1 엔드포인트만 사용
+            working_endpoints = [
+                "/api/mix/v1/plan/currentPlan",              # ✅ 작동 확인됨 (비어있을 뿐)
             ]
             
-            for endpoint in v1_endpoints:
+            for endpoint in working_endpoints:
                 try:
                     params = {
                         'symbol': v1_symbol,
@@ -394,23 +361,21 @@ class BitgetClient:
                         else:
                             params['planType'] = plan_type
                     
-                    logger.info(f"🔍 V1 예약 주문 조회 시도: {endpoint}")
+                    logger.info(f"🔍 V1 예약 주문 조회: {endpoint}")
                     response = await self._request('GET', endpoint, params=params)
                     
                     if response is None:
-                        logger.info(f"{endpoint}: 응답이 None")
+                        logger.debug(f"{endpoint}: 응답이 None")
                         continue
                     
                     # 응답에서 주문 목록 추출
                     orders = []
                     if isinstance(response, dict):
-                        # V1 API 특성상 다양한 필드명들
-                        for field_name in ['list', 'data', 'orderList', 'planList', 'orders', 'planOrders', 'pending', 'currentPlan']:
+                        # V1 API 응답 구조
+                        for field_name in ['list', 'data']:
                             if field_name in response:
                                 orders_raw = response[field_name]
-                                if orders_raw is None:
-                                    continue
-                                elif isinstance(orders_raw, list):
+                                if isinstance(orders_raw, list):
                                     orders = orders_raw
                                     logger.info(f"✅ {endpoint}: {field_name}에서 {len(orders)}개 주문 발견")
                                     break
@@ -427,119 +392,103 @@ class BitgetClient:
                             if order is None:
                                 continue
                             
-                            order_id = order.get('orderId', order.get('planOrderId', order.get('id', 'unknown')))
-                            order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
+                            order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
+                            order_type = order.get('orderType', order.get('planType', 'unknown'))
                             side = order.get('side', order.get('tradeSide', 'unknown'))
-                            trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
+                            trigger_price = order.get('triggerPrice', order.get('executePrice', 'unknown'))
                             size = order.get('size', order.get('volume', 'unknown'))
                             
                             logger.info(f"  📝 V1 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}")
                         
-                        # 주문을 찾았으므로 다른 엔드포인트는 시도하지 않고 종료 (첫 번째 성공한 곳만 사용)
-                        logger.info(f"🎯🎯 V1 성공한 엔드포인트: {endpoint} - {len(orders)}개 예약 주문 발견")
+                        # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
                         break
                     else:
-                        logger.info(f"{endpoint}: 주문이 없음")
+                        logger.debug(f"{endpoint}: 주문이 없음")
                         
                 except Exception as e:
                     logger.debug(f"{endpoint} 조회 실패: {e}")
                     continue
             
-            # 🔥🔥 중복 제거
+            # 중복 제거
             seen = set()
             unique_orders = []
             for order in all_found_orders:
                 if order is None:
                     continue
                     
-                # 여러 ID 필드 확인
                 order_id = (order.get('orderId') or 
                            order.get('planOrderId') or 
                            order.get('id') or
-                           order.get('clientOid') or
                            str(order.get('cTime', '')))
                 
                 if order_id and order_id not in seen:
                     seen.add(order_id)
                     unique_orders.append(order)
-                    logger.info(f"📝 V1 고유 예약 주문 추가: {order_id}")
+                    logger.debug(f"📝 V1 고유 예약 주문 추가: {order_id}")
             
-            logger.info(f"🔥🔥 V1 API에서 최종 발견된 고유한 예약 주문: {len(unique_orders)}건")
+            logger.info(f"🔥 V1 API에서 최종 발견된 고유한 예약 주문: {len(unique_orders)}건")
             return unique_orders
             
         except Exception as e:
-            logger.error(f"V1 예약 주문 포괄적 조회 실패: {e}")
-            logger.error(f"상세 오류: {traceback.format_exc()}")
+            logger.error(f"V1 예약 주문 조회 실패: {e}")
             return []
     
-    async def get_plan_orders_v1(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """플랜 주문 조회 - V1 API (기존 방식도 유지)"""
-        return await self.get_plan_orders_v1_comprehensive(symbol, plan_type)
-    
-    async def get_plan_orders_v2_pending(self, symbol: str = None) -> List[Dict]:
-        """V2 API로 대기중인 전체 주문 조회하여 예약 주문 필터링 (기존 방식도 유지)"""
-        return await self.get_plan_orders_v2_comprehensive(symbol)
-    
     async def get_all_trigger_orders(self, symbol: str = None) -> List[Dict]:
-        """🔥🔥🔥 모든 트리거 주문 조회 - 완전 개선된 버전 (V1 + V2 포괄적 조회)"""
+        """🔥 모든 트리거 주문 조회 - 작동하는 엔드포인트만 사용"""
         all_orders = []
         symbol = symbol or self.config.symbol
         
-        logger.info(f"🔍🔍🔍 모든 트리거 주문 완전 포괄적 조회 시작: {symbol}")
+        logger.info(f"🔍 모든 트리거 주문 조회 시작: {symbol}")
         
-        # 🔥🔥🔥 1. V2 API 포괄적 조회 (우선)
+        # 🔥 1. V2 API 조회 (우선)
         try:
-            v2_orders = await self.get_plan_orders_v2_comprehensive(symbol)
+            v2_orders = await self.get_plan_orders_v2_working(symbol)
             if v2_orders:
                 all_orders.extend(v2_orders)
-                logger.info(f"✅ V2 포괄적 조회에서 {len(v2_orders)}개 예약 주문 발견")
-            else:
-                logger.info("⚠️ V2 포괄적 조회에서 예약 주문을 찾지 못함")
+                logger.info(f"✅ V2에서 {len(v2_orders)}개 예약 주문 발견")
         except Exception as e:
-            logger.warning(f"V2 포괄적 예약 주문 조회 실패: {e}")
+            logger.warning(f"V2 예약 주문 조회 실패: {e}")
         
-        # 🔥🔥🔥 2. V1 API 포괄적 조회
+        # 🔥 2. V1 일반 예약 주문
         try:
-            v1_orders = await self.get_plan_orders_v1_comprehensive(symbol)
+            v1_orders = await self.get_plan_orders_v1_working(symbol)
             if v1_orders:
                 all_orders.extend(v1_orders)
-                logger.info(f"✅ V1 포괄적 조회에서 {len(v1_orders)}개 예약 주문 발견")
+                logger.info(f"✅ V1 일반에서 {len(v1_orders)}개 예약 주문 발견")
         except Exception as e:
-            logger.warning(f"V1 포괄적 예약 주문 조회 실패: {e}")
+            logger.warning(f"V1 일반 예약 주문 조회 실패: {e}")
         
-        # 🔥🔥🔥 3. V1 TP/SL 전용 조회
+        # 🔥 3. V1 TP/SL 주문
         try:
-            v1_tp_sl = await self.get_plan_orders_v1_comprehensive(symbol, 'profit_loss')
+            v1_tp_sl = await self.get_plan_orders_v1_working(symbol, 'profit_loss')
             if v1_tp_sl:
                 all_orders.extend(v1_tp_sl)
                 logger.info(f"✅ V1 TP/SL에서 {len(v1_tp_sl)}개 주문 발견")
         except Exception as e:
             logger.warning(f"V1 TP/SL 주문 조회 실패: {e}")
         
-        # 🔥🔥🔥 중복 제거 (더 정확한 ID 매칭)
+        # 중복 제거
         seen = set()
         unique_orders = []
         for order in all_orders:
             if order is None:
                 continue
                 
-            # 여러 ID 필드 확인
             order_id = (order.get('orderId') or 
                        order.get('planOrderId') or 
                        order.get('id') or
-                       order.get('clientOid') or
                        str(order.get('cTime', '')))
             
             if order_id and order_id not in seen:
                 seen.add(order_id)
                 unique_orders.append(order)
-                logger.info(f"📝 최종 고유 예약 주문 추가: {order_id}")
+                logger.debug(f"📝 최종 고유 예약 주문 추가: {order_id}")
         
-        logger.info(f"🔥🔥🔥 최종 발견된 고유한 트리거 주문: {len(unique_orders)}건")
+        logger.info(f"🔥 최종 발견된 고유한 트리거 주문: {len(unique_orders)}건")
         
-        # 🔥🔥🔥 발견된 주문들의 상세 정보 로깅
+        # 발견된 주문들의 상세 정보 로깅
         if unique_orders:
-            logger.info("📋📋📋 발견된 예약 주문 목록:")
+            logger.info("📋 발견된 예약 주문 목록:")
             for i, order in enumerate(unique_orders, 1):
                 order_id = order.get('orderId', order.get('planOrderId', order.get('id', 'unknown')))
                 side = order.get('side', order.get('tradeSide', 'unknown'))
@@ -548,13 +497,7 @@ class BitgetClient:
                 order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
                 logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}, 타입: {order_type}")
         else:
-            logger.warning("⚠️⚠️⚠️ 모든 API 조회에서 예약 주문을 전혀 찾지 못했습니다!")
-            logger.warning("가능한 원인:")
-            logger.warning("1. 예약 주문이 실제로 없음")
-            logger.warning("2. API 엔드포인트가 변경됨") 
-            logger.warning("3. 심볼 형식이 잘못됨")
-            logger.warning("4. API 권한 문제")
-            logger.warning("5. 예약 주문이 다른 상태 (체결 대기가 아님)")
+            logger.warning("⚠️ 예약 주문을 찾지 못했습니다!")
         
         return unique_orders
     
@@ -579,16 +522,16 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 완전 개선된 분류"""
+        """🔥 모든 플랜 주문과 TP/SL 조회 - 개선된 분류"""
         try:
             symbol = symbol or self.config.symbol
             
-            logger.info(f"🔍🔍🔍 모든 예약 주문 및 TP/SL 포괄적 조회 시작: {symbol}")
+            logger.info(f"🔍 모든 예약 주문 및 TP/SL 조회 시작: {symbol}")
             
-            # 모든 트리거 주문 조회 (완전 개선된 방식)
+            # 모든 트리거 주문 조회 (개선된 방식)
             all_orders = await self.get_all_trigger_orders(symbol)
             
-            # TP/SL과 일반 예약주문 분류 (더 정확한 분류)
+            # TP/SL과 일반 예약주문 분류
             tp_sl_orders = []
             plan_orders = []
             
@@ -611,7 +554,6 @@ class BitgetClient:
                 elif (order.get('presetStopSurplusPrice') or 
                       order.get('presetStopLossPrice')):
                     # 이 경우는 일반 주문에 TP/SL이 설정된 것이므로 plan_orders로 분류
-                    # 하지만 별도로 TP/SL 정보를 추출할 수 있음
                     pass
                 
                 if is_tp_sl:
@@ -628,11 +570,11 @@ class BitgetClient:
                 'total_count': len(all_orders)
             }
             
-            logger.info(f"🔥🔥🔥 전체 예약 주문 분류 완료: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
+            logger.info(f"🔥 전체 예약 주문 분류 완료: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
             
             # 각 카테고리별 상세 로깅
             if plan_orders:
-                logger.info("📈📈📈 일반 예약 주문 목록:")
+                logger.info("📈 일반 예약 주문 목록:")
                 for i, order in enumerate(plan_orders, 1):
                     order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
                     side = order.get('side', order.get('tradeSide', 'unknown'))
@@ -646,7 +588,7 @@ class BitgetClient:
                         logger.info(f"     SL 설정: {sl_price}")
             
             if tp_sl_orders:
-                logger.info("📊📊📊 TP/SL 주문 목록:")
+                logger.info("📊 TP/SL 주문 목록:")
                 for i, order in enumerate(tp_sl_orders, 1):
                     order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
                     side = order.get('side', order.get('tradeSide', 'unknown'))
@@ -1427,249 +1369,6 @@ class BitgetClient:
     async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
         """🔥🔥 개선된 손익 내역 조회 - 새로운 정확한 방식 사용"""
         return await self.get_enhanced_profit_history(symbol, days)
-    
-    async def _get_profit_loss_history_original(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - 기존 방식 (30일 조회 후 필터링)"""
-        try:
-            symbol = symbol or self.config.symbol
-            
-            # KST 기준 현재 시간
-            kst = pytz.timezone('Asia/Seoul')
-            now = datetime.now(kst)
-            
-            # 실제 필요한 기간
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            period_start = today_start - timedelta(days=days-1)
-            period_end = now
-            
-            logger.info(f"=== {days}일 손익 조회 (기존 방식) ===")
-            logger.info(f"실제 필요 기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
-            
-            # 30일 데이터 조회 (안정적인 데이터 확보를 위해)
-            base_days = 30
-            extended_start = today_start - timedelta(days=base_days-1)
-            
-            # UTC로 변환
-            start_time_utc = extended_start.astimezone(pytz.UTC)
-            end_time_utc = now.astimezone(pytz.UTC)
-            
-            start_time = int(start_time_utc.timestamp() * 1000)
-            end_time = int(end_time_utc.timestamp() * 1000)
-            
-            logger.info(f"30일 전체 조회: {extended_start.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}")
-            
-            # 모든 거래 내역 조회
-            all_fills = await self._get_all_fills_comprehensive(symbol, start_time, end_time)
-            
-            logger.info(f"30일 동안 조회된 총 거래 수: {len(all_fills)}건")
-            
-            # 날짜별로 거래 분류
-            trades_by_date = {}
-            total_pnl = 0.0
-            daily_pnl = {}
-            total_fees = 0.0
-            trade_count = 0
-            
-            # 모든 거래 처리
-            for trade in all_fills:
-                try:
-                    # 시간 필드 찾기
-                    trade_time = None
-                    for time_field in ['cTime', 'createdTime', 'createTime', 'time']:
-                        if time_field in trade:
-                            trade_time = int(trade[time_field])
-                            break
-                    
-                    if not trade_time:
-                        continue
-                    
-                    # KST 기준 날짜
-                    trade_date_kst = datetime.fromtimestamp(trade_time / 1000, tz=kst)
-                    trade_date_str = trade_date_kst.strftime('%Y-%m-%d')
-                    
-                    # 손익 필드 찾기
-                    profit = 0.0
-                    for profit_field in ['profit', 'realizedPL', 'realizedPnl', 'pnl']:
-                        if profit_field in trade:
-                            val = trade[profit_field]
-                            if val and str(val).replace('.', '').replace('-', '').isdigit():
-                                profit = float(val)
-                                break
-                    
-                    # 수수료 계산
-                    fee = 0.0
-                    
-                    # feeDetail 확인
-                    fee_detail = trade.get('feeDetail', [])
-                    if isinstance(fee_detail, list):
-                        for fee_info in fee_detail:
-                            if isinstance(fee_info, dict):
-                                fee += abs(float(fee_info.get('totalFee', 0)))
-                    
-                    # fee 필드 확인
-                    if fee == 0 and 'fee' in trade:
-                        fee = abs(float(trade.get('fee', 0)))
-                    
-                    # fees 필드 확인
-                    if fee == 0 and 'fees' in trade:
-                        fee = abs(float(trade.get('fees', 0)))
-                    
-                    # 거래 정보 저장
-                    if trade_date_str not in trades_by_date:
-                        trades_by_date[trade_date_str] = []
-                    
-                    trades_by_date[trade_date_str].append({
-                        'time': trade_time,
-                        'profit': profit,
-                        'fee': fee,
-                        'pnl': profit - fee
-                    })
-                    
-                except Exception as e:
-                    logger.warning(f"거래 파싱 오류: {e}")
-                    continue
-            
-            # 필요한 기간의 데이터만 추출
-            logger.info(f"\n=== {days}일 손익 계산 ===")
-            for i in range(days):
-                date = period_start + timedelta(days=i)
-                date_str = date.strftime('%Y-%m-%d')
-                
-                if date_str in trades_by_date:
-                    day_trades = trades_by_date[date_str]
-                    day_pnl = sum(t['pnl'] for t in day_trades)
-                    day_fees = sum(t['fee'] for t in day_trades)
-                    
-                    daily_pnl[date_str] = day_pnl
-                    total_pnl += day_pnl
-                    total_fees += day_fees
-                    trade_count += len(day_trades)
-                    
-                    logger.info(f"{date_str}: ${day_pnl:,.2f} ({len(day_trades)}건, 수수료 ${day_fees:.2f})")
-                else:
-                    logger.info(f"{date_str}: 거래 없음")
-            
-            logger.info(f"\n=== {days}일 총 손익: ${total_pnl:,.2f} (거래 {trade_count}건, 수수료 ${total_fees:.2f}) ===")
-            
-            return {
-                'total_pnl': total_pnl,
-                'daily_pnl': daily_pnl,
-                'days': days,
-                'average_daily': total_pnl / days if days > 0 else 0,
-                'trade_count': trade_count,
-                'total_fees': total_fees
-            }
-            
-        except Exception as e:
-            logger.error(f"손익 내역 조회 실패: {e}")
-            logger.error(f"상세 오류: {traceback.format_exc()}")
-            return {
-                'total_pnl': 0,
-                'daily_pnl': {},
-                'days': days,
-                'average_daily': 0,
-                'trade_count': 0,
-                'total_fees': 0,
-                'error': str(e)
-            }
-    
-    async def _get_all_fills_comprehensive(self, symbol: str, start_time: int, end_time: int) -> List[Dict]:
-        """포괄적인 거래 내역 조회 - 7일씩 나눠서 조회"""
-        all_fills = []
-        seen_ids = set()
-        
-        # 7일씩 나눠서 조회
-        current_start = start_time
-        
-        while current_start < end_time:
-            current_end = min(current_start + (7 * 24 * 60 * 60 * 1000), end_time)
-            
-            # KST로 변환하여 로깅
-            kst = pytz.timezone('Asia/Seoul')
-            start_kst = datetime.fromtimestamp(current_start/1000, tz=kst)
-            end_kst = datetime.fromtimestamp(current_end/1000, tz=kst)
-            logger.info(f"\n부분 조회: {start_kst.strftime('%Y-%m-%d')} ~ {end_kst.strftime('%Y-%m-%d')}")
-            
-            # 해당 기간 조회
-            period_fills = await self._get_period_fills_with_paging(symbol, current_start, current_end)
-            
-            # 중복 제거하며 추가
-            new_count = 0
-            for fill in period_fills:
-                fill_id = self._get_fill_id(fill)
-                if fill_id and fill_id not in seen_ids:
-                    seen_ids.add(fill_id)
-                    all_fills.append(fill)
-                    new_count += 1
-            
-            logger.info(f"조회 결과: {len(period_fills)}건 중 {new_count}건 추가")
-            
-            current_start = current_end
-            await asyncio.sleep(0.2)
-        
-        return all_fills
-    
-    async def _get_period_fills_with_paging(self, symbol: str, start_time: int, end_time: int) -> List[Dict]:
-        """특정 기간의 모든 거래 조회 (페이징)"""
-        all_fills = []
-        last_id = None
-        page = 0
-        endpoint = "/api/v2/mix/order/fill-history"
-        
-        while page < 20:  # 최대 20페이지
-            params = {
-                'symbol': symbol,
-                'productType': 'USDT-FUTURES',
-                'startTime': str(start_time),
-                'endTime': str(end_time),
-                'limit': '500'
-            }
-            
-            if last_id:
-                params['lastEndId'] = str(last_id)
-            
-            try:
-                response = await self._request('GET', endpoint, params=params)
-                
-                fills = []
-                if isinstance(response, dict):
-                    fills = response.get('fillList', response.get('list', []))
-                elif isinstance(response, list):
-                    fills = response
-                
-                if not fills:
-                    break
-                
-                all_fills.extend(fills)
-                logger.info(f"페이지 {page + 1}: {len(fills)}건 조회 (누적 {len(all_fills)}건)")
-                
-                if len(fills) < 500:
-                    break
-                
-                # 다음 페이지 ID
-                last_fill = fills[-1]
-                new_last_id = self._get_fill_id(last_fill)
-                
-                if not new_last_id or new_last_id == last_id:
-                    break
-                
-                last_id = new_last_id
-                page += 1
-                
-                await asyncio.sleep(0.1)
-                
-            except Exception as e:
-                logger.error(f"페이지 {page + 1} 조회 오류: {e}")
-                break
-        
-        return all_fills
-    
-    def _get_fill_id(self, fill: Dict) -> Optional[str]:
-        """거래 ID 추출"""
-        for field in ['fillId', 'id', 'orderId', 'tradeId']:
-            if field in fill and fill[field]:
-                return str(fill[field])
-        return None
     
     async def get_simple_weekly_profit(self, days: int = 7) -> Dict:
         """🔥🔥 개선된 간단한 주간 손익 계산 - achievedProfits vs 정확한 거래내역 비교"""
