@@ -49,25 +49,40 @@ class RealTimeDataCollector:
             'social_metrics': {'data': None, 'timestamp': None}
         }
         
-        # RealisticNewsCollector 임포트
+        # RealisticNewsCollector 임포트 및 강화
         try:
             from realistic_news_collector import RealisticNewsCollector
             self.news_collector = RealisticNewsCollector(config)
             self.news_collector.data_collector = self
-            logger.info("✅ RealisticNewsCollector 초기화 완료")
+            logger.info("✅ RealisticNewsCollector 초기화 완료 (Claude 번역 지원)")
         except ImportError as e:
             logger.error(f"RealisticNewsCollector 임포트 실패: {e}")
             self.news_collector = None
         
+        # 뉴스 처리 통계
+        self.news_stats = {
+            'total_processed': 0,
+            'critical_alerts': 0,
+            'translations_done': 0,
+            'claude_translations': 0,
+            'gpt_translations': 0,
+            'last_reset': datetime.now()
+        }
+        
     async def start(self):
-        """데이터 수집 시작"""
+        """데이터 수집 시작 - 뉴스 우선도 높임"""
         if not self.session:
             self.session = aiohttp.ClientSession()
         
-        logger.info("🚀 실시간 데이터 수집 시작")
+        logger.info("🚀 실시간 데이터 수집 시작 (Claude 번역 강화)")
         
         # 병렬 태스크 실행
         tasks = []
+        
+        # 뉴스 모니터링을 최우선으로 시작
+        if self.news_collector:
+            tasks.append(self.news_collector.start_monitoring())
+            logger.info("📰 고급 뉴스 모니터링 활성화 (Claude 우선 번역)")
         
         # Bitget 클라이언트가 설정된 경우에만 가격 모니터링 시작
         if self.bitget_client:
@@ -76,14 +91,54 @@ class RealTimeDataCollector:
         
         # 기본 모니터링
         tasks.append(self.monitor_sentiment())
-        tasks.append(self.monitor_market_metrics())  # 새로운 메트릭 모니터링
+        tasks.append(self.monitor_market_metrics())
         
-        # 뉴스 모니터링
-        if self.news_collector:
-            tasks.append(self.news_collector.start_monitoring())
-            logger.info("📰 고급 뉴스 모니터링 활성화")
+        # 뉴스 품질 모니터링 추가
+        tasks.append(self.monitor_news_quality())
         
         await asyncio.gather(*tasks, return_exceptions=True)
+    
+    async def monitor_news_quality(self):
+        """뉴스 품질 및 번역 상태 모니터링"""
+        while True:
+            try:
+                await asyncio.sleep(1800)  # 30분마다
+                
+                current_time = datetime.now()
+                time_since_reset = current_time - self.news_stats['last_reset']
+                hours = time_since_reset.total_seconds() / 3600
+                
+                if hours >= 1.0:  # 1시간마다 통계 리포트
+                    total = self.news_stats['total_processed']
+                    critical = self.news_stats['critical_alerts']
+                    claude_trans = self.news_stats['claude_translations']
+                    gpt_trans = self.news_stats['gpt_translations']
+                    
+                    if total > 0:
+                        logger.info(f"📊 뉴스 처리 통계 (지난 {hours:.1f}시간):")
+                        logger.info(f"  총 처리: {total}건")
+                        logger.info(f"  크리티컬 알림: {critical}건 ({critical/total*100:.1f}%)")
+                        logger.info(f"  Claude 번역: {claude_trans}건")
+                        logger.info(f"  GPT 번역: {gpt_trans}건")
+                        
+                        # 번역 성공률 체크
+                        total_translations = claude_trans + gpt_trans
+                        if total_translations > 0:
+                            claude_ratio = claude_trans / total_translations * 100
+                            logger.info(f"  번역 품질: Claude {claude_ratio:.1f}% / GPT {100-claude_ratio:.1f}%")
+                    
+                    # 통계 리셋
+                    self.news_stats = {
+                        'total_processed': 0,
+                        'critical_alerts': 0,
+                        'translations_done': 0,
+                        'claude_translations': 0,
+                        'gpt_translations': 0,
+                        'last_reset': current_time
+                    }
+                
+            except Exception as e:
+                logger.error(f"뉴스 품질 모니터링 오류: {e}")
     
     async def monitor_price_changes(self):
         """가격 급변동 모니터링 - 1% 민감도"""
@@ -375,11 +430,25 @@ class RealTimeDataCollector:
         return comprehensive_data
     
     async def get_recent_news(self, hours: int = 6) -> List[Dict]:
-        """최근 뉴스 가져오기"""
+        """최근 뉴스 가져오기 - 번역 통계 업데이트"""
         try:
             if self.news_collector:
                 news = await self.news_collector.get_recent_news(hours)
-                logger.info(f"📰 최근 {hours}시간 뉴스 {len(news)}건 조회")
+                
+                # 번역 통계 업데이트
+                for article in news:
+                    if article.get('title_ko') and article['title_ko'] != article.get('title', ''):
+                        self.news_stats['translations_done'] += 1
+                        
+                        # Claude vs GPT 구분 (로그를 통해 추정)
+                        if hasattr(self.news_collector, 'claude_translation_count'):
+                            if self.news_collector.claude_translation_count > 0:
+                                self.news_stats['claude_translations'] += 1
+                        elif hasattr(self.news_collector, 'gpt_translation_count'):
+                            if self.news_collector.gpt_translation_count > 0:
+                                self.news_stats['gpt_translations'] += 1
+                
+                logger.info(f"📰 최근 {hours}시간 뉴스 {len(news)}건 조회 (번역: {sum([1 for n in news if n.get('title_ko')])}건)")
                 return news
             else:
                 return self._get_fallback_news(hours)
@@ -411,6 +480,18 @@ class RealTimeDataCollector:
         self.bitget_client = bitget_client
         logger.info("✅ Bitget 클라이언트 설정 완료")
     
+    def update_news_stats(self, event_type: str, translation_type: str = None):
+        """뉴스 처리 통계 업데이트"""
+        self.news_stats['total_processed'] += 1
+        
+        if event_type == 'critical':
+            self.news_stats['critical_alerts'] += 1
+        
+        if translation_type == 'claude':
+            self.news_stats['claude_translations'] += 1
+        elif translation_type == 'gpt':
+            self.news_stats['gpt_translations'] += 1
+    
     async def close(self):
         """세션 종료"""
         try:
@@ -419,6 +500,15 @@ class RealTimeDataCollector:
             
             if self.news_collector:
                 await self.news_collector.close()
+            
+            # 최종 통계 출력
+            total = self.news_stats['total_processed']
+            if total > 0:
+                logger.info("📊 최종 뉴스 처리 통계:")
+                logger.info(f"  총 처리: {total}건")
+                logger.info(f"  크리티컬: {self.news_stats['critical_alerts']}건")
+                logger.info(f"  Claude 번역: {self.news_stats['claude_translations']}건")
+                logger.info(f"  GPT 번역: {self.news_stats['gpt_translations']}건")
             
             logger.info("🔚 데이터 수집기 종료 완료")
             
