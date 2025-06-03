@@ -295,11 +295,8 @@ class MirrorTradingSystem:
             if not is_buy_order and side not in ['close_long']:
                 gate_size = -gate_size
             
-            # Gate.io 트리거 타입 변환
-            if is_buy_order or side in ['close_short']:
-                gate_trigger_type = "ge"
-            else:
-                gate_trigger_type = "le"
+            # 🔥🔥 수정된 Gate.io 트리거 타입 변환 - 트리거가와 현재가 관계로 결정
+            gate_trigger_type = await self._determine_gate_trigger_type(trigger_price)
             
             # 게이트 레버리지 설정
             try:
@@ -336,8 +333,45 @@ class MirrorTradingSystem:
             self.logger.error(f"시작 시 예약 주문 복제 처리 실패: {e}")
             return "failed"
     
+    async def _determine_gate_trigger_type(self, trigger_price: float) -> str:
+        """🔥🔥 수정된 Gate.io 트리거 타입 결정 - 트리거가와 현재가 관계로 판단"""
+        try:
+            # 게이트 현재 시장가 조회
+            current_price = None
+            try:
+                contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
+                if 'last_price' in contract_info:
+                    current_price = float(contract_info['last_price'])
+                elif 'mark_price' in contract_info:
+                    current_price = float(contract_info['mark_price'])
+            except:
+                pass
+            
+            # 현재가를 찾을 수 없으면 비트겟 현재가 사용
+            if current_price is None:
+                try:
+                    bitget_ticker = await self.bitget.get_ticker(self.SYMBOL)
+                    if bitget_ticker:
+                        current_price = float(bitget_ticker.get('last', 0))
+                except:
+                    pass
+            
+            if current_price is None or current_price == 0:
+                # 폴백: 기본값으로 ge 사용
+                return "ge"
+            
+            # 🔥🔥 핵심 수정: 트리거가와 현재가 관계로만 판단
+            if trigger_price > current_price:
+                return "ge"  # 트리거가가 더 높으면 ge (>=)
+            else:
+                return "le"  # 트리거가가 더 낮으면 le (<=)
+                
+        except Exception as e:
+            self.logger.error(f"Gate.io 트리거 타입 결정 실패: {e}")
+            return "ge"  # 기본값
+    
     async def _validate_trigger_price(self, trigger_price: float, side: str) -> Tuple[bool, str]:
-        """트리거 가격 유효성 검증"""
+        """🔥🔥 수정된 트리거 가격 유효성 검증 - 단순화"""
         try:
             # 게이트 현재 시장가 조회
             contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
@@ -357,29 +391,19 @@ class MirrorTradingSystem:
             if current_price is None or current_price == 0:
                 return False, "현재 시장가를 조회할 수 없음"
             
-            # 방향에 따른 트리거 타입 결정
-            is_buy_order = False
-            if side in ['buy', 'open_long', 'close_short']:
-                is_buy_order = True
-            elif side in ['sell', 'open_short', 'close_long']:
-                is_buy_order = False
-            else:
-                is_buy_order = 'buy' in side.lower()
-            
-            # 트리거 타입에 따른 유효성 검증
-            if is_buy_order:
-                # ge 트리거: 트리거가가 현재가보다 높아야 함
-                if trigger_price <= current_price:
-                    return False, f"ge 트리거는 트리거가({trigger_price:.2f}) > 현재가({current_price:.2f})여야 함"
-            else:
-                # le 트리거: 트리거가가 현재가보다 낮아야 함
-                if trigger_price >= current_price:
-                    return False, f"le 트리거는 트리거가({trigger_price:.2f}) < 현재가({current_price:.2f})여야 함"
-            
-            # 가격 차이 검증 (너무 근접하면 스킵)
+            # 🔥🔥 핵심 수정: 단순한 검증 로직
+            # 트리거가와 현재가가 너무 근접하면 스킵 (최소 0.1% 차이 필요)
             price_diff_percent = abs(trigger_price - current_price) / current_price * 100
-            if price_diff_percent < 0.01:  # 0.01% 미만 차이
+            if price_diff_percent < 0.1:
                 return False, f"트리거가와 현재가 차이가 너무 작음 ({price_diff_percent:.4f}%)"
+            
+            # 🔥🔥 기본적인 유효성만 검증 - 모든 트리거 가격을 허용
+            if trigger_price <= 0:
+                return False, "트리거 가격이 0 이하입니다"
+            
+            # 극단적인 가격 차이 검증 (현재가 대비 50% 이상 차이나면 경고)
+            if price_diff_percent > 50:
+                return False, f"트리거가와 현재가 차이가 너무 큼 ({price_diff_percent:.1f}%)"
             
             return True, "유효한 트리거 가격"
             
@@ -621,11 +645,8 @@ class MirrorTradingSystem:
             if not is_buy_order and side not in ['close_long']:
                 gate_size = -gate_size
             
-            # Gate.io 트리거 타입 변환
-            if is_buy_order or side in ['close_short']:
-                gate_trigger_type = "ge"
-            else:
-                gate_trigger_type = "le"
+            # 🔥🔥 수정된 Gate.io 트리거 타입 변환 - 트리거가와 현재가 관계로 결정
+            gate_trigger_type = await self._determine_gate_trigger_type(trigger_price)
             
             # 게이트 레버리지 설정
             try:
@@ -666,7 +687,8 @@ class MirrorTradingSystem:
                     f"비트겟 ID: {order_id}\n"
                     f"게이트 ID: {gate_order.get('id')}\n"
                     f"방향: {side.upper()}\n"
-                    f"트리거가: ${trigger_price:,.2f}\n\n"
+                    f"트리거가: ${trigger_price:,.2f}\n"
+                    f"트리거 타입: {gate_trigger_type.upper()}\n\n"
                     f"💰 실제 달러 마진 동적 비율 복제:\n"
                     f"비트겟 실제 마진: ${bitget_required_margin:,.2f}\n"
                     f"실제 마진 비율: {margin_ratio*100:.2f}%\n"
@@ -1005,9 +1027,10 @@ class MirrorTradingSystem:
                 f"3️⃣ 실제 마진 비율 = 실제 마진 ÷ 비트겟 총 자산\n"
                 f"4️⃣ 게이트 투입 마진 = 게이트 총 자산 × 동일 비율\n"
                 f"5️⃣ 매 거래마다 실시간으로 비율을 새로 계산\n\n"
-                f"🔥🔥🔥 트리거 가격 유효성 검증:\n"
-                f"• 게이트 현재 시장가와 트리거 가격 비교\n"
-                f"• 부적절한 트리거 가격 자동 감지 및 스킵\n\n"
+                f"🔥🔥🔥 개선된 트리거 가격 검증:\n"
+                f"• 트리거가 > 현재가 → ge 트리거 (상승 돌파)\n"
+                f"• 트리거가 < 현재가 → le 트리거 (하락 돌파)\n"
+                f"• 주문 방향과 무관하게 가격 관계로만 판단\n\n"
                 f"📊 기존 항목:\n"
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.startup_plan_orders)}개 (시작 시 복제)\n"
@@ -1470,6 +1493,11 @@ class MirrorTradingSystem:
 💰💰💰 실제 달러 마진 비율 동적 계산 (핵심)
 - 매 예약주문마다 실제 마진 비율을 새로 계산
 - 미리 정해진 비율 없음 - 완전 동적 계산
+
+🔥🔥🔥 개선된 트리거 검증 (핵심)
+- 트리거가 > 현재가 → ge 트리거 (상승 돌파)
+- 트리거가 < 현재가 → le 트리거 (하락 돌파)
+- 주문 방향과 무관하게 가격 관계로만 판단
 """
             
             if self.daily_stats['errors']:
