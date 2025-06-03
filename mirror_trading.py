@@ -66,11 +66,12 @@ class MirrorTradingSystem:
         self.startup_plan_orders_processed: bool = False
         self.already_mirrored_plan_orders: Set[str] = set()
         
-        # 🔥🔥🔥 예약 주문 취소 감지 시스템
+        # 🔥🔥🔥 예약 주문 취소 감지 시스템 - 강화
         self.last_plan_order_ids: Set[str] = set()  # 이전 체크시 존재했던 예약 주문 ID들
         self.plan_order_snapshot: Dict[str, Dict] = {}  # 예약 주문 스냅샷
         self.plan_order_cancel_retry_count: int = 0
-        self.max_cancel_retry: int = 3
+        self.max_cancel_retry: int = 5  # 재시도 횟수 증가
+        self.cancel_verification_delay: float = 2.0  # 취소 확인 대기 시간
         
         # 포지션 유무에 따른 예약 주문 복제 관리
         self.startup_position_tp_sl: Set[str] = set()
@@ -105,7 +106,7 @@ class MirrorTradingSystem:
         self.GATE_CONTRACT = "BTC_USDT"
         self.CHECK_INTERVAL = 2
         self.ORDER_CHECK_INTERVAL = 1
-        self.PLAN_ORDER_CHECK_INTERVAL = 1  # 🔥🔥🔥 예약 주문 체크 간격을 1초로 단축 (취소 감지 강화)
+        self.PLAN_ORDER_CHECK_INTERVAL = 0.5  # 🔥🔥🔥 예약 주문 체크 간격을 0.5초로 단축 (취소 감지 강화)
         self.SYNC_CHECK_INTERVAL = 30
         self.MAX_RETRIES = 3
         self.MIN_POSITION_SIZE = 0.00001
@@ -139,16 +140,18 @@ class MirrorTradingSystem:
             'sync_tolerance_used': 0,
             'sync_warnings_suppressed': 0,
             'position_size_differences_ignored': 0,
+            'cancel_verification_success': 0,  # 🔥🔥🔥 취소 확인 성공
+            'cancel_verification_failed': 0,   # 🔥🔥🔥 취소 확인 실패
             'errors': []
         }
         
         self.monitoring = True
-        self.logger.info("🔥🔥🔥🔥🔥 예약 주문 취소 미러링 + TP 설정 미러링 + 예약 주문 TP 복제 완전 강화 시스템 초기화 완료")
+        self.logger.info("🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 + TP 설정 미러링 + 예약 주문 TP 복제 시스템 초기화 완료")
 
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🚀🔥🔥🔥🔥🔥 예약 주문 취소 미러링 + TP 설정 미러링 + 예약 주문 TP 복제 완전 강화 시스템 시작")
+            self.logger.info("🚀🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 + TP 설정 미러링 + 예약 주문 TP 복제 시스템 시작")
             
             # 🔥🔥🔥 시세 차이 초기 확인
             await self._update_current_prices()
@@ -178,7 +181,7 @@ class MirrorTradingSystem:
             
             # 모니터링 태스크 시작
             tasks = [
-                self.monitor_plan_orders(),  # 🔥🔥🔥 예약 주문 취소 감지 강화
+                self.monitor_plan_orders(),  # 🔥🔥🔥 예약 주문 취소 감지 완전 강화
                 self.monitor_order_fills(),
                 self.monitor_positions(),
                 self.monitor_sync_status(),
@@ -472,10 +475,18 @@ class MirrorTradingSystem:
                 price_diff_text = f"\n\n🔥🔥🔥 거래소 간 시세 차이:\n비트겟: ${self.bitget_current_price:,.2f}\n게이트: ${self.gate_current_price:,.2f}\n차이: {self.price_diff_percent:.2f}%\n{'⚠️ 큰 차이 감지 - 자동 조정됨' if self.price_diff_percent > self.MAX_PRICE_DIFF_PERCENT else '✅ 정상 범위'}"
             
             await self.telegram.send_message(
-                f"🔥🔥🔥🔥🔥 예약 주문 TP 복제 완전 강화 시스템 시작\n\n"
+                f"🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 시스템 시작\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f} (레버리지: {bitget_leverage}x)\n"
                 f"• 게이트: ${gate_equity:,.2f}{price_diff_text}\n\n"
+                f"🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 (핵심 신기능):\n"
+                f"• 체크 간격: {self.PLAN_ORDER_CHECK_INTERVAL}초마다 (초고속 감지)\n"
+                f"• 재시도 횟수: 최대 {self.max_cancel_retry}회 (확실한 취소 보장)\n"
+                f"• 취소 확인 대기: {self.cancel_verification_delay}초 (안정성 강화)\n"
+                f"• 실시간 스냅샷 비교로 정확한 취소 감지\n"
+                f"• 취소 후 검증 로직으로 완전한 동기화\n"
+                f"• 연결된 TP 주문도 자동 취소\n"
+                f"• 상세한 취소 성공/실패 통계\n\n"
                 f"🔥🔥🔥🔥🔥 예약 주문 TP 복제 완전 강화 (핵심 신기능):\n"
                 f"• 비트겟 예약 주문에 TP 설정이 있으면 게이트에서도 동일하게 설정\n"
                 f"• TP 가격, TP 비율, TP 수량 모두 완전 동기화\n"
@@ -486,12 +497,6 @@ class MirrorTradingSystem:
                 f"• TP 가격 수정 시 게이트에서도 실시간 동기화\n\n"
                 f"🔥🔥🔥 핵심 기능:\n"
                 f"매 주문/포지션마다 실제 달러 투입금 비율을 새로 계산!\n\n"
-                f"🔥🔥🔥 예약 주문 취소 미러링 강화:\n"
-                f"• 예약 주문 상태 체크: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
-                f"• 취소 감지 즉시 처리\n"
-                f"• 최대 {self.max_cancel_retry}회 재시도로 확실한 취소 보장\n"
-                f"• 취소 확인 검증 로직 추가\n"
-                f"• 상세한 취소 성공/실패 통계\n\n"
                 f"🔥🔥🔥 TP 설정 미러링 강화:\n"
                 f"• 비트겟 포지션 진입 시 TP 설정 감지\n"
                 f"• 게이트에서 동일한 TP 가격으로 자동 설정\n"
@@ -535,7 +540,7 @@ class MirrorTradingSystem:
                 f"• TP 가격, 수량, 트리거 타입 모두 완전 동기화\n"
                 f"• 예약 주문 취소 시 연결된 TP도 자동 취소\n\n"
                 f"⚡ 감지 주기:\n"
-                f"• 예약 주문: {self.PLAN_ORDER_CHECK_INTERVAL}초마다 (취소 감지 강화)\n"
+                f"• 예약 주문 취소: {self.PLAN_ORDER_CHECK_INTERVAL}초마다 (완전 강화)\n"
                 f"• 예약 주문 TP: {self.ORDER_CHECK_INTERVAL}초마다 (TP 설정 변경 감지)\n"
                 f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n"
                 f"• 시세 차이 모니터링: 1분마다\n"
@@ -548,7 +553,8 @@ class MirrorTradingSystem:
                 f"→ 포지션 크기 차이는 정상적 현상!\n"
                 f"→ 예약 주문 취소도 즉시 미러링!\n"
                 f"→ TP 설정도 자동 미러링!\n"
-                f"→ 🔥🔥🔥🔥🔥 예약 주문 TP도 완전 복제!"
+                f"→ 🔥🔥🔥🔥🔥 예약 주문 TP도 완전 복제!\n"
+                f"→ 🔥🔥🔥🔥🔥 예약 주문 취소 완전 강화!"
             )
             
         except Exception as e:
@@ -679,6 +685,12 @@ class MirrorTradingSystem:
             if total_plan_tp_mirrors > 0:
                 plan_tp_success_rate = (self.daily_stats['plan_order_tp_success'] / total_plan_tp_mirrors) * 100
             
+            # 🔥🔥🔥 취소 확인 통계 추가
+            verification_success_rate = 0
+            total_verifications = self.daily_stats['cancel_verification_success'] + self.daily_stats['cancel_verification_failed']
+            if total_verifications > 0:
+                verification_success_rate = (self.daily_stats['cancel_verification_success'] / total_verifications) * 100
+            
             # 🔥🔥🔥 시세 차이 정보 추가
             await self._update_current_prices()
             price_diff_text = ""
@@ -694,9 +706,21 @@ class MirrorTradingSystem:
 - 동기화 경고 억제: {self.daily_stats['sync_warnings_suppressed']}회
 - 포지션 크기 차이 무시: {self.daily_stats['position_size_differences_ignored']}회"""
             
-            report = f"""📊 일일 예약 주문 TP 복제 완전 강화 리포트
+            report = f"""📊 일일 예약 주문 취소 미러링 완전 강화 리포트
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
+
+🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 성과 (핵심 신기능)
+- 예약 주문 취소 감지: {self.daily_stats['plan_order_cancels']}건
+- 취소 미러링 성공: {self.daily_stats['plan_order_cancel_success']}건
+- 취소 미러링 실패: {self.daily_stats['plan_order_cancel_failed']}건
+- 취소 미러링 성공률: {cancel_success_rate:.1f}%
+- 취소 확인 성공: {self.daily_stats['cancel_verification_success']}건
+- 취소 확인 실패: {self.daily_stats['cancel_verification_failed']}건
+- 취소 확인 성공률: {verification_success_rate:.1f}%
+- 최대 재시도 횟수: {self.max_cancel_retry}회
+- 모니터링 주기: {self.PLAN_ORDER_CHECK_INTERVAL}초 (초고속)
+- 취소 확인 대기: {self.cancel_verification_delay}초
 
 🔥🔥🔥🔥🔥 예약 주문 TP 복제 완전 강화 성과 (핵심 신기능)
 - 예약 주문 TP 복제 시도: {self.daily_stats['plan_order_tp_mirrors']}건
@@ -704,14 +728,6 @@ class MirrorTradingSystem:
 - 예약 주문 TP 복제 실패: {self.daily_stats['plan_order_tp_failed']}건
 - 예약 주문 TP 복제 성공률: {plan_tp_success_rate:.1f}%
 - 현재 복제된 예약 주문 TP: {len(self.mirrored_plan_order_tp)}개
-
-🔥🔥🔥 예약 주문 취소 미러링 강화 성과
-- 예약 주문 취소 감지: {self.daily_stats['plan_order_cancels']}건
-- 취소 미러링 성공: {self.daily_stats['plan_order_cancel_success']}건
-- 취소 미러링 실패: {self.daily_stats['plan_order_cancel_failed']}건
-- 취소 미러링 성공률: {cancel_success_rate:.1f}%
-- 최대 재시도 횟수: {self.max_cancel_retry}회
-- 모니터링 주기: {self.PLAN_ORDER_CHECK_INTERVAL}초
 
 🔥🔥🔥 TP 설정 미러링 강화 성과
 - TP 미러링 시도: {self.daily_stats['tp_mirrors']}건
@@ -752,6 +768,15 @@ class MirrorTradingSystem:
 - 현재 복제된 예약 주문 TP: {len(self.mirrored_plan_order_tp)}개
 - 실패 기록: {len(self.failed_mirrors)}건{price_diff_text}
 
+🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 (핵심 신기능)
+- {self.PLAN_ORDER_CHECK_INTERVAL}초마다 실시간 스냅샷 비교
+- 비트겟 예약 주문 취소 즉시 감지
+- 게이트에서 연결된 예약 주문 자동 취소
+- 최대 {self.max_cancel_retry}회 재시도로 확실한 취소 보장
+- {self.cancel_verification_delay}초 대기 후 취소 확인 검증
+- 연결된 TP 주문도 함께 자동 취소
+- 상세한 취소 성공/실패 통계
+
 🔥🔥🔥🔥🔥 예약 주문 TP 복제 완전 강화 (핵심 신기능)
 - 비트겟 예약 주문에 TP 설정이 있으면 게이트에서도 동일하게 설정
 - TP 가격, TP 비율, TP 수량 모두 완전 동기화
@@ -760,13 +785,6 @@ class MirrorTradingSystem:
 - 시세 차이 대응으로 TP 가격도 자동 조정
 - 예약 주문 취소 시 연결된 TP도 함께 자동 취소
 - TP 가격 수정 시 게이트에서도 실시간 동기화
-
-🔥🔥🔥 예약 주문 취소 미러링 강화 (핵심 기능)
-- 실시간 예약 주문 상태 모니터링
-- 비트겟 취소 시 즉시 게이트에서도 취소
-- 재시도 로직으로 확실한 취소 보장
-- 취소 확인 검증 시스템
-- 상세한 취소 성공/실패 통계
 
 🔥🔥🔥 TP 설정 미러링 강화 (핵심 기능)
 - 비트겟 포지션 진입 시 TP 설정 자동 감지
@@ -804,7 +822,7 @@ class MirrorTradingSystem:
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
             
-            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥🔥🔥 완전한 예약 주문 TP 복제 + 취소 미러링 + 동기화 수정 + 시세 차이 대응 + 실제 달러 마진 비율 동적 계산!"
+            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥🔥🔥 완전한 예약 주문 취소 미러링 강화 + TP 복제 + 동기화 수정 + 시세 차이 대응 + 실제 달러 마진 비율 동적 계산!"
             
             return report
             
@@ -840,6 +858,8 @@ class MirrorTradingSystem:
             'sync_tolerance_used': 0,
             'sync_warnings_suppressed': 0,
             'position_size_differences_ignored': 0,
+            'cancel_verification_success': 0,  # 🔥🔥🔥 취소 확인 성공
+            'cancel_verification_failed': 0,   # 🔥🔥🔥 취소 확인 실패
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -871,12 +891,12 @@ class MirrorTradingSystem:
         try:
             final_report = await self._create_daily_report()
             await self.telegram.send_message(
-                f"🛑 예약 주문 TP 복제 완전 강화 시스템 종료\n\n{final_report}"
+                f"🛑 예약 주문 취소 미러링 완전 강화 시스템 종료\n\n{final_report}"
             )
         except:
             pass
         
-        self.logger.info("🔥🔥🔥🔥🔥 예약 주문 TP 복제 완전 강화 시스템 중지")
+        self.logger.info("🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 시스템 중지")
 
     async def _create_initial_plan_order_snapshot(self):
         """🔥🔥🔥 예약 주문 초기 스냅샷 생성"""
@@ -951,7 +971,7 @@ class MirrorTradingSystem:
             startup_gate_positions = len(gate_active)
             
             sync_analysis = f"""
-🔥🔥🔥🔥🔥 초기 동기화 상태 분석 (예약 주문 TP 복제 완전 강화):
+🔥🔥🔥🔥🔥 초기 동기화 상태 분석 (예약 주문 취소 미러링 완전 강화):
 
 📊 현재 상황:
 - Bitget 활성 포지션: {startup_bitget_positions}개 (모두 기존 포지션으로 간주)
@@ -965,18 +985,20 @@ class MirrorTradingSystem:
 - 향후 신규 진입만 미러링
 - 포지션 크기 차이는 마진 비율 차이로 정상적 현상
 
+🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 (신규 핵심 기능):
+- {self.PLAN_ORDER_CHECK_INTERVAL}초마다 실시간 스냅샷 비교
+- 비트겟 예약 주문 취소 즉시 감지
+- 게이트에서 연결된 예약 주문 자동 취소
+- 최대 {self.max_cancel_retry}회 재시도로 확실한 취소 보장
+- {self.cancel_verification_delay}초 대기 후 취소 확인 검증
+- 연결된 TP 주문도 함께 자동 취소
+
 🔥🔥🔥🔥🔥 예약 주문 TP 복제 완전 강화 (신규 핵심 기능):
 - 비트겟 예약 주문에 TP 설정이 있으면 게이트에서도 동일하게 설정
 - TP 가격, TP 비율, TP 수량 모두 완전 동기화
 - 예약 주문 체결 후 자동으로 TP 트리거 주문 생성
 - 비트겟과 동일한 수익률로 자동 익절
 - 시세 차이 대응으로 TP 가격도 자동 조정
-
-🔥🔥🔥 예약 주문 취소 미러링 강화:
-- 예약 주문 상태를 {self.PLAN_ORDER_CHECK_INTERVAL}초마다 체크
-- 비트겟에서 취소된 예약 주문을 즉시 감지
-- 게이트에서 해당 예약 주문 자동 취소
-- 최대 {self.max_cancel_retry}회 재시도로 확실한 취소 보장
 
 🔥🔥🔥 TP 설정 미러링 강화:
 - 비트겟 포지션 진입 시 TP 설정 감지
@@ -1408,14 +1430,14 @@ class MirrorTradingSystem:
             self.startup_position_tp_sl.clear()
 
     async def monitor_plan_orders(self):
-        """🔥🔥🔥 예약 주문 모니터링 - 취소 감지 강화"""
-        self.logger.info("🔥🔥🔥 예약 주문 취소 미러링 강화 모니터링 시작")
+        """🔥🔥🔥 예약 주문 모니터링 - 취소 감지 완전 강화"""
+        self.logger.info("🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화 모니터링 시작")
         consecutive_errors = 0
         
         while self.monitoring:
             try:
                 if not self.startup_plan_orders_processed:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.1)
                     continue
                 
                 # 🔥🔥🔥 현재 비트겟 예약 주문 조회 - 더 자주 체크
@@ -1439,12 +1461,12 @@ class MirrorTradingSystem:
                             'status': 'active'
                         }
                 
-                # 🔥🔥🔥 취소된 예약 주문 감지 - 더 정확한 감지
+                # 🔥🔥🔥🔥🔥 취소된 예약 주문 감지 - 완전 강화
                 canceled_order_ids = self.last_plan_order_ids - current_order_ids
                 
-                # 🔥🔥🔥 취소된 주문 처리 - 여러 개일 수 있음
+                # 🔥🔥🔥🔥🔥 취소된 주문 처리 - 여러 개일 수 있음
                 if canceled_order_ids:
-                    self.logger.info(f"🔥🔥🔥 {len(canceled_order_ids)}개의 예약 주문 취소 감지: {canceled_order_ids}")
+                    self.logger.info(f"🔥🔥🔥🔥🔥 {len(canceled_order_ids)}개의 예약 주문 취소 감지: {canceled_order_ids}")
                     
                     for canceled_order_id in canceled_order_ids:
                         await self._handle_plan_order_cancel_enhanced(canceled_order_id)
@@ -1494,7 +1516,7 @@ class MirrorTradingSystem:
                             f"오류: {str(e)[:200]}"
                         )
                 
-                # 🔥🔥🔥 현재 상태를 다음 비교를 위해 저장
+                # 🔥🔥🔥🔥🔥 현재 상태를 다음 비교를 위해 저장
                 self.last_plan_order_ids = current_order_ids.copy()
                 self.plan_order_snapshot = current_snapshot.copy()
                 
@@ -1524,9 +1546,9 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
     async def _handle_plan_order_cancel_enhanced(self, bitget_order_id: str):
-        """🔥🔥🔥 예약 주문 취소 처리 강화 - 재시도 로직 추가"""
+        """🔥🔥🔥🔥🔥 예약 주문 취소 처리 완전 강화 - 확실한 취소 보장"""
         try:
-            self.logger.info(f"🔥🔥🔥 예약 주문 취소 처리 시작: {bitget_order_id}")
+            self.logger.info(f"🔥🔥🔥🔥🔥 예약 주문 취소 처리 시작 (완전 강화): {bitget_order_id}")
             
             # 미러링된 주문인지 확인
             if bitget_order_id not in self.mirrored_plan_orders:
@@ -1545,51 +1567,57 @@ class MirrorTradingSystem:
             # 🔥🔥🔥🔥🔥 예약 주문에 연결된 TP 주문도 함께 취소
             await self._cancel_plan_order_tp(bitget_order_id)
             
-            # 🔥🔥🔥 재시도 로직으로 확실한 취소 보장
+            # 🔥🔥🔥🔥🔥 재시도 로직으로 확실한 취소 보장 - 강화된 버전
             cancel_success = False
             retry_count = 0
             
             while retry_count < self.max_cancel_retry and not cancel_success:
                 try:
                     retry_count += 1
-                    self.logger.info(f"🔥 게이트 예약 주문 취소 시도 {retry_count}/{self.max_cancel_retry}: {gate_order_id}")
+                    self.logger.info(f"🔥🔥🔥 게이트 예약 주문 취소 시도 {retry_count}/{self.max_cancel_retry}: {gate_order_id}")
                     
                     # 게이트에서 예약 주문 취소
                     await self.gate.cancel_price_triggered_order(gate_order_id)
                     
-                    # 취소 확인을 위해 잠시 대기
-                    await asyncio.sleep(1.0)
+                    # 취소 확인을 위해 대기 (강화된 대기 시간)
+                    await asyncio.sleep(self.cancel_verification_delay)
                     
-                    # 🔥🔥🔥 취소 확인 - 게이트에서 주문이 실제로 취소되었는지 확인
-                    gate_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
-                    order_still_exists = any(order.get('id') == gate_order_id for order in gate_orders)
+                    # 🔥🔥🔥🔥🔥 취소 확인 - 게이트에서 주문이 실제로 취소되었는지 확인
+                    verification_success = await self._verify_order_cancellation(gate_order_id)
                     
-                    if not order_still_exists:
+                    if verification_success:
                         cancel_success = True
-                        self.logger.info(f"✅ 게이트 예약 주문 취소 확인됨: {gate_order_id}")
+                        self.logger.info(f"✅✅✅ 게이트 예약 주문 취소 확인됨: {gate_order_id}")
                         self.daily_stats['plan_order_cancel_success'] += 1
+                        self.daily_stats['cancel_verification_success'] += 1
                         
                         # 성공 메시지
                         await self.telegram.send_message(
                             f"🚫✅ 예약 주문 취소 동기화 완료 (TP 포함)\n"
                             f"비트겟 ID: {bitget_order_id}\n"
                             f"게이트 ID: {gate_order_id}\n"
-                            f"재시도: {retry_count}회"
+                            f"재시도: {retry_count}회\n"
+                            f"확인 시간: {self.cancel_verification_delay}초"
                         )
                         break
                     else:
                         self.logger.warning(f"⚠️ 취소 시도했지만 주문이 여전히 존재함 (재시도 {retry_count}/{self.max_cancel_retry})")
+                        self.daily_stats['cancel_verification_failed'] += 1
+                        
                         if retry_count < self.max_cancel_retry:
-                            await asyncio.sleep(2.0)  # 재시도 전 대기
+                            # 재시도 전 더 긴 대기
+                            wait_time = min(self.cancel_verification_delay * retry_count, 10.0)
+                            await asyncio.sleep(wait_time)
                         
                 except Exception as cancel_error:
                     error_msg = str(cancel_error).lower()
                     
-                    if "not found" in error_msg or "order not exist" in error_msg:
+                    if any(keyword in error_msg for keyword in ["not found", "order not exist", "invalid order", "order does not exist"]):
                         # 주문이 이미 취소되었거나 체결됨
                         cancel_success = True
-                        self.logger.info(f"✅ 게이트 예약 주문이 이미 취소/체결됨: {gate_order_id}")
+                        self.logger.info(f"✅✅✅ 게이트 예약 주문이 이미 취소/체결됨: {gate_order_id}")
                         self.daily_stats['plan_order_cancel_success'] += 1
+                        self.daily_stats['cancel_verification_success'] += 1
                         
                         await self.telegram.send_message(
                             f"🚫✅ 예약 주문 취소 처리 완료 (TP 포함)\n"
@@ -1599,20 +1627,26 @@ class MirrorTradingSystem:
                         break
                     else:
                         self.logger.error(f"❌ 게이트 예약 주문 취소 실패 (시도 {retry_count}/{self.max_cancel_retry}): {cancel_error}")
+                        
                         if retry_count < self.max_cancel_retry:
-                            await asyncio.sleep(3.0)  # 재시도 전 더 긴 대기
+                            # 재시도 전 더 긴 대기
+                            wait_time = min(3.0 * retry_count, 15.0)
+                            await asyncio.sleep(wait_time)
                         else:
                             # 최종 실패
                             self.daily_stats['plan_order_cancel_failed'] += 1
+                            self.daily_stats['cancel_verification_failed'] += 1
+                            
                             await self.telegram.send_message(
                                 f"❌ 예약 주문 취소 최종 실패\n"
                                 f"비트겟 ID: {bitget_order_id}\n"
                                 f"게이트 ID: {gate_order_id}\n"
                                 f"오류: {str(cancel_error)[:200]}\n"
+                                f"재시도: {retry_count}회\n"
                                 f"수동 확인이 필요할 수 있습니다."
                             )
             
-            # 🔥🔥🔥 미러링 기록에서 제거 (성공/실패 관계없이)
+            # 🔥🔥🔥🔥🔥 미러링 기록에서 제거 (성공/실패 관계없이)
             if bitget_order_id in self.mirrored_plan_orders:
                 del self.mirrored_plan_orders[bitget_order_id]
                 self.logger.info(f"🗑️ 미러링 기록에서 제거됨: {bitget_order_id}")
@@ -1630,6 +1664,84 @@ class MirrorTradingSystem:
                 f"비트겟 ID: {bitget_order_id}\n"
                 f"오류: {str(e)[:200]}"
             )
+
+    async def _verify_order_cancellation(self, gate_order_id: str) -> bool:
+        """🔥🔥🔥🔥🔥 주문 취소 확인 검증 - 강화된 버전"""
+        try:
+            # 여러 방법으로 취소 확인
+            verification_methods = []
+            
+            # 방법 1: 활성 예약 주문 목록에서 확인
+            try:
+                gate_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+                order_still_exists = any(order.get('id') == gate_order_id for order in gate_orders)
+                verification_methods.append(('active_orders', not order_still_exists))
+                
+                if not order_still_exists:
+                    self.logger.info(f"✅ 확인 방법 1: 주문이 활성 목록에 없음 - {gate_order_id}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ 확인 방법 1: 주문이 여전히 활성 목록에 있음 - {gate_order_id}")
+                    
+            except Exception as e:
+                self.logger.debug(f"확인 방법 1 실패: {e}")
+                verification_methods.append(('active_orders', None))
+            
+            # 방법 2: 취소된 주문 목록에서 확인
+            try:
+                canceled_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "cancelled")
+                order_in_canceled = any(order.get('id') == gate_order_id for order in canceled_orders)
+                verification_methods.append(('canceled_orders', order_in_canceled))
+                
+                if order_in_canceled:
+                    self.logger.info(f"✅ 확인 방법 2: 주문이 취소 목록에 있음 - {gate_order_id}")
+                    return True
+                else:
+                    self.logger.debug(f"확인 방법 2: 주문이 취소 목록에 없음 - {gate_order_id}")
+                    
+            except Exception as e:
+                self.logger.debug(f"확인 방법 2 실패: {e}")
+                verification_methods.append(('canceled_orders', None))
+            
+            # 방법 3: 직접 주문 조회 시도
+            try:
+                # 주문이 존재하지 않으면 오류가 발생할 것임
+                specific_order = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "all")
+                order_found = any(order.get('id') == gate_order_id for order in specific_order)
+                verification_methods.append(('direct_query', not order_found))
+                
+                if not order_found:
+                    self.logger.info(f"✅ 확인 방법 3: 주문을 찾을 수 없음 - {gate_order_id}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ 확인 방법 3: 주문이 여전히 존재함 - {gate_order_id}")
+                    
+            except Exception as e:
+                # 주문이 없어서 오류가 발생한 경우 취소된 것으로 간주
+                if any(keyword in str(e).lower() for keyword in ["not found", "order not exist", "invalid order"]):
+                    self.logger.info(f"✅ 확인 방법 3: 주문 조회 오류로 취소 확인 - {gate_order_id}")
+                    verification_methods.append(('direct_query', True))
+                    return True
+                else:
+                    self.logger.debug(f"확인 방법 3 실패: {e}")
+                    verification_methods.append(('direct_query', None))
+            
+            # 모든 확인 방법 결과 분석
+            successful_verifications = [method for method in verification_methods if method[1] is True]
+            failed_verifications = [method for method in verification_methods if method[1] is False]
+            
+            self.logger.debug(f"취소 확인 결과 - 성공: {successful_verifications}, 실패: {failed_verifications}")
+            
+            # 하나라도 취소가 확인되면 성공
+            if successful_verifications:
+                return True
+            
+            # 모든 방법이 실패했으면 취소되지 않은 것으로 판단
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"주문 취소 확인 검증 실패: {e}")
+            return False
 
     async def _cancel_plan_order_tp(self, bitget_order_id: str):
         """🔥🔥🔥🔥🔥 예약 주문에 연결된 TP 주문 취소"""
@@ -2891,7 +3003,7 @@ class MirrorTradingSystem:
                             price_diff_info = f"\n🔥 시세 차이: {self.price_diff_percent:.2f}% (비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f})"
                         
                         await self.telegram.send_message(
-                            f"🔥⚠️ 신규 포지션 동기화 불일치 감지 (예약 주문 TP 복제 완전 강화)\n"
+                            f"🔥⚠️ 신규 포지션 동기화 불일치 감지 (예약 주문 취소 미러링 완전 강화)\n"
                             f"신규 비트겟: {new_bitget_count}개\n"
                             f"신규 게이트: {new_gate_positions_count}개\n"
                             f"차이: {position_diff}개\n"
@@ -2899,6 +3011,11 @@ class MirrorTradingSystem:
                             f"복제된 TP 주문: {len(self.mirrored_tp_orders)}개\n"
                             f"복제된 예약 주문 TP: {len(self.mirrored_plan_order_tp)}개\n"
                             f"연속 감지: {sync_retry_count}회{price_diff_info}\n\n"
+                            f"🔥🔥🔥🔥🔥 예약 주문 취소 미러링 완전 강화:\n"
+                            f"• {self.PLAN_ORDER_CHECK_INTERVAL}초마다 실시간 스냅샷 비교\n"
+                            f"• 최대 {self.max_cancel_retry}회 재시도로 확실한 취소 보장\n"
+                            f"• {self.cancel_verification_delay}초 대기 후 취소 확인 검증\n"
+                            f"• 연결된 TP 주문도 함께 자동 취소\n\n"
                             f"🔥🔥🔥 수정된 카운팅 로직:\n"
                             f"• 시작시 포지션은 제외하고 신규 포지션만 비교\n"
                             f"• 포지션 크기 차이는 마진 비율 차이로 정상\n"
