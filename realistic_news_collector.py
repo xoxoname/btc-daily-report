@@ -31,14 +31,14 @@ class RealisticNewsCollector:
         # 전송된 뉴스 제목 캐시 (중복 방지 강화) - 초기화
         self.sent_news_titles = {}
         
-        # 🔥🔥 Claude API 에러 방지 - 더 안전한 설정
+        # 🔥🔥 Claude API 에러 방지 - 더 보수적인 설정으로 수정
         self.translation_cache = {}  # 번역 캐시
         self.claude_translation_count = 0  # Claude 번역 횟수
         self.gpt_translation_count = 0  # GPT 번역 횟수 
         self.claude_error_count = 0  # Claude 에러 횟수 추가
         self.last_translation_reset = datetime.now()
-        self.max_claude_translations_per_15min = 20  # 100 → 20으로 대폭 감소
-        self.max_gpt_translations_per_15min = 30  # 10 → 30으로 증가 (GPT 위주로)
+        self.max_claude_translations_per_15min = 5  # 20 → 5로 대폭 감소 (극도로 제한)
+        self.max_gpt_translations_per_15min = 15  # 30 → 15로 감소
         self.translation_reset_interval = 900  # 15분
         self.claude_cooldown_until = None  # Claude 일시 중단 시간
         self.claude_cooldown_duration = 300  # 5분 쿨다운
@@ -49,7 +49,7 @@ class RealisticNewsCollector:
             try:
                 import anthropic
                 self.anthropic_client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
-                logger.info("✅ Claude API 클라이언트 초기화 완료 (보수적 설정)")
+                logger.info("✅ Claude API 클라이언트 초기화 완료 (극도로 제한적 사용)")
             except ImportError:
                 logger.warning("❌ anthropic 라이브러리가 설치되지 않음: pip install anthropic")
             except Exception as e:
@@ -62,7 +62,7 @@ class RealisticNewsCollector:
         
         # GPT 요약 사용량 제한
         self.summary_count = 0
-        self.max_summaries_per_15min = 40  # 30 → 40개로 증가
+        self.max_summaries_per_15min = 20  # 40 → 20개로 감소
         self.last_summary_reset = datetime.now()
         
         # 모든 API 키들
@@ -272,9 +272,9 @@ class RealisticNewsCollector:
         # 중복 방지 데이터 로드
         self._load_duplicate_data()
         
-        logger.info(f"🔥🔥 GPT 위주 번역 뉴스 수집기 초기화 완료")
+        logger.info(f"🔥🔥 번역 극도 제한 뉴스 수집기 초기화 완료")
         logger.info(f"🧠 GPT API: {'활성화' if self.openai_client else '비활성화'} (주력 - 15분당 {self.max_gpt_translations_per_15min}개)")
-        logger.info(f"🤖 Claude API: {'활성화' if self.anthropic_client else '비활성화'} (보조 - 15분당 {self.max_claude_translations_per_15min}개)")
+        logger.info(f"🤖 Claude API: {'활성화' if self.anthropic_client else '비활성화'} (극도 제한 - 15분당 {self.max_claude_translations_per_15min}개)")
         logger.info(f"📊 설정: RSS 5초 체크 (빠른 감지), 요약 15분당 {self.max_summaries_per_15min}개")
         logger.info(f"🎯 크리티컬 키워드: {len(self.critical_keywords)}개 (대폭 확장)")
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
@@ -388,32 +388,53 @@ class RealisticNewsCollector:
                 logger.info(f"요약 카운트 리셋: {old_count} → 0 (15분당 {self.max_summaries_per_15min}개 제한)")
     
     def _should_translate(self, article: Dict) -> bool:
-        """🔥🔥 번역 대상을 좀 더 관대하게"""
+        """🔥🔥 번역 대상을 극도로 제한 - API 비용 절약"""
         # 이미 한글 제목이 있으면 번역 불필요
         if article.get('title_ko') and article['title_ko'] != article.get('title', ''):
             return False
         
-        # 🔥🔥 크리티컬 뉴스는 번역 (weight >= 8로 낮춤)
+        # 🔥🔥 최고 중요도 뉴스만 번역 (weight >= 10으로 대폭 상향)
         weight = article.get('weight', 0)
-        if weight < 8:
+        if weight < 10:
             return False
         
-        # 🔥🔥 크리티컬 뉴스이면서 비트코인 관련만
-        if not self._is_critical_news(article):
+        # 🔥🔥 정말 크리티컬한 뉴스만
+        if not self._is_critical_news_enhanced(article):
             return False
         
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        # 비트코인 또는 중요 경제 키워드가 있어야 함
-        important_keywords = ['bitcoin', 'btc', '비트코인', 'fed', 'tariff', 'inflation', 'etf', 
-                             'tesla', 'microstrategy', 'sec', 'regulation']
-        if not any(keyword in content for keyword in important_keywords):
+        # 🔥🔥 극도로 중요한 키워드만 번역 (대폭 축소)
+        ultra_critical_keywords = [
+            'bitcoin etf approved', 'bitcoin etf rejected', 
+            'tesla bought bitcoin', 'microstrategy bought bitcoin',
+            'fed rate decision', 'china bans bitcoin', 
+            'sec bitcoin lawsuit', 'trump bitcoin'
+        ]
+        
+        # 극도로 중요한 키워드가 있어야만 번역
+        if not any(keyword in content for keyword in ultra_critical_keywords):
             return False
         
-        return True
+        # 회사명이 있으면서 비트코인이 직접 언급된 경우만
+        company_found = any(company.lower() in content for company in ['tesla', 'microstrategy', 'blackrock'])
+        bitcoin_mentioned = any(keyword in content for keyword in ['bitcoin', 'btc'])
+        
+        if company_found and bitcoin_mentioned:
+            return True
+        
+        # ETF 관련만 번역
+        if 'etf' in content and any(keyword in content for keyword in ['bitcoin', 'approved', 'rejected']):
+            return True
+        
+        # Fed 금리 결정만 번역
+        if 'fed' in content and any(keyword in content for keyword in ['rate', 'decision', 'powell']):
+            return True
+        
+        return False
     
     def _should_use_gpt_summary(self, article: Dict) -> bool:
-        """🔥🔥 GPT 요약 사용 여부 결정 - 더 관대하게"""
+        """🔥🔥 GPT 요약 사용 여부 결정 - 더 제한적으로"""
         # 요약 카운트 리셋 체크
         self._reset_summary_count_if_needed()
         
@@ -421,8 +442,8 @@ class RealisticNewsCollector:
         if self.summary_count >= self.max_summaries_per_15min:
             return False
         
-        # weight >= 9이면서 크리티컬 뉴스만
-        if article.get('weight', 0) < 9:
+        # weight >= 10이면서 극도로 크리티컬한 뉴스만
+        if article.get('weight', 0) < 10:
             return False
         
         if not self._is_critical_news_enhanced(article):
@@ -430,10 +451,18 @@ class RealisticNewsCollector:
         
         # description이 충분히 길어야 함 (요약할 가치가 있어야 함)
         description = article.get('description', '')
-        if len(description) < 200:  # 300자에서 200자로 낮춤
+        if len(description) < 300:  # 200자에서 300자로 다시 상향
             return False
         
-        return True
+        # 극도로 중요한 키워드가 있는 경우만
+        content = (article.get('title', '') + ' ' + description).lower()
+        ultra_critical_keywords = [
+            'bitcoin etf approved', 'bitcoin etf rejected', 
+            'tesla bought bitcoin', 'microstrategy bought bitcoin',
+            'fed rate decision', 'china bans bitcoin'
+        ]
+        
+        return any(keyword in content for keyword in ultra_critical_keywords)
     
     def _is_claude_available(self) -> bool:
         """Claude API 사용 가능 여부 확인"""
@@ -452,7 +481,7 @@ class RealisticNewsCollector:
             return False
         
         # 에러가 너무 많으면 일시 중단
-        if self.claude_error_count >= 3:
+        if self.claude_error_count >= 2:  # 3 → 2로 더 엄격하게
             self.claude_cooldown_until = datetime.now() + timedelta(seconds=self.claude_cooldown_duration)
             logger.warning(f"Claude API 에러가 {self.claude_error_count}회 발생, {self.claude_cooldown_duration//60}분 쿨다운 시작")
             return False
@@ -521,7 +550,7 @@ class RealisticNewsCollector:
                 for key in keys_to_remove:
                     del self.translation_cache[key]
             
-            logger.info(f"🤖 Claude 번역 완료 ({self.claude_translation_count}/{self.max_claude_translations_per_15min})")
+            logger.info(f"🤖 Claude 번역 완료 ({self.claude_translation_count}/{self.max_claude_translations_per_15min}) - 극도 제한")
             return translated
             
         except Exception as e:
@@ -531,10 +560,10 @@ class RealisticNewsCollector:
             
             # 529 에러 (rate limit) 특별 처리
             if "529" in error_str or "rate" in error_str.lower() or "limit" in error_str.lower():
-                logger.warning(f"Claude API rate limit 감지 (에러 {self.claude_error_count}/3), 30분 쿨다운")
+                logger.warning(f"Claude API rate limit 감지 (에러 {self.claude_error_count}/2), 30분 쿨다운")
                 self.claude_cooldown_until = datetime.now() + timedelta(minutes=30)
             else:
-                logger.warning(f"Claude 번역 실패 (에러 {self.claude_error_count}/3): {error_str[:50]}")
+                logger.warning(f"Claude 번역 실패 (에러 {self.claude_error_count}/2): {error_str[:50]}")
             
             return ""  # 빈 문자열 반환하여 GPT로 넘어가도록
     
@@ -594,7 +623,7 @@ class RealisticNewsCollector:
             if result != text:  # 번역이 성공했으면
                 return result
         
-        # 2순위: Claude (보조용)
+        # 2순위: Claude (보조용 - 극도로 제한)
         if self._is_claude_available():
             result = await self.translate_text_with_claude(text, max_length)
             if result:  # 빈 문자열이 아니면
@@ -706,20 +735,21 @@ class RealisticNewsCollector:
             return True
     
     async def start_monitoring(self):
-        """🔥🔥 강화된 뉴스 모니터링 시작 - 더 빠른 감지"""
+        """🔥🔥 강화된 뉴스 모니터링 시작 - 번역 극도 제한"""
         if not self.session:
             self.session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=15),
                 connector=aiohttp.TCPConnector(limit=150, limit_per_host=50)
             )
         
-        logger.info("🔥🔥 GPT 위주 번역 비트코인 + 거시경제 뉴스 모니터링 시작")
-        logger.info(f"🧠 GPT API: {'활성화' if self.openai_client else '비활성화'} (주력)")
-        logger.info(f"🤖 Claude API: {'활성화 (보조)' if self.anthropic_client else '비활성화'}")
+        logger.info("🔥🔥 번역 극도 제한 비트코인 + 거시경제 뉴스 모니터링 시작")
+        logger.info(f"🧠 GPT API: {'활성화' if self.openai_client else '비활성화'} (주력 - 15분당 {self.max_gpt_translations_per_15min}개)")
+        logger.info(f"🤖 Claude API: {'활성화 (극도 제한)' if self.anthropic_client else '비활성화'} (15분당 {self.max_claude_translations_per_15min}개)")
         logger.info(f"📊 RSS 체크: 5초마다 (빠른 감지)")
         logger.info(f"🎯 크리티컬 키워드: {len(self.critical_keywords)}개")
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
         logger.info(f"📡 RSS 소스: {len(self.rss_feeds)}개")
+        logger.info(f"💰 번역 정책: 극도로 중요한 뉴스만 (weight >= 10, 특정 키워드)")
         
         # 회사별 뉴스 카운트 초기화
         self.company_news_count = {}
@@ -767,10 +797,11 @@ class RealisticNewsCollector:
                                 if company:
                                     article['company'] = company
                                 
-                                # 🔥🔥 번역 - GPT 우선, Claude 보조
+                                # 🔥🔥 번역 - 극도로 제한적으로만
                                 if self._should_translate(article):
                                     article['title_ko'] = await self.translate_text(article['title'])
                                     translated_count += 1
+                                    logger.info(f"🔥 극도 제한 번역: {article['title'][:50]}...")
                                 else:
                                     article['title_ko'] = article.get('title', '')
                                 
@@ -1593,7 +1624,7 @@ class RealisticNewsCollector:
                                                 article['company'] = company
                                             
                                             if self._is_critical_news_enhanced(article):
-                                                # Reddit에서는 번역 제한적으로만
+                                                # Reddit에서는 번역 극도로 제한
                                                 if self._should_translate(article):
                                                     article['title_ko'] = await self.translate_text(article['title'])
                                                 
@@ -1707,7 +1738,7 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 번역 - GPT 우선, Claude 보조
+                            # 번역 - 극도로 제한적으로만
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                                 translated_count += 1
@@ -1780,7 +1811,7 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 번역 - GPT 우선, Claude 보조
+                            # 번역 - 극도로 제한적으로만
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                                 translated_count += 1
@@ -1855,7 +1886,7 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 번역 - GPT 우선, Claude 보조
+                            # 번역 - 극도로 제한적으로만
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                                 translated_count += 1
@@ -2041,9 +2072,10 @@ class RealisticNewsCollector:
             
             if self.session:
                 await self.session.close()
-                logger.info("🔚 GPT 위주 번역 뉴스 수집기 세션 종료")
+                logger.info("🔚 번역 극도 제한 뉴스 수집기 세션 종료")
                 logger.info(f"🧠 최종 GPT 번역: {self.gpt_translation_count}, Claude 번역: {self.claude_translation_count}")
                 logger.info(f"📝 최종 GPT 요약: {self.summary_count}")
                 logger.info(f"⚠️ Claude 에러: {self.claude_error_count}회")
+                logger.info(f"💰 번역 제한 정책: 극도로 중요한 뉴스만 (weight >= 10)")
         except Exception as e:
             logger.error(f"세션 종료 중 오류: {e}")
