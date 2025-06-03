@@ -627,8 +627,18 @@ class BitgetClient:
     async def get_account_bills(self, start_time: int = None, end_time: int = None, 
                                business_type: str = None, limit: int = 100,
                                next_id: str = None) -> List[Dict]:
-        """계정 거래 내역 조회 (Account Bills)"""
-        endpoint = "/api/v2/mix/account/bills"
+        """🔥🔥 계정 거래 내역 조회 (Account Bills) - 다중 엔드포인트 시도"""
+        
+        # 🔥🔥 여러 가능한 엔드포인트들을 시도
+        possible_endpoints = [
+            "/api/v2/mix/account/account-bill",  # 가장 가능성 높은 엔드포인트
+            "/api/v2/mix/account/bill",          # 간단한 형태
+            "/api/v2/mix/account/bills",         # 원래 사용하던 것 (404 오류)
+            "/api/v2/mix/account/account-bills", # 복수형 변형
+            "/api/v2/mix/account/bills-history", # 히스토리 형태
+            "/api/v2/mix/account/trade-bill",    # 거래 내역 형태
+        ]
+        
         params = {
             'productType': 'USDT-FUTURES',
             'marginCoin': 'USDT'
@@ -639,25 +649,54 @@ class BitgetClient:
         if end_time:
             params['endTime'] = str(end_time)
         if business_type:
-            params['businessType'] = business_type  # 'contract_settle' for realized PnL
+            params['businessType'] = business_type
         if limit:
             params['limit'] = str(min(limit, 100))
         if next_id:
             params['startId'] = str(next_id)
         
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            
-            if isinstance(response, list):
-                return response
-            elif isinstance(response, dict):
-                # 페이징 정보가 있는 경우
-                return response.get('billsList', response.get('bills', []))
-            return []
-            
-        except Exception as e:
-            logger.error(f"계정 내역 조회 실패: {e}")
-            return []
+        # 🔥🔥 각 엔드포인트를 순차적으로 시도
+        for endpoint in possible_endpoints:
+            try:
+                logger.info(f"🔍 Account Bills 엔드포인트 시도: {endpoint}")
+                response = await self._request('GET', endpoint, params=params)
+                
+                if response is not None:
+                    logger.info(f"✅ {endpoint} 성공!")
+                    
+                    if isinstance(response, list):
+                        logger.info(f"📊 {endpoint}에서 {len(response)}건 조회 성공")
+                        return response
+                    elif isinstance(response, dict):
+                        # 페이징 정보가 있는 경우
+                        bills = response.get('billsList', response.get('bills', response.get('list', [])))
+                        if isinstance(bills, list):
+                            logger.info(f"📊 {endpoint}에서 {len(bills)}건 조회 성공 (dict 응답)")
+                            return bills
+                        else:
+                            logger.warning(f"⚠️ {endpoint}: 예상하지 못한 응답 구조: {response}")
+                            continue
+                    else:
+                        logger.warning(f"⚠️ {endpoint}: 알 수 없는 응답 타입: {type(response)}")
+                        continue
+                        
+            except Exception as e:
+                logger.debug(f"❌ {endpoint} 실패: {e}")
+                
+                # 404 오류가 아닌 경우 (권한, 파라미터 오류 등)는 즉시 중단
+                if "404" not in str(e) and "NOT FOUND" not in str(e):
+                    logger.error(f"🚨 {endpoint}: 404가 아닌 오류 발생: {e}")
+                    # 다른 엔드포인트도 시도해볼 가치가 있으므로 계속 진행
+                    
+                continue
+        
+        # 🔥🔥 모든 엔드포인트가 실패한 경우
+        logger.error("❌❌ 모든 Account Bills 엔드포인트가 실패했습니다!")
+        logger.error("시도한 엔드포인트들:")
+        for endpoint in possible_endpoints:
+            logger.error(f"  - {endpoint}")
+        
+        return []
     
     async def get_enhanced_profit_history(self, symbol: str = None, days: int = 7) -> Dict:
         """🔥🔥 개선된 정확한 손익 조회 - 다중 검증 방식"""
@@ -720,7 +759,7 @@ class BitgetClient:
     
     async def _get_profit_from_account_bills(self, start_timestamp: int, end_timestamp: int, 
                                            period_start: datetime, days: int) -> Dict:
-        """Account Bills에서 손익 추출"""
+        """🔥🔥 Account Bills에서 손익 추출 - 개선된 엔드포인트 사용"""
         try:
             logger.info("🔥 Account Bills 기반 손익 조회 시작")
             
@@ -728,9 +767,8 @@ class BitgetClient:
             
             # 모든 손익 관련 Bills 조회
             all_bills = []
-            next_id = None
-            page = 0
             
+            # 🔥🔥 개선된 Account Bills 조회 사용
             # contract_settle (실현 손익)
             settle_bills = await self._get_all_bills_with_paging(
                 start_timestamp, end_timestamp, 'contract_settle'
@@ -803,6 +841,10 @@ class BitgetClient:
                 daily_pnl[date_str] = net_pnl
                 logger.info(f"📊 {date_str}: PnL ${data['pnl']:.2f} + Funding ${data['funding']:.2f} = ${net_pnl:.2f} ({data['trades']}건)")
             
+            # 🔥🔥 Account Bills가 성공했는지 확인
+            confidence = 'high' if len(all_bills) > 0 else 'low'
+            source = 'account_bills_fixed' if len(all_bills) > 0 else 'account_bills_empty'
+            
             return {
                 'total_pnl': total_pnl,
                 'daily_pnl': daily_pnl,
@@ -810,8 +852,8 @@ class BitgetClient:
                 'average_daily': total_pnl / days if days > 0 else 0,
                 'trade_count': trade_count,
                 'total_fees': total_fees,
-                'source': 'account_bills',
-                'confidence': 'high'
+                'source': source,
+                'confidence': confidence
             }
             
         except Exception as e:
@@ -824,7 +866,7 @@ class BitgetClient:
     
     async def _get_all_bills_with_paging(self, start_timestamp: int, end_timestamp: int, 
                                        business_type: str) -> List[Dict]:
-        """페이징을 통한 모든 Bills 조회"""
+        """🔥🔥 페이징을 통한 모든 Bills 조회 - 개선된 엔드포인트 사용"""
         all_bills = []
         next_id = None
         page = 0
@@ -839,17 +881,21 @@ class BitgetClient:
             )
             
             if not bills:
+                logger.info(f"{business_type} Bills 페이지 {page + 1}: 데이터 없음, 종료")
                 break
             
             all_bills.extend(bills)
+            logger.info(f"{business_type} Bills 페이지 {page + 1}: {len(bills)}건 조회 (누적 {len(all_bills)}건)")
             
             if len(bills) < 100:
+                logger.info(f"{business_type} Bills: 마지막 페이지 도달 ({len(bills)}건 < 100건)")
                 break
             
             # 다음 페이지 ID
             last_bill = bills[-1]
             next_id = last_bill.get('billId', last_bill.get('id'))
             if not next_id:
+                logger.info(f"{business_type} Bills: 다음 페이지 ID 없음, 종료")
                 break
             
             page += 1
@@ -1140,28 +1186,32 @@ class BitgetClient:
     
     def _select_best_profit_data(self, bills_result: Dict, fills_result: Dict, 
                                achieved_result: Dict, days: int) -> Dict:
-        """최적의 손익 데이터 선택"""
+        """🔥🔥 최적의 손익 데이터 선택 - 개선된 로직"""
         
         logger.info("🔥 손익 데이터 비교 및 선택")
         logger.info(f"   - Account Bills: ${bills_result['total_pnl']:.2f} (신뢰도: {bills_result['confidence']})")
         logger.info(f"   - Trade Fills: ${fills_result['total_pnl']:.2f} (신뢰도: {fills_result['confidence']})")
         logger.info(f"   - Achieved Profits: ${achieved_result['total_pnl']:.2f} (신뢰도: {achieved_result['confidence']})")
         
-        # 1순위: Account Bills (가장 정확함)
-        if bills_result['confidence'] == 'high' and bills_result['total_pnl'] != 0:
-            logger.info("✅ Account Bills 선택 (가장 신뢰도 높음)")
+        # 🔥🔥 Account Bills가 성공적으로 데이터를 가져왔는지 확인
+        bills_has_data = (bills_result['confidence'] == 'high' and 
+                         (bills_result['total_pnl'] != 0 or bills_result['trade_count'] > 0))
+        
+        # 1순위: Account Bills (데이터가 있고 신뢰도가 높음)
+        if bills_has_data:
+            logger.info("✅ Account Bills 선택 (데이터 있음, 가장 신뢰도 높음)")
             bills_result['source'] = 'account_bills_verified'
             return bills_result
         
-        # 2순위: Trade Fills (중간 신뢰도)
+        # 2순위: Trade Fills (중간 신뢰도, 데이터가 있음)
         if fills_result['confidence'] == 'medium' and fills_result['total_pnl'] != 0:
-            logger.info("✅ Trade Fills 선택 (중간 신뢰도)")
+            logger.info("✅ Trade Fills 선택 (Account Bills 데이터 없음, 중간 신뢰도)")
             fills_result['source'] = 'trade_fills_verified'
             return fills_result
         
         # 3순위: Achieved Profits (포지션 기반)
         if achieved_result['total_pnl'] != 0:
-            logger.info("✅ Achieved Profits 선택 (포지션 기반)")
+            logger.info("✅ Achieved Profits 선택 (다른 방법 실패, 포지션 기반)")
             return {
                 'total_pnl': achieved_result['total_pnl'],
                 'daily_pnl': {},
@@ -1173,16 +1223,30 @@ class BitgetClient:
                 'confidence': 'medium'
             }
         
-        # 마지막: Account Bills (데이터가 있으면)
+        # 4순위: Trade Fills (데이터가 있으면 사용)
+        if fills_result['total_pnl'] != 0 or fills_result['trade_count'] > 0:
+            logger.info("✅ Trade Fills 선택 (최종 폴백, 데이터 있음)")
+            fills_result['source'] = 'trade_fills_fallback'
+            return fills_result
+        
+        # 5순위: Account Bills (신뢰도 낮지만 사용)
         if bills_result['total_pnl'] != 0 or bills_result['trade_count'] > 0:
-            logger.info("✅ Account Bills 선택 (폴백)")
+            logger.info("✅ Account Bills 선택 (최종 폴백, 신뢰도 낮음)")
             bills_result['source'] = 'account_bills_fallback'
             return bills_result
         
-        # 최종 폴백: Trade Fills
-        logger.info("⚠️ Trade Fills 선택 (최종 폴백)")
-        fills_result['source'] = 'trade_fills_fallback'
-        return fills_result
+        # 최종: 모든 데이터가 0인 경우
+        logger.warning("⚠️ 모든 손익 데이터가 0 또는 없음")
+        return {
+            'total_pnl': 0,
+            'daily_pnl': {},
+            'days': days,
+            'average_daily': 0,
+            'trade_count': 0,
+            'total_fees': 0,
+            'source': 'no_data_available',
+            'confidence': 'none'
+        }
     
     async def get_profit_loss_history_v2(self, symbol: str = None, days: int = 7) -> Dict:
         """손익 내역 조회 - Account Bills 사용"""
