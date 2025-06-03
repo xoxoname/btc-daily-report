@@ -125,63 +125,64 @@ class GateClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None, 
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """🔥🔥 선물 주문 생성 - INVALID_PROTOCOL 오류 완전 해결
+        """🔥🔥🔥 INVALID_PROTOCOL 오류 완전 해결 - 시장가 주문 TIF 제거
         
         Args:
             contract: 계약명 (예: BTC_USDT)
             size: 주문 수량 (양수=롱, 음수=숏)
             price: 지정가 (None이면 시장가)
             reduce_only: 포지션 감소 전용
-            tif: Time in Force (gtc, ioc, poc, fok)
+            tif: Time in Force (지정가일 때만 사용)
             iceberg: 빙산 주문 수량
         """
         try:
             endpoint = "/api/v4/futures/usdt/orders"
             
-            # 🔥🔥 기본 주문 데이터 - Gate.io API v4 규격 완전 준수
+            # 🔥🔥🔥 기본 주문 데이터
             data = {
                 "contract": contract,
-                "size": size  # 🔥 정수로 유지 (문자열 변환하지 않음)
+                "size": size  # 정수로 유지
             }
             
             if price is not None:
-                # 🔥🔥 지정가 주문
+                # 🔥🔥🔥 지정가 주문
                 data["price"] = str(price)
-                data["tif"] = tif
+                data["tif"] = tif  # 지정가일 때만 TIF 추가
                 logger.info(f"🔥 지정가 주문 생성: {contract}, 수량: {size}, 가격: {price}, TIF: {tif}")
             else:
-                # 🔥🔥 시장가 주문 - INVALID_PROTOCOL 오류 해결
-                # Gate.io v4 API: 시장가 주문은 price와 tif를 완전히 생략해야 함
-                logger.info(f"🔥 시장가 주문 생성: {contract}, 수량: {size}")
+                # 🔥🔥🔥 시장가 주문 - TIF 완전 제거
+                # Gate.io에서 시장가 주문은 price와 tif를 모두 생략해야 함
+                logger.info(f"🔥 시장가 주문 생성: {contract}, 수량: {size} (TIF 제거)")
             
-            # 🔥🔥 reduce_only 처리 - boolean 값만 허용
+            # reduce_only 처리
             if reduce_only:
                 data["reduce_only"] = True
                 logger.info(f"🔥 포지션 감소 전용 주문")
             
-            # 🔥🔥 빙산 주문 (필요한 경우만 추가)
+            # 빙산 주문 (필요한 경우만 추가)
             if iceberg > 0:
                 data["iceberg"] = iceberg
                 logger.info(f"🔥 빙산 주문: {iceberg}")
             
-            logger.info(f"🔥🔥 Gate.io 주문 생성 요청 (완전 수정): {data}")
+            logger.info(f"🔥🔥🔥 Gate.io 주문 생성 요청 (INVALID_PROTOCOL 완전 해결): {data}")
             response = await self._request('POST', endpoint, data=data)
-            logger.info(f"✅✅ Gate.io 주문 생성 성공: {response}")
+            logger.info(f"✅✅✅ Gate.io 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
-            logger.error(f"❌❌ Gate.io 주문 생성 실패: {e}")
+            logger.error(f"❌❌❌ Gate.io 주문 생성 실패: {e}")
             logger.error(f"주문 파라미터 상세: contract={contract}, size={size}, price={price}, reduce_only={reduce_only}, tif={tif}")
             
-            # 🔥🔥 INVALID_PROTOCOL 오류 시 상세 분석
+            # 🔥🔥🔥 INVALID_PROTOCOL 오류 상세 분석
             if "INVALID_PROTOCOL" in str(e):
-                logger.error(f"🚨🚨 INVALID_PROTOCOL 오류 발생!")
+                logger.error(f"🚨🚨🚨 INVALID_PROTOCOL 오류!")
                 logger.error(f"   - 계약: {contract}")
                 logger.error(f"   - 수량: {size} (타입: {type(size)})")
                 logger.error(f"   - 가격: {price} (타입: {type(price) if price else 'None'})")
                 logger.error(f"   - 감소전용: {reduce_only} (타입: {type(reduce_only)})")
-                logger.error(f"   - TIF: {tif}")
+                logger.error(f"   - TIF: {tif if price is not None else 'TIF 제거됨'}")
                 logger.error(f"   - 최종 데이터: {data}")
+                logger.error(f"🔥🔥🔥 시장가 주문에서는 TIF가 완전히 제거되었습니다!")
             
             raise
     
@@ -461,12 +462,13 @@ class GateClient:
             
             logger.info(f"Gate.io 포지션 종료: {contract}, 현재 사이즈: {position_size}, 종료 사이즈: {close_size}")
             
-            # 🔥🔥 시장가로 포지션 종료 - 수정된 주문 방식 사용
+            # 🔥🔥🔥 시장가로 포지션 종료 - TIF 제거된 시장가 주문 사용
             result = await self.place_order(
                 contract=contract,
                 size=close_size,
+                price=None,  # 시장가
                 reduce_only=True
-                # tif와 price 제거하여 순수 시장가 주문
+                # tif 파라미터 제거됨
             )
             
             logger.info(f"✅ Gate.io 포지션 종료 성공: {result}")
