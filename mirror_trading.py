@@ -98,12 +98,12 @@ class MirrorTradingSystem:
         }
         
         self.monitoring = True
-        self.logger.info("🔥🔥🔥 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 초기화 완료")
+        self.logger.info("🔥🔥🔥 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 초기화 완료")
     
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🚀🔥🔥 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 시작")
+            self.logger.info("🚀🔥🔥 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시스템 시작")
             
             # 초기 포지션 및 예약 주문 기록
             await self._record_startup_positions()
@@ -227,7 +227,7 @@ class MirrorTradingSystem:
     
     async def monitor_plan_orders(self):
         """🔥🔥 예약 주문 모니터링 - 취소 감지 로직 완전 개선"""
-        self.logger.info("🔥🔥 예약 주문 달러 마진 비율 동적 계산 복제 모니터링 시작 (취소 감지 개선)")
+        self.logger.info("🔥🔥 예약 주문 실제 달러 마진 비율 동적 계산 복제 모니터링 시작 (취소 감지 개선)")
         consecutive_errors = 0
         
         while self.monitoring:
@@ -322,7 +322,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
     
     async def _process_new_plan_order(self, bitget_order: Dict):
-        """🔥🔥🔥 새로운 예약 주문 복제 - 달러 마진 비율 동적 계산"""
+        """🔥🔥🔥 새로운 예약 주문 복제 - 실제 달러 마진 비율 동적 계산"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()  # buy/sell 또는 open/close
@@ -339,7 +339,7 @@ class MirrorTradingSystem:
             plan_type = bitget_order.get('planType', 'normal')  # normal, profit_loss
             order_type = bitget_order.get('orderType', 'market')  # market, limit
             
-            self.logger.info(f"🔥🔥🔥 예약 주문 달러 마진 비율 동적 계산 분석: {order_id}")
+            self.logger.info(f"🔥🔥🔥 예약 주문 실제 달러 마진 비율 동적 계산 분석: {order_id}")
             self.logger.info(f"  방향: {side}")
             self.logger.info(f"  비트겟 수량: {size} BTC")
             self.logger.info(f"  트리거가: ${trigger_price}")
@@ -351,66 +351,19 @@ class MirrorTradingSystem:
                 self.logger.error(f"트리거 가격을 찾을 수 없습니다: {bitget_order}")
                 return
             
-            # 🔥🔥🔥 레버리지 정보 정확하게 추출
-            bitget_leverage = 10  # 기본값
+            # 🔥🔥🔥 실제 달러 마진 비율 동적 계산 시작
+            margin_ratio_result = await self._calculate_dynamic_margin_ratio(
+                size, trigger_price, bitget_order
+            )
             
-            # 1순위: 주문에서 직접 레버리지 추출
-            order_leverage = bitget_order.get('leverage')
-            if order_leverage:
-                try:
-                    bitget_leverage = int(float(order_leverage))
-                    self.logger.info(f"🔥 주문에서 레버리지 추출: {bitget_leverage}x")
-                except:
-                    pass
-            
-            # 2순위: 계정 정보에서 레버리지 추출
-            if not order_leverage:
-                try:
-                    bitget_account = await self.bitget.get_account_info()
-                    account_leverage = bitget_account.get('crossMarginLeverage')
-                    if account_leverage:
-                        bitget_leverage = int(float(account_leverage))
-                        self.logger.info(f"🔥 계정에서 레버리지 추출: {bitget_leverage}x")
-                except Exception as e:
-                    self.logger.warning(f"계정 레버리지 조회 실패: {e}")
-            
-            # 3순위: 현재 포지션에서 레버리지 추출
-            if bitget_leverage == 10:  # 여전히 기본값이면
-                try:
-                    positions = await self.bitget.get_positions(self.SYMBOL)
-                    for pos in positions:
-                        if float(pos.get('total', 0)) > 0:
-                            pos_leverage = pos.get('leverage')
-                            if pos_leverage:
-                                bitget_leverage = int(float(pos_leverage))
-                                self.logger.info(f"🔥 포지션에서 레버리지 추출: {bitget_leverage}x")
-                                break
-                except Exception as e:
-                    self.logger.warning(f"포지션 레버리지 조회 실패: {e}")
-            
-            self.logger.info(f"🔥🔥 최종 확정 레버리지: {bitget_leverage}x")
-            
-            # 🔥🔥🔥 비트겟 계정 정보 조회
-            bitget_account = await self.bitget.get_account_info()
-            bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
-            
-            # 🔥🔥🔥 비트겟에서 이 주문이 체결될 때 사용할 마진 계산 (실제 달러 투입금)
-            bitget_notional_value = size * trigger_price  # 총 계약 가치
-            bitget_required_margin = bitget_notional_value / bitget_leverage  # 실제 투입 마진
-            
-            # 🔥🔥🔥 비트겟 총 자산 대비 실제 마진 투입 비율 계산
-            if bitget_total_equity > 0:
-                margin_ratio = bitget_required_margin / bitget_total_equity
-            else:
-                self.logger.error("비트겟 총 자산이 0이거나 음수입니다.")
+            if not margin_ratio_result['success']:
+                self.logger.error(f"실제 달러 마진 비율 계산 실패: {margin_ratio_result['error']}")
                 return
             
-            self.logger.info(f"💰💰💰 달러 마진 비율 동적 계산:")
-            self.logger.info(f"  비트겟 총 자산: ${bitget_total_equity:,.2f}")
-            self.logger.info(f"  예약주문 총 계약가치: ${bitget_notional_value:,.2f}")
-            self.logger.info(f"  예약주문 실제 마진: ${bitget_required_margin:,.2f}")
-            self.logger.info(f"  실제 마진 비율: {margin_ratio:.4f} ({margin_ratio*100:.2f}%)")
-            self.logger.info(f"  레버리지: {bitget_leverage}x")
+            margin_ratio = margin_ratio_result['margin_ratio']
+            bitget_leverage = margin_ratio_result['leverage']
+            bitget_required_margin = margin_ratio_result['required_margin']
+            bitget_total_equity = margin_ratio_result['total_equity']
             
             # 🔥🔥🔥 게이트 계정 정보
             gate_account = await self.gate.get_account_balance()
@@ -463,7 +416,7 @@ class MirrorTradingSystem:
             else:
                 gate_trigger_type = "le"  # 가격이 내려가면 트리거
             
-            self.logger.info(f"🎯🎯🎯 게이트 예약 주문 생성 (동적 마진 비율):")
+            self.logger.info(f"🎯🎯🎯 게이트 예약 주문 생성 (실제 달러 마진 비율 동적 계산):")
             self.logger.info(f"  게이트 총 자산: ${gate_total_equity:,.2f}")
             self.logger.info(f"  게이트 투입 마진: ${gate_margin:.2f} (비율: {margin_ratio*100:.2f}%)")
             self.logger.info(f"  게이트 계약 가치: ${gate_notional_value:,.2f}")
@@ -525,13 +478,14 @@ class MirrorTradingSystem:
                     'margin_ratio': margin_ratio,
                     'leverage': bitget_leverage,  # 🔥 레버리지 정보 저장
                     'bitget_required_margin': bitget_required_margin,  # 🔥🔥 비트겟 마진 정보 저장
-                    'gate_total_equity': gate_total_equity  # 🔥🔥 게이트 총 자산 정보 저장
+                    'gate_total_equity': gate_total_equity,  # 🔥🔥 게이트 총 자산 정보 저장
+                    'bitget_total_equity': bitget_total_equity  # 🔥🔥 비트겟 총 자산 정보 저장
                 }
                 
                 self.daily_stats['plan_order_mirrors'] += 1
                 
                 await self.telegram.send_message(
-                    f"🔥✅ 예약 주문 달러 마진 비율 동적 계산 복제 성공\n"
+                    f"🔥✅ 예약 주문 실제 달러 마진 비율 동적 계산 복제 성공\n"
                     f"비트겟 ID: {order_id}\n"
                     f"게이트 ID: {gate_order.get('id')}\n"
                     f"방향: {side.upper()}\n"
@@ -539,15 +493,15 @@ class MirrorTradingSystem:
                     f"💰💰💰 실제 달러 마진 동적 비율 복제:\n"
                     f"비트겟 실제 마진: ${bitget_required_margin:,.2f}\n"
                     f"비트겟 총 자산: ${bitget_total_equity:,.2f}\n"
-                    f"마진 비율: {margin_ratio*100:.2f}%\n\n"
+                    f"실제 마진 비율: {margin_ratio*100:.2f}%\n\n"
                     f"게이트 총 자산: ${gate_total_equity:,.2f}\n"
                     f"게이트 투입 마진: ${gate_margin:,.2f} (동일 {margin_ratio*100:.2f}%)\n"
                     f"게이트 계약 수: {abs(gate_size)}\n"
                     f"🔧 레버리지 완전 동기화: {bitget_leverage}x\n\n"
-                    f"✨ 실제 달러 투입 비율이 정확히 동일하게 복제되었습니다!"
+                    f"✨ 각 주문별로 실제 달러 투입 비율을 새로 계산하여 정확히 동일하게 복제되었습니다!"
                 )
                 
-                self.logger.info(f"✅🔥🔥 예약 주문 달러 마진 비율 동적 계산 복제 성공: {order_id} → {gate_order.get('id')}")
+                self.logger.info(f"✅🔥🔥 예약 주문 실제 달러 마진 비율 동적 계산 복제 성공: {order_id} → {gate_order.get('id')}")
                 
             except Exception as e:
                 self.logger.error(f"게이트 예약 주문 생성 실패: {e}")
@@ -564,6 +518,89 @@ class MirrorTradingSystem:
                 'error': str(e),
                 'plan_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', 'unknown'))
             })
+    
+    async def _calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
+        """🔥🔥🔥 실제 달러 마진 비율 동적 계산 - 매 주문마다 새로 계산"""
+        try:
+            self.logger.info(f"💰💰💰 실제 달러 마진 비율 동적 계산 시작")
+            
+            # 🔥🔥🔥 레버리지 정보 정확하게 추출
+            bitget_leverage = 10  # 기본값
+            
+            # 1순위: 주문에서 직접 레버리지 추출
+            order_leverage = bitget_order.get('leverage')
+            if order_leverage:
+                try:
+                    bitget_leverage = int(float(order_leverage))
+                    self.logger.info(f"🔥 주문에서 레버리지 추출: {bitget_leverage}x")
+                except:
+                    pass
+            
+            # 2순위: 계정 정보에서 레버리지 추출
+            if not order_leverage:
+                try:
+                    bitget_account = await self.bitget.get_account_info()
+                    account_leverage = bitget_account.get('crossMarginLeverage')
+                    if account_leverage:
+                        bitget_leverage = int(float(account_leverage))
+                        self.logger.info(f"🔥 계정에서 레버리지 추출: {bitget_leverage}x")
+                except Exception as e:
+                    self.logger.warning(f"계정 레버리지 조회 실패: {e}")
+            
+            # 3순위: 현재 포지션에서 레버리지 추출
+            if bitget_leverage == 10:  # 여전히 기본값이면
+                try:
+                    positions = await self.bitget.get_positions(self.SYMBOL)
+                    for pos in positions:
+                        if float(pos.get('total', 0)) > 0:
+                            pos_leverage = pos.get('leverage')
+                            if pos_leverage:
+                                bitget_leverage = int(float(pos_leverage))
+                                self.logger.info(f"🔥 포지션에서 레버리지 추출: {bitget_leverage}x")
+                                break
+                except Exception as e:
+                    self.logger.warning(f"포지션 레버리지 조회 실패: {e}")
+            
+            # 🔥🔥🔥 비트겟 계정 정보 조회
+            bitget_account = await self.bitget.get_account_info()
+            bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
+            
+            # 🔥🔥🔥 비트겟에서 이 주문이 체결될 때 사용할 실제 마진 계산 (달러 투입금)
+            bitget_notional_value = size * trigger_price  # 총 계약 가치
+            bitget_required_margin = bitget_notional_value / bitget_leverage  # 실제 투입 마진 (달러)
+            
+            # 🔥🔥🔥 비트겟 총 자산 대비 실제 마진 투입 비율 계산
+            if bitget_total_equity > 0:
+                margin_ratio = bitget_required_margin / bitget_total_equity
+            else:
+                return {
+                    'success': False,
+                    'error': '비트겟 총 자산이 0이거나 음수입니다.'
+                }
+            
+            self.logger.info(f"💰💰💰 실제 달러 마진 비율 동적 계산 결과:")
+            self.logger.info(f"  비트겟 총 자산: ${bitget_total_equity:,.2f}")
+            self.logger.info(f"  예약주문 총 계약가치: ${bitget_notional_value:,.2f}")
+            self.logger.info(f"  예약주문 실제 투입 마진: ${bitget_required_margin:,.2f}")
+            self.logger.info(f"  실제 투입 마진 비율: {margin_ratio:.4f} ({margin_ratio*100:.2f}%)")
+            self.logger.info(f"  레버리지: {bitget_leverage}x")
+            self.logger.info(f"  🔥🔥🔥 이 비율이 게이트에서도 동일하게 적용됩니다!")
+            
+            return {
+                'success': True,
+                'margin_ratio': margin_ratio,
+                'leverage': bitget_leverage,
+                'required_margin': bitget_required_margin,
+                'total_equity': bitget_total_equity,
+                'notional_value': bitget_notional_value
+            }
+            
+        except Exception as e:
+            self.logger.error(f"실제 달러 마진 비율 동적 계산 실패: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
     
     async def _handle_plan_order_cancel(self, bitget_order_id: str):
         """🔥🔥 예약 주문 취소 처리 - 개선된 로직"""
@@ -688,7 +725,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
     
     async def _process_filled_order(self, order: Dict):
-        """체결된 주문으로부터 미러링 실행"""
+        """🔥🔥🔥 체결된 주문으로부터 미러링 실행 - 실제 달러 마진 비율 동적 계산"""
         try:
             order_id = order.get('orderId', order.get('id', ''))
             side = order.get('side', '').lower()  # buy/sell
@@ -703,24 +740,16 @@ class MirrorTradingSystem:
             # Bitget의 buy/sell을 long/short로 변환
             position_side = 'long' if side == 'buy' else 'short'
             
-            # 🔥 레버리지 정보 추출 (주문 체결 시)
-            leverage = 10  # 기본값
-            try:
-                # 주문에서 레버리지 추출
-                order_leverage = order.get('leverage')
-                if order_leverage:
-                    leverage = int(float(order_leverage))
-                else:
-                    # 계정에서 레버리지 추출
-                    account = await self.bitget.get_account_info()
-                    if account:
-                        account_leverage = account.get('crossMarginLeverage')
-                        if account_leverage:
-                            leverage = int(float(account_leverage))
-                
-                self.logger.info(f"🔧 체결 주문 레버리지: {leverage}x")
-            except Exception as e:
-                self.logger.warning(f"체결 주문 레버리지 조회 실패: {e}")
+            # 🔥🔥🔥 체결된 주문의 실제 달러 마진 비율 동적 계산
+            margin_ratio_result = await self._calculate_dynamic_margin_ratio_for_filled_order(
+                size, fill_price, order
+            )
+            
+            if not margin_ratio_result['success']:
+                self.logger.error(f"체결 주문 마진 비율 계산 실패: {margin_ratio_result['error']}")
+                return
+            
+            leverage = margin_ratio_result['leverage']
             
             # 가상의 포지션 데이터 생성 (실제 포지션 API 형식에 맞춤)
             synthetic_position = {
@@ -729,19 +758,14 @@ class MirrorTradingSystem:
                 'total': str(size),
                 'openPriceAvg': str(fill_price),
                 'markPrice': str(fill_price),
-                'marginSize': '0',  # 실제 계산 필요
+                'marginSize': str(margin_ratio_result['required_margin']),
                 'leverage': str(leverage),
                 'marginMode': 'crossed',
                 'unrealizedPL': '0'
             }
             
-            # 마진 계산 (notional value / leverage)
-            notional = size * fill_price
-            margin = notional / leverage
-            synthetic_position['marginSize'] = str(margin)
-            
             self.logger.info(f"  레버리지: {leverage}x")
-            self.logger.info(f"  마진: ${margin:.2f}")
+            self.logger.info(f"  실제 마진: ${margin_ratio_result['required_margin']:.2f}")
             
             # 포지션 ID 생성
             pos_id = f"{self.SYMBOL}_{position_side}_{fill_price}"
@@ -756,7 +780,7 @@ class MirrorTradingSystem:
                 self.logger.info(f"이미 미러링된 포지션: {pos_id}")
                 return
             
-            self.logger.info(f"🎯 실시간 미러링 실행: {pos_id}")
+            self.logger.info(f"🎯 실시간 미러링 실행 (실제 달러 마진 비율 동적 계산): {pos_id}")
             
             # 미러링 실행
             result = await self._mirror_new_position(synthetic_position)
@@ -768,13 +792,15 @@ class MirrorTradingSystem:
                 self.daily_stats['order_mirrors'] += 1  # 주문 기반 미러링 카운트
                 
                 await self.telegram.send_message(
-                    f"⚡ 실시간 주문 체결 미러링 성공 (레버리지 동기화)\n"
+                    f"⚡ 실시간 주문 체결 미러링 성공 (실제 달러 마진 비율 동적 계산)\n"
                     f"주문 ID: {order_id}\n"
                     f"방향: {position_side}\n"
                     f"체결가: ${fill_price:,.2f}\n"
                     f"수량: {size}\n"
                     f"🔧 레버리지: {leverage}x\n"
-                    f"마진: ${result.gate_data.get('margin', 0):,.2f}"
+                    f"💰 실제 마진 비율: {margin_ratio_result['margin_ratio']*100:.2f}%\n"
+                    f"게이트 투입 마진: ${result.gate_data.get('margin', 0):,.2f}\n"
+                    f"✨ 실제 달러 투입 비율이 동일하게 복제되었습니다!"
                 )
                 
                 self.logger.info(f"✅ 실시간 미러링 성공: {pos_id}")
@@ -799,6 +825,58 @@ class MirrorTradingSystem:
                 'error': str(e),
                 'order_id': order.get('orderId', 'unknown')
             })
+    
+    async def _calculate_dynamic_margin_ratio_for_filled_order(self, size: float, fill_price: float, order: Dict) -> Dict:
+        """🔥🔥🔥 체결된 주문의 실제 달러 마진 비율 동적 계산"""
+        try:
+            # 레버리지 정보 추출 (주문 체결 시)
+            leverage = 10  # 기본값
+            try:
+                # 주문에서 레버리지 추출
+                order_leverage = order.get('leverage')
+                if order_leverage:
+                    leverage = int(float(order_leverage))
+                else:
+                    # 계정에서 레버리지 추출
+                    account = await self.bitget.get_account_info()
+                    if account:
+                        account_leverage = account.get('crossMarginLeverage')
+                        if account_leverage:
+                            leverage = int(float(account_leverage))
+                
+                self.logger.info(f"🔧 체결 주문 레버리지: {leverage}x")
+            except Exception as e:
+                self.logger.warning(f"체결 주문 레버리지 조회 실패: {e}")
+            
+            # 비트겟 계정 정보
+            bitget_account = await self.bitget.get_account_info()
+            bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
+            
+            # 실제 마진 계산
+            notional = size * fill_price
+            required_margin = notional / leverage
+            margin_ratio = required_margin / bitget_total_equity if bitget_total_equity > 0 else 0
+            
+            self.logger.info(f"💰 체결 주문 실제 달러 마진 비율:")
+            self.logger.info(f"  총 자산: ${bitget_total_equity:,.2f}")
+            self.logger.info(f"  계약 가치: ${notional:,.2f}")
+            self.logger.info(f"  실제 마진: ${required_margin:.2f}")
+            self.logger.info(f"  마진 비율: {margin_ratio*100:.2f}%")
+            
+            return {
+                'success': True,
+                'margin_ratio': margin_ratio,
+                'leverage': leverage,
+                'required_margin': required_margin,
+                'total_equity': bitget_total_equity,
+                'notional_value': notional
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
     
     async def _record_startup_positions(self):
         """시작 시 존재하는 포지션 기록"""
@@ -840,7 +918,7 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 포지션 기록 실패: {e}")
     
     async def _log_account_status(self):
-        """계정 상태 로깅"""
+        """🔥🔥🔥 계정 상태 로깅 - 고정 비율 제거, 동적 계산 강조"""
         try:
             # 비트겟 계정 정보
             bitget_account = await self.bitget.get_account_info()
@@ -862,35 +940,34 @@ class MirrorTradingSystem:
                 f"예약 주문: {total_plan_orders}개"
             )
             
-            # 🔥🔥🔥 계정 비율은 참고용으로만 표시하고, 실제 마진 비율은 주문별로 동적 계산됨을 명시
-            account_ratio = (gate_equity/bitget_equity*100) if bitget_equity > 0 else 0
-            
             await self.telegram.send_message(
-                f"🔥🔥🔥 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시작\n\n"
-                f"💰 계정 잔고 (참고용):\n"
+                f"🔥🔥🔥 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시작\n\n"
+                f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f} (레버리지: {bitget_leverage}x)\n"
-                f"• 게이트: ${gate_equity:,.2f}\n"
-                f"• 계정 비율: {account_ratio:.1f}% (참고용)\n\n"
-                f"⚠️ 중요: 실제 미러링은 계정 비율이 아닌 각 주문의 실제 달러 마진 비율로 동적 계산됩니다!\n\n"
+                f"• 게이트: ${gate_equity:,.2f}\n\n"
+                f"🔥🔥🔥 핵심 원리 (완전 개선):\n"
+                f"매 주문/포지션마다 실제 달러 투입금 비율을 새로 계산!\n\n"
+                f"💰💰💰 실제 달러 마진 비율 동적 계산 원리:\n"
+                f"1️⃣ 비트겟에서 주문 체결 또는 예약 주문 생성\n"
+                f"2️⃣ 해당 주문의 실제 마진 = (수량 × 가격) ÷ 레버리지\n"
+                f"3️⃣ 실제 마진 비율 = 실제 마진 ÷ 비트겟 총 자산\n"
+                f"4️⃣ 게이트 투입 마진 = 게이트 총 자산 × 동일 비율\n"
+                f"5️⃣ 매 거래마다 실시간으로 비율을 새로 계산\n\n"
                 f"📊 기존 항목 (복제 제외):\n"
                 f"• 포지션: {len(self.startup_positions)}개\n"
                 f"• 예약 주문: {len(self.startup_plan_orders)}개\n"
                 f"• 기존 포지션 클로즈 TP/SL: {len(self.startup_position_tp_sl)}개\n\n"
                 f"🔥🔥🔥 핵심 기능 (완전 개선):\n"
                 f"• 🔧 레버리지 완전 동기화 (비트겟 = 게이트)\n"
-                f"• 💰💰💰 실제 달러 마진 비율 동적 계산\n"
-                f"  ↳ 비트겟에서 실제 투입하는 달러 마진의 비율을\n"
-                f"  ↳ 게이트에서도 정확히 동일한 비율로 계산\n"
+                f"• 💰💰💰 실제 달러 마진 비율 매번 동적 계산\n"
+                f"  ↳ 미리 정해진 비율 없음!\n"
+                f"  ↳ 매 주문마다 실제 투입 달러 비율 계산\n"
+                f"  ↳ 게이트에서도 정확히 동일한 비율로 투입\n"
                 f"• 📈 예약 주문별 개별 마진 비율 계산\n"
                 f"• 🚫🚫 기존 포지션 클로즈 TP/SL 제외\n"
                 f"• 📈 추가 진입 예약 TP/SL 복제\n"
                 f"• 🚫🚫 예약 주문 취소 시 자동 동기화\n"
                 f"• 주문 체결 시 포지션 미러링\n\n"
-                f"💰💰💰 달러 마진 비율 동적 계산 원리:\n"
-                f"1. 비트겟 예약주문의 실제 마진 = (수량 × 가격) ÷ 레버리지\n"
-                f"2. 비트겟 마진 비율 = 실제 마진 ÷ 비트겟 총 자산\n"
-                f"3. 게이트 투입 마진 = 게이트 총 자산 × 동일 비율\n"
-                f"4. 매 주문마다 실시간으로 비율을 새로 계산\n\n"
                 f"🔧 레버리지 완전 동기화:\n"
                 f"• 비트겟 {bitget_leverage}x → 게이트 {bitget_leverage}x\n"
                 f"• 예약 주문별 정확한 레버리지 추출\n"
@@ -900,9 +977,14 @@ class MirrorTradingSystem:
                 f"• 예약 주문: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
                 f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n\n"
                 f"🔥🔥🔥 주요 개선점:\n"
-                f"• 미리 정해진 비율 없음 - 매 주문마다 동적 계산\n"
+                f"• 미리 정해진 비율 완전 폐지\n"
+                f"• 매 주문마다 실제 달러 투입 비율 새로 계산\n"
                 f"• 실제 달러 투입 비율의 정확한 복제\n"
-                f"• 레버리지까지 완전 동기화"
+                f"• 레버리지까지 완전 동기화\n\n"
+                f"💡 예시:\n"
+                f"비트겟 총 자산 $10,000에서 $200 마진 투입 (2%)\n"
+                f"→ 게이트 총 자산 $1,000에서 $20 마진 투입 (동일 2%)\n"
+                f"→ 매 거래마다 실시간으로 이 비율을 새로 계산!"
             )
             
         except Exception as e:
@@ -1486,218 +1568,4 @@ class MirrorTradingSystem:
             new_bitget_orders = [
                 order for order in current_bitget_orders 
                 if (order.get('orderId', order.get('planOrderId', '')) not in self.startup_plan_orders and
-                    order.get('orderId', order.get('planOrderId', '')) not in self.startup_position_tp_sl)
-            ]
-            
-            bitget_plan_count = len(new_bitget_orders)
-            gate_plan_count = len(self.mirrored_plan_orders)
-            
-            self.logger.info(f"예약 주문 동기화 상태: 비트겟 {bitget_plan_count}개, 게이트 {gate_plan_count}개 복제됨")
-            
-        except Exception as e:
-            self.logger.error(f"예약 주문 동기화 체크 실패: {e}")
-    
-    async def _analyze_sync_mismatch(self, bitget_positions: List[Dict], gate_positions: List[Dict]):
-        """동기화 불일치 분석"""
-        try:
-            # 비트겟에만 있는 포지션
-            for bitget_pos in bitget_positions:
-                pos_id = self._generate_position_id(bitget_pos)
-                
-                # 시작 시 존재했던 포지션은 제외
-                if pos_id in self.startup_positions:
-                    continue
-                
-                if pos_id not in self.mirrored_positions:
-                    self.logger.warning(f"비트겟에만 존재하는 포지션: {pos_id}")
-                    
-                    # 자동 미러링 시도
-                    result = await self._mirror_new_position(bitget_pos)
-                    if result.success:
-                        self.logger.info(f"동기화 복구 성공: {pos_id}")
-                    else:
-                        await self.telegram.send_message(
-                            f"⚠️ 동기화 문제\n"
-                            f"비트겟 포지션이 게이트에 없습니다\n"
-                            f"포지션: {pos_id}\n"
-                            f"자동 복구 실패: {result.error}"
-                        )
-            
-            # 게이트에만 있는 포지션
-            if len(gate_positions) > 0 and len(self.mirrored_positions) == 0:
-                self.logger.warning("게이트에 추적되지 않는 포지션 존재")
-                
-                # 자동 정리
-                for gate_pos in gate_positions:
-                    if gate_pos.get('size', 0) != 0:
-                        self.logger.info("추적되지 않는 게이트 포지션 종료")
-                        await self.gate.close_position(self.GATE_CONTRACT)
-                        
-                        await self.telegram.send_message(
-                            f"🔄 게이트 단독 포지션 정리\n"
-                            f"대응하는 비트겟 포지션이 없어 종료했습니다"
-                        )
-            
-        except Exception as e:
-            self.logger.error(f"동기화 분석 중 오류: {e}")
-    
-    async def generate_daily_reports(self):
-        """일일 리포트 생성"""
-        while self.monitoring:
-            try:
-                now = datetime.now()
-                
-                # 매일 지정된 시간에 리포트 생성
-                if now.hour == self.DAILY_REPORT_HOUR and now > self.last_report_time + timedelta(hours=23):
-                    report = await self._create_daily_report()
-                    await self.telegram.send_message(report)
-                    
-                    # 통계 초기화
-                    self._reset_daily_stats()
-                    self.last_report_time = now
-                
-                await asyncio.sleep(3600)  # 1시간마다 체크
-                
-            except Exception as e:
-                self.logger.error(f"일일 리포트 생성 오류: {e}")
-                await asyncio.sleep(3600)
-    
-    async def _create_daily_report(self) -> str:
-        """일일 리포트 생성"""
-        try:
-            # 계정 정보 조회
-            bitget_account = await self.bitget.get_account_info()
-            gate_account = await self.gate.get_account_balance()
-            
-            bitget_equity = float(bitget_account.get('accountEquity', 0))
-            gate_equity = float(gate_account.get('total', 0))
-            bitget_leverage = bitget_account.get('crossMarginLeverage', 'N/A')
-            
-            # 성공률 계산
-            success_rate = 0
-            if self.daily_stats['total_mirrored'] > 0:
-                success_rate = (self.daily_stats['successful_mirrors'] / 
-                              self.daily_stats['total_mirrored']) * 100
-            
-            report = f"""📊 일일 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 리포트
-📅 {datetime.now().strftime('%Y-%m-%d')}
-━━━━━━━━━━━━━━━━━━━
-
-🔥🔥🔥 예약 주문 달러 마진 비율 동적 계산 성과
-- 예약 주문 미러링: {self.daily_stats['plan_order_mirrors']}회
-- 예약 주문 취소 동기화: {self.daily_stats['plan_order_cancels']}회
-- 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개
-
-⚡ 실시간 포지션 미러링 (레버리지 동기화)
-- 주문 체결 기반: {self.daily_stats['order_mirrors']}회
-- 포지션 기반: {self.daily_stats['position_mirrors']}회
-- 총 시도: {self.daily_stats['total_mirrored']}회
-- 성공: {self.daily_stats['successful_mirrors']}회
-- 실패: {self.daily_stats['failed_mirrors']}회
-- 성공률: {success_rate:.1f}%
-
-📉 포지션 관리
-- 부분 청산: {self.daily_stats['partial_closes']}회
-- 전체 청산: {self.daily_stats['full_closes']}회
-- 총 거래량: ${self.daily_stats['total_volume']:,.2f}
-
-💰 계정 잔고 (참고용)
-- 비트겟: ${bitget_equity:,.2f} (레버리지: {bitget_leverage}x)
-- 게이트: ${gate_equity:,.2f} (레버리지: 동기화됨)
-- 계정 비율: {(gate_equity/bitget_equity*100):.1f}% (참고용)
-
-🔄 현재 미러링 상태
-- 활성 포지션: {len(self.mirrored_positions)}개
-- 활성 예약 주문: {len(self.mirrored_plan_orders)}개
-- 실패 기록: {len(self.failed_mirrors)}건
-
-⚡ 시스템 최적화 (달러 마진 비율 동적 계산)
-- 예약 주문 감지: {self.PLAN_ORDER_CHECK_INTERVAL}초마다
-- 주문 체결 감지: {self.ORDER_CHECK_INTERVAL}초마다
-- 포지션 모니터링: {self.CHECK_INTERVAL}초마다
-
-🔧 레버리지 완전 동기화
-- 비트겟 레버리지 → 게이트 레버리지 (완전 동일)
-- 예약 주문별 정확한 레버리지 추출
-- 3단계 확인 및 재설정 시스템
-- 주문 생성 전 강제 동기화
-
-💰💰💰 달러 마진 비율 동적 계산 (핵심 개선)
-- 매 예약주문마다 실제 마진 비율을 새로 계산
-- 비트겟 실제 마진 = (수량 × 가격) ÷ 레버리지
-- 마진 비율 = 실제 마진 ÷ 비트겟 총 자산
-- 게이트 투입 마진 = 게이트 총 자산 × 동일 비율
-- 미리 정해진 비율 없음 - 완전 동적 계산
-
-🚫🚫 예약주문 취소 동기화 (개선)
-- 비트겟에서 예약주문 취소 → 게이트도 자동 취소
-- 실시간 취소 상태 비교
-- 취소 실패 시 상세 오류 처리
-
-"""
-            
-            # 오류가 있었다면 추가
-            if self.daily_stats['errors']:
-                report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건\n"
-                for i, error in enumerate(self.daily_stats['errors'][-3:], 1):  # 최근 3개만
-                    report += f"{i}. {error['error'][:50]}...\n"
-            
-            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥 달러 마진 비율 동적 계산으로 완벽한 실제 투입 비율 복제!"
-            
-            return report
-            
-        except Exception as e:
-            self.logger.error(f"리포트 생성 실패: {e}")
-            return f"📊 일일 리포트 생성 실패\n오류: {str(e)}"
-    
-    def _reset_daily_stats(self):
-        """일일 통계 초기화"""
-        self.daily_stats = {
-            'total_mirrored': 0,
-            'successful_mirrors': 0,
-            'failed_mirrors': 0,
-            'partial_closes': 0,
-            'full_closes': 0,
-            'total_volume': 0.0,
-            'order_mirrors': 0,
-            'position_mirrors': 0,
-            'plan_order_mirrors': 0,
-            'plan_order_cancels': 0,
-            'errors': []
-        }
-        self.failed_mirrors.clear()
-    
-    def _generate_position_id(self, pos: Dict) -> str:
-        """포지션 고유 ID 생성"""
-        symbol = pos.get('symbol', self.SYMBOL)
-        side = pos.get('holdSide', '')
-        entry_price = pos.get('openPriceAvg', '')
-        return f"{symbol}_{side}_{entry_price}"
-    
-    async def _create_position_info(self, bitget_pos: Dict) -> PositionInfo:
-        """포지션 정보 객체 생성"""
-        return PositionInfo(
-            symbol=bitget_pos.get('symbol', self.SYMBOL),
-            side=bitget_pos.get('holdSide', '').lower(),
-            size=float(bitget_pos.get('total', 0)),
-            entry_price=float(bitget_pos.get('openPriceAvg', 0)),
-            margin=float(bitget_pos.get('marginSize', 0)),
-            leverage=int(float(bitget_pos.get('leverage', 1))),
-            mode='cross' if bitget_pos.get('marginMode') == 'crossed' else 'isolated',
-            unrealized_pnl=float(bitget_pos.get('unrealizedPL', 0))
-        )
-    
-    async def stop(self):
-        """미러 트레이딩 중지"""
-        self.monitoring = False
-        
-        # 최종 리포트 생성
-        try:
-            final_report = await self._create_daily_report()
-            await self.telegram.send_message(
-                f"🛑 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 종료\n\n{final_report}"
-            )
-        except:
-            pass
-        
-        self.logger.info("달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 시스템 중지")
+                    order.get('orderId', order.get('planOrder
