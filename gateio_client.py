@@ -75,9 +75,9 @@ class GateClient:
         headers = self._generate_signature(method, endpoint, query_string, payload)
         
         try:
-            logger.info(f"Gate.io API 요청: {method} {url}")
+            logger.debug(f"Gate.io API 요청: {method} {url}")
             if data:
-                logger.info(f"요청 데이터: {payload}")
+                logger.debug(f"요청 데이터: {payload}")
             
             async with self.session.request(method, url, headers=headers, data=payload) as response:
                 response_text = await response.text()
@@ -98,7 +98,7 @@ class GateClient:
         try:
             endpoint = "/api/v4/futures/usdt/accounts"
             response = await self._request('GET', endpoint)
-            logger.info(f"Gate.io 계정 잔고 응답: {response}")
+            logger.debug(f"Gate.io 계정 잔고 응답: {response}")
             return response
         except Exception as e:
             logger.error(f"계정 잔고 조회 실패: {e}")
@@ -125,7 +125,7 @@ class GateClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None, 
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """🔥🔥🔥 INVALID_PROTOCOL 오류 완전 해결 - 시장가 주문 TIF 제거
+        """시장가/지정가 주문 생성
         
         Args:
             contract: 계약명 (예: BTC_USDT)
@@ -138,57 +138,44 @@ class GateClient:
         try:
             endpoint = "/api/v4/futures/usdt/orders"
             
-            # 🔥🔥🔥 기본 주문 데이터
+            # 기본 주문 데이터
             data = {
                 "contract": contract,
                 "size": size  # 정수로 유지
             }
             
             if price is not None:
-                # 🔥🔥🔥 지정가 주문
+                # 지정가 주문
                 data["price"] = str(price)
-                data["tif"] = tif  # 지정가일 때만 TIF 추가
-                logger.info(f"🔥 지정가 주문 생성: {contract}, 수량: {size}, 가격: {price}, TIF: {tif}")
+                data["tif"] = tif
+                logger.info(f"지정가 주문 생성: {contract}, 수량: {size}, 가격: {price}, TIF: {tif}")
             else:
-                # 🔥🔥🔥 시장가 주문 - TIF 완전 제거
-                # Gate.io에서 시장가 주문은 price와 tif를 모두 생략해야 함
-                logger.info(f"🔥 시장가 주문 생성: {contract}, 수량: {size} (TIF 제거)")
+                # 시장가 주문 - TIF 제거
+                logger.info(f"시장가 주문 생성: {contract}, 수량: {size}")
             
             # reduce_only 처리
             if reduce_only:
                 data["reduce_only"] = True
-                logger.info(f"🔥 포지션 감소 전용 주문")
+                logger.info(f"포지션 감소 전용 주문")
             
             # 빙산 주문 (필요한 경우만 추가)
             if iceberg > 0:
                 data["iceberg"] = iceberg
-                logger.info(f"🔥 빙산 주문: {iceberg}")
+                logger.info(f"빙산 주문: {iceberg}")
             
-            logger.info(f"🔥🔥🔥 Gate.io 주문 생성 요청 (INVALID_PROTOCOL 완전 해결): {data}")
+            logger.info(f"Gate.io 주문 생성 요청: {data}")
             response = await self._request('POST', endpoint, data=data)
-            logger.info(f"✅✅✅ Gate.io 주문 생성 성공: {response}")
+            logger.info(f"✅ Gate.io 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
-            logger.error(f"❌❌❌ Gate.io 주문 생성 실패: {e}")
-            logger.error(f"주문 파라미터 상세: contract={contract}, size={size}, price={price}, reduce_only={reduce_only}, tif={tif}")
-            
-            # 🔥🔥🔥 INVALID_PROTOCOL 오류 상세 분석
-            if "INVALID_PROTOCOL" in str(e):
-                logger.error(f"🚨🚨🚨 INVALID_PROTOCOL 오류!")
-                logger.error(f"   - 계약: {contract}")
-                logger.error(f"   - 수량: {size} (타입: {type(size)})")
-                logger.error(f"   - 가격: {price} (타입: {type(price) if price else 'None'})")
-                logger.error(f"   - 감소전용: {reduce_only} (타입: {type(reduce_only)})")
-                logger.error(f"   - TIF: {tif if price is not None else 'TIF 제거됨'}")
-                logger.error(f"   - 최종 데이터: {data}")
-                logger.error(f"🔥🔥🔥 시장가 주문에서는 TIF가 완전히 제거되었습니다!")
-            
+            logger.error(f"❌ Gate.io 주문 생성 실패: {e}")
+            logger.error(f"주문 파라미터: contract={contract}, size={size}, price={price}, reduce_only={reduce_only}, tif={tif}")
             raise
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
                           retry_count: int = 3) -> Dict:
-        """🔥🔥 레버리지 설정 강화 - 재시도 및 확인 로직 추가"""
+        """레버리지 설정 - 재시도 및 확인 로직 포함"""
         for attempt in range(retry_count):
             try:
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
@@ -200,13 +187,13 @@ class GateClient:
                 if cross_leverage_limit > 0:
                     params["cross_leverage_limit"] = str(cross_leverage_limit)
                 
-                logger.info(f"🔧 Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
+                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
                 response = await self._request('POST', endpoint, params=params)
                 
                 # 설정 후 잠시 대기
                 await asyncio.sleep(0.3)
                 
-                # 🔥 설정 확인
+                # 설정 확인
                 verify_success = await self._verify_leverage_setting(contract, leverage)
                 if verify_success:
                     logger.info(f"✅ Gate.io 레버리지 설정 및 확인 완료: {contract} - {leverage}x")
@@ -218,21 +205,20 @@ class GateClient:
                         continue
                     else:
                         logger.error(f"❌ 레버리지 설정 최종 실패: {contract} - {leverage}x")
-                        return response  # 응답은 성공이었으니 일단 반환
+                        return response
                 
             except Exception as e:
                 logger.error(f"❌ Gate.io 레버리지 설정 시도 {attempt + 1} 실패: {e}")
                 if attempt < retry_count - 1:
-                    await asyncio.sleep(1.0)  # 오류 시 더 긴 대기
+                    await asyncio.sleep(1.0)
                     continue
                 else:
                     raise
         
-        # 모든 시도 실패
         raise Exception(f"레버리지 설정 최대 재시도 횟수 초과: {contract} - {leverage}x")
     
     async def _verify_leverage_setting(self, contract: str, expected_leverage: int) -> bool:
-        """🔥 레버리지 설정 확인"""
+        """레버리지 설정 확인"""
         try:
             positions = await self.get_positions(contract)
             if positions:
@@ -246,31 +232,29 @@ class GateClient:
                         logger.warning(f"⚠️ 레버리지 불일치: 현재 {current_lev_int}x, 예상 {expected_leverage}x")
                         return False
             
-            # 포지션이 없으면 직접 설정 API로 확인 불가, 일단 성공으로 처리
             logger.info("📝 포지션이 없어 레버리지 확인 불가, 설정 성공으로 처리")
             return True
             
         except Exception as e:
             logger.warning(f"레버리지 확인 중 오류: {e}")
-            return True  # 확인 실패해도 설정은 성공했을 수 있으므로
+            return True
     
     async def get_leverage_info(self, contract: str = "BTC_USDT") -> Dict:
-        """🔥 현재 레버리지 정보 조회"""
+        """현재 레버리지 정보 조회"""
         try:
             positions = await self.get_positions(contract)
             if positions:
                 position = positions[0]
                 leverage = position.get('leverage', 'N/A')
-                mode = position.get('mode', 'N/A')  # single, dual_long, dual_short
+                mode = position.get('mode', 'N/A')
                 
-                logger.info(f"🔧 Gate.io 현재 레버리지: {leverage}x, 모드: {mode}")
+                logger.info(f"Gate.io 현재 레버리지: {leverage}x, 모드: {mode}")
                 return {
                     'leverage': leverage,
                     'mode': mode,
                     'contract': contract
                 }
             else:
-                # 포지션이 없으면 기본 정보 반환
                 logger.info("📝 활성 포지션이 없어 레버리지 정보 조회 불가")
                 return {
                     'leverage': 'N/A',
@@ -293,7 +277,7 @@ class GateClient:
             endpoint = f"/api/v4/futures/usdt/positions/{contract}/margin"
             
             data = {
-                "change": "0",  # 마진 변경 없음
+                "change": "0",
                 "mode": mode
             }
             
@@ -307,7 +291,7 @@ class GateClient:
     async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
                                          order_type: str, contract: str, size: int, 
                                          price: Optional[str] = None) -> Dict:
-        """🔥🔥🔥🔥🔥 가격 트리거 주문 생성 (TP/SL) - AUTO_INVALID_PARAM_PRICE 오류 완전 해결
+        """가격 트리거 주문 생성 (TP/SL)
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
@@ -320,77 +304,50 @@ class GateClient:
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥🔥🔥 AUTO_INVALID_PARAM_PRICE 완전 해결: 시장가 트리거 주문도 price 필수
             initial_data = {
                 "type": order_type,
                 "contract": contract,
-                "size": size  # 🔥🔥 정수로 유지
+                "size": size
             }
             
-            # 🔥🔥🔥🔥🔥 시장가 트리거 주문에서도 price 필드 필수 - trigger_price 사용
+            # 시장가 트리거 주문에서도 price 필드 필수 - trigger_price 사용
             if order_type == "limit":
-                # 지정가: 전달받은 price 사용, 없으면 trigger_price 사용
                 if price:
                     initial_data["price"] = str(price)
                 else:
                     initial_data["price"] = str(trigger_price)
-                    logger.info(f"🔥 지정가 주문에 트리거 가격을 price로 사용: {trigger_price}")
+                    logger.info(f"지정가 주문에 트리거 가격을 price로 사용: {trigger_price}")
             elif order_type == "market":
-                # 🔥🔥🔥🔥🔥 시장가도 price 필드 필수 - trigger_price 사용
                 initial_data["price"] = str(trigger_price)
-                logger.info(f"🔥🔥🔥🔥🔥 시장가 트리거 주문에 trigger_price를 initial.price로 설정: {trigger_price}")
+                logger.info(f"시장가 트리거 주문에 trigger_price를 initial.price로 설정: {trigger_price}")
             
-            # 🔥🔥🔥🔥 트리거 rule을 정수로 변환
+            # 트리거 rule을 정수로 변환
             if trigger_type == "ge":
                 rule_value = 1  # >= (greater than or equal)
             elif trigger_type == "le":
                 rule_value = 2  # <= (less than or equal)
             else:
-                # 기본값으로 ge 사용
                 rule_value = 1
                 logger.warning(f"알 수 없는 trigger_type: {trigger_type}, 기본값 ge(1) 사용")
             
-            # 🔥🔥🔥🔥 트리거 주문 데이터 구조 - 완전 수정
             data = {
                 "initial": initial_data,
                 "trigger": {
-                    "strategy_type": 0,  # 🔥🔥🔥 정수 0으로 수정
-                    "price_type": 0,     # 🔥🔥🔥 정수 0으로 수정
+                    "strategy_type": 0,
+                    "price_type": 0,
                     "price": str(trigger_price),
-                    "rule": rule_value   # 🔥🔥🔥🔥 정수로 변경 (1 for >=, 2 for <=)
+                    "rule": rule_value
                 }
             }
             
-            logger.info(f"🔥🔥🔥🔥🔥 Gate.io 가격 트리거 주문 생성 (AUTO_INVALID_PARAM_PRICE 완전 해결): {data}")
+            logger.info(f"Gate.io 가격 트리거 주문 생성: {data}")
             response = await self._request('POST', endpoint, data=data)
-            logger.info(f"✅✅✅✅✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
+            logger.info(f"✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
-            logger.error(f"❌❌❌❌❌ 가격 트리거 주문 생성 실패: {e}")
-            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size} (타입: {type(size)}), price={price}")
-            
-            # 🔥🔥🔥🔥🔥 상세 디버깅 정보
-            if "AUTO_INVALID_PARAM_PRICE" in str(e) or "invalid argument: initial.price" in str(e):
-                logger.error(f"🚨🚨🚨🚨🚨 AUTO_INVALID_PARAM_PRICE 오류 감지!")
-                logger.error(f"   - 계약: {contract}")
-                logger.error(f"   - 수량: {size} (타입: {type(size)})")
-                logger.error(f"   - 트리거가: {trigger_price} (타입: {type(trigger_price)})")
-                logger.error(f"   - 트리거 타입: {trigger_type} → 정수 변환: {1 if trigger_type == 'ge' else 2}")
-                logger.error(f"   - 주문 타입: {order_type}")
-                logger.error(f"   - 전달된 price: {price}")
-                logger.error(f"   - 최종 initial_data: {initial_data}")
-                logger.error(f"🔥🔥🔥🔥🔥 시장가 주문에서도 trigger_price를 initial.price로 설정했습니다!")
-            elif "cannot unmarshal string into Go struct" in str(e):
-                logger.error(f"🚨🚨🚨🚨🚨 타입 불일치 오류 감지!")
-                logger.error(f"   - 계약: {contract}")
-                logger.error(f"   - 수량: {size} (타입: {type(size)})")
-                logger.error(f"   - 트리거가: {trigger_price} (타입: {type(trigger_price)})")
-                logger.error(f"   - 트리거 타입: {trigger_type} → 정수 변환: {1 if trigger_type == 'ge' else 2}")
-                logger.error(f"   - 주문 타입: {order_type}")
-                logger.error(f"   - 최종 데이터: {data}")
-                logger.error(f"🔥🔥🔥🔥🔥 trigger rule을 정수형으로 수정했습니다!")
-            
+            logger.error(f"❌ 가격 트리거 주문 생성 실패: {e}")
+            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}, price={price}")
             raise
     
     async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
@@ -440,7 +397,6 @@ class GateClient:
             size: 종료할 수량 (None이면 전체 종료)
         """
         try:
-            # 현재 포지션 조회
             positions = await self.get_positions(contract)
             
             if not positions or positions[0].get('size', 0) == 0:
@@ -462,13 +418,12 @@ class GateClient:
             
             logger.info(f"Gate.io 포지션 종료: {contract}, 현재 사이즈: {position_size}, 종료 사이즈: {close_size}")
             
-            # 🔥🔥🔥 시장가로 포지션 종료 - TIF 제거된 시장가 주문 사용
+            # 시장가로 포지션 종료
             result = await self.place_order(
                 contract=contract,
                 size=close_size,
                 price=None,  # 시장가
                 reduce_only=True
-                # tif 파라미터 제거됨
             )
             
             logger.info(f"✅ Gate.io 포지션 종료 성공: {result}")
@@ -536,7 +491,7 @@ class GateClient:
             }
             
             if type:
-                params["type"] = type  # pnl, fee, refr, fund, point_fee, point_refr, point_dnw
+                params["type"] = type
             if start_time:
                 params["from"] = str(start_time)
             if end_time:
@@ -687,7 +642,7 @@ class GateClient:
             actual_profit = current_balance - initial_capital
             
             return {
-                'total': cumulative_net_profit,  # 5월 29일부터의 순수익
+                'total': cumulative_net_profit,
                 'weekly': {
                     'total': weekly_net,
                     'average': weekly_net / days_traded if days_traded > 0 else 0
@@ -695,13 +650,13 @@ class GateClient:
                 'today_realized': today_pnl,
                 'current_balance': current_balance,
                 'initial_capital': initial_capital,
-                'actual_profit': actual_profit,  # 실제 수익 (현재잔고 - 초기자본)
-                'days_traded': days_traded  # 실제 거래 일수
+                'actual_profit': actual_profit,
+                'days_traded': days_traded
             }
             
         except Exception as e:
             logger.error(f"Gate 손익 내역 조회 실패: {e}")
-            # 🔥 폴백: 현재 잔고 기반 계산 강화
+            # 폴백: 현재 잔고 기반 계산
             try:
                 account = await self.get_account_balance()
                 total_equity = float(account.get('total', 0))
@@ -713,7 +668,7 @@ class GateClient:
                 return {
                     'total': total_pnl,
                     'weekly': {
-                        'total': 0,  # 알 수 없음
+                        'total': 0,
                         'average': 0
                     },
                     'today_realized': 0.0,
@@ -735,9 +690,9 @@ class GateClient:
                 }
     
     async def test_connection(self) -> Dict:
-        """🔥 연결 테스트 및 기본 정보 확인"""
+        """연결 테스트 및 기본 정보 확인"""
         try:
-            logger.info("🔧 Gate.io 연결 테스트 시작")
+            logger.info("Gate.io 연결 테스트 시작")
             
             # 1. 계정 잔고 조회
             account = await self.get_account_balance()
