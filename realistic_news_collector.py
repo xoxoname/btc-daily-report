@@ -31,14 +31,19 @@ class RealisticNewsCollector:
         # 전송된 뉴스 제목 캐시 (중복 방지 강화) - 초기화
         self.sent_news_titles = {}
         
-        # 번역 캐시 및 rate limit 관리
+        # 🔥🔥 GPT API 사용량 대폭 최적화
         self.translation_cache = {}  # 번역 캐시
         self.translation_count = 0  # 번역 횟수 추적
         self.last_translation_reset = datetime.now()
-        self.max_translations_per_15min = 150  # 15분당 최대 번역 수 증가
+        self.max_translations_per_15min = 30  # 150 → 30으로 대폭 감소
         self.translation_reset_interval = 900  # 15분
         
-        # OpenAI 클라이언트 초기화 (번역용)
+        # GPT 요약 사용량 제한 추가
+        self.summary_count = 0
+        self.max_summaries_per_15min = 15  # 15분당 최대 15개 요약만
+        self.last_summary_reset = datetime.now()
+        
+        # OpenAI 클라이언트 초기화 (번역용) - 더 보수적으로
         self.openai_client = None
         if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY:
             self.openai_client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
@@ -250,8 +255,9 @@ class RealisticNewsCollector:
         # 중복 방지 데이터 로드
         self._load_duplicate_data()
         
-        logger.info(f"🔥🔥 강화된 뉴스 수집기 초기화 완료")
-        logger.info(f"📊 설정: RSS 10초 체크, 번역 15분당 {self.max_translations_per_15min}개")
+        logger.info(f"🔥🔥 GPT API 최적화된 뉴스 수집기 초기화 완료")
+        logger.info(f"📊 설정: RSS 10초 체크, GPT 번역 15분당 {self.max_translations_per_15min}개 (대폭 감소)")
+        logger.info(f"📝 요약: 15분당 {self.max_summaries_per_15min}개 (새로 제한)")
         logger.info(f"🎯 크리티컬 키워드: {len(self.critical_keywords)}개 (대폭 확장)")
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
         logger.info(f"📈 가격 패턴: {len(self.historical_patterns)}개 시나리오")
@@ -341,30 +347,76 @@ class RealisticNewsCollector:
             self.translation_count = 0
             self.last_translation_reset = now
             if old_count > 0:
-                logger.info(f"번역 카운트 리셋: {old_count} → 0")
+                logger.info(f"번역 카운트 리셋: {old_count} → 0 (15분당 {self.max_translations_per_15min}개 제한)")
+    
+    def _reset_summary_count_if_needed(self):
+        """필요시 요약 카운트 리셋"""
+        now = datetime.now()
+        if (now - self.last_summary_reset).total_seconds() > self.translation_reset_interval:
+            old_count = self.summary_count
+            self.summary_count = 0
+            self.last_summary_reset = now
+            if old_count > 0:
+                logger.info(f"요약 카운트 리셋: {old_count} → 0 (15분당 {self.max_summaries_per_15min}개 제한)")
     
     def _should_translate(self, article: Dict) -> bool:
-        """뉴스를 번역해야 하는지 결정"""
+        """🔥🔥 번역 대상을 매우 엄격하게 제한 - GPT API 절약"""
         # 이미 한글 제목이 있으면 번역 불필요
         if article.get('title_ko') and article['title_ko'] != article.get('title', ''):
             return False
         
-        # 크리티컬 뉴스는 항상 번역
-        if self._is_critical_news(article):
-            return True
+        # 🔥🔥 오직 극도로 중요한 뉴스만 번역 (weight >= 10)
+        weight = article.get('weight', 0)
+        if weight < 10:
+            return False
         
-        # 높은 가중치 + 암호화폐 카테고리
-        if article.get('weight', 0) >= 7 and article.get('category') == 'crypto':
-            return True
+        # 🔥🔥 크리티컬 뉴스이면서 비트코인 직접 관련만
+        if not self._is_critical_news(article):
+            return False
         
-        # API 뉴스
-        if article.get('category') == 'api' and article.get('weight', 0) >= 8:
-            return True
+        content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        return False
+        # 비트코인 직접 언급이 있어야 함
+        bitcoin_keywords = ['bitcoin', 'btc', '비트코인']
+        if not any(keyword in content for keyword in bitcoin_keywords):
+            return False
+        
+        # ETF, 대기업 구매, Fed 결정 등 극도로 중요한 뉴스만
+        ultra_important = [
+            'etf approved', 'etf rejected', 'tesla bought', 'microstrategy bought',
+            'fed rate decision', 'sec approves', 'sec rejects', 'china bans'
+        ]
+        
+        if not any(keyword in content for keyword in ultra_important):
+            return False
+        
+        return True
+    
+    def _should_use_gpt_summary(self, article: Dict) -> bool:
+        """🔥🔥 GPT 요약 사용 여부 결정 - 매우 엄격"""
+        # 요약 카운트 리셋 체크
+        self._reset_summary_count_if_needed()
+        
+        # Rate limit 체크
+        if self.summary_count >= self.max_summaries_per_15min:
+            return False
+        
+        # 오직 weight >= 10이면서 크리티컬 뉴스만
+        if article.get('weight', 0) < 10:
+            return False
+        
+        if not self._is_critical_news_enhanced(article):
+            return False
+        
+        # description이 충분히 길어야 함 (요약할 가치가 있어야 함)
+        description = article.get('description', '')
+        if len(description) < 300:  # 300자 이상만
+            return False
+        
+        return True
     
     async def translate_text(self, text: str, max_length: int = 400) -> str:
-        """텍스트를 한국어로 번역 - 완벽히 자연스럽게"""
+        """🔥🔥 GPT API 절약 번역 - 매우 보수적"""
         if not self.openai_client:
             return text
         
@@ -374,53 +426,30 @@ class RealisticNewsCollector:
         # 캐시 확인
         cache_key = hashlib.md5(text.encode()).hexdigest()
         if cache_key in self.translation_cache:
+            logger.debug(f"🔄 번역 캐시 히트")
             return self.translation_cache[cache_key]
         
-        # Rate limit 체크
+        # 🔥🔥 Rate limit 엄격 체크
         if self.translation_count >= self.max_translations_per_15min:
-            logger.warning(f"번역 한도 초과: {self.translation_count}/{self.max_translations_per_15min}")
+            logger.warning(f"번역 한도 초과: {self.translation_count}/{self.max_translations_per_15min} - 번역 건너뜀")
             return text
         
         try:
-            system_content = """당신은 한국의 블록체인 전문 기자입니다. 비트코인 뉴스를 한국 독자들이 즉시 이해할 수 있도록 매끄러운 한국어로 번역합니다.
+            # 🔥🔥 더 간단한 시스템 프롬프트로 토큰 절약
+            system_content = """한국의 블록체인 전문 기자입니다. 비트코인 뉴스를 한국어로 자연스럽게 번역하세요.
 
-번역 원칙:
-1. 한국 경제 뉴스처럼 자연스럽게 번역
-2. 핵심 정보를 명확하게 전달:
-   - 주체 (기업/인물/국가)
-   - 행동 (매입, 매도, 발표, 승인 등)
-   - 규모 (금액, 수량)
-   - 영향/의미
-3. 전문 용어 처리:
-   - MicroStrategy → 마이크로스트래티지
-   - Tesla → 테슬라  
-   - Sberbank → 스베르방크
-   - BlackRock → 블랙록
-   - SEC → SEC (미국 증권거래위원회)
-   - ETF → ETF
-   - Federal Reserve → 연준
-   - Powell → 파월 의장
-4. 자연스러운 한국어 문장 구조 사용
-5. 불필요한 수식어 제거, 핵심만 전달
-
-예시:
-Fed raises interest rates by 0.25% → 연준, 기준금리 0.25%포인트 인상
-Tesla reports Q3 earnings beat → 테슬라, 3분기 실적 시장 전망치 상회
-China manufacturing PMI falls → 중국 제조업 PMI 하락"""
+핵심 원칙:
+1. 자연스러운 한국어
+2. 주요 용어: MicroStrategy→마이크로스트래티지, Tesla→테슬라, SEC→SEC, Fed→연준
+3. 핵심 정보만 간결하게"""
             
             response = await self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
+                model="gpt-4o-mini",  # 🔥🔥 더 저렴한 모델 사용
                 messages=[
-                    {
-                        "role": "system", 
-                        "content": system_content
-                    },
-                    {
-                        "role": "user", 
-                        "content": f"다음 뉴스를 자연스러운 한국어로 번역해주세요 (최대 {max_length}자):\n\n{text}"
-                    }
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": f"다음을 한국어로 번역 (최대 {max_length}자):\n\n{text}"}
                 ],
-                max_tokens=600,
+                max_tokens=300,  # 600 → 300으로 감소
                 temperature=0.3
             )
             
@@ -428,7 +457,6 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
             
             # 길이 체크
             if len(translated) > max_length:
-                # 의미가 끊기지 않도록 문장 단위로 자르기
                 sentences = translated.split('.')
                 result = ""
                 for sentence in sentences:
@@ -445,15 +473,16 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
             self.translation_count += 1
             
             # 캐시 크기 제한
-            if len(self.translation_cache) > 1000:
-                keys_to_remove = list(self.translation_cache.keys())[:500]
+            if len(self.translation_cache) > 500:  # 1000 → 500으로 감소
+                keys_to_remove = list(self.translation_cache.keys())[:250]
                 for key in keys_to_remove:
                     del self.translation_cache[key]
             
+            logger.info(f"🌐 GPT 번역 완료 ({self.translation_count}/{self.max_translations_per_15min})")
             return translated
             
         except openai.RateLimitError:
-            logger.warning("OpenAI Rate limit 도달")
+            logger.warning("OpenAI Rate limit 도달 - 번역 중단")
             self.translation_count = self.max_translations_per_15min
             return text
         except Exception as e:
@@ -570,8 +599,10 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                 connector=aiohttp.TCPConnector(limit=150, limit_per_host=50)
             )
         
-        logger.info("🔥🔥 비트코인 + 거시경제 뉴스 모니터링 시작 (강화된 버전)")
-        logger.info(f"📊 크리티컬 키워드: {len(self.critical_keywords)}개")
+        logger.info("🔥🔥 GPT API 최적화된 비트코인 + 거시경제 뉴스 모니터링 시작")
+        logger.info(f"💰 GPT 번역: 15분당 {self.max_translations_per_15min}개만 (대폭 절약)")
+        logger.info(f"📝 GPT 요약: 15분당 {self.max_summaries_per_15min}개만 (새로 제한)")
+        logger.info(f"🎯 크리티컬 키워드: {len(self.critical_keywords)}개")
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
         logger.info(f"📡 RSS 소스: {len(self.rss_feeds)}개")
         
@@ -595,6 +626,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                 successful_feeds = 0
                 processed_articles = 0
                 critical_found = 0
+                gpt_used = 0
                 
                 for feed_info in sorted_feeds:
                     try:
@@ -620,23 +652,25 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                                 if company:
                                     article['company'] = company
                                 
-                                # 번역 및 요약
+                                # 🔥🔥 번역 - 매우 제한적
                                 if self.openai_client and self._should_translate(article):
                                     article['title_ko'] = await self.translate_text(article['title'])
-                                    
-                                    # 요약 생성 (크리티컬 뉴스만)
-                                    if self._is_critical_news_enhanced(article):
+                                    gpt_used += 1
+                                else:
+                                    article['title_ko'] = article.get('title', '')
+                                
+                                # 🔥🔥 강화된 크리티컬 뉴스 체크
+                                if self._is_critical_news_enhanced(article):
+                                    # 🔥🔥 요약 - 매우 제한적
+                                    if self._should_use_gpt_summary(article):
                                         summary = await self.summarize_article_enhanced(
                                             article['title'],
                                             article.get('description', '')
                                         )
                                         if summary:
                                             article['summary'] = summary
-                                else:
-                                    article['title_ko'] = article.get('title', '')
-                                
-                                # 🔥🔥 강화된 크리티컬 뉴스 체크
-                                if self._is_critical_news_enhanced(article):
+                                            gpt_used += 1
+                                    
                                     if not self._is_duplicate_emergency(article):
                                         article['expected_change'] = self._estimate_price_impact_enhanced(article)
                                         await self._trigger_emergency_alert_enhanced(article)
@@ -653,7 +687,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                         continue
                 
                 if processed_articles > 0:
-                    logger.info(f"🔥 RSS 스캔 완료: {successful_feeds}개 피드, {processed_articles}개 관련 뉴스 (크리티컬: {critical_found}개)")
+                    logger.info(f"🔥 RSS 스캔 완료: {successful_feeds}개 피드, {processed_articles}개 관련 뉴스 (크리티컬: {critical_found}개, GPT 사용: {gpt_used}회)")
                 
                 await asyncio.sleep(10)  # 10초마다 (더 빈번하게)
                 
@@ -1015,45 +1049,48 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
         return '⚡ 변동 ±0.2~0.8% (단기)'
     
     async def summarize_article_enhanced(self, title: str, description: str, max_length: int = 200) -> str:
-        """🔥🔥 강화된 기사 요약 - 투자 판단 특화"""
+        """🔥🔥 GPT API 절약 요약 - 기본 요약 우선, GPT는 최후 수단"""
+        
+        # 🔥🔥 먼저 기본 요약으로 시도
+        basic_summary = self._generate_basic_summary_enhanced(title, description)
+        if basic_summary and len(basic_summary.strip()) > 50:
+            logger.debug(f"🔄 기본 요약 사용 (GPT 절약)")
+            return basic_summary
+        
+        # GPT 요약이 정말 필요한 경우만
         if not self.openai_client or not description:
-            return self._generate_basic_summary_enhanced(title, description)
+            return basic_summary or "비트코인 관련 발표가 있었다. 투자자들은 신중한 접근이 필요하다."
         
         if len(description) <= 200:
-            return self._generate_basic_summary_enhanced(title, description)
+            return basic_summary or self._generate_basic_summary_enhanced(title, description)
+        
+        # 요약 카운트 리셋 체크
+        self._reset_summary_count_if_needed()
+        
+        # Rate limit 체크
+        if self.summary_count >= self.max_summaries_per_15min:
+            logger.warning(f"요약 한도 초과: {self.summary_count}/{self.max_summaries_per_15min} - 기본 요약 사용")
+            return basic_summary or "비트코인 관련 발표가 있었다. 투자자들은 신중한 접근이 필요하다."
         
         try:
             news_type = self._classify_news_for_summary_enhanced(title, description)
             
-            system_content = f"""당신은 비트코인 투자 전문가입니다. 뉴스를 투자자 관점에서 3문장으로 요약합니다.
+            # 🔥🔥 더 간단한 시스템 프롬프트로 토큰 절약
+            system_content = f"""비트코인 투자 전문가입니다. 3문장으로 요약하세요.
 
-요약 원칙:
-1. 정확히 3문장 구조:
-   - 1문장: 핵심 사실 (누가, 무엇을, 언제)
-   - 2문장: 배경과 맥락 (왜 중요한지)
-   - 3문장: 시장 영향 (투자자에게 미치는 의미)
+1문장: 핵심 사실
+2문장: 중요성
+3문장: 시장 영향
 
-2. 투자 판단에 필요한 핵심 정보만:
-   - 구체적인 숫자와 날짜
-   - 시장 반응 예상
-   - 향후 전망
-
-3. 뉴스 타입별 포커스:
-   - ETF: 승인/거부 여부, 시작일, 관련 기업
-   - 기업구매: 매입량, 매입가격, 총 보유량
-   - Fed: 금리 변동폭, 다음 회의, 시장 예상
-   - 규제: 시행일, 대상 범위, 예외 조건
-   - 경제지표: 수치, 예상치 대비, 다음 발표일
-
-현재 뉴스 타입: {news_type}"""
+뉴스 타입: {news_type}"""
             
             response = await self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
+                model="gpt-4o-mini",  # 🔥🔥 더 저렴한 모델
                 messages=[
                     {"role": "system", "content": system_content},
-                    {"role": "user", "content": f"다음 뉴스를 정확히 3문장으로 요약 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:1500]}"}
+                    {"role": "user", "content": f"3문장 요약 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:800]}"}  # 1500 → 800자로 감소
                 ],
-                max_tokens=400,
+                max_tokens=250,  # 400 → 250으로 감소
                 temperature=0.2
             )
             
@@ -1069,11 +1106,14 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                         break
                 summary = result.strip() or summary[:max_length-3] + "..."
             
+            self.summary_count += 1
+            logger.info(f"📝 GPT 요약 완료 ({self.summary_count}/{self.max_summaries_per_15min})")
+            
             return summary
             
         except Exception as e:
-            logger.warning(f"요약 실패: {str(e)[:50]}")
-            return self._generate_basic_summary_enhanced(title, description)
+            logger.warning(f"GPT 요약 실패: {str(e)[:50]} - 기본 요약 사용")
+            return basic_summary or "비트코인 관련 발표가 있었다. 투자자들은 신중한 접근이 필요하다."
     
     def _classify_news_for_summary_enhanced(self, title: str, description: str) -> str:
         """강화된 뉴스 타입 분류"""
@@ -1099,7 +1139,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
             return 'general'
     
     def _generate_basic_summary_enhanced(self, title: str, description: str) -> str:
-        """강화된 기본 요약 생성"""
+        """🔥🔥 강화된 기본 요약 생성 - GPT 대신 사용할 고품질 요약"""
         try:
             content = (title + " " + description).lower()
             
@@ -1119,11 +1159,26 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
             
             # 기업 구매
             elif any(company in content for company in ['tesla', 'microstrategy']):
-                return "대형 기업이 비트코인을 추가 매입했다. 기업의 비트코인 채택이 지속되면서 제도화가 가속화되고 있다. 이는 장기적으로 비트코인의 가치 저장 수단 지위를 강화할 것으로 분석된다."
+                if 'tesla' in content:
+                    return "테슬라가 비트코인을 추가 매입했다. 일론 머스크의 영향력과 함께 시장에 상당한 관심을 불러일으킬 것으로 예상된다. 기업의 비트코인 채택 확산에 긍정적 영향을 미칠 전망이다."
+                else:
+                    return "마이크로스트래티지가 비트코인을 추가 매입했다. 기업의 비트코인 채택이 지속되면서 제도화가 가속화되고 있다. 이는 장기적으로 비트코인의 가치 저장 수단 지위를 강화할 것으로 분석된다."
+            
+            # 관세/무역 (새로 추가)
+            elif any(word in content for word in ['trump', 'tariffs', 'trade']):
+                return "미국의 새로운 관세 정책이 발표되었다. 무역 분쟁 우려로 인해 단기적으로 리스크 자산에 부담이 될 수 있다. 하지만 달러 약세 요인이 비트코인에는 중장기적으로 유리할 것으로 분석된다."
+            
+            # 인플레이션 (새로 추가)
+            elif any(word in content for word in ['inflation', 'cpi']):
+                return "최신 인플레이션 데이터가 발표되었다. 인플레이션 헤지 자산으로서 비트코인에 대한 관심이 높아지고 있다. 실물 자산 대비 우월한 성과를 보이며 투자자들의 주목을 받고 있다."
             
             # 규제
             elif any(word in content for word in ['regulation', 'ban', 'sec']):
                 return "암호화폐 관련 새로운 규제 소식이 발표되었다. 규제 환경의 변화가 시장 참가자들의 전략에 영향을 미칠 것으로 예상된다. 투자자들은 규제 동향을 면밀히 모니터링할 필요가 있다."
+            
+            # 구조화 상품 특별 처리
+            elif any(word in content for word in ['structured', 'bonds', 'sberbank']):
+                return "새로운 비트코인 연계 구조화 상품이 출시되었다. 직접적인 비트코인 수요보다는 간접적 노출 제공에 중점을 둔 상품으로 평가된다. 시장에 미치는 실질적 영향은 제한적일 것으로 전망된다."
             
             # 기본값
             else:
@@ -1375,8 +1430,12 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                                                 article['company'] = company
                                             
                                             if self._is_critical_news_enhanced(article):
+                                                # 🔥🔥 Reddit에서는 번역 제한적으로만
                                                 if self._should_translate(article):
                                                     article['title_ko'] = await self.translate_text(article['title'])
+                                                
+                                                # 🔥🔥 Reddit에서는 요약 거의 사용 안함
+                                                if self._should_use_gpt_summary(article):
                                                     summary = await self.summarize_article_enhanced(
                                                         article['title'],
                                                         article.get('description', '')
@@ -1463,6 +1522,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                     
                     processed = 0
                     critical_found = 0
+                    gpt_used = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -1484,17 +1544,22 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                             if company:
                                 formatted_article['company'] = company
                             
+                            # 🔥🔥 번역 - 매우 제한적
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
-                                if self._is_critical_news_enhanced(formatted_article):
+                                gpt_used += 1
+                            
+                            if self._is_critical_news_enhanced(formatted_article):
+                                # 🔥🔥 요약 - 매우 제한적
+                                if self._should_use_gpt_summary(formatted_article):
                                     summary = await self.summarize_article_enhanced(
                                         formatted_article['title'],
                                         formatted_article.get('description', '')
                                     )
                                     if summary:
                                         formatted_article['summary'] = summary
-                            
-                            if self._is_critical_news_enhanced(formatted_article):
+                                        gpt_used += 1
+                                
                                 if not self._is_duplicate_emergency(formatted_article):
                                     formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
                                     await self._trigger_emergency_alert_enhanced(formatted_article)
@@ -1505,7 +1570,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"🔥 NewsAPI: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
+                        logger.info(f"🔥 NewsAPI: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, GPT 사용: {gpt_used}회)")
                 else:
                     logger.warning(f"NewsAPI 응답 오류: {response.status}")
         
@@ -1531,6 +1596,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                     
                     processed = 0
                     critical_found = 0
+                    gpt_used = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -1552,17 +1618,22 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                             if company:
                                 formatted_article['company'] = company
                             
+                            # 🔥🔥 번역 - 매우 제한적
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
-                                if self._is_critical_news_enhanced(formatted_article):
+                                gpt_used += 1
+                            
+                            if self._is_critical_news_enhanced(formatted_article):
+                                # 🔥🔥 요약 - 매우 제한적
+                                if self._should_use_gpt_summary(formatted_article):
                                     summary = await self.summarize_article_enhanced(
                                         formatted_article['title'],
                                         formatted_article.get('description', '')
                                     )
                                     if summary:
                                         formatted_article['summary'] = summary
-                            
-                            if self._is_critical_news_enhanced(formatted_article):
+                                        gpt_used += 1
+                                
                                 if not self._is_duplicate_emergency(formatted_article):
                                     formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
                                     await self._trigger_emergency_alert_enhanced(formatted_article)
@@ -1573,7 +1644,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"🔥 NewsData: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
+                        logger.info(f"🔥 NewsData: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, GPT 사용: {gpt_used}회)")
                 else:
                     logger.warning(f"NewsData 응답 오류: {response.status}")
         
@@ -1600,6 +1671,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                     
                     processed = 0
                     critical_found = 0
+                    gpt_used = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -1622,17 +1694,22 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                             if company:
                                 formatted_article['company'] = company
                             
+                            # 🔥🔥 번역 - 매우 제한적
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
-                                if self._is_critical_news_enhanced(formatted_article):
+                                gpt_used += 1
+                            
+                            if self._is_critical_news_enhanced(formatted_article):
+                                # 🔥🔥 요약 - 매우 제한적
+                                if self._should_use_gpt_summary(formatted_article):
                                     summary = await self.summarize_article_enhanced(
                                         formatted_article['title'],
                                         formatted_article.get('description', '')
                                     )
                                     if summary:
                                         formatted_article['summary'] = summary
-                            
-                            if self._is_critical_news_enhanced(formatted_article):
+                                        gpt_used += 1
+                                
                                 if not self._is_duplicate_emergency(formatted_article):
                                     formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
                                     await self._trigger_emergency_alert_enhanced(formatted_article)
@@ -1643,7 +1720,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"🔥 Alpha Vantage: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개)")
+                        logger.info(f"🔥 Alpha Vantage: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, GPT 사용: {gpt_used}회)")
                 else:
                     logger.warning(f"Alpha Vantage 응답 오류: {response.status}")
         
@@ -1737,9 +1814,11 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
             })
             self.company_news_count = {}
             self.translation_count = 0
+            self.summary_count = 0  # 새로 추가
             self.last_translation_reset = datetime.now()
+            self.last_summary_reset = datetime.now()  # 새로 추가
             self.news_first_seen = {}
-            logger.info(f"🔄 일일 리셋 완료 (API 사용량 초기화)")
+            logger.info(f"🔄 일일 리셋 완료 (GPT API 사용량 초기화 - 번역: {self.max_translations_per_15min}/15분, 요약: {self.max_summaries_per_15min}/15분)")
     
     async def get_recent_news_enhanced(self, hours: int = 12) -> List[Dict]:
         """🔥🔥 강화된 최근 뉴스 가져오기"""
@@ -1787,6 +1866,10 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
         """최근 뉴스 가져오기 (호환성을 위한 래퍼)"""
         return await self.get_recent_news_enhanced(hours)
     
+    def _is_critical_news(self, article: Dict) -> bool:
+        """기존 호환성을 위한 메서드"""
+        return self._is_critical_news_enhanced(article)
+    
     async def close(self):
         """세션 종료"""
         try:
@@ -1795,6 +1878,7 @@ China manufacturing PMI falls → 중국 제조업 PMI 하락"""
             
             if self.session:
                 await self.session.close()
-                logger.info("🔚 강화된 뉴스 수집기 세션 종료")
+                logger.info("🔚 GPT API 최적화된 뉴스 수집기 세션 종료")
+                logger.info(f"💰 최종 GPT 사용량 - 번역: {self.translation_count}, 요약: {self.summary_count}")
         except Exception as e:
             logger.error(f"세션 종료 중 오류: {e}")
