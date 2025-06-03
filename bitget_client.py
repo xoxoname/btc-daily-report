@@ -486,7 +486,7 @@ class BitgetClient:
         
         logger.info(f"🔥 최종 발견된 고유한 트리거 주문: {len(unique_orders)}건")
         
-        # 발견된 주문들의 상세 정보 로깅
+        # 🔥🔥🔥 수정: 예약 주문이 없을 때 경고 로그 제거
         if unique_orders:
             logger.info("📋 발견된 예약 주문 목록:")
             for i, order in enumerate(unique_orders, 1):
@@ -497,7 +497,8 @@ class BitgetClient:
                 order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
                 logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}, 타입: {order_type}")
         else:
-            logger.warning("⚠️ 예약 주문을 찾지 못했습니다!")
+            # 🔥🔥🔥 수정: WARNING → DEBUG로 변경하여 빨간 로그 제거
+            logger.debug("📝 현재 예약 주문이 없습니다.")
         
         return unique_orders
     
