@@ -1,12 +1,297 @@
 import asyncio
+import aiohttp
+import hmac
+import hashlib
+import time
+import json
 import logging
 from typing import Dict, List, Optional, Set, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
-import json
 import traceback
 
 logger = logging.getLogger(__name__)
+
+class BitgetClient:
+    """Bitget API 클라이언트"""
+    
+    def __init__(self, config):
+        self.config = config
+        self.api_key = config.BITGET_APIKEY
+        self.api_secret = config.BITGET_APISECRET
+        self.passphrase = config.BITGET_PASSPHRASE
+        self.base_url = "https://api.bitget.com"
+        self.session = None
+        
+    async def initialize(self):
+        """클라이언트 초기화"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+            logger.info("Bitget 클라이언트 초기화 완료")
+    
+    def _generate_signature(self, timestamp: str, method: str, request_path: str, body: str = "") -> str:
+        """API 서명 생성"""
+        message = timestamp + method.upper() + request_path + body
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            message.encode('utf-8'),
+            hashlib.sha256
+        ).digest()
+        return signature.hex()
+    
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None) -> Dict:
+        """API 요청"""
+        if not self.session:
+            await self.initialize()
+        
+        url = f"{self.base_url}{endpoint}"
+        timestamp = str(int(time.time() * 1000))
+        
+        query_string = ""
+        if params:
+            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+            if query_string:
+                url += f"?{query_string}"
+        
+        body = ""
+        if data:
+            body = json.dumps(data)
+        
+        request_path = endpoint
+        if query_string:
+            request_path += f"?{query_string}"
+        
+        signature = self._generate_signature(timestamp, method, request_path, body)
+        
+        headers = {
+            'ACCESS-KEY': self.api_key,
+            'ACCESS-SIGN': signature,
+            'ACCESS-TIMESTAMP': timestamp,
+            'ACCESS-PASSPHRASE': self.passphrase,
+            'Content-Type': 'application/json'
+        }
+        
+        try:
+            async with self.session.request(method, url, headers=headers, data=body) as response:
+                response_text = await response.text()
+                
+                if response.status != 200:
+                    logger.error(f"Bitget API 오류: {response.status} - {response_text}")
+                    raise Exception(f"Bitget API 오류: {response_text}")
+                
+                return json.loads(response_text) if response_text else {}
+                
+        except Exception as e:
+            logger.error(f"Bitget API 요청 중 오류: {e}")
+            raise
+    
+    async def get_account_info(self) -> Dict:
+        """계정 정보 조회"""
+        try:
+            endpoint = "/api/mix/v1/account/account"
+            params = {'symbol': 'BTCUSDT', 'marginCoin': 'USDT'}
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('code') == '00000' and response.get('data'):
+                return response['data']
+            else:
+                logger.error(f"계정 정보 조회 실패: {response}")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"계정 정보 조회 실패: {e}")
+            return {}
+    
+    async def get_positions(self, symbol: str = "BTCUSDT") -> List[Dict]:
+        """포지션 조회"""
+        try:
+            endpoint = "/api/mix/v1/position/allPosition"
+            params = {'symbol': symbol, 'marginCoin': 'USDT'}
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('code') == '00000' and response.get('data'):
+                return response['data']
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"포지션 조회 실패: {e}")
+            return []
+    
+    async def get_ticker(self, symbol: str = "BTCUSDT") -> Dict:
+        """티커 정보 조회"""
+        try:
+            endpoint = "/api/mix/v1/market/ticker"
+            params = {'symbol': symbol}
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('code') == '00000' and response.get('data'):
+                return response['data']
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"티커 조회 실패: {e}")
+            return {}
+    
+    async def get_kline(self, symbol: str, granularity: str, limit: int = 100) -> List[List]:
+        """K라인 데이터 조회"""
+        try:
+            endpoint = "/api/mix/v1/market/candles"
+            params = {
+                'symbol': symbol,
+                'granularity': granularity,
+                'limit': str(limit)
+            }
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('code') == '00000' and response.get('data'):
+                return response['data']
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"K라인 데이터 조회 실패: {e}")
+            return []
+    
+    async def get_funding_rate(self, symbol: str = "BTCUSDT") -> Dict:
+        """펀딩비 조회"""
+        try:
+            endpoint = "/api/mix/v1/market/current-fundRate"
+            params = {'symbol': symbol}
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('code') == '00000' and response.get('data'):
+                return response['data']
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"펀딩비 조회 실패: {e}")
+            return {}
+    
+    async def get_open_interest(self, symbol: str = "BTCUSDT") -> Dict:
+        """미결제약정 조회"""
+        try:
+            endpoint = "/api/mix/v1/market/open-interest"
+            params = {'symbol': symbol}
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('code') == '00000' and response.get('data'):
+                return response['data']
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"미결제약정 조회 실패: {e}")
+            return {}
+    
+    async def get_recent_filled_orders(self, symbol: str = "BTCUSDT", minutes: int = 5) -> List[Dict]:
+        """최근 체결 주문 조회"""
+        try:
+            endpoint = "/api/mix/v1/order/fills"
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (minutes * 60 * 1000)
+            
+            params = {
+                'symbol': symbol,
+                'startTime': str(start_time),
+                'endTime': str(end_time)
+            }
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('code') == '00000' and response.get('data'):
+                return response['data']
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"최근 체결 주문 조회 실패: {e}")
+            return []
+    
+    async def get_all_plan_orders_with_tp_sl(self, symbol: str = "BTCUSDT") -> Dict:
+        """모든 예약 주문 조회 (TP/SL 포함)"""
+        try:
+            result = {
+                'plan_orders': [],
+                'tp_sl_orders': []
+            }
+            
+            # 일반 예약 주문 조회
+            try:
+                endpoint = "/api/mix/v1/plan/currentPlan"
+                params = {'symbol': symbol}
+                response = await self._request('GET', endpoint, params=params)
+                
+                if response.get('code') == '00000' and response.get('data'):
+                    result['plan_orders'] = response['data']
+            except Exception as e:
+                logger.warning(f"예약 주문 조회 실패: {e}")
+            
+            # TP/SL 주문 조회
+            try:
+                endpoint = "/api/mix/v1/plan/currentPlan"
+                params = {'symbol': symbol, 'planType': 'profit_plan'}
+                response = await self._request('GET', endpoint, params=params)
+                
+                if response.get('code') == '00000' and response.get('data'):
+                    result['tp_sl_orders'].extend(response['data'])
+            except Exception as e:
+                logger.warning(f"TP/SL 주문 조회 실패: {e}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"예약 주문 조회 실패: {e}")
+            return {'plan_orders': [], 'tp_sl_orders': []}
+    
+    async def get_enhanced_profit_history(self, days: int = 7) -> Dict:
+        """향상된 손익 내역 조회"""
+        try:
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (days * 24 * 60 * 60 * 1000)
+            
+            endpoint = "/api/mix/v1/account/accountBill"
+            params = {
+                'symbol': 'BTCUSDT',
+                'marginCoin': 'USDT',
+                'startTime': str(start_time),
+                'endTime': str(end_time),
+                'pageSize': '100'
+            }
+            
+            response = await self._request('GET', endpoint, params=params)
+            
+            total_pnl = 0.0
+            
+            if response.get('code') == '00000' and response.get('data'):
+                for record in response['data']:
+                    change = float(record.get('amount', 0))
+                    business_type = record.get('businessType', '')
+                    
+                    # 실현 손익만 계산
+                    if business_type in ['close_long', 'close_short', 'delivery_long', 'delivery_short']:
+                        total_pnl += change
+            
+            return {
+                'total_pnl': total_pnl,
+                'average_daily': total_pnl / days if days > 0 else 0,
+                'days': days
+            }
+            
+        except Exception as e:
+            logger.error(f"손익 내역 조회 실패: {e}")
+            return {
+                'total_pnl': 0.0,
+                'average_daily': 0.0,
+                'days': days
+            }
+    
+    async def close(self):
+        """세션 종료"""
+        if self.session:
+            await self.session.close()
+            logger.info("Bitget 클라이언트 세션 종료")
 
 @dataclass
 class PositionInfo:
