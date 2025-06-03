@@ -15,8 +15,14 @@ class MentalCareGenerator:
         """수익 상황 기반 멘탈 케어"""
         
         # 상황 분석
-        total_equity = account_info.get('total_equity', 0)
-        unrealized_pnl = account_info.get('unrealized_pnl', 0)
+        total_equity = account_info.get('accountEquity', 0)
+        if isinstance(total_equity, str):
+            total_equity = float(total_equity)
+        
+        unrealized_pnl = account_info.get('unrealizedPL', 0)
+        if isinstance(unrealized_pnl, str):
+            unrealized_pnl = float(unrealized_pnl)
+            
         weekly_total = weekly_profit.get('total', 0)
         weekly_avg = weekly_profit.get('average', 0)
         has_position = position_info.get('has_position', False)
@@ -79,12 +85,12 @@ class MentalCareGenerator:
 """
         
         response = await self.openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "당신은 따뜻하고 현실적인 트레이딩 멘토입니다. 구체적인 숫자와 함께 실질적인 조언을 제공하세요."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=350,
+            max_tokens=200,
             temperature=0.8
         )
         
