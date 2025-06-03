@@ -48,7 +48,7 @@ class RealisticNewsCollector:
         self.newsdata_key = getattr(config, 'NEWSDATA_KEY', None)
         self.alpha_vantage_key = getattr(config, 'ALPHA_VANTAGE_KEY', None)
         
-        # 크리티컬 키워드 (비트코인 직접 영향만)
+        # 크리티컬 키워드 (비트코인 직접 영향 + 거시경제)
         self.critical_keywords = [
             # 비트코인 ETF 관련 (최우선)
             'bitcoin etf approved', 'bitcoin etf rejected', 'spot bitcoin etf', 'etf decision',
@@ -90,7 +90,37 @@ class RealisticNewsCollector:
             # Fed 금리 결정 (비트코인 영향)
             'fed rate decision bitcoin', 'fomc bitcoin', 'interest rate bitcoin',
             'powell bitcoin', 'federal reserve bitcoin',
-            '연준 비트코인', '금리 비트코인'
+            '연준 비트코인', '금리 비트코인',
+            
+            # ===== 거시경제 영향 (새로 추가) =====
+            # Fed 금리 일반
+            'fed rate decision', 'fomc decision', 'interest rate hike', 'interest rate cut',
+            'powell announces', 'federal reserve decision', 'monetary policy',
+            'fed meeting minutes', 'dot plot', 'fed chair',
+            '연준 금리', '기준금리', '통화정책',
+            
+            # 미국 관세 및 무역
+            'trump tariffs', 'china tariffs', 'trade war', 'trade deal', 'trade agreement',
+            'customs duties', 'import tariffs', 'export restrictions', 'trade negotiations',
+            'trade talks deadline', 'tariff exemption', 'tariff extension',
+            '관세', '무역협상', '무역전쟁', '무역합의',
+            
+            # 글로벌 경제 정책
+            'us economic policy', 'treasury secretary', 'inflation data', 'cpi report',
+            'unemployment rate', 'gdp growth', 'recession fears', 'economic stimulus',
+            'quantitative easing', 'dollar strength', 'dollar weakness',
+            '달러 강세', '달러 약세', '인플레이션', '경기침체',
+            
+            # 지정학적 리스크
+            'ukraine war', 'russia sanctions', 'north korea sanctions', 'iran sanctions',
+            'china us tensions', 'taiwan conflict', 'middle east conflict',
+            'energy crisis', 'oil price surge', 'natural gas crisis',
+            '지정학적 리스크', '제재', '분쟁',
+            
+            # 중앙은행 정책
+            'ecb rate decision', 'bank of japan', 'people bank of china',
+            'swiss national bank', 'bank of england rate',
+            '유럽중앙은행', '일본은행', '중국인민은행'
         ]
         
         # 제외 키워드 (비트코인과 무관한 것들)
@@ -126,7 +156,11 @@ class RealisticNewsCollector:
             'fed_rate_hike': {'avg_impact': -1.0, 'duration_hours': 6, 'confidence': 0.6},
             'fed_rate_cut': {'avg_impact': 1.2, 'duration_hours': 12, 'confidence': 0.7},
             'corporate_adoption': {'avg_impact': 0.4, 'duration_hours': 8, 'confidence': 0.7},  # 12시간 → 8시간
-            'exchange_hack': {'avg_impact': -1.8, 'duration_hours': 6, 'confidence': 0.75}  # 8시간 → 6시간
+            'exchange_hack': {'avg_impact': -1.8, 'duration_hours': 6, 'confidence': 0.75},  # 8시간 → 6시간
+            'trump_tariffs': {'avg_impact': -0.8, 'duration_hours': 8, 'confidence': 0.6},  # 새로 추가
+            'trade_deal': {'avg_impact': 0.6, 'duration_hours': 12, 'confidence': 0.7},  # 새로 추가
+            'inflation_data': {'avg_impact': 1.0, 'duration_hours': 6, 'confidence': 0.65},  # 새로 추가
+            'geopolitical_risk': {'avg_impact': 0.8, 'duration_hours': 12, 'confidence': 0.6}  # 새로 추가
         }
         
         # RSS 피드 - 암호화폐 전문 소스 위주
@@ -167,7 +201,7 @@ class RealisticNewsCollector:
         # 중복 방지 데이터 로드
         self._load_duplicate_data()
         
-        logger.info(f"뉴스 수집기 초기화 완료 - 비트코인 전용 필터링 강화")
+        logger.info(f"뉴스 수집기 초기화 완료 - 비트코인 + 거시경제 필터링 강화")
         logger.info(f"📊 설정: RSS 15초 체크, 번역 15분당 {self.max_translations_per_15min}개, 크리티컬 키워드 {len(self.critical_keywords)}개")
         logger.info(f"💾 중복 방지 데이터 로드: 처리된 뉴스 {len(self.processed_news_hashes)}개, 긴급 알림 {len(self.emergency_alerts_sent)}개")
     
@@ -399,8 +433,8 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             except:
                 return text
     
-    async def summarize_article(self, title: str, description: str, max_length: int = 500) -> str:
-        """기사 내용을 한국어로 상세 요약 - 투자 판단에 필요한 핵심 정보"""
+    async def summarize_article(self, title: str, description: str, max_length: int = 200) -> str:
+        """기사 내용을 한국어로 3문장 요약 - 투자 판단에 필요한 핵심 정보만"""
         if not self.openai_client or not description:
             # OpenAI가 없거나 description이 없으면 제목과 기본 정보로 요약 생성
             return self._generate_basic_summary(title, description)
@@ -413,27 +447,20 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             # 뉴스 타입 분류
             news_type = self._classify_news_for_summary(title, description)
             
-            system_content = f"""당신은 한국의 비트코인 투자 전문가입니다. 비트코인 뉴스의 핵심을 한국 투자자들이 즉시 활용할 수 있도록 상세히 요약합니다.
+            system_content = f"""당신은 한국의 비트코인 투자 전문가입니다. 비트코인 뉴스의 핵심을 한국 투자자들이 즉시 활용할 수 있도록 3문장으로 간결하게 요약합니다.
 
 요약 원칙:
-1. 투자 판단에 필요한 모든 정보 포함:
-   - 누가: 기업/인물/국가명 (한국식 표기)
-   - 무엇을: 구체적 행동 (매입, 매도, 발표, 출시 등)
-   - 얼마나: 정확한 금액/수량
-   - 언제: 시기 정보
-   - 왜: 배경과 이유
-   - 영향: 시장에 미칠 영향
-
-2. 뉴스 타입별 특화 요약:
-{self._get_summary_template(news_type)}
-
-3. 투자자 관점에서 중요도 순으로 정리
-4. 구체적인 숫자와 사실 위주
-5. 불확실한 추측은 제외
-6. 한국 투자자가 바로 이해할 수 있는 표현 사용
+1. 정확히 3문장으로 요약
+2. 투자 판단에 필요한 핵심 정보만:
+   - 1문장: 누가, 무엇을, 얼마나 (주체, 행동, 규모)
+   - 2문장: 배경과 이유 (왜 이런 일이 발생했는지)
+   - 3문장: 시장 영향 예상 (투자자에게 미치는 의미)
+3. 구체적인 숫자와 사실 위주
+4. 불확실한 추측은 제외
+5. 한국 투자자가 바로 이해할 수 있는 표현 사용
 
 예시:
-마이크로스트래티지가 12월 15일 580,955개의 비트코인을 보유하게 되었다. 이는 약 270억 달러 규모로, 전체 비트코인 공급량의 2.7%에 해당한다. 평균 매입가는 46,500달러이며, 현재 시세 대비 30% 수익을 보고 있다."""
+마이크로스트래티지가 12월 15일 비트코인 500개를 추가 매입하여 총 580,955개를 보유하게 되었다. 이는 약 270억 달러 규모로 회사의 비트코인 중심 전략이 지속되고 있음을 보여준다. 대형 기업의 지속적인 비트코인 매입은 시장 신뢰도 향상과 가격 상승 압력으로 작용할 것으로 예상된다."""
             
             response = await self.openai_client.chat.completions.create(
                 model="gpt-4-turbo-preview",
@@ -444,10 +471,10 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                     },
                     {
                         "role": "user", 
-                        "content": f"다음 비트코인 뉴스를 한국어로 상세 요약해주세요 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:1500]}"
+                        "content": f"다음 비트코인 뉴스를 정확히 3문장으로 요약해주세요 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:1500]}"
                     }
                 ],
-                max_tokens=800,
+                max_tokens=400,
                 temperature=0.3
             )
             
@@ -456,7 +483,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             if len(summary) > max_length:
                 sentences = summary.split('.')
                 result = ""
-                for sentence in sentences:
+                for sentence in sentences[:3]:  # 최대 3문장
                     if len(result + sentence + ".") <= max_length - 3:
                         result += sentence + "."
                     else:
@@ -474,14 +501,14 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                     messages=[
                         {
                             "role": "system", 
-                            "content": "비트코인 뉴스의 핵심을 한국어로 요약합니다. 누가, 무엇을, 얼마나, 왜를 중심으로 구체적인 정보를 포함해주세요."
+                            "content": "비트코인 뉴스의 핵심을 3문장으로 요약합니다. 누가, 무엇을, 얼마나를 중심으로 구체적인 정보를 포함해주세요."
                         },
                         {
                             "role": "user", 
-                            "content": f"요약 (최대 {max_length}자):\n제목: {title}\n내용: {description[:1000]}"
+                            "content": f"3문장 요약 (최대 {max_length}자):\n제목: {title}\n내용: {description[:1000]}"
                         }
                     ],
-                    max_tokens=600,
+                    max_tokens=300,
                     temperature=0.3
                 )
                 
@@ -494,7 +521,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                 return self._generate_basic_summary(title, description)
     
     def _generate_basic_summary(self, title: str, description: str) -> str:
-        """OpenAI 없이 기본 요약 생성"""
+        """OpenAI 없이 기본 3문장 요약 생성"""
         try:
             # 제목에서 핵심 정보 추출
             content = (title + " " + description).lower()
@@ -505,61 +532,47 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             for company in self.important_companies:
                 if company.lower() in content:
                     if company.lower() == 'sberbank':
-                        summary_parts.append("러시아 최대 은행 스베르방크가")
+                        summary_parts.append("러시아 최대 은행 스베르방크가 비트코인 연계 채권을 출시했다.")
                     elif company.lower() == 'tesla':
-                        summary_parts.append("테슬라가")
+                        summary_parts.append("테슬라가 비트코인 관련 중요한 발표를 했다.")
                     elif company.lower() == 'microstrategy':
-                        summary_parts.append("마이크로스트래티지가")
+                        summary_parts.append("마이크로스트래티지가 비트코인을 추가 매입했다.")
                     elif company.lower() == 'blackrock':
-                        summary_parts.append("블랙록이")
+                        summary_parts.append("블랙록이 비트코인 ETF 관련 발표를 했다.")
                     else:
-                        summary_parts.append(f"{company}가")
+                        summary_parts.append(f"{company}가 비트코인 관련 발표를 했다.")
                     break
             
-            # 행동 추출
-            if 'bought' in content or 'purchase' in content or '구매' in content:
-                summary_parts.append("비트코인을 매입했습니다.")
-            elif 'launch' in content or 'bonds' in content or '출시' in content or '채권' in content:
-                summary_parts.append("비트코인 연계 상품을 출시했습니다.")
-            elif 'approved' in content or '승인' in content:
-                summary_parts.append("비트코인 관련 승인을 받았습니다.")
-            elif 'rejected' in content or '거부' in content:
-                summary_parts.append("비트코인 관련 승인이 거부되었습니다.")
+            # 배경 설명
+            if 'bonds' in content or 'structured' in content:
+                summary_parts.append("이는 러시아의 비트코인 채택 확대를 의미하며 기관 투자자들의 관심을 끌 것으로 보인다.")
+            elif 'etf' in content:
+                summary_parts.append("ETF 승인은 기관 투자자들의 비트코인 접근성을 크게 향상시킬 것으로 예상된다.")
+            elif any(company in content for company in ['tesla', 'microstrategy', 'blackrock']):
+                summary_parts.append("대형 기업의 비트코인 채택은 시장의 제도화를 가속화할 것으로 보인다.")
             else:
-                summary_parts.append("비트코인 관련 중요한 발표를 했습니다.")
+                summary_parts.append("이러한 발표는 비트코인 시장에 중요한 영향을 미칠 것으로 분석된다.")
             
-            # 금액 정보 추출
-            amount_match = re.search(r'\$?([\d,]+(?:\.\d+)?)\s*(billion|million|천만|억)', content)
-            if amount_match:
-                amount = amount_match.group(1)
-                unit = amount_match.group(2)
-                if 'billion' in unit:
-                    summary_parts.append(f"규모는 약 {amount}억 달러입니다.")
-                elif 'million' in unit:
-                    summary_parts.append(f"규모는 약 {amount}백만 달러입니다.")
+            # 시장 영향
+            if len(summary_parts) == 2:
+                summary_parts.append("투자자들은 시장 반응을 주의 깊게 지켜볼 필요가 있다.")
             
-            # BTC 수량 정보
-            btc_match = re.search(r'([\d,]+)\s*(?:btc|bitcoin)', content)
-            if btc_match:
-                btc_amount = btc_match.group(1)
-                summary_parts.append(f"비트코인 {btc_amount}개가 관련되었습니다.")
-            
-            if summary_parts:
-                return " ".join(summary_parts)
+            if len(summary_parts) >= 3:
+                return " ".join(summary_parts[:3])
             else:
                 # 제목 기반 기본 요약
                 if 'sberbank' in content and 'bonds' in content:
-                    return "러시아 최대 은행 스베르방크가 비트코인 연계 채권을 출시했습니다. 이는 러시아의 비트코인 채택 확대를 의미하며, 기관 투자자들의 관심을 끌 것으로 예상됩니다."
+                    return "러시아 최대 은행 스베르방크가 비트코인 연계 채권을 출시했다. 이는 러시아의 비트코인 채택 확대를 의미한다. 기관 투자자들의 관심을 끌 것으로 예상된다."
                 elif 'etf' in content:
-                    return "비트코인 ETF 관련 중요한 발표가 있었습니다. ETF 승인은 기관 투자자들의 비트코인 접근성을 크게 향상시킬 것으로 예상됩니다."
+                    return "비트코인 ETF 관련 중요한 발표가 있었다. ETF 승인은 기관 투자자들의 접근성을 향상시킨다. 비트코인 시장에 긍정적 영향을 미칠 것으로 보인다."
                 elif any(company in content for company in ['tesla', 'microstrategy', 'blackrock']):
-                    return "대형 기업의 비트코인 관련 중요한 발표가 있었습니다. 기업의 비트코인 채택은 시장의 제도화를 가속화할 것으로 보입니다."
+                    return "대형 기업의 비트코인 관련 중요한 발표가 있었다. 기업의 비트코인 채택이 시장 제도화를 가속화하고 있다. 투자자들은 추가 기업 참여를 주목하고 있다."
                 else:
-                    return "비트코인 시장에 중요한 영향을 미칠 수 있는 발표가 있었습니다. 투자자들은 시장 반응을 주의 깊게 지켜볼 필요가 있습니다."
+                    return "비트코인 시장에 중요한 영향을 미칠 수 있는 발표가 있었다. 시장 참가자들이 이번 소식에 주목하고 있다. 투자자들은 시장 반응을 면밀히 관찰할 필요가 있다."
                     
         except Exception as e:
             logger.error(f"기본 요약 생성 실패: {e}")
-            return "비트코인 관련 중요한 뉴스가 발표되었습니다. 자세한 내용은 원문을 확인하시기 바랍니다."
+            return "비트코인 관련 중요한 뉴스가 발표되었다. 시장에 영향을 미칠 것으로 예상된다. 투자자들은 상황을 지켜봐야 한다."
     
     def _classify_news_for_summary(self, title: str, description: str) -> str:
         """요약을 위한 뉴스 타입 분류"""
@@ -794,7 +807,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                 connector=aiohttp.TCPConnector(limit=100, limit_per_host=30)
             )
         
-        logger.info("🔍 비트코인 전용 뉴스 모니터링 시작")
+        logger.info("🔍 비트코인 + 거시경제 뉴스 모니터링 시작")
         
         # 회사별 뉴스 카운트 초기화
         self.company_news_count = {}
@@ -828,8 +841,8 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                                 if not self._is_recent_news(article, hours=2):
                                     continue
                                 
-                                # 비트코인 관련성 체크
-                                if not self._is_bitcoin_related(article):
+                                # 비트코인 + 거시경제 관련성 체크
+                                if not self._is_bitcoin_or_macro_related(article):
                                     continue
                                 
                                 # 기업명 추출
@@ -872,7 +885,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                         continue
                 
                 if processed_articles > 0:
-                    logger.info(f"📰 RSS 스캔 완료: {successful_feeds}개 피드, {processed_articles}개 비트코인 뉴스")
+                    logger.info(f"📰 RSS 스캔 완료: {successful_feeds}개 피드, {processed_articles}개 관련 뉴스")
                 
                 await asyncio.sleep(15)  # 15초마다
                 
@@ -880,8 +893,8 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                 logger.error(f"RSS 모니터링 오류: {e}")
                 await asyncio.sleep(30)
     
-    def _is_bitcoin_related(self, article: Dict) -> bool:
-        """비트코인 직접 관련성 체크"""
+    def _is_bitcoin_or_macro_related(self, article: Dict) -> bool:
+        """비트코인 직접 관련성 + 거시경제 영향 체크"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
         # 제외 키워드 먼저 체크
@@ -906,15 +919,36 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             if any(term in content for term in important_terms):
                 return True
         
+        # ===== 거시경제 영향 키워드 (새로 추가) =====
         # Fed 금리 결정 (비트코인 언급 없어도 중요)
-        fed_keywords = ['fed rate decision', 'fomc decides', 'interest rate hike', 'interest rate cut', 'powell announces']
+        fed_keywords = ['fed rate decision', 'fomc decides', 'interest rate hike', 'interest rate cut', 'powell announces', 'federal reserve decision']
         if any(keyword in content for keyword in fed_keywords):
+            return True
+        
+        # 미국 관세 및 무역 (비트코인 시장에 영향)
+        trade_keywords = ['trump tariffs', 'china tariffs', 'trade war', 'trade deal', 'trade agreement', 'trade negotiations deadline']
+        if any(keyword in content for keyword in trade_keywords):
+            return True
+        
+        # 인플레이션 데이터 (비트코인 헤지 자산으로 인식)
+        inflation_keywords = ['inflation data', 'cpi report', 'pce index', 'inflation rate']
+        if any(keyword in content for keyword in inflation_keywords):
+            return True
+        
+        # 달러 강세/약세 (비트코인과 역상관)
+        dollar_keywords = ['dollar strength', 'dollar weakness', 'dxy surge', 'dollar index']
+        if any(keyword in content for keyword in dollar_keywords):
+            return True
+        
+        # 지정학적 리스크 (안전자산 수요)
+        geopolitical_keywords = ['ukraine war', 'russia sanctions', 'china us tensions', 'middle east conflict', 'energy crisis']
+        if any(keyword in content for keyword in geopolitical_keywords):
             return True
         
         return False
     
     def _estimate_price_impact_advanced(self, article: Dict) -> str:
-        """현실적 가격 영향 추정 - 구조화 상품 vs 직접 투자 구분"""
+        """현실적 가격 영향 추정 - 구조화 상품 vs 직접 투자 + 거시경제 구분"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
         # 구조화 상품 특별 처리 (스베르방크 타입)
@@ -957,10 +991,10 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         return self._estimate_price_impact_realistic(article)
     
     def _match_historical_pattern(self, content: str) -> Optional[str]:
-        """과거 패턴과 매칭 - 구조화 상품 추가"""
+        """과거 패턴과 매칭 - 구조화 상품 + 거시경제 추가"""
         patterns = {
             'sberbank_bonds': ['sberbank', 'bonds'],
-            'structured_products': ['structured', 'bonds', 'linked'],  # 새로 추가
+            'structured_products': ['structured', 'bonds', 'linked'],  # 구조화 상품
             'microstrategy_purchase': ['microstrategy', 'bought', 'bitcoin'],
             'tesla_purchase': ['tesla', 'bought', 'bitcoin'],
             'etf_approval': ['etf', 'approved', 'sec'],
@@ -970,7 +1004,13 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             'fed_rate_hike': ['fed', 'rate', 'hike', 'increase'],
             'fed_rate_cut': ['fed', 'rate', 'cut', 'lower'],
             'corporate_adoption': ['corporation', 'adopt', 'bitcoin'],
-            'exchange_hack': ['exchange', 'hack', 'stolen']
+            'exchange_hack': ['exchange', 'hack', 'stolen'],
+            
+            # ===== 거시경제 패턴 (새로 추가) =====
+            'trump_tariffs': ['trump', 'tariffs', 'china'],
+            'trade_deal': ['trade', 'deal', 'agreement'],
+            'inflation_data': ['inflation', 'cpi', 'data'],
+            'geopolitical_risk': ['ukraine', 'war', 'sanctions', 'conflict']
         }
         
         # 구조화 상품 우선 체크
@@ -987,7 +1027,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         return None
     
     def _estimate_price_impact_realistic(self, article: Dict) -> str:
-        """현실적인 가격 영향 추정 - 과도한 예측 방지"""
+        """현실적인 가격 영향 추정 - 과도한 예측 방지 + 거시경제 추가"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
         # ETF 관련 (가장 높은 영향)
@@ -1019,6 +1059,32 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                 return '⚡ 변동 ±0.1~0.3% (미미)'
             else:
                 return '📈 상승 +0.1~0.4%'
+        
+        # ===== 거시경제 영향 (새로 추가) =====
+        # 미국 관세 및 무역
+        if any(word in content for word in ['trump tariffs', 'china tariffs', 'trade war']):
+            return '📉 하락 -0.5~1.5%'
+        elif any(word in content for word in ['trade deal', 'trade agreement']):
+            return '📈 상승 +0.3~1%'
+        
+        # 인플레이션 데이터
+        if any(word in content for word in ['inflation data', 'cpi report']):
+            if any(word in content for word in ['higher', 'rises', 'surge']):
+                return '📈 상승 +0.5~1.5%'  # 비트코인 헤지 수요
+            elif any(word in content for word in ['lower', 'falls', 'decline']):
+                return '📉 하락 -0.3~0.8%'
+            else:
+                return '⚡ 변동 ±0.3~1%'
+        
+        # 달러 강세/약세
+        if any(word in content for word in ['dollar strength', 'dxy surge']):
+            return '📉 하락 -0.3~1%'
+        elif any(word in content for word in ['dollar weakness', 'dxy falls']):
+            return '📈 상승 +0.3~1%'
+        
+        # 지정학적 리스크
+        if any(word in content for word in ['ukraine war', 'russia sanctions', 'middle east conflict']):
+            return '📈 상승 +0.3~1.2%'  # 안전자산 수요
         
         # 규제/금지
         if any(word in content for word in ['ban', 'banned', 'prohibit']):
@@ -1058,75 +1124,13 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         
         # 기본값 (매우 보수적)
         return '⚡ 변동 ±0.1~0.4%'
-        """뉴스의 예상 가격 영향 추정 - 명확하게 상승/하락 표시"""
-        content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
-        
-        # ETF 관련
-        if 'etf approved' in content or 'etf approval' in content:
-            return '📈 상승 +1~3%'
-        elif 'etf rejected' in content or 'etf rejection' in content:
-            return '📉 하락 -1~3%'
-        elif 'etf' in content:
-            return '⚡ 변동 ±0.5~1%'
-        
-        # 기업/국가 구매
-        for entity in ['tesla', 'microstrategy', 'gamestop', 'blackrock', 'russia', 'sberbank']:
-            if entity in content and any(word in content for word in ['bought', 'purchased', 'buys', 'adds', 'launches', 'bonds']):
-                if 'billion' in content:
-                    return '📈 상승 +0.5~2%'
-                elif 'million' in content:
-                    return '📈 상승 +0.3~1%'
-                else:
-                    return '📈 상승 +0.2~0.5%'
-        
-        # 규제/금지
-        if any(word in content for word in ['ban', 'banned', 'prohibit']):
-            if 'china' in content:
-                return '📉 하락 -2~4%'
-            else:
-                return '📉 하락 -1~3%'
-        elif 'lawsuit' in content or 'sue' in content:
-            return '📉 하락 -0.5~2%'
-        elif 'regulation' in content:
-            return '⚡ 변동 ±0.5~1.5%'
-        
-        # Fed 금리
-        if any(word in content for word in ['rate hike', 'rates higher', 'hawkish']):
-            return '📉 하락 -0.5~2%'
-        elif any(word in content for word in ['rate cut', 'rates lower', 'dovish']):
-            return '📈 상승 +0.5~2%'
-        elif 'fed' in content or 'fomc' in content:
-            return '⚡ 변동 ±0.3~1%'
-        
-        # 시장 급변동
-        if any(word in content for word in ['crash', 'plunge', 'tumble']):
-            return '📉 하락 -3~5%'
-        elif any(word in content for word in ['surge', 'soar', 'rally', 'all time high', 'ath']):
-            return '📈 상승 +2~4%'
-        
-        # 해킹/보안
-        if any(word in content for word in ['hack', 'stolen', 'breach']):
-            if 'billion' in content:
-                return '📉 하락 -1~3%'
-            else:
-                return '📉 하락 -0.5~1.5%'
-        
-        # 고래 이동
-        if 'whale' in content or 'large transfer' in content:
-            if 'exchange' in content:
-                return '⚡ 변동 ±0.5~1.5%'
-            else:
-                return '⚡ 변동 ±0.2~0.5%'
-        
-        # 기본값
-        return '⚡ 변동 ±0.3~1%'
     
     def _is_critical_news(self, article: Dict) -> bool:
-        """크리티컬 뉴스 판단 - 비트코인 직접 영향만"""
+        """크리티컬 뉴스 판단 - 비트코인 직접 영향 + 거시경제"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        # 비트코인 관련성 체크
-        if not self._is_bitcoin_related(article):
+        # 비트코인 + 거시경제 관련성 체크
+        if not self._is_bitcoin_or_macro_related(article):
             return False
         
         # 제외 키워드 체크
@@ -1159,6 +1163,9 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             ('fed', 'rate', 'decision'),        # Fed 금리 결정
             ('russia', 'bitcoin', 'bonds'),     # 러시아 비트코인 채권
             ('sberbank', 'bitcoin'),            # 스베르방크 비트코인
+            ('trump', 'tariffs', 'china'),      # 트럼프 관세 (새로 추가)
+            ('trade', 'deal', 'china'),         # 무역 합의 (새로 추가)
+            ('inflation', 'cpi', 'data'),       # 인플레이션 데이터 (새로 추가)
         ]
         
         for pattern in critical_patterns:
@@ -1172,8 +1179,8 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         """중요 뉴스 판단"""
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        # 비트코인 관련성 체크
-        if not self._is_bitcoin_related(article):
+        # 비트코인 + 거시경제 관련성 체크
+        if not self._is_bitcoin_or_macro_related(article):
             return False
         
         # 제외 키워드 체크
@@ -1193,7 +1200,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             # 금융 소스 + 비트코인 또는 중요 키워드
             category == 'finance' and weight >= 7 and (
                 any(word in content for word in ['bitcoin', 'btc', 'crypto']) or
-                any(word in content for word in ['fed', 'rate', 'regulation', 'sec'])
+                any(word in content for word in ['fed', 'rate', 'regulation', 'sec', 'tariffs', 'trade'])
             ),
             
             # API 뉴스 + 높은 가중치
@@ -1202,6 +1209,9 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             # 기업 + 비트코인
             any(company.lower() in content for company in self.important_companies) and 
             any(word in content for word in ['bitcoin', 'btc', 'crypto']),
+            
+            # 거시경제 중요 뉴스 (새로 추가)
+            any(word in content for word in ['fed rate decision', 'trump tariffs', 'trade deal', 'inflation data']) and weight >= 7,
         ]
         
         return any(conditions)
@@ -1270,7 +1280,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             if hasattr(self, 'data_collector') and self.data_collector:
                 self.data_collector.events_buffer.append(event)
             
-            logger.critical(f"🚨 비트코인 긴급 뉴스: {event['impact']} - {event['title_ko'][:60]}... (예상: {event['expected_change']})")
+            logger.critical(f"🚨 긴급 뉴스: {event['impact']} - {event['title_ko'][:60]}... (예상: {event['expected_change']})")
             
         except Exception as e:
             logger.error(f"긴급 알림 처리 오류: {e}")
@@ -1348,7 +1358,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                                             'weight': sub_info['weight']
                                         }
                                         
-                                        if self._is_bitcoin_related(article):
+                                        if self._is_bitcoin_or_macro_related(article):
                                             # 기업명 추출
                                             company = self._extract_company_from_content(
                                                 article['title'],
@@ -1477,11 +1487,11 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         return articles
     
     async def _call_newsapi(self):
-        """NewsAPI 호출"""
+        """NewsAPI 호출 - 거시경제 키워드 추가"""
         try:
             url = "https://newsapi.org/v2/everything"
             params = {
-                'q': '(bitcoin OR btc) AND (etf OR sec OR "bought bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "bitcoin ban" OR "bitcoin regulation" OR "bitcoin hack" OR "whale alert" OR "fed rate" OR "russia bitcoin" OR "sberbank")',
+                'q': '(bitcoin OR btc OR "bitcoin etf" OR "fed rate" OR "trump tariffs" OR "trade deal" OR "inflation data") AND (etf OR sec OR "bought bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "bitcoin ban" OR "bitcoin regulation" OR "bitcoin hack" OR "whale alert" OR "fed rate" OR "russia bitcoin" OR "sberbank" OR "tariffs china" OR "trade negotiations" OR "cpi report")',
                 'language': 'en',
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
@@ -1507,7 +1517,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                             'category': 'api'
                         }
                         
-                        if self._is_bitcoin_related(formatted_article):
+                        if self._is_bitcoin_or_macro_related(formatted_article):
                             # 기업명 추출
                             company = self._extract_company_from_content(
                                 formatted_article['title'],
@@ -1536,7 +1546,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"📰 NewsAPI: {processed}개 비트코인 뉴스 처리")
+                        logger.info(f"📰 NewsAPI: {processed}개 관련 뉴스 처리")
                 else:
                     logger.warning(f"NewsAPI 응답 오류: {response.status}")
         
@@ -1544,12 +1554,12 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             logger.error(f"NewsAPI 호출 오류: {e}")
     
     async def _call_newsdata(self):
-        """NewsData API 호출"""
+        """NewsData API 호출 - 거시경제 키워드 추가"""
         try:
             url = "https://newsdata.io/api/1/news"
             params = {
                 'apikey': self.newsdata_key,
-                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin"',
+                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin" OR "fed rate decision" OR "trump tariffs" OR "trade deal" OR "inflation data"',
                 'language': 'en',
                 'category': 'business,top',
                 'size': 30
@@ -1573,7 +1583,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                             'category': 'api'
                         }
                         
-                        if self._is_bitcoin_related(formatted_article):
+                        if self._is_bitcoin_or_macro_related(formatted_article):
                             # 기업명 추출
                             company = self._extract_company_from_content(
                                 formatted_article['title'],
@@ -1602,7 +1612,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"📰 NewsData: {processed}개 비트코인 뉴스 처리")
+                        logger.info(f"📰 NewsData: {processed}개 관련 뉴스 처리")
                 else:
                     logger.warning(f"NewsData 응답 오류: {response.status}")
         
@@ -1641,7 +1651,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                             'sentiment': article.get('overall_sentiment_label', 'Neutral')
                         }
                         
-                        if self._is_bitcoin_related(formatted_article):
+                        if self._is_bitcoin_or_macro_related(formatted_article):
                             # 기업명 추출
                             company = self._extract_company_from_content(
                                 formatted_article['title'],
@@ -1670,7 +1680,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"📰 Alpha Vantage: {processed}개 비트코인 뉴스 처리")
+                        logger.info(f"📰 Alpha Vantage: {processed}개 관련 뉴스 처리")
                 else:
                     logger.warning(f"Alpha Vantage 응답 오류: {response.status}")
         
