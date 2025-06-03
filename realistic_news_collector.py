@@ -31,22 +31,36 @@ class RealisticNewsCollector:
         # 전송된 뉴스 제목 캐시 (중복 방지 강화) - 초기화
         self.sent_news_titles = {}
         
-        # 🔥🔥 GPT API 사용량 대폭 최적화
+        # 🔥🔥 Claude API 우선 사용, GPT는 백업용
         self.translation_cache = {}  # 번역 캐시
-        self.translation_count = 0  # 번역 횟수 추적
+        self.claude_translation_count = 0  # Claude 번역 횟수
+        self.gpt_translation_count = 0  # GPT 번역 횟수 
         self.last_translation_reset = datetime.now()
-        self.max_translations_per_15min = 30  # 150 → 30으로 대폭 감소
+        self.max_claude_translations_per_15min = 100  # Claude는 더 많이 사용 가능
+        self.max_gpt_translations_per_15min = 10  # GPT는 백업용으로만
         self.translation_reset_interval = 900  # 15분
         
-        # GPT 요약 사용량 제한 추가
-        self.summary_count = 0
-        self.max_summaries_per_15min = 15  # 15분당 최대 15개 요약만
-        self.last_summary_reset = datetime.now()
+        # Claude API 클라이언트 초기화
+        self.anthropic_client = None
+        if hasattr(config, 'ANTHROPIC_API_KEY') and config.ANTHROPIC_API_KEY:
+            try:
+                import anthropic
+                self.anthropic_client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+                logger.info("✅ Claude API 클라이언트 초기화 완료")
+            except ImportError:
+                logger.warning("❌ anthropic 라이브러리가 설치되지 않음: pip install anthropic")
+            except Exception as e:
+                logger.warning(f"Claude API 초기화 실패: {e}")
         
-        # OpenAI 클라이언트 초기화 (번역용) - 더 보수적으로
+        # OpenAI 클라이언트 초기화 (백업용)
         self.openai_client = None
         if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY:
             self.openai_client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+        
+        # GPT 요약 사용량 제한 추가
+        self.summary_count = 0
+        self.max_summaries_per_15min = 30  # 15개에서 30개로 증가
+        self.last_summary_reset = datetime.now()
         
         # 모든 API 키들
         self.newsapi_key = getattr(config, 'NEWSAPI_KEY', None)
@@ -255,9 +269,10 @@ class RealisticNewsCollector:
         # 중복 방지 데이터 로드
         self._load_duplicate_data()
         
-        logger.info(f"🔥🔥 GPT API 최적화된 뉴스 수집기 초기화 완료")
-        logger.info(f"📊 설정: RSS 10초 체크, GPT 번역 15분당 {self.max_translations_per_15min}개 (대폭 감소)")
-        logger.info(f"📝 요약: 15분당 {self.max_summaries_per_15min}개 (새로 제한)")
+        logger.info(f"🔥🔥 Claude 우선 번역 뉴스 수집기 초기화 완료")
+        logger.info(f"🤖 Claude API: {'활성화' if self.anthropic_client else '비활성화'} (15분당 {self.max_claude_translations_per_15min}개)")
+        logger.info(f"🧠 GPT API: {'활성화' if self.openai_client else '비활성화'} (백업용 15분당 {self.max_gpt_translations_per_15min}개)")
+        logger.info(f"📊 설정: RSS 5초 체크 (빠른 감지), 요약 15분당 {self.max_summaries_per_15min}개")
         logger.info(f"🎯 크리티컬 키워드: {len(self.critical_keywords)}개 (대폭 확장)")
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
         logger.info(f"📈 가격 패턴: {len(self.historical_patterns)}개 시나리오")
@@ -343,11 +358,13 @@ class RealisticNewsCollector:
         """필요시 번역 카운트 리셋"""
         now = datetime.now()
         if (now - self.last_translation_reset).total_seconds() > self.translation_reset_interval:
-            old_count = self.translation_count
-            self.translation_count = 0
+            old_claude_count = self.claude_translation_count
+            old_gpt_count = self.gpt_translation_count
+            self.claude_translation_count = 0
+            self.gpt_translation_count = 0
             self.last_translation_reset = now
-            if old_count > 0:
-                logger.info(f"번역 카운트 리셋: {old_count} → 0 (15분당 {self.max_translations_per_15min}개 제한)")
+            if old_claude_count > 0 or old_gpt_count > 0:
+                logger.info(f"번역 카운트 리셋: Claude {old_claude_count} → 0, GPT {old_gpt_count} → 0")
     
     def _reset_summary_count_if_needed(self):
         """필요시 요약 카운트 리셋"""
@@ -360,40 +377,32 @@ class RealisticNewsCollector:
                 logger.info(f"요약 카운트 리셋: {old_count} → 0 (15분당 {self.max_summaries_per_15min}개 제한)")
     
     def _should_translate(self, article: Dict) -> bool:
-        """🔥🔥 번역 대상을 매우 엄격하게 제한 - GPT API 절약"""
+        """🔥🔥 번역 대상을 좀 더 관대하게 - Claude는 더 많이 사용 가능"""
         # 이미 한글 제목이 있으면 번역 불필요
         if article.get('title_ko') and article['title_ko'] != article.get('title', ''):
             return False
         
-        # 🔥🔥 오직 극도로 중요한 뉴스만 번역 (weight >= 10)
+        # 🔥🔥 크리티컬 뉴스는 번역 (weight >= 8로 낮춤)
         weight = article.get('weight', 0)
-        if weight < 10:
+        if weight < 8:
             return False
         
-        # 🔥🔥 크리티컬 뉴스이면서 비트코인 직접 관련만
+        # 🔥🔥 크리티컬 뉴스이면서 비트코인 관련만
         if not self._is_critical_news(article):
             return False
         
         content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
         
-        # 비트코인 직접 언급이 있어야 함
-        bitcoin_keywords = ['bitcoin', 'btc', '비트코인']
-        if not any(keyword in content for keyword in bitcoin_keywords):
-            return False
-        
-        # ETF, 대기업 구매, Fed 결정 등 극도로 중요한 뉴스만
-        ultra_important = [
-            'etf approved', 'etf rejected', 'tesla bought', 'microstrategy bought',
-            'fed rate decision', 'sec approves', 'sec rejects', 'china bans'
-        ]
-        
-        if not any(keyword in content for keyword in ultra_important):
+        # 비트코인 또는 중요 경제 키워드가 있어야 함
+        important_keywords = ['bitcoin', 'btc', '비트코인', 'fed', 'tariff', 'inflation', 'etf', 
+                             'tesla', 'microstrategy', 'sec', 'regulation']
+        if not any(keyword in content for keyword in important_keywords):
             return False
         
         return True
     
     def _should_use_gpt_summary(self, article: Dict) -> bool:
-        """🔥🔥 GPT 요약 사용 여부 결정 - 매우 엄격"""
+        """🔥🔥 GPT 요약 사용 여부 결정 - 더 관대하게"""
         # 요약 카운트 리셋 체크
         self._reset_summary_count_if_needed()
         
@@ -401,8 +410,8 @@ class RealisticNewsCollector:
         if self.summary_count >= self.max_summaries_per_15min:
             return False
         
-        # 오직 weight >= 10이면서 크리티컬 뉴스만
-        if article.get('weight', 0) < 10:
+        # weight >= 9이면서 크리티컬 뉴스만
+        if article.get('weight', 0) < 9:
             return False
         
         if not self._is_critical_news_enhanced(article):
@@ -410,50 +419,56 @@ class RealisticNewsCollector:
         
         # description이 충분히 길어야 함 (요약할 가치가 있어야 함)
         description = article.get('description', '')
-        if len(description) < 300:  # 300자 이상만
+        if len(description) < 200:  # 300자에서 200자로 낮춤
             return False
         
         return True
     
-    async def translate_text(self, text: str, max_length: int = 400) -> str:
-        """🔥🔥 GPT API 절약 번역 - 매우 보수적"""
-        if not self.openai_client:
+    async def translate_text_with_claude(self, text: str, max_length: int = 400) -> str:
+        """🔥🔥 Claude API를 사용한 번역"""
+        if not self.anthropic_client:
             return text
         
         # 번역 카운트 리셋 체크
         self._reset_translation_count_if_needed()
         
         # 캐시 확인
-        cache_key = hashlib.md5(text.encode()).hexdigest()
+        cache_key = f"claude_{hashlib.md5(text.encode()).hexdigest()}"
         if cache_key in self.translation_cache:
-            logger.debug(f"🔄 번역 캐시 히트")
+            logger.debug(f"🔄 Claude 번역 캐시 히트")
             return self.translation_cache[cache_key]
         
-        # 🔥🔥 Rate limit 엄격 체크
-        if self.translation_count >= self.max_translations_per_15min:
-            logger.warning(f"번역 한도 초과: {self.translation_count}/{self.max_translations_per_15min} - 번역 건너뜀")
+        # Claude Rate limit 체크
+        if self.claude_translation_count >= self.max_claude_translations_per_15min:
+            logger.warning(f"Claude 번역 한도 초과: {self.claude_translation_count}/{self.max_claude_translations_per_15min}")
             return text
         
         try:
-            # 🔥🔥 더 간단한 시스템 프롬프트로 토큰 절약
-            system_content = """한국의 블록체인 전문 기자입니다. 비트코인 뉴스를 한국어로 자연스럽게 번역하세요.
+            response = await self.anthropic_client.messages.create(
+                model="claude-3-5-haiku-20241022",  # 빠르고 저렴한 모델
+                max_tokens=200,
+                messages=[{
+                    "role": "user", 
+                    "content": f"""다음 영문 뉴스 제목을 자연스러운 한국어로 번역해주세요. 전문 용어는 다음과 같이 번역하세요:
 
-핵심 원칙:
-1. 자연스러운 한국어
-2. 주요 용어: MicroStrategy→마이크로스트래티지, Tesla→테슬라, SEC→SEC, Fed→연준
-3. 핵심 정보만 간결하게"""
-            
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # 🔥🔥 더 저렴한 모델 사용
-                messages=[
-                    {"role": "system", "content": system_content},
-                    {"role": "user", "content": f"다음을 한국어로 번역 (최대 {max_length}자):\n\n{text}"}
-                ],
-                max_tokens=300,  # 600 → 300으로 감소
-                temperature=0.3
+- Bitcoin/BTC → 비트코인
+- ETF → ETF
+- Tesla → 테슬라
+- MicroStrategy → 마이크로스트래티지
+- SEC → SEC
+- Fed/Federal Reserve → 연준
+- Trump → 트럼프
+- China → 중국
+- Russia → 러시아
+- tariffs → 관세
+
+최대 {max_length}자 이내로 번역하되, 의미가 명확하게 전달되도록 해주세요.
+
+제목: {text}"""
+                }]
             )
             
-            translated = response.choices[0].message.content.strip()
+            translated = response.content[0].text.strip()
             
             # 길이 체크
             if len(translated) > max_length:
@@ -470,23 +485,63 @@ class RealisticNewsCollector:
             
             # 캐시 저장 및 카운트 증가
             self.translation_cache[cache_key] = translated
-            self.translation_count += 1
+            self.claude_translation_count += 1
             
             # 캐시 크기 제한
-            if len(self.translation_cache) > 500:  # 1000 → 500으로 감소
+            if len(self.translation_cache) > 500:
                 keys_to_remove = list(self.translation_cache.keys())[:250]
                 for key in keys_to_remove:
                     del self.translation_cache[key]
             
-            logger.info(f"🌐 GPT 번역 완료 ({self.translation_count}/{self.max_translations_per_15min})")
+            logger.info(f"🤖 Claude 번역 완료 ({self.claude_translation_count}/{self.max_claude_translations_per_15min})")
             return translated
             
-        except openai.RateLimitError:
-            logger.warning("OpenAI Rate limit 도달 - 번역 중단")
-            self.translation_count = self.max_translations_per_15min
-            return text
         except Exception as e:
-            logger.warning(f"번역 실패: {str(e)[:50]}")
+            logger.warning(f"Claude 번역 실패: {str(e)[:50]} - GPT 백업 시도")
+            return await self.translate_text_with_gpt(text, max_length)
+    
+    async def translate_text_with_gpt(self, text: str, max_length: int = 400) -> str:
+        """🔥🔥 GPT API를 사용한 백업 번역"""
+        if not self.openai_client:
+            return text
+        
+        # GPT Rate limit 체크
+        if self.gpt_translation_count >= self.max_gpt_translations_per_15min:
+            logger.warning(f"GPT 번역 한도 초과: {self.gpt_translation_count}/{self.max_gpt_translations_per_15min}")
+            return text
+        
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "비트코인 전문 번역가입니다. 영문을 자연스러운 한국어로 번역하세요."},
+                    {"role": "user", "content": f"다음을 한국어로 번역 (최대 {max_length}자):\n\n{text}"}
+                ],
+                max_tokens=150,
+                temperature=0.2
+            )
+            
+            translated = response.choices[0].message.content.strip()
+            
+            # 길이 체크
+            if len(translated) > max_length:
+                translated = translated[:max_length-3] + "..."
+            
+            self.gpt_translation_count += 1
+            logger.info(f"🧠 GPT 백업 번역 완료 ({self.gpt_translation_count}/{self.max_gpt_translations_per_15min})")
+            return translated
+            
+        except Exception as e:
+            logger.warning(f"GPT 번역도 실패: {str(e)[:50]}")
+            return text
+    
+    async def translate_text(self, text: str, max_length: int = 400) -> str:
+        """🔥🔥 통합 번역 함수 - Claude 우선, GPT 백업"""
+        if self.anthropic_client:
+            return await self.translate_text_with_claude(text, max_length)
+        elif self.openai_client:
+            return await self.translate_text_with_gpt(text, max_length)
+        else:
             return text
     
     def _generate_content_hash(self, title: str, description: str = "") -> str:
@@ -534,8 +589,8 @@ class RealisticNewsCollector:
         
         return hashlib.md5(hash_content.encode()).hexdigest()
     
-    def _is_duplicate_emergency(self, article: Dict, time_window: int = 60) -> bool:
-        """긴급 알림이 중복인지 확인 (60분 이내) - 더 짧게"""
+    def _is_duplicate_emergency(self, article: Dict, time_window: int = 30) -> bool:
+        """긴급 알림이 중복인지 확인 (30분 이내로 단축)"""
         try:
             current_time = datetime.now()
             content_hash = self._generate_content_hash(
@@ -567,8 +622,8 @@ class RealisticNewsCollector:
             logger.error(f"중복 체크 오류: {e}")
             return False
     
-    def _is_recent_news(self, article: Dict, hours: int = 3) -> bool:
-        """뉴스가 최근 것인지 확인 - 3시간 이내"""
+    def _is_recent_news(self, article: Dict, hours: int = 2) -> bool:
+        """뉴스가 최근 것인지 확인 - 2시간 이내로 단축"""
         try:
             pub_time_str = article.get('published_at', '')
             if not pub_time_str:
@@ -592,16 +647,17 @@ class RealisticNewsCollector:
             return True
     
     async def start_monitoring(self):
-        """🔥🔥 강화된 뉴스 모니터링 시작"""
+        """🔥🔥 강화된 뉴스 모니터링 시작 - 더 빠른 감지"""
         if not self.session:
             self.session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=15),
                 connector=aiohttp.TCPConnector(limit=150, limit_per_host=50)
             )
         
-        logger.info("🔥🔥 GPT API 최적화된 비트코인 + 거시경제 뉴스 모니터링 시작")
-        logger.info(f"💰 GPT 번역: 15분당 {self.max_translations_per_15min}개만 (대폭 절약)")
-        logger.info(f"📝 GPT 요약: 15분당 {self.max_summaries_per_15min}개만 (새로 제한)")
+        logger.info("🔥🔥 Claude 우선 번역 비트코인 + 거시경제 뉴스 모니터링 시작")
+        logger.info(f"🤖 Claude API: {'활성화' if self.anthropic_client else '비활성화'}")
+        logger.info(f"🧠 GPT API: {'활성화 (백업)' if self.openai_client else '비활성화'}")
+        logger.info(f"📊 RSS 체크: 5초마다 (빠른 감지)")
         logger.info(f"🎯 크리티컬 키워드: {len(self.critical_keywords)}개")
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
         logger.info(f"📡 RSS 소스: {len(self.rss_feeds)}개")
@@ -610,7 +666,7 @@ class RealisticNewsCollector:
         self.company_news_count = {}
         
         tasks = [
-            self.monitor_rss_feeds_enhanced(),      # RSS (10초마다) - 강화
+            self.monitor_rss_feeds_enhanced(),      # RSS (5초마다) - 더 빠르게
             self.monitor_reddit_enhanced(),         # Reddit (5분마다) - 강화
             self.aggressive_api_rotation_enhanced() # API 순환 사용 - 강화
         ]
@@ -618,7 +674,7 @@ class RealisticNewsCollector:
         await asyncio.gather(*tasks, return_exceptions=True)
     
     async def monitor_rss_feeds_enhanced(self):
-        """🔥🔥 강화된 RSS 피드 모니터링 - 10초마다"""
+        """🔥🔥 강화된 RSS 피드 모니터링 - 5초마다 (더 빠르게)"""
         while True:
             try:
                 # 가중치가 높은 소스부터 처리
@@ -626,7 +682,7 @@ class RealisticNewsCollector:
                 successful_feeds = 0
                 processed_articles = 0
                 critical_found = 0
-                gpt_used = 0
+                translated_count = 0
                 
                 for feed_info in sorted_feeds:
                     try:
@@ -636,8 +692,8 @@ class RealisticNewsCollector:
                             successful_feeds += 1
                             
                             for article in articles:
-                                # 최신 뉴스만 처리 (3시간 이내)
-                                if not self._is_recent_news(article, hours=3):
+                                # 최신 뉴스만 처리 (2시간 이내로 단축)
+                                if not self._is_recent_news(article, hours=2):
                                     continue
                                 
                                 # 비트코인 + 거시경제 관련성 체크 (강화)
@@ -652,16 +708,16 @@ class RealisticNewsCollector:
                                 if company:
                                     article['company'] = company
                                 
-                                # 🔥🔥 번역 - 매우 제한적
-                                if self.openai_client and self._should_translate(article):
+                                # 🔥🔥 번역 - Claude 우선 사용
+                                if self._should_translate(article):
                                     article['title_ko'] = await self.translate_text(article['title'])
-                                    gpt_used += 1
+                                    translated_count += 1
                                 else:
                                     article['title_ko'] = article.get('title', '')
                                 
                                 # 🔥🔥 강화된 크리티컬 뉴스 체크
                                 if self._is_critical_news_enhanced(article):
-                                    # 🔥🔥 요약 - 매우 제한적
+                                    # 요약 (선택적)
                                     if self._should_use_gpt_summary(article):
                                         summary = await self.summarize_article_enhanced(
                                             article['title'],
@@ -669,7 +725,6 @@ class RealisticNewsCollector:
                                         )
                                         if summary:
                                             article['summary'] = summary
-                                            gpt_used += 1
                                     
                                     if not self._is_duplicate_emergency(article):
                                         article['expected_change'] = self._estimate_price_impact_enhanced(article)
@@ -687,9 +742,9 @@ class RealisticNewsCollector:
                         continue
                 
                 if processed_articles > 0:
-                    logger.info(f"🔥 RSS 스캔 완료: {successful_feeds}개 피드, {processed_articles}개 관련 뉴스 (크리티컬: {critical_found}개, GPT 사용: {gpt_used}회)")
+                    logger.info(f"🔥 RSS 스캔 완료: {successful_feeds}개 피드, {processed_articles}개 관련 뉴스 (크리티컬: {critical_found}개, 번역: {translated_count}개)")
                 
-                await asyncio.sleep(10)  # 10초마다 (더 빈번하게)
+                await asyncio.sleep(5)  # 5초마다 (더 빈번하게)
                 
             except Exception as e:
                 logger.error(f"RSS 모니터링 오류: {e}")
@@ -1049,12 +1104,12 @@ class RealisticNewsCollector:
         return '⚡ 변동 ±0.2~0.8% (단기)'
     
     async def summarize_article_enhanced(self, title: str, description: str, max_length: int = 200) -> str:
-        """🔥🔥 GPT API 절약 요약 - 기본 요약 우선, GPT는 최후 수단"""
+        """🔥🔥 개선된 요약 - 기본 요약 우선, GPT는 백업"""
         
         # 🔥🔥 먼저 기본 요약으로 시도
         basic_summary = self._generate_basic_summary_enhanced(title, description)
         if basic_summary and len(basic_summary.strip()) > 50:
-            logger.debug(f"🔄 기본 요약 사용 (GPT 절약)")
+            logger.debug(f"🔄 기본 요약 사용")
             return basic_summary
         
         # GPT 요약이 정말 필요한 경우만
@@ -1075,22 +1130,13 @@ class RealisticNewsCollector:
         try:
             news_type = self._classify_news_for_summary_enhanced(title, description)
             
-            # 🔥🔥 더 간단한 시스템 프롬프트로 토큰 절약
-            system_content = f"""비트코인 투자 전문가입니다. 3문장으로 요약하세요.
-
-1문장: 핵심 사실
-2문장: 중요성
-3문장: 시장 영향
-
-뉴스 타입: {news_type}"""
-            
             response = await self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # 🔥🔥 더 저렴한 모델
+                model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": system_content},
-                    {"role": "user", "content": f"3문장 요약 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:800]}"}  # 1500 → 800자로 감소
+                    {"role": "system", "content": f"비트코인 투자 전문가입니다. 3문장으로 요약하세요.\n\n1문장: 핵심 사실\n2문장: 중요성\n3문장: 시장 영향\n\n뉴스 타입: {news_type}"},
+                    {"role": "user", "content": f"3문장 요약 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:800]}"}
                 ],
-                max_tokens=250,  # 400 → 250으로 감소
+                max_tokens=250,
                 temperature=0.2
             )
             
@@ -1142,51 +1188,108 @@ class RealisticNewsCollector:
         """🔥🔥 강화된 기본 요약 생성 - GPT 대신 사용할 고품질 요약"""
         try:
             content = (title + " " + description).lower()
-            
-            # ETF 관련
-            if 'etf' in content:
-                if 'approved' in content or 'approval' in content:
-                    return "SEC가 비트코인 현물 ETF를 승인했다. 이는 기관 투자자들의 비트코인 접근성을 크게 향상시킬 것으로 예상된다. 시장에서는 대규모 자금 유입으로 인한 가격 상승을 전망하고 있다."
-                elif 'rejected' in content or 'denial' in content:
-                    return "SEC가 비트코인 현물 ETF 승인을 거부했다. 규제 당국의 신중한 접근이 지속되고 있어 기관 투자자 진입이 지연될 것으로 보인다. 단기적으로 시장 실망감이 반영될 가능성이 있다."
-            
-            # Fed 관련
-            elif any(word in content for word in ['fed', 'powell', 'fomc']):
-                if any(word in content for word in ['raise', 'hike', 'increase']):
-                    return "연준이 기준금리를 인상했다. 긴축적 통화정책이 지속되면서 위험자산에 대한 선호도가 감소할 것으로 예상된다. 비트코인을 포함한 암호화폐 시장에 단기적 압박이 가해질 수 있다."
-                elif any(word in content for word in ['cut', 'lower', 'reduce']):
-                    return "연준이 기준금리를 인하했다. 완화적 통화정책으로 유동성이 증가하면서 위험자산 선호도가 높아질 전망이다. 비트코인 등 대안투자에 대한 관심이 증가할 것으로 예상된다."
-            
-            # 기업 구매
-            elif any(company in content for company in ['tesla', 'microstrategy']):
-                if 'tesla' in content:
-                    return "테슬라가 비트코인을 추가 매입했다. 일론 머스크의 영향력과 함께 시장에 상당한 관심을 불러일으킬 것으로 예상된다. 기업의 비트코인 채택 확산에 긍정적 영향을 미칠 전망이다."
-                else:
-                    return "마이크로스트래티지가 비트코인을 추가 매입했다. 기업의 비트코인 채택이 지속되면서 제도화가 가속화되고 있다. 이는 장기적으로 비트코인의 가치 저장 수단 지위를 강화할 것으로 분석된다."
-            
-            # 관세/무역 (새로 추가)
-            elif any(word in content for word in ['trump', 'tariffs', 'trade']):
-                return "미국의 새로운 관세 정책이 발표되었다. 무역 분쟁 우려로 인해 단기적으로 리스크 자산에 부담이 될 수 있다. 하지만 달러 약세 요인이 비트코인에는 중장기적으로 유리할 것으로 분석된다."
-            
-            # 인플레이션 (새로 추가)
-            elif any(word in content for word in ['inflation', 'cpi']):
-                return "최신 인플레이션 데이터가 발표되었다. 인플레이션 헤지 자산으로서 비트코인에 대한 관심이 높아지고 있다. 실물 자산 대비 우월한 성과를 보이며 투자자들의 주목을 받고 있다."
-            
-            # 규제
-            elif any(word in content for word in ['regulation', 'ban', 'sec']):
-                return "암호화폐 관련 새로운 규제 소식이 발표되었다. 규제 환경의 변화가 시장 참가자들의 전략에 영향을 미칠 것으로 예상된다. 투자자들은 규제 동향을 면밀히 모니터링할 필요가 있다."
+            summary_parts = []
             
             # 구조화 상품 특별 처리
-            elif any(word in content for word in ['structured', 'bonds', 'sberbank']):
-                return "새로운 비트코인 연계 구조화 상품이 출시되었다. 직접적인 비트코인 수요보다는 간접적 노출 제공에 중점을 둔 상품으로 평가된다. 시장에 미치는 실질적 영향은 제한적일 것으로 전망된다."
-            
-            # 기본값
-            else:
-                return "비트코인 시장에 영향을 미칠 수 있는 중요한 소식이 발표되었다. 시장 참가자들이 이번 뉴스의 파급효과를 분석하고 있다. 투자자들은 향후 시장 반응을 주의 깊게 관찰할 필요가 있다."
+            if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']):
+                if 'sberbank' in content:
+                    summary_parts.append("러시아 최대 은행 스베르방크가 비트코인 가격에 연동된 구조화 채권을 출시했다.")
+                    summary_parts.append("이는 직접적인 비트코인 매수가 아닌 가격 추적 상품으로, 실제 BTC 수요 창출 효과는 제한적이다.")
+                    summary_parts.append("러시아 제재 상황과 OTC 거래로 인해 글로벌 시장에 미치는 즉각적 영향은 미미할 것으로 예상된다.")
+                else:
+                    summary_parts.append("새로운 비트코인 연계 구조화 상품이 출시되었다.")
+                    summary_parts.append("직접적인 비트코인 수요보다는 간접적 노출 제공에 중점을 둔 상품으로 평가된다.")
+                    summary_parts.append("시장에 미치는 실질적 영향은 제한적일 것으로 전망된다.")
                 
+                return " ".join(summary_parts)
+            
+            # 기업명과 행동 매칭
+            companies_in_title = []
+            for company in ['tesla', 'microstrategy', 'blackrock', 'gamestop']:
+                if company in content:
+                    companies_in_title.append(company)
+            
+            if companies_in_title:
+                company = companies_in_title[0]
+                
+                # 마이크로스트래티지 처리
+                if company == 'microstrategy':
+                    if 'bought' in content or 'purchase' in content:
+                        btc_amounts = re.findall(r'(\d+(?:,\d+)*)\s*(?:btc|bitcoin)', content)
+                        if btc_amounts:
+                            summary_parts.append(f"마이크로스트래티지가 비트코인 {btc_amounts[0]}개를 직접 매입했다.")
+                        else:
+                            summary_parts.append("마이크로스트래티지가 비트코인을 추가 매입했다.")
+                        
+                        summary_parts.append("이는 실제 BTC 수요 증가를 의미하며, 기업 재무 전략의 일환으로 시장에 긍정적 신호를 보낸다.")
+                        summary_parts.append("대형 기업의 지속적인 비트코인 매입은 시장 신뢰도 향상에 기여할 것으로 예상된다.")
+                
+                # 테슬라 처리
+                elif company == 'tesla':
+                    if 'bought' in content or 'purchase' in content:
+                        summary_parts.append("테슬라가 비트코인 직접 매입을 재개했다.")
+                        summary_parts.append("일론 머스크의 영향력과 함께 시장에 상당한 관심을 불러일으킬 것으로 예상된다.")
+                        summary_parts.append("기업의 비트코인 채택 확산에 긍정적 영향을 미칠 전망이다.")
+                
+                # 블랙록 처리
+                elif company == 'blackrock':
+                    if 'etf' in content:
+                        if 'approved' in content:
+                            summary_parts.append("세계 최대 자산운용사 블랙록의 비트코인 ETF가 승인되었다.")
+                            summary_parts.append("이는 기관 자금의 대규모 유입 가능성을 열어주는 획기적 사건이다.")
+                            summary_parts.append("비트코인 시장의 제도화와 주류 채택에 중요한 이정표가 될 것으로 보인다.")
+                        else:
+                            summary_parts.append("블랙록의 비트코인 ETF 관련 중요한 발표가 있었다.")
+                            summary_parts.append("세계 최대 자산운용사의 움직임이 시장에 주목받고 있다.")
+                            summary_parts.append("기관 투자자들의 비트코인 관심도가 높아지고 있음을 시사한다.")
+            
+            # 거시경제 패턴 처리 (새로 추가)
+            if not summary_parts:
+                # 관세 관련
+                if any(word in content for word in ['trump', 'tariffs', 'trade war']):
+                    summary_parts.append("미국의 새로운 관세 정책이 발표되었다.")
+                    summary_parts.append("무역 분쟁 우려로 인해 단기적으로 리스크 자산에 부담이 될 수 있다.")
+                    summary_parts.append("하지만 달러 약세 요인이 비트코인에는 중장기적으로 유리할 것으로 분석된다.")
+                
+                # 인플레이션 관련
+                elif any(word in content for word in ['inflation', 'cpi']):
+                    summary_parts.append("최신 인플레이션 데이터가 발표되었다.")
+                    summary_parts.append("인플레이션 헤지 자산으로서 비트코인에 대한 관심이 높아지고 있다.")
+                    summary_parts.append("실물 자산 대비 우월한 성과를 보이며 투자자들의 주목을 받고 있다.")
+                
+                # ETF 관련
+                elif 'etf' in content:
+                    if 'approved' in content or 'approval' in content:
+                        summary_parts.append("비트코인 현물 ETF 승인 소식이 전해졌다.")
+                        summary_parts.append("ETF 승인은 기관 투자자들의 대규모 자금 유입을 가능하게 하는 중요한 이정표다.")
+                        summary_parts.append("비트코인 시장의 성숙도와 제도적 인정을 보여주는 상징적 사건으로 평가된다.")
+                    elif 'rejected' in content or 'delay' in content:
+                        summary_parts.append("비트코인 ETF 승인이 지연되거나 거부되었다.")
+                        summary_parts.append("단기적 실망감은 있으나, 지속적인 신청은 결국 승인 가능성을 높이고 있다.")
+                        summary_parts.append("시장은 이미 ETF 승인을 기정사실로 받아들이고 있어 장기 전망은 긍정적이다.")
+                
+                # Fed 금리 관련
+                elif 'fed' in content or 'rate' in content:
+                    if 'cut' in content or 'lower' in content:
+                        summary_parts.append("연준의 금리 인하 결정이 발표되었다.")
+                        summary_parts.append("금리 인하는 유동성 증가를 통해 비트코인과 같은 리스크 자산에 긍정적 영향을 미친다.")
+                        summary_parts.append("저금리 환경에서 대안 투자처로서 비트코인의 매력도가 더욱 부각될 전망이다.")
+                    elif 'hike' in content or 'increase' in content:
+                        summary_parts.append("연준의 금리 인상 결정이 발표되었다.")
+                        summary_parts.append("단기적으로는 부담이지만 인플레이션 헤지 자산으로서의 비트코인 가치는 지속될 것이다.")
+                        summary_parts.append("고금리 환경에서도 디지털 금으로서의 역할은 변함없을 것으로 예상된다.")
+                
+                # 기본 케이스
+                else:
+                    summary_parts.append("비트코인 시장에 영향을 미칠 수 있는 발표가 있었다.")
+                    summary_parts.append("투자자들은 이번 소식의 실제 시장 영향을 면밀히 분석하고 있다.")
+                    summary_parts.append("단기 변동성은 있겠지만 장기 트렌드에는 큰 변화가 없을 것으로 전망된다.")
+            
+            return " ".join(summary_parts[:3]) if summary_parts else "비트코인 관련 소식이 발표되었다. 시장 반응을 지켜볼 필요가 있다. 투자자들은 신중한 접근이 필요하다."
+            
         except Exception as e:
-            logger.error(f"기본 요약 생성 실패: {e}")
-            return "중요한 시장 관련 뉴스가 발표되었다. 투자자들은 시장 동향을 면밀히 관찰할 필요가 있다. 추가적인 시장 반응을 지켜보는 것이 중요하다."
+            logger.error(f"스마트 요약 생성 실패: {e}")
+            return "비트코인 시장 관련 소식이 발표되었다. 자세한 내용은 원문을 확인하시기 바란다. 실제 시장 반응을 면밀히 분석할 필요가 있다."
     
     async def _trigger_emergency_alert_enhanced(self, article: Dict):
         """🔥🔥 강화된 긴급 알림 트리거"""
@@ -1430,11 +1533,11 @@ class RealisticNewsCollector:
                                                 article['company'] = company
                                             
                                             if self._is_critical_news_enhanced(article):
-                                                # 🔥🔥 Reddit에서는 번역 제한적으로만
+                                                # Reddit에서는 번역 제한적으로만
                                                 if self._should_translate(article):
                                                     article['title_ko'] = await self.translate_text(article['title'])
                                                 
-                                                # 🔥🔥 Reddit에서는 요약 거의 사용 안함
+                                                # Reddit에서는 요약 거의 사용 안함
                                                 if self._should_use_gpt_summary(article):
                                                     summary = await self.summarize_article_enhanced(
                                                         article['title'],
@@ -1512,7 +1615,7 @@ class RealisticNewsCollector:
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
                 'pageSize': 100,  # 50 → 100으로 증가
-                'from': (datetime.now() - timedelta(hours=6)).isoformat()  # 2시간 → 6시간으로 확장
+                'from': (datetime.now() - timedelta(hours=3)).isoformat()  # 6시간 → 3시간으로 단축 (더 빠른 감지)
             }
             
             async with self.session.get(url, params=params) as response:
@@ -1522,7 +1625,7 @@ class RealisticNewsCollector:
                     
                     processed = 0
                     critical_found = 0
-                    gpt_used = 0
+                    translated_count = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -1544,13 +1647,13 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 🔥🔥 번역 - 매우 제한적
+                            # 번역 - Claude 우선 사용
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
-                                gpt_used += 1
+                                translated_count += 1
                             
                             if self._is_critical_news_enhanced(formatted_article):
-                                # 🔥🔥 요약 - 매우 제한적
+                                # 요약 (선택적)
                                 if self._should_use_gpt_summary(formatted_article):
                                     summary = await self.summarize_article_enhanced(
                                         formatted_article['title'],
@@ -1558,7 +1661,6 @@ class RealisticNewsCollector:
                                     )
                                     if summary:
                                         formatted_article['summary'] = summary
-                                        gpt_used += 1
                                 
                                 if not self._is_duplicate_emergency(formatted_article):
                                     formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
@@ -1570,7 +1672,7 @@ class RealisticNewsCollector:
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"🔥 NewsAPI: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, GPT 사용: {gpt_used}회)")
+                        logger.info(f"🔥 NewsAPI: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, 번역: {translated_count}개)")
                 else:
                     logger.warning(f"NewsAPI 응답 오류: {response.status}")
         
@@ -1596,7 +1698,7 @@ class RealisticNewsCollector:
                     
                     processed = 0
                     critical_found = 0
-                    gpt_used = 0
+                    translated_count = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -1618,13 +1720,13 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 🔥🔥 번역 - 매우 제한적
+                            # 번역 - Claude 우선 사용
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
-                                gpt_used += 1
+                                translated_count += 1
                             
                             if self._is_critical_news_enhanced(formatted_article):
-                                # 🔥🔥 요약 - 매우 제한적
+                                # 요약 (선택적)
                                 if self._should_use_gpt_summary(formatted_article):
                                     summary = await self.summarize_article_enhanced(
                                         formatted_article['title'],
@@ -1632,7 +1734,6 @@ class RealisticNewsCollector:
                                     )
                                     if summary:
                                         formatted_article['summary'] = summary
-                                        gpt_used += 1
                                 
                                 if not self._is_duplicate_emergency(formatted_article):
                                     formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
@@ -1644,7 +1745,7 @@ class RealisticNewsCollector:
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"🔥 NewsData: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, GPT 사용: {gpt_used}회)")
+                        logger.info(f"🔥 NewsData: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, 번역: {translated_count}개)")
                 else:
                     logger.warning(f"NewsData 응답 오류: {response.status}")
         
@@ -1671,7 +1772,7 @@ class RealisticNewsCollector:
                     
                     processed = 0
                     critical_found = 0
-                    gpt_used = 0
+                    translated_count = 0
                     for article in articles:
                         formatted_article = {
                             'title': article.get('title', ''),
@@ -1694,13 +1795,13 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 🔥🔥 번역 - 매우 제한적
+                            # 번역 - Claude 우선 사용
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
-                                gpt_used += 1
+                                translated_count += 1
                             
                             if self._is_critical_news_enhanced(formatted_article):
-                                # 🔥🔥 요약 - 매우 제한적
+                                # 요약 (선택적)
                                 if self._should_use_gpt_summary(formatted_article):
                                     summary = await self.summarize_article_enhanced(
                                         formatted_article['title'],
@@ -1708,7 +1809,6 @@ class RealisticNewsCollector:
                                     )
                                     if summary:
                                         formatted_article['summary'] = summary
-                                        gpt_used += 1
                                 
                                 if not self._is_duplicate_emergency(formatted_article):
                                     formatted_article['expected_change'] = self._estimate_price_impact_enhanced(formatted_article)
@@ -1720,7 +1820,7 @@ class RealisticNewsCollector:
                                 processed += 1
                     
                     if processed > 0:
-                        logger.info(f"🔥 Alpha Vantage: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, GPT 사용: {gpt_used}회)")
+                        logger.info(f"🔥 Alpha Vantage: {processed}개 관련 뉴스 처리 (크리티컬: {critical_found}개, 번역: {translated_count}개)")
                 else:
                     logger.warning(f"Alpha Vantage 응답 오류: {response.status}")
         
@@ -1813,12 +1913,13 @@ class RealisticNewsCollector:
                 'last_reset': today
             })
             self.company_news_count = {}
-            self.translation_count = 0
-            self.summary_count = 0  # 새로 추가
+            self.claude_translation_count = 0
+            self.gpt_translation_count = 0
+            self.summary_count = 0
             self.last_translation_reset = datetime.now()
-            self.last_summary_reset = datetime.now()  # 새로 추가
+            self.last_summary_reset = datetime.now()
             self.news_first_seen = {}
-            logger.info(f"🔄 일일 리셋 완료 (GPT API 사용량 초기화 - 번역: {self.max_translations_per_15min}/15분, 요약: {self.max_summaries_per_15min}/15분)")
+            logger.info(f"🔄 일일 리셋 완료 (Claude: {self.max_claude_translations_per_15min}/15분, GPT: {self.max_gpt_translations_per_15min}/15분, 요약: {self.max_summaries_per_15min}/15분)")
     
     async def get_recent_news_enhanced(self, hours: int = 12) -> List[Dict]:
         """🔥🔥 강화된 최근 뉴스 가져오기"""
@@ -1878,7 +1979,8 @@ class RealisticNewsCollector:
             
             if self.session:
                 await self.session.close()
-                logger.info("🔚 GPT API 최적화된 뉴스 수집기 세션 종료")
-                logger.info(f"💰 최종 GPT 사용량 - 번역: {self.translation_count}, 요약: {self.summary_count}")
+                logger.info("🔚 Claude 우선 번역 뉴스 수집기 세션 종료")
+                logger.info(f"🤖 최종 Claude 번역: {self.claude_translation_count}, GPT 번역: {self.gpt_translation_count}")
+                logger.info(f"📝 최종 GPT 요약: {self.summary_count}")
         except Exception as e:
             logger.error(f"세션 종료 중 오류: {e}")
