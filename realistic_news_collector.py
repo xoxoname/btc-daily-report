@@ -31,35 +31,38 @@ class RealisticNewsCollector:
         # 전송된 뉴스 제목 캐시 (중복 방지 강화) - 초기화
         self.sent_news_titles = {}
         
-        # 🔥🔥 Claude API 우선 사용, GPT는 백업용
+        # 🔥🔥 Claude API 에러 방지 - 더 안전한 설정
         self.translation_cache = {}  # 번역 캐시
         self.claude_translation_count = 0  # Claude 번역 횟수
         self.gpt_translation_count = 0  # GPT 번역 횟수 
+        self.claude_error_count = 0  # Claude 에러 횟수 추가
         self.last_translation_reset = datetime.now()
-        self.max_claude_translations_per_15min = 100  # Claude는 더 많이 사용 가능
-        self.max_gpt_translations_per_15min = 10  # GPT는 백업용으로만
+        self.max_claude_translations_per_15min = 20  # 100 → 20으로 대폭 감소
+        self.max_gpt_translations_per_15min = 30  # 10 → 30으로 증가 (GPT 위주로)
         self.translation_reset_interval = 900  # 15분
+        self.claude_cooldown_until = None  # Claude 일시 중단 시간
+        self.claude_cooldown_duration = 300  # 5분 쿨다운
         
-        # Claude API 클라이언트 초기화
+        # Claude API 클라이언트 초기화 (더 안전하게)
         self.anthropic_client = None
         if hasattr(config, 'ANTHROPIC_API_KEY') and config.ANTHROPIC_API_KEY:
             try:
                 import anthropic
                 self.anthropic_client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
-                logger.info("✅ Claude API 클라이언트 초기화 완료")
+                logger.info("✅ Claude API 클라이언트 초기화 완료 (보수적 설정)")
             except ImportError:
                 logger.warning("❌ anthropic 라이브러리가 설치되지 않음: pip install anthropic")
             except Exception as e:
                 logger.warning(f"Claude API 초기화 실패: {e}")
         
-        # OpenAI 클라이언트 초기화 (백업용)
+        # OpenAI 클라이언트 초기화 (주력 사용)
         self.openai_client = None
         if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY:
             self.openai_client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
         
-        # GPT 요약 사용량 제한 추가
+        # GPT 요약 사용량 제한
         self.summary_count = 0
-        self.max_summaries_per_15min = 30  # 15개에서 30개로 증가
+        self.max_summaries_per_15min = 40  # 30 → 40개로 증가
         self.last_summary_reset = datetime.now()
         
         # 모든 API 키들
@@ -269,9 +272,9 @@ class RealisticNewsCollector:
         # 중복 방지 데이터 로드
         self._load_duplicate_data()
         
-        logger.info(f"🔥🔥 Claude 우선 번역 뉴스 수집기 초기화 완료")
-        logger.info(f"🤖 Claude API: {'활성화' if self.anthropic_client else '비활성화'} (15분당 {self.max_claude_translations_per_15min}개)")
-        logger.info(f"🧠 GPT API: {'활성화' if self.openai_client else '비활성화'} (백업용 15분당 {self.max_gpt_translations_per_15min}개)")
+        logger.info(f"🔥🔥 GPT 위주 번역 뉴스 수집기 초기화 완료")
+        logger.info(f"🧠 GPT API: {'활성화' if self.openai_client else '비활성화'} (주력 - 15분당 {self.max_gpt_translations_per_15min}개)")
+        logger.info(f"🤖 Claude API: {'활성화' if self.anthropic_client else '비활성화'} (보조 - 15분당 {self.max_claude_translations_per_15min}개)")
         logger.info(f"📊 설정: RSS 5초 체크 (빠른 감지), 요약 15분당 {self.max_summaries_per_15min}개")
         logger.info(f"🎯 크리티컬 키워드: {len(self.critical_keywords)}개 (대폭 확장)")
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
@@ -360,11 +363,19 @@ class RealisticNewsCollector:
         if (now - self.last_translation_reset).total_seconds() > self.translation_reset_interval:
             old_claude_count = self.claude_translation_count
             old_gpt_count = self.gpt_translation_count
+            old_error_count = self.claude_error_count
             self.claude_translation_count = 0
             self.gpt_translation_count = 0
+            self.claude_error_count = 0
             self.last_translation_reset = now
+            
+            # Claude 쿨다운 해제
+            if self.claude_cooldown_until and now > self.claude_cooldown_until:
+                self.claude_cooldown_until = None
+                logger.info("Claude 쿨다운 해제")
+            
             if old_claude_count > 0 or old_gpt_count > 0:
-                logger.info(f"번역 카운트 리셋: Claude {old_claude_count} → 0, GPT {old_gpt_count} → 0")
+                logger.info(f"번역 카운트 리셋: GPT {old_gpt_count} → 0, Claude {old_claude_count} → 0, 에러 {old_error_count} → 0")
     
     def _reset_summary_count_if_needed(self):
         """필요시 요약 카운트 리셋"""
@@ -377,7 +388,7 @@ class RealisticNewsCollector:
                 logger.info(f"요약 카운트 리셋: {old_count} → 0 (15분당 {self.max_summaries_per_15min}개 제한)")
     
     def _should_translate(self, article: Dict) -> bool:
-        """🔥🔥 번역 대상을 좀 더 관대하게 - Claude는 더 많이 사용 가능"""
+        """🔥🔥 번역 대상을 좀 더 관대하게"""
         # 이미 한글 제목이 있으면 번역 불필요
         if article.get('title_ko') and article['title_ko'] != article.get('title', ''):
             return False
@@ -424,13 +435,34 @@ class RealisticNewsCollector:
         
         return True
     
-    async def translate_text_with_claude(self, text: str, max_length: int = 400) -> str:
-        """🔥🔥 Claude API를 사용한 번역"""
+    def _is_claude_available(self) -> bool:
+        """Claude API 사용 가능 여부 확인"""
         if not self.anthropic_client:
-            return text
+            return False
+        
+        # 쿨다운 중인지 확인
+        if self.claude_cooldown_until and datetime.now() < self.claude_cooldown_until:
+            return False
         
         # 번역 카운트 리셋 체크
         self._reset_translation_count_if_needed()
+        
+        # Rate limit 체크
+        if self.claude_translation_count >= self.max_claude_translations_per_15min:
+            return False
+        
+        # 에러가 너무 많으면 일시 중단
+        if self.claude_error_count >= 3:
+            self.claude_cooldown_until = datetime.now() + timedelta(seconds=self.claude_cooldown_duration)
+            logger.warning(f"Claude API 에러가 {self.claude_error_count}회 발생, {self.claude_cooldown_duration//60}분 쿨다운 시작")
+            return False
+        
+        return True
+    
+    async def translate_text_with_claude(self, text: str, max_length: int = 400) -> str:
+        """🔥🔥 Claude API를 사용한 번역 - 에러 처리 강화"""
+        if not self._is_claude_available():
+            return ""  # 빈 문자열 반환하여 GPT로 넘어가도록
         
         # 캐시 확인
         cache_key = f"claude_{hashlib.md5(text.encode()).hexdigest()}"
@@ -438,15 +470,11 @@ class RealisticNewsCollector:
             logger.debug(f"🔄 Claude 번역 캐시 히트")
             return self.translation_cache[cache_key]
         
-        # Claude Rate limit 체크
-        if self.claude_translation_count >= self.max_claude_translations_per_15min:
-            logger.warning(f"Claude 번역 한도 초과: {self.claude_translation_count}/{self.max_claude_translations_per_15min}")
-            return text
-        
         try:
             response = await self.anthropic_client.messages.create(
                 model="claude-3-5-haiku-20241022",  # 빠르고 저렴한 모델
                 max_tokens=200,
+                timeout=10.0,  # 10초 타임아웃 추가
                 messages=[{
                     "role": "user", 
                     "content": f"""다음 영문 뉴스 제목을 자연스러운 한국어로 번역해주세요. 전문 용어는 다음과 같이 번역하세요:
@@ -497,18 +525,37 @@ class RealisticNewsCollector:
             return translated
             
         except Exception as e:
-            logger.warning(f"Claude 번역 실패: {str(e)[:50]} - GPT 백업 시도")
-            return await self.translate_text_with_gpt(text, max_length)
+            # 에러 카운트 증가
+            self.claude_error_count += 1
+            error_str = str(e)
+            
+            # 529 에러 (rate limit) 특별 처리
+            if "529" in error_str or "rate" in error_str.lower() or "limit" in error_str.lower():
+                logger.warning(f"Claude API rate limit 감지 (에러 {self.claude_error_count}/3), 30분 쿨다운")
+                self.claude_cooldown_until = datetime.now() + timedelta(minutes=30)
+            else:
+                logger.warning(f"Claude 번역 실패 (에러 {self.claude_error_count}/3): {error_str[:50]}")
+            
+            return ""  # 빈 문자열 반환하여 GPT로 넘어가도록
     
     async def translate_text_with_gpt(self, text: str, max_length: int = 400) -> str:
-        """🔥🔥 GPT API를 사용한 백업 번역"""
+        """🔥🔥 GPT API를 사용한 번역 - 주력 사용"""
         if not self.openai_client:
             return text
+        
+        # 번역 카운트 리셋 체크
+        self._reset_translation_count_if_needed()
         
         # GPT Rate limit 체크
         if self.gpt_translation_count >= self.max_gpt_translations_per_15min:
             logger.warning(f"GPT 번역 한도 초과: {self.gpt_translation_count}/{self.max_gpt_translations_per_15min}")
             return text
+        
+        # 캐시 확인
+        cache_key = f"gpt_{hashlib.md5(text.encode()).hexdigest()}"
+        if cache_key in self.translation_cache:
+            logger.debug(f"🔄 GPT 번역 캐시 히트")
+            return self.translation_cache[cache_key]
         
         try:
             response = await self.openai_client.chat.completions.create(
@@ -518,7 +565,8 @@ class RealisticNewsCollector:
                     {"role": "user", "content": f"다음을 한국어로 번역 (최대 {max_length}자):\n\n{text}"}
                 ],
                 max_tokens=150,
-                temperature=0.2
+                temperature=0.2,
+                timeout=15.0  # 15초 타임아웃
             )
             
             translated = response.choices[0].message.content.strip()
@@ -527,22 +575,33 @@ class RealisticNewsCollector:
             if len(translated) > max_length:
                 translated = translated[:max_length-3] + "..."
             
+            # 캐시 저장
+            self.translation_cache[cache_key] = translated
+            
             self.gpt_translation_count += 1
-            logger.info(f"🧠 GPT 백업 번역 완료 ({self.gpt_translation_count}/{self.max_gpt_translations_per_15min})")
+            logger.info(f"🧠 GPT 번역 완료 ({self.gpt_translation_count}/{self.max_gpt_translations_per_15min})")
             return translated
             
         except Exception as e:
-            logger.warning(f"GPT 번역도 실패: {str(e)[:50]}")
+            logger.warning(f"GPT 번역 실패: {str(e)[:50]}")
             return text
     
     async def translate_text(self, text: str, max_length: int = 400) -> str:
-        """🔥🔥 통합 번역 함수 - Claude 우선, GPT 백업"""
-        if self.anthropic_client:
-            return await self.translate_text_with_claude(text, max_length)
-        elif self.openai_client:
-            return await self.translate_text_with_gpt(text, max_length)
-        else:
-            return text
+        """🔥🔥 통합 번역 함수 - GPT 우선, Claude 보조"""
+        # 1순위: GPT (안정적)
+        if self.openai_client:
+            result = await self.translate_text_with_gpt(text, max_length)
+            if result != text:  # 번역이 성공했으면
+                return result
+        
+        # 2순위: Claude (보조용)
+        if self._is_claude_available():
+            result = await self.translate_text_with_claude(text, max_length)
+            if result:  # 빈 문자열이 아니면
+                return result
+        
+        # 모든 번역 실패 시 원문 반환
+        return text
     
     def _generate_content_hash(self, title: str, description: str = "") -> str:
         """뉴스 내용의 해시 생성 (중복 체크용) - 더 엄격하게"""
@@ -654,9 +713,9 @@ class RealisticNewsCollector:
                 connector=aiohttp.TCPConnector(limit=150, limit_per_host=50)
             )
         
-        logger.info("🔥🔥 Claude 우선 번역 비트코인 + 거시경제 뉴스 모니터링 시작")
-        logger.info(f"🤖 Claude API: {'활성화' if self.anthropic_client else '비활성화'}")
-        logger.info(f"🧠 GPT API: {'활성화 (백업)' if self.openai_client else '비활성화'}")
+        logger.info("🔥🔥 GPT 위주 번역 비트코인 + 거시경제 뉴스 모니터링 시작")
+        logger.info(f"🧠 GPT API: {'활성화' if self.openai_client else '비활성화'} (주력)")
+        logger.info(f"🤖 Claude API: {'활성화 (보조)' if self.anthropic_client else '비활성화'}")
         logger.info(f"📊 RSS 체크: 5초마다 (빠른 감지)")
         logger.info(f"🎯 크리티컬 키워드: {len(self.critical_keywords)}개")
         logger.info(f"🏢 추적 기업: {len(self.important_companies)}개")
@@ -708,7 +767,7 @@ class RealisticNewsCollector:
                                 if company:
                                     article['company'] = company
                                 
-                                # 🔥🔥 번역 - Claude 우선 사용
+                                # 🔥🔥 번역 - GPT 우선, Claude 보조
                                 if self._should_translate(article):
                                     article['title_ko'] = await self.translate_text(article['title'])
                                     translated_count += 1
@@ -1137,7 +1196,8 @@ class RealisticNewsCollector:
                     {"role": "user", "content": f"3문장 요약 (최대 {max_length}자):\n\n제목: {title}\n\n내용: {description[:800]}"}
                 ],
                 max_tokens=250,
-                temperature=0.2
+                temperature=0.2,
+                timeout=15.0
             )
             
             summary = response.choices[0].message.content.strip()
@@ -1647,7 +1707,7 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 번역 - Claude 우선 사용
+                            # 번역 - GPT 우선, Claude 보조
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                                 translated_count += 1
@@ -1720,7 +1780,7 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 번역 - Claude 우선 사용
+                            # 번역 - GPT 우선, Claude 보조
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                                 translated_count += 1
@@ -1795,7 +1855,7 @@ class RealisticNewsCollector:
                             if company:
                                 formatted_article['company'] = company
                             
-                            # 번역 - Claude 우선 사용
+                            # 번역 - GPT 우선, Claude 보조
                             if self._should_translate(formatted_article):
                                 formatted_article['title_ko'] = await self.translate_text(formatted_article['title'])
                                 translated_count += 1
@@ -1915,11 +1975,13 @@ class RealisticNewsCollector:
             self.company_news_count = {}
             self.claude_translation_count = 0
             self.gpt_translation_count = 0
+            self.claude_error_count = 0
             self.summary_count = 0
             self.last_translation_reset = datetime.now()
             self.last_summary_reset = datetime.now()
             self.news_first_seen = {}
-            logger.info(f"🔄 일일 리셋 완료 (Claude: {self.max_claude_translations_per_15min}/15분, GPT: {self.max_gpt_translations_per_15min}/15분, 요약: {self.max_summaries_per_15min}/15분)")
+            self.claude_cooldown_until = None
+            logger.info(f"🔄 일일 리셋 완료 (GPT: {self.max_gpt_translations_per_15min}/15분, Claude: {self.max_claude_translations_per_15min}/15분, 요약: {self.max_summaries_per_15min}/15분)")
     
     async def get_recent_news_enhanced(self, hours: int = 12) -> List[Dict]:
         """🔥🔥 강화된 최근 뉴스 가져오기"""
@@ -1979,8 +2041,9 @@ class RealisticNewsCollector:
             
             if self.session:
                 await self.session.close()
-                logger.info("🔚 Claude 우선 번역 뉴스 수집기 세션 종료")
-                logger.info(f"🤖 최종 Claude 번역: {self.claude_translation_count}, GPT 번역: {self.gpt_translation_count}")
+                logger.info("🔚 GPT 위주 번역 뉴스 수집기 세션 종료")
+                logger.info(f"🧠 최종 GPT 번역: {self.gpt_translation_count}, Claude 번역: {self.claude_translation_count}")
                 logger.info(f"📝 최종 GPT 요약: {self.summary_count}")
+                logger.info(f"⚠️ Claude 에러: {self.claude_error_count}회")
         except Exception as e:
             logger.error(f"세션 종료 중 오류: {e}")
