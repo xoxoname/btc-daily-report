@@ -143,24 +143,26 @@ class RealisticNewsCollector:
             'sberbank', '스베르방크', 'jpmorgan', 'goldman sachs'
         ]
         
-        # 과거 뉴스 영향 패턴 (실제 시장 데이터 기반)
+        # 현실적인 과거 뉴스 영향 패턴 (실제 시장 데이터 기반) - 더 정교하게 조정
         self.historical_patterns = {
-            'sberbank_bonds': {'avg_impact': 0.1, 'duration_hours': 3, 'confidence': 0.8},  # 실제로는 거의 반응 없음
-            'structured_products': {'avg_impact': 0.15, 'duration_hours': 4, 'confidence': 0.75},  # 구조화 상품 일반
-            'microstrategy_purchase': {'avg_impact': 0.8, 'duration_hours': 18, 'confidence': 0.85},
-            'tesla_purchase': {'avg_impact': 2.5, 'duration_hours': 36, 'confidence': 0.9},
-            'etf_approval': {'avg_impact': 3.0, 'duration_hours': 24, 'confidence': 0.95},  # 48시간 → 24시간
-            'etf_rejection': {'avg_impact': -2.0, 'duration_hours': 12, 'confidence': 0.85},  # 24시간 → 12시간
-            'sec_lawsuit': {'avg_impact': -1.5, 'duration_hours': 8, 'confidence': 0.7},
-            'china_ban': {'avg_impact': -3.5, 'duration_hours': 24, 'confidence': 0.8},  # 48시간 → 24시간
-            'fed_rate_hike': {'avg_impact': -1.0, 'duration_hours': 6, 'confidence': 0.6},
-            'fed_rate_cut': {'avg_impact': 1.2, 'duration_hours': 12, 'confidence': 0.7},
-            'corporate_adoption': {'avg_impact': 0.4, 'duration_hours': 8, 'confidence': 0.7},  # 12시간 → 8시간
-            'exchange_hack': {'avg_impact': -1.8, 'duration_hours': 6, 'confidence': 0.75},  # 8시간 → 6시간
-            'trump_tariffs': {'avg_impact': -0.8, 'duration_hours': 8, 'confidence': 0.6},  # 새로 추가
-            'trade_deal': {'avg_impact': 0.6, 'duration_hours': 12, 'confidence': 0.7},  # 새로 추가
-            'inflation_data': {'avg_impact': 1.0, 'duration_hours': 6, 'confidence': 0.65},  # 새로 추가
-            'geopolitical_risk': {'avg_impact': 0.8, 'duration_hours': 12, 'confidence': 0.6}  # 새로 추가
+            'sberbank_bonds': {'avg_impact': 0.08, 'duration_hours': 2, 'confidence': 0.85},  # 실제로는 거의 반응 없음
+            'structured_products': {'avg_impact': 0.12, 'duration_hours': 3, 'confidence': 0.8},  # 구조화 상품 일반
+            'microstrategy_purchase': {'avg_impact': 0.6, 'duration_hours': 12, 'confidence': 0.85},  # 0.8 → 0.6
+            'tesla_purchase': {'avg_impact': 1.8, 'duration_hours': 24, 'confidence': 0.9},  # 2.5 → 1.8
+            'etf_approval': {'avg_impact': 2.2, 'duration_hours': 18, 'confidence': 0.95},  # 3.0 → 2.2
+            'etf_rejection': {'avg_impact': -1.5, 'duration_hours': 8, 'confidence': 0.85},  # -2.0 → -1.5
+            'sec_lawsuit': {'avg_impact': -1.0, 'duration_hours': 6, 'confidence': 0.7},  # -1.5 → -1.0
+            'china_ban': {'avg_impact': -2.8, 'duration_hours': 16, 'confidence': 0.8},  # -3.5 → -2.8
+            'fed_rate_hike': {'avg_impact': -0.7, 'duration_hours': 4, 'confidence': 0.6},  # -1.0 → -0.7
+            'fed_rate_cut': {'avg_impact': 0.9, 'duration_hours': 8, 'confidence': 0.7},  # 1.2 → 0.9
+            'corporate_adoption': {'avg_impact': 0.3, 'duration_hours': 6, 'confidence': 0.7},  # 0.4 → 0.3
+            'exchange_hack': {'avg_impact': -1.2, 'duration_hours': 4, 'confidence': 0.75},  # -1.8 → -1.2
+            'trump_tariffs': {'avg_impact': -0.5, 'duration_hours': 6, 'confidence': 0.6},  # -0.8 → -0.5
+            'trade_deal': {'avg_impact': 0.4, 'duration_hours': 8, 'confidence': 0.7},  # 0.6 → 0.4
+            'inflation_data': {'avg_impact': 0.6, 'duration_hours': 4, 'confidence': 0.65},  # 1.0 → 0.6
+            'geopolitical_risk': {'avg_impact': 0.5, 'duration_hours': 8, 'confidence': 0.6},  # 0.8 → 0.5
+            'manufacturing_data': {'avg_impact': 0.15, 'duration_hours': 3, 'confidence': 0.5},  # 새로 추가 - 제조업 데이터
+            'china_economic_data': {'avg_impact': 0.25, 'duration_hours': 4, 'confidence': 0.55},  # 새로 추가 - 중국 경제 데이터
         }
         
         # RSS 피드 - 암호화폐 전문 소스 위주
@@ -945,6 +947,11 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         if any(keyword in content for keyword in geopolitical_keywords):
             return True
         
+        # 중국 경제 데이터 (글로벌 시장 영향) - 새로 추가
+        china_economic_keywords = ['china manufacturing', 'china economic data', 'china gdp', 'china pmi', 'china exports']
+        if any(keyword in content for keyword in china_economic_keywords):
+            return True
+        
         return False
     
     def _estimate_price_impact_advanced(self, article: Dict) -> str:
@@ -953,7 +960,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         
         # 구조화 상품 특별 처리 (스베르방크 타입)
         if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure', 'tracking']):
-            return '⚡ 변동 ±0.1~0.3% (미미)'
+            return '⚡ 변동 ±0.05~0.15% (미미)'
         
         # 과거 패턴 기반 예측
         pattern_match = self._match_historical_pattern(content)
@@ -965,24 +972,24 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             # 현실적 범위 조정
             if impact > 0:
                 direction = "📈 상승"
-                if impact >= 2.0:
-                    range_text = f"+{impact:.1f}~{impact+0.8:.1f}%"
-                elif impact >= 1.0:
-                    range_text = f"+{impact:.1f}~{impact+0.5:.1f}%"
+                if impact >= 1.5:
+                    range_text = f"+{impact:.2f}~{impact+0.4:.2f}%"
+                elif impact >= 0.8:
+                    range_text = f"+{impact:.2f}~{impact+0.3:.2f}%"
                 else:
-                    range_text = f"+{impact:.1f}~{impact+0.3:.1f}%"
+                    range_text = f"+{impact:.2f}~{impact+0.2:.2f}%"
             else:
                 direction = "📉 하락"
-                if abs(impact) >= 2.0:
-                    range_text = f"-{abs(impact):.1f}~{abs(impact)+0.8:.1f}%"
-                elif abs(impact) >= 1.0:
-                    range_text = f"-{abs(impact):.1f}~{abs(impact)+0.5:.1f}%"
+                if abs(impact) >= 1.5:
+                    range_text = f"-{abs(impact):.2f}~{abs(impact)+0.4:.2f}%"
+                elif abs(impact) >= 0.8:
+                    range_text = f"-{abs(impact):.2f}~{abs(impact)+0.3:.2f}%"
                 else:
-                    range_text = f"-{abs(impact):.1f}~{abs(impact)+0.3:.1f}%"
+                    range_text = f"-{abs(impact):.2f}~{abs(impact)+0.2:.2f}%"
             
             # 신뢰도가 낮으면 변동성으로 표시
             if confidence < 0.6:
-                range_text = f"±{abs(impact)*0.7:.1f}~{abs(impact)*1.2:.1f}%"
+                range_text = f"±{abs(impact)*0.7:.2f}~{abs(impact)*1.1:.2f}%"
                 direction = "⚡ 변동"
             
             return f"{direction} {range_text}"
@@ -1010,7 +1017,9 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             'trump_tariffs': ['trump', 'tariffs', 'china'],
             'trade_deal': ['trade', 'deal', 'agreement'],
             'inflation_data': ['inflation', 'cpi', 'data'],
-            'geopolitical_risk': ['ukraine', 'war', 'sanctions', 'conflict']
+            'geopolitical_risk': ['ukraine', 'war', 'sanctions', 'conflict'],
+            'manufacturing_data': ['manufacturing', 'pmi', 'index'],  # 새로 추가
+            'china_economic_data': ['china', 'manufacturing', 'economic'],  # 새로 추가
         }
         
         # 구조화 상품 우선 체크
@@ -1019,6 +1028,10 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                 return 'sberbank_bonds'
             else:
                 return 'structured_products'
+        
+        # 중국 경제 데이터 특별 체크 (새로 추가)
+        if any(word in content for word in ['china manufacturing', 'china pmi', 'china factory']):
+            return 'china_economic_data'
         
         for pattern_name, keywords in patterns.items():
             if all(keyword in content for keyword in keywords[:2]):  # 최소 2개 키워드 매칭
@@ -1032,11 +1045,11 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         
         # ETF 관련 (가장 높은 영향)
         if 'etf approved' in content or 'etf approval' in content:
-            return '📈 상승 +1.5~3%'
+            return '📈 상승 +1.2~2.5%'
         elif 'etf rejected' in content or 'etf rejection' in content:
-            return '📉 하락 -1~2.5%'
+            return '📉 하락 -0.8~2.0%'
         elif 'etf' in content:
-            return '⚡ 변동 ±0.3~0.8%'
+            return '⚡ 변동 ±0.2~0.6%'
         
         # 기업/국가 구매 - 직접 vs 구조화 구분
         for entity in ['tesla', 'microstrategy', 'gamestop', 'blackrock']:
@@ -1044,86 +1057,95 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
                 if any(word in content for word in ['bought', 'purchased', 'acquired']):
                     # 직접 매입
                     if 'billion' in content:
-                        return '📈 상승 +0.8~2%'
+                        return '📈 상승 +0.6~1.5%'
                     elif 'million' in content:
-                        return '📈 상승 +0.3~0.8%'
+                        return '📈 상승 +0.2~0.6%'
                     else:
-                        return '📈 상승 +0.2~0.5%'
+                        return '📈 상승 +0.1~0.4%'
                 elif any(word in content for word in ['structured', 'bonds', 'linked']):
                     # 구조화 상품
-                    return '⚡ 변동 ±0.1~0.3% (미미)'
+                    return '⚡ 변동 ±0.05~0.2% (미미)'
         
         # 러시아/은행 - 제재로 인한 제한적 영향
         if any(entity in content for entity in ['russia', 'sberbank']):
             if any(word in content for word in ['bonds', 'structured', 'linked']):
-                return '⚡ 변동 ±0.1~0.3% (미미)'
+                return '⚡ 변동 ±0.05~0.15% (미미)'
             else:
-                return '📈 상승 +0.1~0.4%'
+                return '📈 상승 +0.08~0.3%'
         
         # ===== 거시경제 영향 (새로 추가) =====
         # 미국 관세 및 무역
         if any(word in content for word in ['trump tariffs', 'china tariffs', 'trade war']):
-            return '📉 하락 -0.5~1.5%'
+            return '📉 하락 -0.3~0.8%'
         elif any(word in content for word in ['trade deal', 'trade agreement']):
-            return '📈 상승 +0.3~1%'
+            return '📈 상승 +0.2~0.6%'
         
         # 인플레이션 데이터
         if any(word in content for word in ['inflation data', 'cpi report']):
             if any(word in content for word in ['higher', 'rises', 'surge']):
-                return '📈 상승 +0.5~1.5%'  # 비트코인 헤지 수요
+                return '📈 상승 +0.3~0.8%'  # 비트코인 헤지 수요
             elif any(word in content for word in ['lower', 'falls', 'decline']):
-                return '📉 하락 -0.3~0.8%'
+                return '📉 하락 -0.2~0.5%'
             else:
-                return '⚡ 변동 ±0.3~1%'
+                return '⚡ 변동 ±0.2~0.6%'
+        
+        # 중국 경제 데이터 (새로 추가)
+        if any(word in content for word in ['china manufacturing', 'china pmi', 'china factory']):
+            if any(word in content for word in ['falls', 'decline', 'lowest', 'worst']):
+                return '📉 하락 -0.15~0.4%'  # 글로벌 경제 우려
+            elif any(word in content for word in ['rises', 'improve', 'strong']):
+                return '📈 상승 +0.1~0.3%'
+            else:
+                return '⚡ 변동 ±0.1~0.25%'
         
         # 달러 강세/약세
         if any(word in content for word in ['dollar strength', 'dxy surge']):
-            return '📉 하락 -0.3~1%'
+            return '📉 하락 -0.2~0.6%'
         elif any(word in content for word in ['dollar weakness', 'dxy falls']):
-            return '📈 상승 +0.3~1%'
+            return '📈 상승 +0.2~0.6%'
         
         # 지정학적 리스크
         if any(word in content for word in ['ukraine war', 'russia sanctions', 'middle east conflict']):
-            return '📈 상승 +0.3~1.2%'  # 안전자산 수요
+            return '📈 상승 +0.2~0.8%'  # 안전자산 수요
         
         # 규제/금지
         if any(word in content for word in ['ban', 'banned', 'prohibit']):
             if 'china' in content:
-                return '📉 하락 -1.5~3%'
+                return '📉 하락 -1.0~2.5%'
             else:
-                return '📉 하락 -0.5~1.5%'
+                return '📉 하락 -0.3~1.0%'
         elif 'lawsuit' in content or 'sue' in content:
-            return '📉 하락 -0.3~1%'
+            return '📉 하락 -0.2~0.8%'
         elif 'regulation' in content and 'positive' in content:
-            return '📈 상승 +0.3~0.8%'
+            return '📈 상승 +0.2~0.6%'
         
         # Fed 금리 (현실적 조정)
         if any(word in content for word in ['rate hike', 'rates higher', 'hawkish']):
-            return '📉 하락 -0.5~1.5%'
+            return '📉 하락 -0.3~1.0%'
         elif any(word in content for word in ['rate cut', 'rates lower', 'dovish']):
-            return '📈 상승 +0.5~1.5%'
+            return '📈 상승 +0.3~1.0%'
         elif 'fed' in content or 'fomc' in content:
-            return '⚡ 변동 ±0.3~1%'
+            return '⚡ 변동 ±0.2~0.6%'
         
         # 시장 급변동
         if any(word in content for word in ['crash', 'plunge', 'tumble']):
-            return '📉 하락 -2~4%'
+            return '📉 하락 -1.5~3.0%'
         elif any(word in content for word in ['surge', 'soar', 'rally', 'all time high', 'ath']):
-            return '📈 상승 +1.5~3%'
+            return '📈 상승 +1.0~2.5%'
         
         # 해킹/보안 (현실적 조정)
         if any(word in content for word in ['hack', 'stolen', 'breach']):
             if 'billion' in content:
-                return '📉 하락 -0.8~2%'
+                return '📉 하락 -0.6~1.5%'
             else:
-                return '📉 하락 -0.3~1%'
+                return '📉 하락 -0.2~0.8%'
         
         # 고래 이동 (영향 축소)
         if 'whale' in content or 'large transfer' in content:
-            return '⚡ 변동 ±0.2~0.5%'
+            return '⚡ 변동 ±0.1~0.3%'
         
         # 기본값 (매우 보수적)
-        return '⚡ 변동 ±0.1~0.4%'
+        return '⚡ 변동 ±0.05~0.25%'
     
     def _is_critical_news(self, article: Dict) -> bool:
         """크리티컬 뉴스 판단 - 비트코인 직접 영향 + 거시경제"""
@@ -1166,6 +1188,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             ('trump', 'tariffs', 'china'),      # 트럼프 관세 (새로 추가)
             ('trade', 'deal', 'china'),         # 무역 합의 (새로 추가)
             ('inflation', 'cpi', 'data'),       # 인플레이션 데이터 (새로 추가)
+            ('china', 'manufacturing', 'pmi'),  # 중국 제조업 (새로 추가)
         ]
         
         for pattern in critical_patterns:
@@ -1211,7 +1234,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             any(word in content for word in ['bitcoin', 'btc', 'crypto']),
             
             # 거시경제 중요 뉴스 (새로 추가)
-            any(word in content for word in ['fed rate decision', 'trump tariffs', 'trade deal', 'inflation data']) and weight >= 7,
+            any(word in content for word in ['fed rate decision', 'trump tariffs', 'trade deal', 'inflation data', 'china manufacturing']) and weight >= 7,
         ]
         
         return any(conditions)
@@ -1223,12 +1246,12 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         
         # 예상 변동률에 따른 영향도
         if '📈' in expected_change:
-            if any(x in expected_change for x in ['3%', '4%', '5%']):
+            if any(x in expected_change for x in ['2%', '3%', '4%', '5%']):
                 return "📈 강한 호재"
             else:
                 return "📈 호재"
         elif '📉' in expected_change:
-            if any(x in expected_change for x in ['3%', '4%', '5%']):
+            if any(x in expected_change for x in ['2%', '3%', '4%', '5%']):
                 return "📉 강한 악재"
             else:
                 return "📉 악재"
@@ -1491,7 +1514,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
         try:
             url = "https://newsapi.org/v2/everything"
             params = {
-                'q': '(bitcoin OR btc OR "bitcoin etf" OR "fed rate" OR "trump tariffs" OR "trade deal" OR "inflation data") AND (etf OR sec OR "bought bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "bitcoin ban" OR "bitcoin regulation" OR "bitcoin hack" OR "whale alert" OR "fed rate" OR "russia bitcoin" OR "sberbank" OR "tariffs china" OR "trade negotiations" OR "cpi report")',
+                'q': '(bitcoin OR btc OR "bitcoin etf" OR "fed rate" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing") AND (etf OR sec OR "bought bitcoin" OR "tesla bitcoin" OR "microstrategy bitcoin" OR "bitcoin ban" OR "bitcoin regulation" OR "bitcoin hack" OR "whale alert" OR "fed rate" OR "russia bitcoin" OR "sberbank" OR "tariffs china" OR "trade negotiations" OR "cpi report" OR "manufacturing pmi")',
                 'language': 'en',
                 'sortBy': 'publishedAt',
                 'apiKey': self.newsapi_key,
@@ -1559,7 +1582,7 @@ SEC approves spot Bitcoin ETF → SEC, 현물 비트코인 ETF 승인"""
             url = "https://newsdata.io/api/1/news"
             params = {
                 'apikey': self.newsdata_key,
-                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin" OR "fed rate decision" OR "trump tariffs" OR "trade deal" OR "inflation data"',
+                'q': 'bitcoin OR btc OR "bitcoin etf" OR "bitcoin regulation" OR "russia bitcoin" OR "sberbank bitcoin" OR "fed rate decision" OR "trump tariffs" OR "trade deal" OR "inflation data" OR "china manufacturing"',
                 'language': 'en',
                 'category': 'business,top',
                 'size': 30
