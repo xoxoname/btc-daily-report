@@ -68,8 +68,9 @@ class MirrorTradingSystem:
         # 🔥🔥 예약주문 취소 감지 개선
         self.last_plan_order_ids: Set[str] = set()  # 이전 체크에서 발견된 예약주문 ID들
         
-        # 🔥 기존 포지션 TP/SL 제외용 (개선된 분류)
+        # 🔥🔥🔥 포지션 유무에 따른 예약 주문 복제 관리 (개선)
         self.startup_position_tp_sl: Set[str] = set()  # 시작 시 존재했던 포지션의 클로즈 TP/SL (복제 제외)
+        self.has_startup_positions: bool = False  # 🔥🔥🔥 시작 시 포지션 존재 여부
         
         # 설정
         self.SYMBOL = "BTCUSDT"
@@ -110,7 +111,7 @@ class MirrorTradingSystem:
             # 초기 포지션 및 예약 주문 기록
             await self._record_startup_positions()
             await self._record_startup_plan_orders()  # 🔥 기존 예약 주문 기록 (기록만)
-            await self._record_startup_position_tp_sl()  # 🔥 기존 포지션 TP/SL 기록 (개선된 분류)
+            await self._record_startup_position_tp_sl()  # 🔥🔥🔥 포지션 유무에 따른 개선된 분류
             
             # 🔥🔥 시작 시 기존 예약 주문 복제 (새로 추가)
             await self._mirror_startup_plan_orders()
@@ -197,8 +198,8 @@ class MirrorTradingSystem:
                     if not order_id:
                         continue
                     
-                    # 🔥 기존 포지션의 클로즈 TP/SL인지 확인
-                    if order_id in self.startup_position_tp_sl:
+                    # 🔥🔥🔥 포지션이 있을 때만 기존 포지션의 클로즈 TP/SL 제외
+                    if self.has_startup_positions and order_id in self.startup_position_tp_sl:
                         self.logger.info(f"기존 포지션 클로즈 TP/SL이므로 복제 제외: {order_id}")
                         continue
                     
@@ -222,14 +223,17 @@ class MirrorTradingSystem:
             self.daily_stats['startup_plan_mirrors'] = mirrored_count
             self.startup_plan_orders_processed = True
             
+            position_mode_text = "포지션 없음 - 모든 예약 주문 복제" if not self.has_startup_positions else "포지션 있음 - 클로즈 TP/SL 제외하고 복제"
+            
             await self.telegram.send_message(
                 f"🔥✅ 시작 시 기존 예약 주문 복제 완료\n"
                 f"성공: {mirrored_count}개\n"
                 f"실패: {failed_count}개\n"
-                f"총 {len(all_orders)}개 중 {mirrored_count}개 복제됨"
+                f"총 {len(all_orders)}개 중 {mirrored_count}개 복제됨\n"
+                f"🔥🔥🔥 모드: {position_mode_text}"
             )
             
-            self.logger.info(f"🔥🔥 시작 시 예약 주문 복제 완료: 성공 {mirrored_count}개, 실패 {failed_count}개")
+            self.logger.info(f"🔥🔥 시작 시 예약 주문 복제 완료: 성공 {mirrored_count}개, 실패 {failed_count}개 ({position_mode_text})")
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
@@ -350,16 +354,35 @@ class MirrorTradingSystem:
             raise
     
     async def _record_startup_position_tp_sl(self):
-        """🔥 개선: 시작 시 존재하는 포지션의 클로즈 TP/SL만 제외, 추가 진입 TP는 복제"""
+        """🔥🔥🔥 포지션 유무에 따른 개선된 TP/SL 분류 - 포지션이 없으면 모든 예약 주문 복제"""
         try:
-            self.logger.info("🔥 기존 포지션의 클로즈 TP/SL 기록 시작 (추가 진입 TP는 복제)")
+            self.logger.info("🔥🔥🔥 포지션 유무에 따른 예약 주문 복제 정책 설정 시작")
             
             # 현재 활성 포지션들 조회
             positions = await self.bitget.get_positions(self.SYMBOL)
             
-            existing_position_count = 0
+            active_positions = []
             for pos in positions:
                 if float(pos.get('total', 0)) > 0:
+                    active_positions.append(pos)
+            
+            self.has_startup_positions = len(active_positions) > 0
+            
+            if not self.has_startup_positions:
+                # 🔥🔥🔥 포지션이 없으면 모든 예약 주문을 복제 (제외하지 않음)
+                self.logger.info("🔥🔥🔥 현재 보유 포지션이 없습니다!")
+                self.logger.info("🔥🔥🔥 → 모든 예약 주문을 복제합니다 (제외 없음)")
+                
+                # startup_position_tp_sl을 비워둠 (아무것도 제외하지 않음)
+                self.startup_position_tp_sl.clear()
+                
+            else:
+                # 🔥🔥🔥 포지션이 있으면 기존 로직대로 클로즈 TP/SL만 제외
+                self.logger.info(f"🔥🔥🔥 현재 {len(active_positions)}개의 보유 포지션이 있습니다!")
+                self.logger.info("🔥🔥🔥 → 기존 포지션의 클로즈 TP/SL만 제외하고 나머지는 복제합니다")
+                
+                existing_position_count = 0
+                for pos in active_positions:
                     pos_id = self._generate_position_id(pos)
                     pos_side = pos.get('holdSide', '').lower()  # long or short
                     existing_position_count += 1
@@ -398,13 +421,22 @@ class MirrorTradingSystem:
                             else:
                                 # 추가 진입 TP/SL → 복제 대상
                                 self.logger.info(f"🔥 추가 진입 TP/SL 감지 (복제 대상): {order_id} - {trade_side}")
+                
+                self.logger.info(f"🔥 기존 포지션: {existing_position_count}개")
+                self.logger.info(f"🔥 제외할 클로즈 TP/SL: {len(self.startup_position_tp_sl)}개")
             
-            self.logger.info(f"🔥 기존 포지션: {existing_position_count}개")
-            self.logger.info(f"🔥 제외할 클로즈 TP/SL: {len(self.startup_position_tp_sl)}개")
-            self.logger.info(f"🔥 추가 진입 TP/SL은 복제 대상으로 처리됩니다")
+            # 최종 정책 요약
+            if self.has_startup_positions:
+                self.logger.info(f"🔥🔥🔥 최종 정책: 포지션 있음 - 클로즈 TP/SL {len(self.startup_position_tp_sl)}개 제외, 나머지 모든 예약 주문 복제")
+            else:
+                self.logger.info(f"🔥🔥🔥 최종 정책: 포지션 없음 - 모든 예약 주문 복제 (제외 없음)")
             
         except Exception as e:
-            self.logger.error(f"기존 포지션 TP/SL 기록 실패: {e}")
+            self.logger.error(f"포지션 유무에 따른 예약 주문 정책 설정 실패: {e}")
+            # 오류 시 안전하게 포지션 없음으로 처리 (모든 예약 주문 복제)
+            self.has_startup_positions = False
+            self.startup_position_tp_sl.clear()
+            self.logger.info("🔥🔥🔥 오류로 인해 안전 모드: 모든 예약 주문 복제")
     
     async def monitor_plan_orders(self):
         """🔥🔥 예약 주문 모니터링 - 개선된 디버깅 및 복제 로직"""
@@ -456,8 +488,8 @@ class MirrorTradingSystem:
                     
                     self.logger.debug(f"🔍 예약 주문 처리 중: {order_id}")
                     
-                    # 🔥 기존 포지션 TP/SL 필터링
-                    if order_id in self.startup_position_tp_sl:
+                    # 🔥🔥🔥 포지션 유무에 따른 필터링 (개선됨)
+                    if self.has_startup_positions and order_id in self.startup_position_tp_sl:
                         self.logger.debug(f"기존 포지션 클로즈 TP/SL 스킵: {order_id}")
                         continue
                     
@@ -1161,6 +1193,8 @@ class MirrorTradingSystem:
                 f"예약 주문: {total_plan_orders}개"
             )
             
+            position_mode_text = "포지션 없음 - 모든 예약 주문 복제" if not self.has_startup_positions else "포지션 있음 - 클로즈 TP/SL 제외하고 복제"
+            
             await self.telegram.send_message(
                 f"🔥🔥🔥 실제 달러 마진 비율 동적 계산 + 예약 주문 완전 복제 미러 트레이딩 시작\n\n"
                 f"💰 계정 잔고:\n"
@@ -1179,6 +1213,10 @@ class MirrorTradingSystem:
                 f"• 기존 예약 주문: {len(self.startup_plan_orders)}개 (시작 시 복제)\n"
                 f"• 기존 포지션 클로즈 TP/SL: {len(self.startup_position_tp_sl)}개 (복제 제외)\n"
                 f"• 복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n\n"
+                f"🔥🔥🔥 예약 주문 복제 정책:\n"
+                f"• {position_mode_text}\n"
+                f"• 보유 포지션: {len(self.startup_positions)}개\n"
+                f"• 제외할 클로즈 TP/SL: {len(self.startup_position_tp_sl)}개\n\n"
                 f"🔥🔥🔥 핵심 기능 (완전 개선):\n"
                 f"• 🔧 레버리지 완전 동기화 (비트겟 = 게이트)\n"
                 f"• 💰💰💰 실제 달러 마진 비율 매번 동적 계산\n"
@@ -1187,7 +1225,7 @@ class MirrorTradingSystem:
                 f"  ↳ 게이트에서도 정확히 동일한 비율로 투입\n"
                 f"• 📈 예약 주문별 개별 마진 비율 계산\n"
                 f"• 🔥 시작 시 기존 예약 주문 복제\n"
-                f"• 🚫 기존 포지션 클로즈 TP/SL 제외\n"
+                f"• 🚫 기존 포지션 클로즈 TP/SL 제외 (포지션이 있을 때만)\n"
                 f"• 📈 추가 진입 예약 TP/SL 복제\n"
                 f"• 🚫🚫 예약 주문 취소 시 자동 동기화\n"
                 f"• 주문 체결 시 포지션 미러링\n\n"
@@ -1200,7 +1238,8 @@ class MirrorTradingSystem:
                 f"• 예약 주문: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
                 f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n\n"
                 f"🔥🔥🔥 주요 개선점:\n"
-                f"• 시작 시 기존 예약 주문도 복제\n"
+                f"• 포지션 없으면 모든 예약 주문 복제\n"
+                f"• 포지션 있으면 클로즈 TP/SL만 제외\n"
                 f"• 미리 정해진 비율 완전 폐지\n"
                 f"• 매 주문마다 실제 달러 투입 비율 새로 계산\n"
                 f"• 실제 달러 투입 비율의 정확한 복제\n"
@@ -1788,16 +1827,22 @@ class MirrorTradingSystem:
             plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
             current_bitget_orders = plan_data.get('plan_orders', []) + plan_data.get('tp_sl_orders', [])
             
-            # 기존 포지션 TP/SL 제외
-            new_bitget_orders = [
-                order for order in current_bitget_orders 
-                if order.get('orderId', order.get('planOrderId', '')) not in self.startup_position_tp_sl
-            ]
+            # 🔥🔥🔥 포지션 유무에 따른 제외 로직 적용
+            if self.has_startup_positions:
+                # 포지션이 있으면 기존 포지션 TP/SL 제외
+                new_bitget_orders = [
+                    order for order in current_bitget_orders 
+                    if order.get('orderId', order.get('planOrderId', '')) not in self.startup_position_tp_sl
+                ]
+            else:
+                # 포지션이 없으면 모든 예약 주문이 대상
+                new_bitget_orders = current_bitget_orders
             
             bitget_plan_count = len(new_bitget_orders)
             gate_plan_count = len(self.mirrored_plan_orders)
             
-            self.logger.info(f"예약 주문 동기화 상태: 비트겟 {bitget_plan_count}개, 게이트 {gate_plan_count}개 복제됨")
+            position_mode_text = "포지션 없음 - 모든 예약 주문 대상" if not self.has_startup_positions else "포지션 있음 - 클로즈 TP/SL 제외"
+            self.logger.info(f"예약 주문 동기화 상태: 비트겟 {bitget_plan_count}개, 게이트 {gate_plan_count}개 복제됨 ({position_mode_text})")
             
         except Exception as e:
             self.logger.error(f"예약 주문 동기화 체크 실패: {e}")
@@ -1884,6 +1929,8 @@ class MirrorTradingSystem:
                 success_rate = (self.daily_stats['successful_mirrors'] / 
                               self.daily_stats['total_mirrored']) * 100
             
+            position_mode_text = "포지션 없음 - 모든 예약 주문 복제" if not self.has_startup_positions else "포지션 있음 - 클로즈 TP/SL 제외하고 복제"
+            
             report = f"""📊 일일 실제 달러 마진 비율 동적 계산 + 완전 복제 미러 트레이딩 리포트
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
@@ -1893,6 +1940,7 @@ class MirrorTradingSystem:
 - 신규 예약 주문 미러링: {self.daily_stats['plan_order_mirrors']}회
 - 예약 주문 취소 동기화: {self.daily_stats['plan_order_cancels']}회
 - 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개
+- 🔥🔥🔥 복제 정책: {position_mode_text}
 
 ⚡ 실시간 포지션 미러링 (실제 달러 마진 비율 동적 계산)
 - 주문 체결 기반: {self.daily_stats['order_mirrors']}회
@@ -1939,10 +1987,10 @@ class MirrorTradingSystem:
 - 실시간 취소 상태 비교
 - 취소 실패 시 상세 오류 처리
 
-🔥 시작 시 기존 예약 주문 복제 (신규 추가)
-- 시스템 시작 시 기존 예약 주문도 복제
-- 기존 포지션 클로즈 TP/SL만 제외
-- 추가 진입 예약 주문은 복제
+🔥🔥🔥 포지션 유무에 따른 예약 주문 복제 정책 (신규)
+- 포지션 없음: 모든 예약 주문 복제
+- 포지션 있음: 기존 포지션 클로즈 TP/SL만 제외하고 복제
+- 추가 진입 예약 주문은 항상 복제
 
 """
             
@@ -1952,7 +2000,7 @@ class MirrorTradingSystem:
                 for i, error in enumerate(self.daily_stats['errors'][-3:], 1):  # 최근 3개만
                     report += f"{i}. {error['error'][:50]}...\n"
             
-            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥 시작 시 기존 예약 주문도 복제하는 완전한 실제 달러 마진 비율 동적 계산!"
+            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥🔥🔥 포지션 유무에 따른 완전한 실제 달러 마진 비율 동적 계산!"
             
             return report
             
