@@ -323,8 +323,8 @@ class MirrorTradingSystem:
             if trigger_price == 0:
                 return "failed"
             
-            # 트리거 가격 유효성 검증
-            is_valid, skip_reason = await self._validate_trigger_price(trigger_price, side)
+            # 🔥🔥🔥 개선된 트리거 가격 유효성 검증 - 더 관대한 기준
+            is_valid, skip_reason = await self._validate_trigger_price_improved(trigger_price, side)
             if not is_valid:
                 self.logger.warning(f"⏭️ 시작 시 예약 주문 스킵됨 (트리거 가격 문제): {order_id} - {skip_reason}")
                 return "skipped_trigger_price"
@@ -361,22 +361,8 @@ class MirrorTradingSystem:
             if gate_size == 0:
                 gate_size = 1
             
-            # 방향에 따라 부호 조정
-            is_buy_order = False
-            if side in ['buy', 'open_long']:
-                is_buy_order = True
-            elif side in ['sell', 'open_short']:
-                is_buy_order = False
-            elif side in ['close_long']:
-                is_buy_order = False
-                gate_size = -gate_size
-            elif side in ['close_short']:
-                is_buy_order = True
-            else:
-                is_buy_order = 'buy' in side.lower()
-            
-            if not is_buy_order and side not in ['close_long']:
-                gate_size = -gate_size
+            # 🔥🔥🔥 개선된 방향 처리 - close_long이 올바르게 처리되도록
+            gate_size = await self._calculate_gate_order_size_improved(side, gate_size)
             
             # 🔥🔥 수정된 Gate.io 트리거 타입 변환 - 트리거가와 현재가 관계로 결정
             gate_trigger_type = await self._determine_gate_trigger_type(trigger_price)
@@ -453,8 +439,8 @@ class MirrorTradingSystem:
             self.logger.error(f"Gate.io 트리거 타입 결정 실패: {e}")
             return "ge"  # 기본값
     
-    async def _validate_trigger_price(self, trigger_price: float, side: str) -> Tuple[bool, str]:
-        """🔥🔥 수정된 트리거 가격 유효성 검증 - 단순화"""
+    async def _validate_trigger_price_improved(self, trigger_price: float, side: str) -> Tuple[bool, str]:
+        """🔥🔥🔥 개선된 트리거 가격 유효성 검증 - 더 관대한 기준"""
         try:
             # 게이트 현재 시장가 조회
             contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
@@ -474,18 +460,18 @@ class MirrorTradingSystem:
             if current_price is None or current_price == 0:
                 return False, "현재 시장가를 조회할 수 없음"
             
-            # 🔥🔥 핵심 수정: 단순한 검증 로직
-            # 트리거가와 현재가가 너무 근접하면 스킵 (최소 0.1% 차이 필요)
+            # 🔥🔥🔥 핵심 수정: 매우 관대한 검증 로직
+            # 트리거가와 현재가가 너무 근접하면 스킵 (최소 0.01% 차이 필요 - 기존 0.1%에서 완화)
             price_diff_percent = abs(trigger_price - current_price) / current_price * 100
-            if price_diff_percent < 0.1:
+            if price_diff_percent < 0.01:
                 return False, f"트리거가와 현재가 차이가 너무 작음 ({price_diff_percent:.4f}%)"
             
-            # 🔥🔥 기본적인 유효성만 검증 - 모든 트리거 가격을 허용
+            # 기본적인 유효성만 검증 - 모든 트리거 가격을 허용
             if trigger_price <= 0:
                 return False, "트리거 가격이 0 이하입니다"
             
-            # 극단적인 가격 차이 검증 (현재가 대비 50% 이상 차이나면 경고)
-            if price_diff_percent > 50:
+            # 극단적인 가격 차이 검증 (현재가 대비 100% 이상 차이나면 경고 - 기존 50%에서 완화)
+            if price_diff_percent > 100:
                 return False, f"트리거가와 현재가 차이가 너무 큼 ({price_diff_percent:.1f}%)"
             
             return True, "유효한 트리거 가격"
@@ -493,6 +479,37 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"트리거 가격 검증 실패: {e}")
             return False, f"검증 오류: {str(e)}"
+    
+    async def _calculate_gate_order_size_improved(self, side: str, base_size: int) -> int:
+        """🔥🔥🔥 개선된 게이트 주문 수량 계산 - close_long이 올바르게 처리되도록"""
+        try:
+            # 🔥🔥🔥 개선된 방향 처리 로직
+            if side in ['buy', 'open_long']:
+                # 롱 오픈: 양수
+                return abs(base_size)
+            elif side in ['sell', 'open_short']:
+                # 숏 오픈: 음수
+                return -abs(base_size)
+            elif side in ['close_long']:
+                # 🔥🔥🔥 클로즈 롱: 롱 포지션을 닫는 것이므로 매도 (음수)
+                return -abs(base_size)
+            elif side in ['close_short']:
+                # 클로즈 숏: 숏 포지션을 닫는 것이므로 매수 (양수)
+                return abs(base_size)
+            else:
+                # 기본적으로 buy가 포함된 경우 양수, sell이 포함된 경우 음수
+                if 'buy' in side.lower():
+                    return abs(base_size)
+                elif 'sell' in side.lower():
+                    return -abs(base_size)
+                else:
+                    # 알 수 없는 경우 기본값
+                    self.logger.warning(f"알 수 없는 주문 방향: {side}, 기본값 사용")
+                    return base_size
+            
+        except Exception as e:
+            self.logger.error(f"게이트 주문 수량 계산 실패: {e}")
+            return base_size
     
     async def _record_startup_position_tp_sl(self):
         """포지션 유무에 따른 개선된 TP/SL 분류"""
@@ -665,8 +682,8 @@ class MirrorTradingSystem:
             if trigger_price == 0:
                 return "failed"
             
-            # 트리거 가격 유효성 검증
-            is_valid, skip_reason = await self._validate_trigger_price(trigger_price, side)
+            # 🔥🔥🔥 개선된 트리거 가격 유효성 검증 - 더 관대한 기준
+            is_valid, skip_reason = await self._validate_trigger_price_improved(trigger_price, side)
             if not is_valid:
                 await self.telegram.send_message(
                     f"⏭️ 예약 주문 스킵됨 (트리거 가격 문제)\n"
@@ -711,22 +728,8 @@ class MirrorTradingSystem:
             if gate_size == 0:
                 gate_size = 1
             
-            # 방향에 따라 부호 조정
-            is_buy_order = False
-            if side in ['buy', 'open_long']:
-                is_buy_order = True
-            elif side in ['sell', 'open_short']:
-                is_buy_order = False
-            elif side in ['close_long']:
-                is_buy_order = False
-                gate_size = -gate_size
-            elif side in ['close_short']:
-                is_buy_order = True
-            else:
-                is_buy_order = 'buy' in side.lower()
-            
-            if not is_buy_order and side not in ['close_long']:
-                gate_size = -gate_size
+            # 🔥🔥🔥 개선된 방향 처리 - close_long이 올바르게 처리되도록
+            gate_size = await self._calculate_gate_order_size_improved(side, gate_size)
             
             # 🔥🔥 수정된 Gate.io 트리거 타입 변환 - 트리거가와 현재가 관계로 결정
             gate_trigger_type = await self._determine_gate_trigger_type(trigger_price)
@@ -771,7 +774,8 @@ class MirrorTradingSystem:
                     f"게이트 ID: {gate_order.get('id')}\n"
                     f"방향: {side.upper()}\n"
                     f"트리거가: ${trigger_price:,.2f}\n"
-                    f"트리거 타입: {gate_trigger_type.upper()}\n\n"
+                    f"트리거 타입: {gate_trigger_type.upper()}\n"
+                    f"게이트 수량: {gate_size}\n\n"
                     f"💰 실제 달러 마진 동적 비율 복제:\n"
                     f"비트겟 실제 마진: ${bitget_required_margin:,.2f}\n"
                     f"실제 마진 비율: {margin_ratio*100:.2f}%\n"
@@ -1111,9 +1115,13 @@ class MirrorTradingSystem:
                 f"4️⃣ 게이트 투입 마진 = 게이트 총 자산 × 동일 비율\n"
                 f"5️⃣ 매 거래마다 실시간으로 비율을 새로 계산\n\n"
                 f"🔥🔥🔥 개선된 트리거 가격 검증:\n"
-                f"• 트리거가 > 현재가 → ge 트리거 (상승 돌파)\n"
-                f"• 트리거가 < 현재가 → le 트리거 (하락 돌파)\n"
-                f"• 주문 방향과 무관하게 가격 관계로만 판단\n\n"
+                f"• 최소 차이 기준 완화: 0.1% → 0.01%\n"
+                f"• 최대 차이 기준 완화: 50% → 100%\n"
+                f"• 더 많은 예약 주문 복제 허용\n\n"
+                f"🔥🔥🔥 개선된 방향 처리:\n"
+                f"• close_long → 게이트에서 올바르게 매도 (음수)\n"
+                f"• close_short → 게이트에서 올바르게 매수 (양수)\n"
+                f"• 모든 주문 방향 정확히 매칭\n\n"
                 f"📊 기존 항목:\n"
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.startup_plan_orders)}개 (시작 시 복제)\n"
@@ -1583,15 +1591,19 @@ class MirrorTradingSystem:
 - 미리 정해진 비율 없음 - 완전 동적 계산
 
 🔥🔥🔥 개선된 트리거 검증 (핵심)
-- 트리거가 > 현재가 → ge 트리거 (상승 돌파)
-- 트리거가 < 현재가 → le 트리거 (하락 돌파)
-- 주문 방향과 무관하게 가격 관계로만 판단
+- 최소 차이: 0.1% → 0.01% (10배 완화)
+- 최대 차이: 50% → 100% (2배 완화)
+- close_long 방향 처리 완전 수정
+
+🔥🔥🔥 개선된 방향 처리 (핵심)
+- close_long → 게이트 매도 (음수) 올바르게 처리
+- close_short → 게이트 매수 (양수) 올바르게 처리
 """
             
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
             
-            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥 완전한 실제 달러 마진 비율 동적 계산!"
+            report += "\n━━━━━━━━━━━━━━━━━━━\n🔥 완전한 실제 달러 마진 비율 동적 계산 + 개선된 방향 처리!"
             
             return report
             
