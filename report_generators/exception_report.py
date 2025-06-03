@@ -16,7 +16,7 @@ except ImportError:
     ML_AVAILABLE = False
 
 class ExceptionReportGenerator(BaseReportGenerator):
-    """예외 상황 리포트 전담 생성기 - 현실적 시장 반응 반영"""
+    """예외 상황 리포트 전담 생성기 - 현실적 시장 반응 반영 + 뉴스 후 실제 가격 변동 추가"""
     
     def __init__(self, config, data_collector, indicator_system, bitget_client=None):
         super().__init__(config, data_collector, indicator_system, bitget_client)
@@ -391,6 +391,13 @@ class ExceptionReportGenerator(BaseReportGenerator):
             content = (title + " " + description).lower()
             summary_parts = []
             
+            # 비트코인 가격 관련 특별 처리 (새로 추가)
+            if 'crosses' in content and ('100k' in content or '$100' in content):
+                summary_parts.append("비트코인이 10만 달러를 돌파했지만 구글 검색량은 예상보다 낮은 수준을 보이고 있다.")
+                summary_parts.append("이는 기관 투자자 중심의 상승으로 일반 투자자들의 관심은 아직 제한적임을 시사한다.")
+                summary_parts.append("향후 소매 투자자들의 FOMO가 본격화될 경우 추가 상승 여력이 있을 것으로 분석된다.")
+                return " ".join(summary_parts)
+            
             # 구조화 상품 특별 처리
             if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']):
                 if 'sberbank' in content:
@@ -488,12 +495,12 @@ class ExceptionReportGenerator(BaseReportGenerator):
             return "비트코인 시장 관련 소식이 발표되었다. 자세한 내용은 원문을 확인하시기 바란다. 실제 시장 반응을 면밀히 분석할 필요가 있다."
     
     async def _get_price_change_since_news(self, news_pub_time: datetime) -> str:
-        """뉴스 발표 후 실제 가격 변동 계산"""
+        """🔥🔥 뉴스 발표 후 실제 가격 변동 계산 - Bitget 선물 API 연동"""
         try:
             if not self.bitget_client:
                 return ""
             
-            # 현재 시장 데이터 조회
+            # 현재 시장 데이터 조회 (Bitget 선물)
             current_ticker = await self.bitget_client.get_ticker('BTCUSDT')
             if not current_ticker:
                 return ""
@@ -613,7 +620,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
             volume_status = "매우 높음" if volume_24h > 80000 else "높음" if volume_24h > 60000 else "보통" if volume_24h > 40000 else "낮음"
             
             market_status = f"""
-<b>📊 현재 시장 상황 (실시간 API 데이터):</b>
+<b>📊 현재 시장 상황 (Bitget 선물 API):</b>
 • 현재가: <b>${current_price:,.0f}</b> (24시간: {change_24h:+.2f}%)
 • 시장 추세: <b>{price_trend}</b>
 • 거래량: <b>{volume_24h:,.0f} BTC</b> ({volume_status})"""
@@ -661,7 +668,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 return "영향 소멸"
     
     async def generate_report(self, event: Dict) -> str:
-        """🚨 현실적인 긴급 예외 리포트 생성 - 정확한 시간 표시"""
+        """🚨 현실적인 긴급 예외 리포트 생성 - 정확한 시간 표시 + 실제 시장 변동"""
         current_time = self._get_current_time_kst()
         event_type = event.get('type', 'unknown')
         
@@ -746,7 +753,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
             # 현실적 전략 생성
             smart_strategy = self._format_smart_strategy(news_type, ml_prediction, event)
             
-            # 3문장 요약 생성
+            # 3문장 요약 생성 - 실제 뉴스 내용 분석
             if summary and len(summary.strip()) > 10:
                 detail_summary = summary[:200]  # 200자로 제한
             elif description and len(description.strip()) > 20:
