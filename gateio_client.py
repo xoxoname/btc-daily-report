@@ -175,7 +175,7 @@ class GateClient:
             
             # 🔥🔥 INVALID_PROTOCOL 오류 시 상세 분석
             if "INVALID_PROTOCOL" in str(e):
-                logger.error(f"🚨 INVALID_PROTOCOL 오류 발생!")
+                logger.error(f"🚨🚨 INVALID_PROTOCOL 오류 발생!")
                 logger.error(f"   - 계약: {contract}")
                 logger.error(f"   - 수량: {size} (타입: {type(size)})")
                 logger.error(f"   - 가격: {price} (타입: {type(price) if price else 'None'})")
@@ -306,7 +306,7 @@ class GateClient:
     async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
                                          order_type: str, contract: str, size: int, 
                                          price: Optional[str] = None) -> Dict:
-        """🔥🔥 가격 트리거 주문 생성 (TP/SL) - INVALID_PROTOCOL 오류 해결
+        """🔥🔥 가격 트리거 주문 생성 (TP/SL) - size 정수 타입 수정
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
@@ -319,11 +319,11 @@ class GateClient:
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥 Gate.io API v4 트리거 주문 규격 완전 준수
+            # 🔥🔥 Gate.io API v4 트리거 주문 규격 완전 준수 - size를 정수로 유지
             initial_data = {
                 "type": order_type,
                 "contract": contract,
-                "size": str(size)  # 🔥 문자열로 변환
+                "size": size  # 🔥🔥 정수로 유지 (문자열 변환 제거)
             }
             
             # 🔥🔥 지정가인 경우만 price 추가
@@ -341,18 +341,18 @@ class GateClient:
                 }
             }
             
-            logger.info(f"🔥🔥 Gate.io 가격 트리거 주문 생성 (수정): {data}")
+            logger.info(f"🔥🔥 Gate.io 가격 트리거 주문 생성 (size 정수 수정): {data}")
             response = await self._request('POST', endpoint, data=data)
             logger.info(f"✅✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
             return response
             
         except Exception as e:
             logger.error(f"❌❌ 가격 트리거 주문 생성 실패: {e}")
-            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}")
+            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size} (타입: {type(size)})")
             
-            # 🔥🔥 INVALID_PROTOCOL 오류 시 상세 분석
-            if "INVALID_PROTOCOL" in str(e):
-                logger.error(f"🚨 트리거 주문 INVALID_PROTOCOL 오류!")
+            # 🔥🔥 상세 디버깅 정보
+            if "AUTO_INVALID_REQUEST_BODY" in str(e) or "cannot unmarshal string into Go struct" in str(e):
+                logger.error(f"🚨 타입 불일치 오류 - size가 정수가 아님!")
                 logger.error(f"   - 계약: {contract}")
                 logger.error(f"   - 수량: {size} (타입: {type(size)})")
                 logger.error(f"   - 트리거가: {trigger_price} (타입: {type(trigger_price)})")
