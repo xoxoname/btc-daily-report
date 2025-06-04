@@ -419,7 +419,7 @@ class MirrorTradingSystem:
                 f"• 주문 체결 감지: {self.ORDER_CHECK_INTERVAL}초마다\n"
                 f"• 예약 주문 감지: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
                 f"• 포지션 모니터링: {self.CHECK_INTERVAL}초마다\n"
-                f"• TP/SL 포함 복제: 활성화"
+                f"• TP/SL 포함 복제: 활성화 (개선된 검증)"
             )
             
         except Exception as e:
@@ -538,7 +538,7 @@ class MirrorTradingSystem:
 
 ━━━━━━━━━━━━━━━━━━━
 달러 기준 동일 비율 미러링 시스템
-TP/SL 포함 완전 복제"""
+TP/SL 포함 완전 복제 (개선된 검증)"""
             
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -795,7 +795,7 @@ TP/SL 포함 완전 복제"""
             return None, None
 
     async def _process_startup_plan_order(self, bitget_order: Dict) -> str:
-        """시작 시 예약 주문 복제 처리 - TP/SL 포함"""
+        """🔥 시작 시 예약 주문 복제 처리 - 개선된 검증 포함"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -832,8 +832,10 @@ TP/SL 포함 완전 복제"""
                 adjusted_sl_price = await self._adjust_price_for_gate(sl_price)
                 self.logger.info(f"🛡️ SL 가격 조정: ${sl_price:.2f} → ${adjusted_sl_price:.2f}")
             
-            # 트리거 가격 유효성 검증
-            is_valid, skip_reason = await self._validate_trigger_price(adjusted_trigger_price, side)
+            # 🔥 개선된 트리거 가격 유효성 검증
+            is_valid, skip_reason = await self._validate_trigger_price_with_gate(
+                adjusted_trigger_price, side
+            )
             if not is_valid:
                 self.logger.warning(f"시작 시 예약 주문 스킵됨: {order_id} - {skip_reason}")
                 return "skipped"
@@ -883,7 +885,7 @@ TP/SL 포함 완전 복제"""
             except Exception as e:
                 self.logger.error(f"시작 시 레버리지 설정 실패: {e}")
             
-            # 🔥 TP/SL 포함 Gate.io 예약 주문 생성
+            # 🔥 TP/SL 포함 Gate.io 예약 주문 생성 (개선된 검증 포함)
             if adjusted_tp_price or adjusted_sl_price:
                 self.logger.info(f"🎯 TP/SL 포함 예약 주문 생성: TP=${adjusted_tp_price}, SL=${adjusted_sl_price}")
                 
@@ -937,6 +939,30 @@ TP/SL 포함 완전 복제"""
             self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
             return "failed"
 
+    async def _validate_trigger_price_with_gate(self, trigger_price: float, side: str) -> Tuple[bool, str]:
+        """🔥 Gate.io 검증 시스템을 사용한 트리거 가격 유효성 검증"""
+        try:
+            # Gate.io의 validate_trigger_price 사용
+            gate_trigger_type = await self._determine_gate_trigger_type(trigger_price)
+            is_valid, validation_msg, adjusted_price = await self.gate.validate_trigger_price(
+                trigger_price, gate_trigger_type, self.GATE_CONTRACT
+            )
+            
+            if not is_valid:
+                return False, validation_msg
+            
+            # 조정된 가격이 있으면 사용
+            if adjusted_price != trigger_price:
+                self.logger.info(f"🔧 Gate.io 검증에 의한 가격 조정: ${trigger_price:.2f} → ${adjusted_price:.2f}")
+                # 여기서는 조정된 가격을 반환하지 않고 유효성만 확인
+                # 실제 조정은 주문 생성 시 Gate.io 클라이언트에서 처리
+            
+            return True, "유효한 트리거 가격"
+            
+        except Exception as e:
+            self.logger.error(f"Gate.io 트리거 가격 검증 실패: {e}")
+            return False, f"검증 오류: {str(e)}"
+
     async def _adjust_price_for_gate(self, price: float) -> float:
         """게이트 기준으로 가격 조정"""
         if price == 0 or self.price_diff_percent <= 0.3:
@@ -952,32 +978,6 @@ TP/SL 포함 완전 복제"""
                 return adjusted_price
         
         return price
-
-    async def _validate_trigger_price(self, trigger_price: float, side: str) -> Tuple[bool, str]:
-        """트리거 가격 유효성 검증"""
-        try:
-            current_price = self.gate_current_price or self.bitget_current_price
-            
-            if current_price == 0:
-                return False, "현재 시장가를 조회할 수 없음"
-            
-            # 트리거가와 현재가가 너무 근접하면 스킵
-            price_diff_percent = abs(trigger_price - current_price) / current_price * 100
-            if price_diff_percent < 0.01:
-                return False, f"트리거가와 현재가 차이가 너무 작음 ({price_diff_percent:.4f}%)"
-            
-            if trigger_price <= 0:
-                return False, "트리거 가격이 0 이하입니다"
-            
-            # 극단적인 가격 차이 검증
-            if price_diff_percent > 100:
-                return False, f"트리거가와 현재가 차이가 너무 큼 ({price_diff_percent:.1f}%)"
-            
-            return True, "유효한 트리거 가격"
-            
-        except Exception as e:
-            self.logger.error(f"트리거 가격 검증 실패: {e}")
-            return False, f"검증 오류: {str(e)}"
 
     async def _calculate_gate_order_size(self, side: str, base_size: int) -> int:
         """게이트 주문 수량 계산"""
@@ -1177,7 +1177,7 @@ TP/SL 포함 완전 복제"""
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
     async def _process_new_plan_order(self, bitget_order: Dict) -> str:
-        """새로운 예약 주문 복제 - TP/SL 포함"""
+        """🔥 새로운 예약 주문 복제 - 개선된 검증 포함"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -1214,8 +1214,10 @@ TP/SL 포함 완전 복제"""
                 adjusted_sl_price = await self._adjust_price_for_gate(sl_price)
                 self.logger.info(f"🛡️ 새 주문 SL 가격 조정: ${sl_price:.2f} → ${adjusted_sl_price:.2f}")
             
-            # 트리거 가격 유효성 검증
-            is_valid, skip_reason = await self._validate_trigger_price(adjusted_trigger_price, side)
+            # 🔥 개선된 트리거 가격 유효성 검증
+            is_valid, skip_reason = await self._validate_trigger_price_with_gate(
+                adjusted_trigger_price, side
+            )
             if not is_valid:
                 await self.telegram.send_message(
                     f"⏭️ 예약 주문 스킵됨\n"
@@ -1273,7 +1275,7 @@ TP/SL 포함 완전 복제"""
             except Exception as e:
                 self.logger.error(f"게이트 레버리지 설정 실패: {e}")
             
-            # 🔥 TP/SL 포함 Gate.io 예약 주문 생성
+            # 🔥 TP/SL 포함 Gate.io 예약 주문 생성 (개선된 검증 포함)
             if adjusted_tp_price or adjusted_sl_price:
                 self.logger.info(f"🎯 신규 TP/SL 포함 예약 주문 생성: TP=${adjusted_tp_price}, SL=${adjusted_sl_price}")
                 
@@ -1347,7 +1349,7 @@ TP/SL 포함 완전 복제"""
                     success_msg += f"\n• TP: ${adjusted_tp_price:,.2f}"
                 if adjusted_sl_price:
                     success_msg += f"\n• SL: ${adjusted_sl_price:,.2f}"
-                success_msg += f"\n✨ TP/SL 완전 복제 완료!"
+                success_msg += f"\n✨ TP/SL 완전 복제 완료! (개선된 검증)"
             
             await self.telegram.send_message(success_msg)
             
@@ -1422,7 +1424,7 @@ TP/SL 포함 완전 복제"""
                     error_msg = str(cancel_error).lower()
                     
                     if any(keyword in error_msg for keyword in ["not found", "order not exist", "invalid order", "order does not exist"]):
-                        # 주문이 이미 취소되었거나 체결됨
+# 주문이 이미 취소되었거나 체결됨
                         cancel_success = True
                         self.logger.info(f"게이트 예약 주문이 이미 취소/체결됨: {gate_order_id}")
                         self.daily_stats['plan_order_cancel_success'] += 1
