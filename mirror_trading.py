@@ -48,17 +48,13 @@ class MirrorTradingSystem:
         self.max_cancel_retry: int = 3
         self.cancel_verification_delay: float = 2.0
         
-        # 포지션 유무에 따른 예약 주문 복제 관리
-        self.startup_position_tp_sl: Set[str] = set()
-        self.has_startup_positions: bool = False
-        
         # 🔥 렌더 재구동 시 기존 게이트 포지션 확인
         self.existing_gate_positions: Dict = {}
         self.render_restart_detected: bool = False
         
         # 🔥🔥🔥 게이트 기존 예약 주문 중복 방지 - 강화된 버전
         self.gate_existing_order_hashes: Set[str] = set()
-        self.gate_existing_orders_detailed: Dict[str, Dict] = {}  # 상세 정보 저장
+        self.gate_existing_orders_detailed: Dict[str, Dict] = {}
         
         # 시세 차이 관리
         self.bitget_current_price: float = 0.0
@@ -71,7 +67,7 @@ class MirrorTradingSystem:
         self.MAX_PRICE_DIFF_PERCENT = 1.0
         self.POSITION_SYNC_RETRY_COUNT = 3
         
-        # 동기화 개선 - 포지션 카운팅 로직 수정
+        # 동기화 개선
         self.startup_positions_detailed: Dict[str, Dict] = {}
         self.startup_gate_positions_count: int = 0
         self.sync_warning_suppressed_until: datetime = datetime.min
@@ -104,18 +100,8 @@ class MirrorTradingSystem:
             'plan_order_cancel_failed': 0,
             'startup_plan_mirrors': 0,
             'plan_order_skipped_already_mirrored': 0,
-            'plan_order_skipped_trigger_price': 0,
-            'price_adjustments': 0,
-            'sync_tolerance_used': 0,
-            'sync_warnings_suppressed': 0,
-            'position_size_differences_ignored': 0,
-            'cancel_verification_success': 0,
-            'cancel_verification_failed': 0,
-            'tp_sl_mirrors_success': 0,
-            'tp_sl_mirrors_failed': 0,
-            'tp_only_mirrors': 0,
-            'sl_only_mirrors': 0,
-            'tp_sl_both_mirrors': 0,
+            'close_order_mirrors': 0,  # 🔥 클로즈 주문 복제 통계 추가
+            'close_order_skipped': 0,
             'duplicate_orders_prevented': 0,
             'render_restart_skips': 0,
             'unified_tp_sl_orders': 0,
@@ -124,12 +110,12 @@ class MirrorTradingSystem:
         }
         
         self.monitoring = True
-        self.logger.info("미러 트레이딩 시스템 초기화 완료 - 통합 TP/SL 예약주문 복제 + 렌더 재구동 중복 방지 강화")
+        self.logger.info("미러 트레이딩 시스템 초기화 완료 - 클로즈 주문 복제 개선")
 
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("미러 트레이딩 시스템 시작 - 통합 TP/SL 예약주문 복제 + 렌더 재구동 중복 방지 강화")
+            self.logger.info("미러 트레이딩 시스템 시작 - 클로즈 주문 복제 개선")
             
             # 현재 시세 업데이트
             await self._update_current_prices()
@@ -137,19 +123,18 @@ class MirrorTradingSystem:
             # 🔥 렌더 재구동 시 기존 게이트 포지션 확인
             await self._check_existing_gate_positions()
             
-            # 🔥🔥🔥 게이트 기존 예약 주문 확인 (강화된 중복 방지)
+            # 🔥🔥🔥 게이트 기존 예약 주문 확인
             await self._record_gate_existing_orders_advanced()
             
             # 초기 포지션 및 예약 주문 기록
             await self._record_startup_positions()
             await self._record_startup_plan_orders()
-            await self._record_startup_position_tp_sl()
             await self._record_startup_gate_positions()
             
             # 예약 주문 초기 스냅샷 생성
             await self._create_initial_plan_order_snapshot()
             
-            # 시작 시 기존 예약 주문 복제 (통합 TP/SL 방식) - 강화된 중복 방지
+            # 시작 시 기존 예약 주문 복제
             await self._mirror_startup_plan_orders()
             
             # 초기 계정 상태 출력
@@ -186,7 +171,6 @@ class MirrorTradingSystem:
                 self.logger.warning(f"🔄 렌더 재구동 감지: 기존 게이트 포지션 발견")
                 self.logger.warning(f"   - 롱 포지션: {self.existing_gate_positions['has_long']} (크기: {self.existing_gate_positions['long_size']})")
                 self.logger.warning(f"   - 숏 포지션: {self.existing_gate_positions['has_short']} (크기: {self.existing_gate_positions['short_size']})")
-                self.logger.warning(f"   - 동일 포지션 중복 복제 방지 활성화")
             else:
                 self.render_restart_detected = False
                 self.logger.info("✅ 새로운 시작: 기존 게이트 포지션 없음")
@@ -194,37 +178,29 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"기존 게이트 포지션 확인 실패: {e}")
             self.existing_gate_positions = {
-                'has_long': False,
-                'has_short': False,
-                'long_size': 0,
-                'short_size': 0,
-                'positions': []
+                'has_long': False, 'has_short': False, 'long_size': 0, 'short_size': 0, 'positions': []
             }
             self.render_restart_detected = False
 
     async def _record_gate_existing_orders_advanced(self):
         """🔥🔥🔥 게이트 기존 예약 주문 기록 - 강화된 중복 방지"""
         try:
-            self.logger.info("🔍 게이트 기존 예약 주문 조회 중 (강화된 중복 방지)...")
+            self.logger.info("🔍 게이트 기존 예약 주문 조회 중...")
             
             gate_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
             self.logger.info(f"📋 게이트에서 조회된 예약 주문: {len(gate_orders)}개")
             
             for i, gate_order in enumerate(gate_orders):
                 try:
-                    # 🔥🔥🔥 상세 정보 추출 (None 체크 강화)
                     order_details = await self.utils.extract_gate_order_details(gate_order)
                     
                     if order_details:
-                        # 여러 방식으로 해시 생성 (None 체크 강화)
                         hashes = await self.utils.generate_multiple_order_hashes(order_details)
                         
-                        if hashes:  # 해시가 성공적으로 생성된 경우만 처리
-                            # 모든 해시를 저장하여 다양한 방식으로 중복 감지
+                        if hashes:
                             for hash_key in hashes:
                                 self.gate_existing_order_hashes.add(hash_key)
                             
-                            # 상세 정보도 저장
                             order_id = gate_order.get('id', f"unknown_{i}")
                             self.gate_existing_orders_detailed[order_id] = {
                                 'gate_order': gate_order,
@@ -234,29 +210,15 @@ class MirrorTradingSystem:
                             }
                             
                             self.logger.info(f"📝 게이트 예약 주문 기록: ID={order_id}")
-                            self.logger.info(f"   - 트리거가: ${order_details['trigger_price']:.2f}")
-                            self.logger.info(f"   - 수량: {order_details['size']}")
-                            self.logger.info(f"   - 해시: {len(hashes)}개 생성")
-                            
-                            # TP/SL 정보도 로깅
-                            if order_details.get('tp_price'):
-                                self.logger.info(f"   - TP: ${order_details['tp_price']:.2f}")
-                            if order_details.get('sl_price'):
-                                self.logger.info(f"   - SL: ${order_details['sl_price']:.2f}")
-                        else:
-                            self.logger.warning(f"게이트 주문 해시 생성 실패: {gate_order.get('id', 'unknown')}")
                     
                 except Exception as e:
                     self.logger.warning(f"게이트 주문 처리 실패: {e}")
                     continue
             
-            self.logger.info(f"✅ 게이트 기존 예약 주문 기록 완료")
-            self.logger.info(f"   - 주문 수: {len(self.gate_existing_orders_detailed)}개")
-            self.logger.info(f"   - 해시 수: {len(self.gate_existing_order_hashes)}개")
+            self.logger.info(f"✅ 게이트 기존 예약 주문 기록 완료: {len(self.gate_existing_orders_detailed)}개")
             
         except Exception as e:
             self.logger.error(f"게이트 기존 예약 주문 조회 실패: {e}")
-            # 실패해도 계속 진행
 
     async def _should_skip_position_due_to_existing(self, bitget_position: Dict) -> bool:
         """🔥 렌더 재구동 시 기존 포지션 때문에 스킵해야 하는지 판단"""
@@ -269,10 +231,9 @@ class MirrorTradingSystem:
             
             if position_side == 'long' and self.existing_gate_positions['has_long']:
                 existing_size = self.existing_gate_positions['long_size']
-                # 크기가 유사하면 동일한 포지션으로 판단
                 size_diff_percent = abs(position_size - existing_size) / max(position_size, existing_size) * 100
-                if size_diff_percent < 20:  # 20% 이하 차이면 동일 포지션으로 판단
-                    self.logger.info(f"🔄 렌더 재구동: 동일한 롱 포지션 감지, 복제 스킵 (비트겟: {position_size}, 게이트: {existing_size})")
+                if size_diff_percent < 20:
+                    self.logger.info(f"🔄 렌더 재구동: 동일한 롱 포지션 감지, 복제 스킵")
                     self.daily_stats['render_restart_skips'] += 1
                     return True
             
@@ -280,7 +241,7 @@ class MirrorTradingSystem:
                 existing_size = self.existing_gate_positions['short_size']
                 size_diff_percent = abs(position_size - existing_size) / max(position_size, existing_size) * 100
                 if size_diff_percent < 20:
-                    self.logger.info(f"🔄 렌더 재구동: 동일한 숏 포지션 감지, 복제 스킵 (비트겟: {position_size}, 게이트: {existing_size})")
+                    self.logger.info(f"🔄 렌더 재구동: 동일한 숏 포지션 감지, 복제 스킵")
                     self.daily_stats['render_restart_skips'] += 1
                     return True
             
@@ -349,8 +310,8 @@ class MirrorTradingSystem:
                 'total': str(size),
                 'openPriceAvg': str(fill_price),
                 'markPrice': str(fill_price),
-                'marginSize': '0',  # 임시값
-                'leverage': '10',  # 임시값
+                'marginSize': '0',
+                'leverage': '10',
                 'marginMode': 'crossed',
                 'unrealizedPL': '0'
             }
@@ -429,7 +390,6 @@ class MirrorTradingSystem:
                     self.startup_positions.add(pos_id)
                     self.position_sizes[pos_id] = float(pos.get('total', 0))
                     
-                    # 상세 정보 저장
                     self.startup_positions_detailed[pos_id] = {
                         'size': float(pos.get('total', 0)),
                         'side': pos.get('holdSide', ''),
@@ -456,7 +416,6 @@ class MirrorTradingSystem:
         try:
             bitget_account = await self.bitget.get_account_info()
             bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
-            bitget_leverage = bitget_account.get('crossMarginLeverage', 'N/A')
             
             gate_account = await self.gate.get_account_balance()
             gate_equity = float(gate_account.get('total', 0))
@@ -464,35 +423,27 @@ class MirrorTradingSystem:
             # 시세 차이 정보 추가
             price_diff_text = ""
             if self.price_diff_percent > 0:
-                price_diff_text = f"\n시세 차이: {self.price_diff_percent:.2f}% (비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f})"
+                price_diff_text = f"\n시세 차이: {self.price_diff_percent:.2f}%"
             
             # 렌더 재구동 정보 추가
             restart_info = ""
             if self.render_restart_detected:
-                restart_info = f"\n🔄 렌더 재구동 감지: 기존 게이트 포지션 있음 (중복 복제 방지 활성화)"
+                restart_info = f"\n🔄 렌더 재구동 감지: 기존 게이트 포지션 있음"
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (통합 TP/SL 예약주문 복제 + 강화된 중복 방지){restart_info}\n\n"
+                f"🔄 미러 트레이딩 시스템 시작 (클로즈 주문 복제 개선){restart_info}\n\n"
                 f"💰 계정 잔고:\n"
-                f"• 비트겟: ${bitget_equity:,.2f} (레버리지: {bitget_leverage}x)\n"
+                f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}{price_diff_text}\n\n"
                 f"📊 현재 상태:\n"
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.startup_plan_orders)}개\n"
-                f"• 게이트 기존 예약 주문: {len(self.gate_existing_orders_detailed)}개 (강화된 중복 방지)\n"
-                f"• 게이트 예약 주문 해시: {len(self.gate_existing_order_hashes)}개\n"
+                f"• 게이트 기존 예약 주문: {len(self.gate_existing_orders_detailed)}개\n"
                 f"• 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n\n"
-                f"⚡ 감지 주기:\n"
-                f"• 예약 주문 취소: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
-                f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n"
-                f"• 시세 차이 모니터링: 1분마다\n\n"
-                f"🎯 통합 TP/SL 예약주문 복제 기능:\n"
-                f"• 비트겟과 동일한 형태로 TP/SL 포함 예약 주문 복제\n"
-                f"• 강화된 중복 복제 방지 시스템 (다중 해시 비교)\n"
-                f"• 렌더 재구동 시 기존 주문 스킵\n"
-                f"• 기존 포지션 중복 방지\n\n"
-                f"💡 실제 달러 마진 비율 동적 계산:\n"
-                f"매 거래마다 실시간으로 동일한 마진 비율 적용"
+                f"⚡ 개선 사항:\n"
+                f"• 클로즈 주문 복제 지원\n"
+                f"• 강화된 중복 방지\n"
+                f"• 실제 달러 마진 비율 동적 계산"
             )
             
         except Exception as e:
@@ -522,11 +473,6 @@ class MirrorTradingSystem:
                     pos_id = self.utils.generate_position_id(pos)
                     if pos_id not in self.startup_positions:
                         new_bitget_positions.append(pos)
-                
-                # 게이트 포지션에서 시작시 존재했던 포지션 제외
-                new_gate_positions_count = len(gate_active) - self.startup_gate_positions_count
-                if new_gate_positions_count < 0:
-                    new_gate_positions_count = 0
                 
                 # 실제 포지션 처리
                 active_position_ids = set()
@@ -589,21 +535,11 @@ class MirrorTradingSystem:
                 success_rate = (self.daily_stats['successful_mirrors'] / 
                               self.daily_stats['total_mirrored']) * 100
             
-            # 예약 주문 취소 통계
-            cancel_success_rate = 0
-            total_cancels = self.daily_stats['plan_order_cancel_success'] + self.daily_stats['plan_order_cancel_failed']
-            if total_cancels > 0:
-                cancel_success_rate = (self.daily_stats['plan_order_cancel_success'] / total_cancels) * 100
-            
-            # 통합 TP/SL 복제 통계
-            tp_sl_stats = f"""
-🎯 통합 TP/SL 복제 통계:
-- 통합 TP/SL 주문: {self.daily_stats['unified_tp_sl_orders']}회
-- TP/SL 복제 성공: {self.daily_stats['tp_sl_mirrors_success']}회
-- TP/SL 복제 실패: {self.daily_stats['tp_sl_mirrors_failed']}회
-- TP만 복제: {self.daily_stats['tp_only_mirrors']}회
-- SL만 복제: {self.daily_stats['sl_only_mirrors']}회
-- TP+SL 복제: {self.daily_stats['tp_sl_both_mirrors']}회"""
+            # 클로즈 주문 통계 추가
+            close_stats = f"""
+📉 클로즈 주문 처리:
+- 클로즈 주문 복제: {self.daily_stats['close_order_mirrors']}회
+- 클로즈 주문 스킵: {self.daily_stats['close_order_skipped']}회"""
             
             # 현재 시세 차이 정보 추가
             await self._update_current_prices()
@@ -614,25 +550,7 @@ class MirrorTradingSystem:
 시세 차이:
 - 비트겟: ${self.bitget_current_price:,.2f}
 - 게이트: ${self.gate_current_price:,.2f}
-- 차이: {self.price_diff_percent:.2f}%
-- 가격 조정: {self.daily_stats['price_adjustments']}회"""
-            
-            # 렌더 재구동 관련 통계
-            restart_stats = ""
-            if self.daily_stats['render_restart_skips'] > 0:
-                restart_stats = f"""
-
-🔄 렌더 재구동 대응:
-- 중복 포지션 스킵: {self.daily_stats['render_restart_skips']}회"""
-            
-            # 🔥🔥🔥 강화된 중복 방지 통계
-            advanced_duplicate_stats = ""
-            if self.daily_stats['duplicate_advanced_prevention'] > 0:
-                advanced_duplicate_stats = f"""
-
-🛡️ 강화된 중복 방지:
-- 고급 중복 감지: {self.daily_stats['duplicate_advanced_prevention']}회
-- 기본 중복 방지: {self.daily_stats['duplicate_orders_prevented']}회"""
+- 차이: {self.price_diff_percent:.2f}%"""
             
             report = f"""📊 미러 트레이딩 일일 리포트
 📅 {datetime.now().strftime('%Y-%m-%d')}
@@ -650,9 +568,7 @@ class MirrorTradingSystem:
 - 시작 시 예약 주문 복제: {self.daily_stats['startup_plan_mirrors']}회
 - 신규 예약 주문 미러링: {self.daily_stats['plan_order_mirrors']}회
 - 예약 주문 취소 동기화: {self.daily_stats['plan_order_cancels']}회
-- 취소 성공률: {cancel_success_rate:.1f}%
-- 중복 방지: {self.daily_stats['duplicate_orders_prevented']}회
-- 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개{tp_sl_stats}{restart_stats}{advanced_duplicate_stats}
+- 중복 방지: {self.daily_stats['duplicate_orders_prevented']}회{close_stats}
 
 📉 포지션 관리
 - 부분 청산: {self.daily_stats['partial_closes']}회
@@ -669,7 +585,7 @@ class MirrorTradingSystem:
 - 실패 기록: {len(self.failed_mirrors)}건{price_diff_text}
 
 ━━━━━━━━━━━━━━━━━━━
-🎯 통합 TP/SL 예약주문 복제 + 강화된 렌더 재구동 중복 방지 + 실제 달러 마진 비율 동적 계산"""
+🎯 클로즈 주문 복제 개선 + 강화된 중복 방지"""
             
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -696,19 +612,8 @@ class MirrorTradingSystem:
             'plan_order_cancel_success': 0,
             'plan_order_cancel_failed': 0,
             'startup_plan_mirrors': 0,
-            'plan_order_skipped_already_mirrored': 0,
-            'plan_order_skipped_trigger_price': 0,
-            'price_adjustments': 0,
-            'sync_tolerance_used': 0,
-            'sync_warnings_suppressed': 0,
-            'position_size_differences_ignored': 0,
-            'cancel_verification_success': 0,
-            'cancel_verification_failed': 0,
-            'tp_sl_mirrors_success': 0,
-            'tp_sl_mirrors_failed': 0,
-            'tp_only_mirrors': 0,
-            'sl_only_mirrors': 0,
-            'tp_sl_both_mirrors': 0,
+            'close_order_mirrors': 0,
+            'close_order_skipped': 0,
             'duplicate_orders_prevented': 0,
             'render_restart_skips': 0,
             'unified_tp_sl_orders': 0,
@@ -787,7 +692,6 @@ class MirrorTradingSystem:
                 elif 'mark_price' in gate_contract_info:
                     self.gate_current_price = float(gate_contract_info['mark_price'])
             except:
-                # 게이트 가격 조회 실패 시 비트겟 가격 사용
                 self.gate_current_price = self.bitget_current_price
             
             # 가격 차이 계산
@@ -797,10 +701,6 @@ class MirrorTradingSystem:
                 self.price_diff_percent = 0.0
             
             self.last_price_update = datetime.now()
-            
-            # 큰 차이 발생 시 로깅
-            if self.price_diff_percent > self.MAX_PRICE_DIFF_PERCENT:
-                self.logger.warning(f"거래소 간 시세 차이 큼: 비트겟 ${self.bitget_current_price:,.2f}, 게이트 ${self.gate_current_price:,.2f} (차이: {self.price_diff_percent:.2f}%)")
             
         except Exception as e:
             self.logger.error(f"시세 업데이트 실패: {e}")
@@ -827,26 +727,47 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 예약 주문 기록 실패: {e}")
 
     async def _mirror_startup_plan_orders(self):
-        """시작 시 기존 예약 주문 복제 - 통합 TP/SL 방식 + 강화된 중복 방지"""
+        """🔥 시작 시 기존 예약 주문 복제 - 클로즈 주문 포함 개선"""
         try:
-            self.logger.info("🎯 시작 시 기존 예약 주문 복제 시작 (통합 TP/SL 방식 + 강화된 중복 방지)")
+            self.logger.info("🎯 시작 시 기존 예약 주문 복제 시작 (클로즈 주문 포함)")
             
             plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
             plan_orders = plan_data.get('plan_orders', [])
             tp_sl_orders = plan_data.get('tp_sl_orders', [])
             
-            # TP/SL 주문은 복제하지 않고 일반 예약 주문만 복제
-            orders_to_mirror = plan_orders
+            # 🔥 클로즈 주문도 복제 대상에 포함
+            orders_to_mirror = []
+            
+            # 일반 예약 주문 추가
+            orders_to_mirror.extend(plan_orders)
+            
+            # 🔥 TP/SL 주문 중에서 클로즈 주문도 추가 (조건부)
+            for tp_sl_order in tp_sl_orders:
+                side = tp_sl_order.get('side', tp_sl_order.get('tradeSide', '')).lower()
+                reduce_only = tp_sl_order.get('reduceOnly', False)
+                
+                # 클로즈 주문 감지
+                is_close_order = (
+                    'close' in side or 
+                    reduce_only is True or 
+                    reduce_only == 'true'
+                )
+                
+                if is_close_order:
+                    # 🔥 기존 포지션의 클로즈가 아닌 새로운 클로즈 주문인지 확인
+                    if not self._is_existing_position_close_order(tp_sl_order):
+                        orders_to_mirror.append(tp_sl_order)
+                        self.logger.info(f"🔄 클로즈 주문 복제 대상에 추가: {tp_sl_order.get('orderId')}")
             
             if not orders_to_mirror:
                 self.startup_plan_orders_processed = True
-                self.logger.info("복제할 일반 예약 주문이 없습니다.")
+                self.logger.info("복제할 예약 주문이 없습니다.")
                 return
             
             mirrored_count = 0
             failed_count = 0
             duplicate_count = 0
-            advanced_duplicate_count = 0  # 🔥 강화된 중복 방지 카운터
+            close_order_count = 0
             
             for order in orders_to_mirror:
                 try:
@@ -854,15 +775,14 @@ class MirrorTradingSystem:
                     if not order_id:
                         continue
                     
-                    # 포지션이 있을 때만 기존 포지션의 클로즈 TP/SL 제외
-                    if self.has_startup_positions and order_id in self.startup_position_tp_sl:
-                        continue
+                    # 클로즈 주문인지 확인
+                    side = order.get('side', order.get('tradeSide', '')).lower()
+                    is_close_order = 'close' in side or order.get('reduceOnly', False)
                     
                     # 🔥🔥🔥 강화된 중복 복제 확인
                     is_duplicate, duplicate_type = await self._is_duplicate_order_advanced(order)
                     if is_duplicate:
                         if duplicate_type == "advanced":
-                            advanced_duplicate_count += 1
                             self.daily_stats['duplicate_advanced_prevention'] += 1
                             self.logger.info(f"🛡️ 강화된 중복 감지로 스킵: {order_id}")
                         else:
@@ -878,6 +798,9 @@ class MirrorTradingSystem:
                     
                     if result == "success":
                         mirrored_count += 1
+                        if is_close_order:
+                            close_order_count += 1
+                            self.daily_stats['close_order_mirrors'] += 1
                     else:
                         failed_count += 1
                     
@@ -893,16 +816,48 @@ class MirrorTradingSystem:
             self.startup_plan_orders_processed = True
             
             await self.telegram.send_message(
-                f"✅ 시작 시 기존 예약 주문 복제 완료 (통합 TP/SL 방식 + 강화된 중복 방지)\n"
+                f"✅ 시작 시 기존 예약 주문 복제 완료 (클로즈 주문 포함)\n"
                 f"성공: {mirrored_count}개\n"
+                f"• 클로즈 주문: {close_order_count}개\n"
                 f"실패: {failed_count}개\n"
-                f"기본 중복 방지: {duplicate_count}개\n"
-                f"강화된 중복 방지: {advanced_duplicate_count}개\n"
+                f"중복 방지: {duplicate_count}개\n"
                 f"복제 방식: 통합 TP/SL 예약 주문 (비트겟과 동일한 형태)"
             )
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 처리 실패: {e}")
+
+    def _is_existing_position_close_order(self, order: Dict) -> bool:
+        """🔥 기존 포지션의 클로즈 주문인지 확인"""
+        try:
+            # 현재 활성 포지션이 없으면 기존 포지션의 클로즈가 아님
+            if len(self.startup_positions_detailed) == 0:
+                return False
+            
+            side = order.get('side', order.get('tradeSide', '')).lower()
+            reduce_only = order.get('reduceOnly', False)
+            
+            # 클로즈 주문이 아니면 False
+            if not ('close' in side or reduce_only is True or reduce_only == 'true'):
+                return False
+            
+            # 기존 포지션과 매칭되는지 확인
+            for pos_id, pos_info in self.startup_positions_detailed.items():
+                pos_side = pos_info['side'].lower()
+                
+                # 롱 포지션의 클로즈 주문인지 확인
+                if pos_side == 'long' and ('close_long' in side or ('sell' in side and reduce_only)):
+                    return True
+                
+                # 숏 포지션의 클로즈 주문인지 확인
+                if pos_side == 'short' and ('close_short' in side or ('buy' in side and reduce_only)):
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"기존 포지션 클로즈 주문 확인 실패: {e}")
+            return False
 
     async def _is_duplicate_order_advanced(self, bitget_order: Dict) -> Tuple[bool, str]:
         """🔥🔥🔥 강화된 중복 주문 확인"""
@@ -972,107 +927,12 @@ class MirrorTradingSystem:
             for bitget_hash in bitget_hashes:
                 if bitget_hash in self.gate_existing_order_hashes:
                     self.logger.info(f"🛡️ 강화된 중복 주문 발견: {bitget_order.get('orderId', 'unknown')}")
-                    self.logger.info(f"   - 매칭 해시: {bitget_hash}")
                     return True, "advanced"
-            
-            # 3. 기존 게이트 예약 주문과 직접 비교
-            for gate_order_id, gate_order_info in self.gate_existing_orders_detailed.items():
-                gate_details = gate_order_info['details']
-                
-                # 트리거 가격 유사성 체크 (±0.5% 허용)
-                price_tolerance = 0.005  # 0.5%
-                price_diff_percent = abs(adjusted_trigger_price - gate_details['trigger_price']) / gate_details['trigger_price']
-                
-                if price_diff_percent <= price_tolerance:
-                    # 크기 유사성 체크 (±10% 허용)
-                    size_tolerance = 0.1  # 10%
-                    size_diff_percent = abs(abs(gate_size) - gate_details['abs_size']) / max(abs(gate_size), gate_details['abs_size'])
-                    
-                    if size_diff_percent <= size_tolerance:
-                        # TP/SL 유사성 체크
-                        tp_sl_similar = True
-                        
-                        if tp_price and gate_details.get('tp_price'):
-                            tp_diff_percent = abs(tp_price - gate_details['tp_price']) / gate_details['tp_price']
-                            if tp_diff_percent > 0.01:  # 1% 이상 차이
-                                tp_sl_similar = False
-                        
-                        if sl_price and gate_details.get('sl_price'):
-                            sl_diff_percent = abs(sl_price - gate_details['sl_price']) / gate_details['sl_price']
-                            if sl_diff_percent > 0.01:  # 1% 이상 차이
-                                tp_sl_similar = False
-                        
-                        if tp_sl_similar:
-                            self.logger.info(f"🛡️ 강화된 직접 비교로 중복 발견: {bitget_order.get('orderId', 'unknown')}")
-                            self.logger.info(f"   - 게이트 주문: {gate_order_id}")
-                            self.logger.info(f"   - 가격 차이: {price_diff_percent*100:.2f}%")
-                            self.logger.info(f"   - 크기 차이: {size_diff_percent*100:.2f}%")
-                            return True, "advanced"
             
             return False, "none"
             
         except Exception as e:
             self.logger.error(f"강화된 중복 주문 확인 실패: {e}")
-            # 기본 중복 체크로 폴백
-            return await self._is_duplicate_order_basic(bitget_order)
-
-    async def _is_duplicate_order_basic(self, bitget_order: Dict) -> Tuple[bool, str]:
-        """🔥 기본 중복 주문 확인 (기존 방식)"""
-        try:
-            side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
-            size = float(bitget_order.get('size', 0))
-            
-            # 트리거 가격 추출
-            original_trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if bitget_order.get(price_field):
-                    original_trigger_price = float(bitget_order.get(price_field))
-                    break
-            
-            if original_trigger_price == 0:
-                return False, "none"
-            
-            # 게이트 기준으로 가격 조정
-            adjusted_trigger_price = await self.utils.adjust_price_for_gate(
-                original_trigger_price,
-                self.bitget_current_price,
-                self.gate_current_price,
-                self.price_diff_percent
-            )
-            
-            # 실제 달러 마진 비율 동적 계산으로 게이트 사이즈 계산
-            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
-                size, adjusted_trigger_price, bitget_order
-            )
-            
-            if not margin_ratio_result['success']:
-                return False, "none"
-            
-            margin_ratio = margin_ratio_result['margin_ratio']
-            bitget_leverage = margin_ratio_result['leverage']
-            
-            gate_account = await self.gate.get_account_balance()
-            gate_total_equity = float(gate_account.get('total', 0))
-            gate_margin = gate_total_equity * margin_ratio
-            gate_notional_value = gate_margin * bitget_leverage
-            gate_size = int(gate_notional_value / (adjusted_trigger_price * 0.0001))
-            
-            if gate_size == 0:
-                gate_size = 1
-                
-            gate_size = await self.utils.calculate_gate_order_size(side, gate_size)
-            
-            # 기본 해시 생성 (기존 방식)
-            order_hash = self.utils.generate_order_hash(adjusted_trigger_price, gate_size)
-            
-            if order_hash in self.gate_existing_order_hashes:
-                self.logger.info(f"🛡️ 기본 중복 주문 발견: {bitget_order.get('orderId', 'unknown')} - 해시: {order_hash}")
-                return True, "basic"
-            
-            return False, "none"
-            
-        except Exception as e:
-            self.logger.error(f"기본 중복 주문 확인 실패: {e}")
             return False, "none"
 
     async def _process_startup_plan_order_unified(self, bitget_order: Dict) -> str:
@@ -1195,14 +1055,6 @@ class MirrorTradingSystem:
             # 통계 업데이트
             if gate_order.get('has_tp_sl', False):
                 self.daily_stats['unified_tp_sl_orders'] += 1
-                self.daily_stats['tp_sl_mirrors_success'] += 1
-                
-                if adjusted_tp_price and adjusted_sl_price:
-                    self.daily_stats['tp_sl_both_mirrors'] += 1
-                elif adjusted_tp_price:
-                    self.daily_stats['tp_only_mirrors'] += 1
-                elif adjusted_sl_price:
-                    self.daily_stats['sl_only_mirrors'] += 1
             
             # 🔥🔥🔥 강화된 해시 추가 (중복 방지)
             order_details = {
@@ -1237,8 +1089,8 @@ class MirrorTradingSystem:
                 'adjusted_tp_price': adjusted_tp_price,
                 'adjusted_sl_price': adjusted_sl_price,
                 'has_tp_sl': gate_order.get('has_tp_sl', False),
-                'order_hashes': new_hashes,  # 🔥 다중 해시 저장
-                'unified_order': True  # 통합 주문 표시
+                'order_hashes': new_hashes,
+                'unified_order': True
             }
             
             return "success"
@@ -1247,61 +1099,9 @@ class MirrorTradingSystem:
             self.logger.error(f"시작 시 통합 TP/SL 예약 주문 복제 실패: {e}")
             return "failed"
 
-    async def _record_startup_position_tp_sl(self):
-        """포지션 유무에 따른 TP/SL 분류"""
-        try:
-            self.logger.info("포지션 유무에 따른 예약 주문 복제 정책 설정 시작")
-            
-            # 현재 활성 포지션들 조회
-            positions = await self.bitget.get_positions(self.SYMBOL)
-            
-            active_positions = []
-            for pos in positions:
-                if float(pos.get('total', 0)) > 0:
-                    active_positions.append(pos)
-            
-            self.has_startup_positions = len(active_positions) > 0
-            
-            if not self.has_startup_positions:
-                # 포지션이 없으면 모든 예약 주문을 복제
-                self.startup_position_tp_sl.clear()
-            else:
-                # 포지션이 있으면 기존 로직대로 클로즈 TP/SL만 제외
-                for pos in active_positions:
-                    pos_side = pos.get('holdSide', '').lower()
-                    
-                    # 해당 포지션의 TP/SL 주문들 찾기
-                    plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-                    tp_sl_orders = plan_data.get('tp_sl_orders', [])
-                    
-                    for tp_sl_order in tp_sl_orders:
-                        trade_side = tp_sl_order.get('tradeSide', tp_sl_order.get('side', '')).lower()
-                        reduce_only = tp_sl_order.get('reduceOnly', False)
-                        
-                        # 기존 포지션의 클로즈 TP/SL인지 판단
-                        is_existing_position_close = False
-                        
-                        if pos_side == 'long':
-                            if (trade_side in ['close_long', 'sell'] and 
-                                (reduce_only is True or reduce_only == 'true')):
-                                is_existing_position_close = True
-                        elif pos_side == 'short':
-                            if (trade_side in ['close_short', 'buy'] and 
-                                (reduce_only is True or reduce_only == 'true')):
-                                is_existing_position_close = True
-                        
-                        order_id = tp_sl_order.get('orderId', tp_sl_order.get('planOrderId', ''))
-                        if order_id and is_existing_position_close:
-                            self.startup_position_tp_sl.add(order_id)
-            
-        except Exception as e:
-            self.logger.error(f"포지션 유무에 따른 예약 주문 정책 설정 실패: {e}")
-            self.has_startup_positions = False
-            self.startup_position_tp_sl.clear()
-
     async def monitor_plan_orders(self):
-        """예약 주문 모니터링 - 통합 TP/SL 복제 + 강화된 중복 방지"""
-        self.logger.info("🎯 예약 주문 취소 미러링 모니터링 시작 (통합 TP/SL 복제 + 강화된 중복 방지)")
+        """🔥 예약 주문 모니터링 - 클로즈 주문 복제 개선"""
+        self.logger.info("🎯 예약 주문 취소 미러링 모니터링 시작 (클로즈 주문 복제 개선)")
         consecutive_errors = 0
         
         while self.monitoring:
@@ -1315,14 +1115,32 @@ class MirrorTradingSystem:
                 current_plan_orders = plan_data.get('plan_orders', [])
                 current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
                 
-                # 일반 예약 주문만 처리 (TP/SL 주문 제외)
-                current_orders_to_monitor = current_plan_orders
+                # 🔥 클로즈 주문도 모니터링 대상에 포함
+                orders_to_monitor = []
+                orders_to_monitor.extend(current_plan_orders)
+                
+                # TP/SL 주문 중에서 클로즈 주문 추가
+                for tp_sl_order in current_tp_sl_orders:
+                    side = tp_sl_order.get('side', tp_sl_order.get('tradeSide', '')).lower()
+                    reduce_only = tp_sl_order.get('reduceOnly', False)
+                    
+                    # 클로즈 주문인지 확인
+                    is_close_order = (
+                        'close' in side or 
+                        reduce_only is True or 
+                        reduce_only == 'true'
+                    )
+                    
+                    if is_close_order:
+                        # 기존 포지션의 클로즈가 아닌 새로운 클로즈 주문만 추가
+                        if not self._is_existing_position_close_order(tp_sl_order):
+                            orders_to_monitor.append(tp_sl_order)
                 
                 # 현재 존재하는 예약주문 ID 집합
                 current_order_ids = set()
                 current_snapshot = {}
                 
-                for order in current_orders_to_monitor:
+                for order in orders_to_monitor:
                     order_id = order.get('orderId', order.get('planOrderId', ''))
                     if order_id:
                         current_order_ids.add(order_id)
@@ -1332,7 +1150,7 @@ class MirrorTradingSystem:
                             'status': 'active'
                         }
                 
-                # 취소된 예약 주문 감지 (일반 예약 주문만)
+                # 취소된 예약 주문 감지
                 canceled_order_ids = self.last_plan_order_ids - current_order_ids
                 
                 # 취소된 주문 처리
@@ -1342,19 +1160,15 @@ class MirrorTradingSystem:
                     for canceled_order_id in canceled_order_ids:
                         await self._handle_plan_order_cancel(canceled_order_id)
                     
-                    # 통계 업데이트
                     self.daily_stats['plan_order_cancels'] += len(canceled_order_ids)
                 
-                # 새로운 예약 주문 감지 (일반 예약 주문만)
+                # 새로운 예약 주문 감지
                 new_orders_count = 0
+                new_close_orders_count = 0
                 
-                for order in current_orders_to_monitor:
+                for order in orders_to_monitor:
                     order_id = order.get('orderId', order.get('planOrderId', ''))
                     if not order_id:
-                        continue
-                    
-                    # 포지션 유무에 따른 필터링
-                    if self.has_startup_positions and order_id in self.startup_position_tp_sl:
                         continue
                     
                     # 이미 처리된 주문은 스킵
@@ -1379,12 +1193,21 @@ class MirrorTradingSystem:
                         self.processed_plan_orders.add(order_id)
                         continue
                     
-                    # 🎯 새로운 예약 주문 감지 - 통합 TP/SL 복제
+                    # 🎯 새로운 예약 주문 감지 - 클로즈 주문 포함
                     try:
+                        # 클로즈 주문인지 확인
+                        side = order.get('side', order.get('tradeSide', '')).lower()
+                        is_close_order = 'close' in side or order.get('reduceOnly', False)
+                        
                         result = await self._process_new_plan_order_unified(order)
                         
                         if result == "success":
                             new_orders_count += 1
+                            if is_close_order:
+                                new_close_orders_count += 1
+                                self.daily_stats['close_order_mirrors'] += 1
+                        elif result == "skipped" and is_close_order:
+                            self.daily_stats['close_order_skipped'] += 1
                         
                         self.processed_plan_orders.add(order_id)
                         
@@ -1393,10 +1216,18 @@ class MirrorTradingSystem:
                         self.processed_plan_orders.add(order_id)
                         
                         await self.telegram.send_message(
-                            f"❌ 예약 주문 복제 실패 (통합 TP/SL + 강화된 중복 방지)\n"
+                            f"❌ 예약 주문 복제 실패 (클로즈 주문 포함)\n"
                             f"비트겟 ID: {order_id}\n"
                             f"오류: {str(e)[:200]}"
                         )
+                
+                # 클로즈 주문 복제 성공 시 알림
+                if new_close_orders_count > 0:
+                    await self.telegram.send_message(
+                        f"✅ 클로즈 주문 복제 성공\n"
+                        f"클로즈 주문: {new_close_orders_count}개\n"
+                        f"전체 신규 복제: {new_orders_count}개"
+                    )
                 
                 # 현재 상태를 다음 비교를 위해 저장
                 self.last_plan_order_ids = current_order_ids.copy()
@@ -1424,11 +1255,14 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
     async def _process_new_plan_order_unified(self, bitget_order: Dict) -> str:
-        """🔥 새로운 예약 주문 복제 - 통합 TP/SL 방식 + 강화된 중복 방지"""
+        """🔥 새로운 예약 주문 복제 - 통합 TP/SL 방식 (클로즈 주문 포함)"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
             size = float(bitget_order.get('size', 0))
+            
+            # 클로즈 주문 여부 확인
+            is_close_order = 'close' in side or bitget_order.get('reduceOnly', False)
             
             # 트리거 가격 추출
             original_trigger_price = 0
@@ -1459,8 +1293,9 @@ class MirrorTradingSystem:
                 adjusted_trigger_price, side, self.gate_current_price or self.bitget_current_price
             )
             if not is_valid:
+                order_type = "클로즈 주문" if is_close_order else "예약 주문"
                 await self.telegram.send_message(
-                    f"⏭️ 예약 주문 스킵됨 (트리거 가격 문제)\n"
+                    f"⏭️ {order_type} 스킵됨 (트리거 가격 문제)\n"
                     f"비트겟 ID: {order_id}\n"
                     f"방향: {side.upper()}\n"
                     f"원본 트리거가: ${original_trigger_price:,.2f}\n"
@@ -1479,8 +1314,6 @@ class MirrorTradingSystem:
             
             margin_ratio = margin_ratio_result['margin_ratio']
             bitget_leverage = margin_ratio_result['leverage']
-            bitget_required_margin = margin_ratio_result['required_margin']
-            bitget_total_equity = margin_ratio_result['total_equity']
             
             # 게이트 계정 정보
             gate_account = await self.gate.get_account_balance()
@@ -1552,14 +1385,6 @@ class MirrorTradingSystem:
             # 통계 업데이트
             if gate_order.get('has_tp_sl', False):
                 self.daily_stats['unified_tp_sl_orders'] += 1
-                self.daily_stats['tp_sl_mirrors_success'] += 1
-                
-                if adjusted_tp_price and adjusted_sl_price:
-                    self.daily_stats['tp_sl_both_mirrors'] += 1
-                elif adjusted_tp_price:
-                    self.daily_stats['tp_only_mirrors'] += 1
-                elif adjusted_sl_price:
-                    self.daily_stats['sl_only_mirrors'] += 1
             
             # 🔥🔥🔥 강화된 해시 추가 (중복 방지)
             order_details = {
@@ -1597,9 +1422,6 @@ class MirrorTradingSystem:
                 'size': gate_size,
                 'margin_ratio': margin_ratio,
                 'leverage': bitget_leverage,
-                'bitget_required_margin': bitget_required_margin,
-                'gate_total_equity': gate_total_equity,
-                'bitget_total_equity': bitget_total_equity,
                 'original_trigger_price': original_trigger_price,
                 'adjusted_trigger_price': adjusted_trigger_price,
                 'tp_price': tp_price,
@@ -1607,13 +1429,15 @@ class MirrorTradingSystem:
                 'adjusted_tp_price': adjusted_tp_price,
                 'adjusted_sl_price': adjusted_sl_price,
                 'has_tp_sl': gate_order.get('has_tp_sl', False),
-                'order_hashes': new_hashes,  # 🔥 다중 해시 저장
-                'unified_order': True  # 통합 주문 표시
+                'order_hashes': new_hashes,
+                'unified_order': True,
+                'is_close_order': is_close_order  # 🔥 클로즈 주문 표시
             }
             
             self.daily_stats['plan_order_mirrors'] += 1
             
             # 성공 메시지
+            order_type = "클로즈 주문" if is_close_order else "예약 주문"
             tp_sl_info = ""
             if gate_order.get('has_tp_sl', False):
                 tp_sl_info = f"\n\n🎯 통합 TP/SL 설정:"
@@ -1621,20 +1445,17 @@ class MirrorTradingSystem:
                     tp_sl_info += f"\n• TP: ${adjusted_tp_price:,.2f}"
                 if adjusted_sl_price:
                     tp_sl_info += f"\n• SL: ${adjusted_sl_price:,.2f}"
-                tp_sl_info += f"\n• 비트겟과 동일한 형태로 복제됨"
             
             await self.telegram.send_message(
-                f"✅ 예약 주문 복제 성공 (통합 TP/SL 방식 + 강화된 중복 방지)\n"
+                f"✅ {order_type} 복제 성공\n"
                 f"비트겟 ID: {order_id}\n"
                 f"게이트 ID: {gate_order.get('id')}\n"
                 f"방향: {side.upper()}\n"
                 f"트리거가: ${adjusted_trigger_price:,.2f}\n"
-                f"트리거 타입: {gate_trigger_type.upper()}\n"
                 f"게이트 수량: {gate_size}\n\n"
                 f"💰 실제 달러 마진 동적 비율 복제:\n"
-                f"비트겟 실제 마진: ${bitget_required_margin:,.2f}\n"
-                f"실제 마진 비율: {margin_ratio*100:.2f}%\n"
-                f"게이트 투입 마진: ${gate_margin:,.2f} (동일 {margin_ratio*100:.2f}%)\n"
+                f"마진 비율: {margin_ratio*100:.2f}%\n"
+                f"게이트 투입 마진: ${gate_margin:,.2f}\n"
                 f"레버리지: {bitget_leverage}x{tp_sl_info}"
             )
             
@@ -1650,7 +1471,7 @@ class MirrorTradingSystem:
             return "failed"
 
     async def _handle_plan_order_cancel(self, bitget_order_id: str):
-        """예약 주문 취소 처리 - 강화된 해시 관리"""
+        """🔥 예약 주문 취소 처리 - 오류 처리 개선"""
         try:
             self.logger.info(f"예약 주문 취소 처리 시작: {bitget_order_id}")
             
@@ -1662,14 +1483,14 @@ class MirrorTradingSystem:
             mirror_info = self.mirrored_plan_orders[bitget_order_id]
             gate_order_id = mirror_info.get('gate_order_id')
             order_hashes = mirror_info.get('order_hashes', [])
-            is_unified = mirror_info.get('unified_order', False)
+            is_close_order = mirror_info.get('is_close_order', False)
             
             if not gate_order_id:
                 self.logger.warning(f"게이트 주문 ID가 없음: {bitget_order_id}")
                 del self.mirrored_plan_orders[bitget_order_id]
                 return
             
-            # 재시도 로직으로 확실한 취소 보장
+            # 🔥 개선된 취소 처리 - 오류 처리 강화
             cancel_success = False
             retry_count = 0
             
@@ -1691,21 +1512,18 @@ class MirrorTradingSystem:
                         cancel_success = True
                         self.logger.info(f"게이트 예약 주문 취소 확인됨: {gate_order_id}")
                         self.daily_stats['plan_order_cancel_success'] += 1
-                        self.daily_stats['cancel_verification_success'] += 1
                         
-                        cancel_type = "통합 TP/SL 주문" if is_unified else "일반 예약 주문"
+                        order_type = "클로즈 주문" if is_close_order else "예약 주문"
                         
                         await self.telegram.send_message(
-                            f"🚫✅ 예약 주문 취소 동기화 완료\n"
+                            f"🚫✅ {order_type} 취소 동기화 완료\n"
                             f"비트겟 ID: {bitget_order_id}\n"
                             f"게이트 ID: {gate_order_id}\n"
-                            f"타입: {cancel_type}\n"
                             f"재시도: {retry_count}회"
                         )
                         break
                     else:
                         self.logger.warning(f"취소 시도했지만 주문이 여전히 존재함 (재시도 {retry_count}/{self.max_cancel_retry})")
-                        self.daily_stats['cancel_verification_failed'] += 1
                         
                         if retry_count < self.max_cancel_retry:
                             wait_time = min(self.cancel_verification_delay * retry_count, 10.0)
@@ -1714,15 +1532,20 @@ class MirrorTradingSystem:
                 except Exception as cancel_error:
                     error_msg = str(cancel_error).lower()
                     
-                    if any(keyword in error_msg for keyword in ["not found", "order not exist", "invalid order", "order does not exist"]):
+                    # 🔥 개선된 오류 처리
+                    if any(keyword in error_msg for keyword in [
+                        "not found", "order not exist", "invalid order", 
+                        "order does not exist", "auto_order_not_found"
+                    ]):
                         # 주문이 이미 취소되었거나 체결됨
                         cancel_success = True
                         self.logger.info(f"게이트 예약 주문이 이미 취소/체결됨: {gate_order_id}")
                         self.daily_stats['plan_order_cancel_success'] += 1
-                        self.daily_stats['cancel_verification_success'] += 1
+                        
+                        order_type = "클로즈 주문" if is_close_order else "예약 주문"
                         
                         await self.telegram.send_message(
-                            f"🚫✅ 예약 주문 취소 처리 완료\n"
+                            f"🚫✅ {order_type} 취소 처리 완료\n"
                             f"비트겟 ID: {bitget_order_id}\n"
                             f"게이트 주문이 이미 취소되었거나 체결되었습니다."
                         )
@@ -1733,10 +1556,11 @@ class MirrorTradingSystem:
                         if retry_count >= self.max_cancel_retry:
                             # 최종 실패
                             self.daily_stats['plan_order_cancel_failed'] += 1
-                            self.daily_stats['cancel_verification_failed'] += 1
+                            
+                            order_type = "클로즈 주문" if is_close_order else "예약 주문"
                             
                             await self.telegram.send_message(
-                                f"❌ 예약 주문 취소 최종 실패\n"
+                                f"❌ {order_type} 취소 최종 실패\n"
                                 f"비트겟 ID: {bitget_order_id}\n"
                                 f"게이트 ID: {gate_order_id}\n"
                                 f"오류: {str(cancel_error)[:200]}\n"
@@ -1756,7 +1580,6 @@ class MirrorTradingSystem:
                 for hash_key in order_hashes:
                     if hash_key in self.gate_existing_order_hashes:
                         self.gate_existing_order_hashes.remove(hash_key)
-                        self.logger.debug(f"해시 제거됨: {hash_key}")
                 self.logger.info(f"주문 해시 {len(order_hashes)}개 제거됨")
             
             # 🔥🔥🔥 상세 정보에서도 제거
@@ -2096,10 +1919,6 @@ class MirrorTradingSystem:
                 new_bitget_count = len(new_bitget_positions)
                 position_diff = new_bitget_count - new_gate_positions_count
                 
-                # 포지션 크기 차이는 정상적 현상으로 간주
-                if bitget_active and gate_active:
-                    self.daily_stats['position_size_differences_ignored'] += 1
-                
                 # 개선된 동기화 체크 - 허용 오차 적용
                 sync_tolerance_met = False
                 
@@ -2120,7 +1939,6 @@ class MirrorTradingSystem:
                     if recent_orders:
                         sync_tolerance_met = True
                         sync_retry_count = 0
-                        self.daily_stats['sync_tolerance_used'] += 1
                 
                 # 허용 오차를 초과하거나 지속적인 불일치 시에만 경고
                 if not sync_tolerance_met and position_diff != 0:
@@ -2132,12 +1950,12 @@ class MirrorTradingSystem:
                         
                         price_diff_info = ""
                         if self.price_diff_percent > 0.5:
-                            price_diff_info = f"\n시세 차이: {self.price_diff_percent:.2f}% (비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f})"
+                            price_diff_info = f"\n시세 차이: {self.price_diff_percent:.2f}%"
                         
                         # 렌더 재구동 정보 추가
                         restart_info = ""
                         if self.render_restart_detected:
-                            restart_info = f"\n🔄 렌더 재구동: 중복 방지 활성화됨 (스킵: {self.daily_stats['render_restart_skips']}회)"
+                            restart_info = f"\n🔄 렌더 재구동: 중복 방지 활성화됨"
                         
                         await self.telegram.send_message(
                             f"⚠️ 신규 포지션 동기화 불일치 감지\n"
@@ -2145,11 +1963,8 @@ class MirrorTradingSystem:
                             f"신규 게이트: {new_gate_positions_count}개\n"
                             f"차이: {position_diff}개\n"
                             f"복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n"
-                            f"연속 감지: {sync_retry_count}회{price_diff_info}{restart_info}\n\n"
-                            f"📊 상세 정보:\n"
-                            f"• 전체 비트겟: {len(bitget_active)}개 (시작시: {len(self.startup_positions)}개)\n"
-                            f"• 전체 게이트: {len(gate_active)}개 (시작시: {self.startup_gate_positions_count}개)\n"
-                            f"• 강화된 중복 방지: {self.daily_stats['duplicate_advanced_prevention']}회"
+                            f"클로즈 주문 복제: {self.daily_stats['close_order_mirrors']}개\n"
+                            f"연속 감지: {sync_retry_count}회{price_diff_info}{restart_info}"
                         )
                         
                         sync_retry_count = 0  # 리셋
