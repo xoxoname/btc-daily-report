@@ -62,7 +62,7 @@ class BitcoinPredictionSystem:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.logger.info("=" * 50)
-        self.logger.info("비트코인 예측 시스템 초기화 시작 - 정확도 향상 버전")
+        self.logger.info("비트코인 예측 시스템 초기화 시작")
         self.logger.info("=" * 50)
         
         # 설정 로드
@@ -74,7 +74,7 @@ class BitcoinPredictionSystem:
         
         # 미러 트레이딩 모드 확인
         self.mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'true').lower() == 'true'
-        self.logger.info(f"미러 트레이딩 모드: {'활성화 (제한 해제)' if self.mirror_mode else '비활성화'}")
+        self.logger.info(f"미러 트레이딩 모드: {'활성화' if self.mirror_mode else '비활성화'}")
         
         # ML 예측기 모드 확인
         self.ml_mode = ML_PREDICTOR_AVAILABLE
@@ -128,7 +128,7 @@ class BitcoinPredictionSystem:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
-        self.logger.info(f"시스템 초기화 완료 (미러: {'활성 (제한 해제)' if self.mirror_mode else '비활성'}, ML: {'활성' if self.ml_mode else '비활성'})")
+        self.logger.info(f"시스템 초기화 완료 (미러: {'활성' if self.mirror_mode else '비활성'}, ML: {'활성' if self.ml_mode else '비활성'})")
     
     def _initialize_clients(self):
         """클라이언트 초기화"""
@@ -154,7 +154,7 @@ class BitcoinPredictionSystem:
                         self.gate_client,
                         self.telegram_bot
                     )
-                    self.logger.info("✅ Gate.io 클라이언트 및 미러 트레이딩 초기화 완료 (제한 해제)")
+                    self.logger.info("✅ Gate.io 클라이언트 및 미러 트레이딩 초기화 완료")
                 except Exception as e:
                     self.logger.warning(f"미러 트레이딩 초기화 실패: {e}")
                     self.mirror_mode = False
@@ -657,7 +657,7 @@ class BitcoinPredictionSystem:
                 success_rate = (self.mirror_trading.daily_stats['successful_mirrors'] / 
                               self.mirror_trading.daily_stats['total_mirrored']) * 100
             
-            status_msg = f"""🔄 <b>미러 트레이딩 상태 (제한 해제)</b>
+            status_msg = f"""🔄 <b>미러 트레이딩 상태</b>
 
 <b>💰 계정 잔고:</b>
 - 비트겟: ${bitget_equity:,.2f}
@@ -668,12 +668,6 @@ class BitcoinPredictionSystem:
 - 비트겟: {bitget_pos_count}개
 - 게이트: {gate_pos_count}개
 - 활성 미러: {active_mirrors}개
-- 제외된 기존 포지션: {len(self.mirror_trading.startup_positions)}개
-
-<b>🔥 예약 주문 현황:</b>
-- 복제된 예약 주문: {len(self.mirror_trading.mirrored_plan_orders)}개
-- 제외된 기존 예약 주문: {len(self.mirror_trading.startup_plan_orders)}개
-- 제외된 기존 포지션 TP/SL: {len(self.mirror_trading.startup_position_tp_sl)}개
 
 <b>📈 오늘 통계:</b>
 - 시도: {self.mirror_trading.daily_stats['total_mirrored']}회
@@ -686,12 +680,10 @@ class BitcoinPredictionSystem:
 - 전체청산: {self.mirror_trading.daily_stats['full_closes']}회
 - 총 거래량: ${self.mirror_trading.daily_stats['total_volume']:,.2f}
 
-<b>💰 달러 비율 복제 (제한 해제):</b>
+<b>💰 달러 비율 복제:</b>
 - 총 자산 대비 동일 비율 유지
-- 30% 제한 완전 해제
 - 예약 주문도 동일 비율 복제
-- 기존 포지션 TP/SL 제외
-- 신규 예약 주문 TP/SL 복제
+- 실시간 가격 조정
 
 <b>⚠️ 최근 오류:</b>
 - 실패 기록: {failed_count}건"""
@@ -981,19 +973,6 @@ class BitcoinPredictionSystem:
                         parse_mode='HTML'
                     )
             
-            # 동기화 불일치 체크
-            bitget_positions = await self.bitget_client.get_positions(self.config.symbol)
-            gate_positions = await self.gate_client.get_positions("BTC_USDT")
-            
-            bitget_active = sum(1 for pos in bitget_positions if float(pos.get('total', 0)) > 0)
-            gate_active = sum(1 for pos in gate_positions if pos.get('size', 0) != 0)
-            
-            # 시작 시 포지션 제외
-            mirrored_expected = bitget_active - len(self.mirror_trading.startup_positions)
-            
-            if mirrored_expected > 0 and gate_active == 0:
-                self.logger.warning("미러링 동기화 문제 감지")
-                
         except Exception as e:
             self.logger.error(f"미러 건강 체크 실패: {e}")
     
@@ -1141,7 +1120,7 @@ class BitcoinPredictionSystem:
                 mirror_stats = self.mirror_trading.daily_stats
                 report += f"""
 
-<b>🔄 미러 트레이딩 통계 (제한 해제):</b>
+<b>🔄 미러 트레이딩 통계:</b>
 - 총 시도: {mirror_stats['total_mirrored']}회
 - 성공: {mirror_stats['successful_mirrors']}회
 - 실패: {mirror_stats['failed_mirrors']}회
@@ -1205,22 +1184,21 @@ class BitcoinPredictionSystem:
         return parts
     
     async def handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """시작 명령 처리"""
+        """시작 명령 처리 - 간소화된 도움말"""
         try:
             user_id = update.effective_user.id
             username = update.effective_user.username or "Unknown"
             self.logger.info(f"시작 명령 - User: {username}({user_id})")
             
-            mode_text = "🔄 미러 트레이딩 모드 (제한 해제)" if self.mirror_mode else "📊 분석 전용 모드"
+            mode_text = "🔄 미러 트레이딩 모드" if self.mirror_mode else "📊 분석 전용 모드"
             if self.ml_mode:
                 mode_text += " + 🤖 ML 예측"
             
             welcome_message = f"""<b>🚀 비트코인 예측 시스템에 오신 것을 환영합니다!</b>
 
 현재 모드: {mode_text}
-시스템 버전: 2.2 - 비트코인 전용 정확도 향상
 
-<b>📊 슬래시 명령어:</b>
+<b>📊 주요 명령어:</b>
 - /report - 전체 분석 리포트
 - /forecast - 단기 예측 요약
 - /profit - 실시간 수익 현황
@@ -1246,9 +1224,9 @@ class BitcoinPredictionSystem:
             welcome_message += f"""
 <b>🔔 자동 기능:</b>
 - 정기 리포트: 09:00, 13:00, 18:00, 23:00
-- 예외 감지: <b>5분마다</b>
-- 급속 변동: <b>2분마다</b>
-- 뉴스 수집: <b>15초마다</b> (RSS)
+- 예외 감지: 5분마다
+- 급속 변동: 2분마다
+- 뉴스 수집: 15초마다 (RSS)
 - 시스템 체크: 30분마다"""
             
             if self.ml_mode:
@@ -1259,22 +1237,18 @@ class BitcoinPredictionSystem:
 <b>⚡ 실시간 알림 (비트코인 전용):</b>
 - 가격 급변동 (≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%)
 - 단기 급변동 (5분 내 ≥{self.exception_detector.short_term_threshold}%)
-- 비트코인 중요 뉴스 (ETF, 기업 구매, 규제)
+- 비트코인 중요 뉴스
 - 펀딩비 이상 (≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%)
 - 거래량 급증 (≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배)
 """
             
             if self.mirror_mode:
                 welcome_message += """
-<b>🔄 미러 트레이딩 (달러 비율 복제 - 제한 해제):</b>
+<b>🔄 미러 트레이딩:</b>
 - 비트겟 → 게이트 자동 복제
 - 총 자산 대비 동일 비율
 - 예약 주문도 동일 비율 복제
-- 30% 제한 완전 해제
-- 기존 포지션 TP/SL 제외
-- 신규 예약 주문 TP/SL 복제
-- TP/SL 자동 동기화
-- 부분/전체 청산 미러링
+- 실시간 가격 조정
 """
             
             if self.ml_mode:
@@ -1282,7 +1256,6 @@ class BitcoinPredictionSystem:
 <b>🤖 ML 예측 시스템:</b>
 - 과거 데이터 학습
 - 실시간 예측
-- 카테고리별 최적화
 - 자동 성능 개선
 """
             
@@ -1298,22 +1271,7 @@ class BitcoinPredictionSystem:
 - 가동 시간: {hours}시간 {minutes}분
 - 오늘 명령 처리: {sum(self.command_stats.values())}건
 - 오늘 예외 감지: <b>{total_exceptions}건</b>
-- 활성 서비스: {'미러+분석 (제한 해제)' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
-
-🚨 <b>주요 특징:</b>
-- 비트코인 전용 필터링
-- 정확한 호재/악재 판단
-- 현실적인 예상 변동률
-- 상황별 맞춤 전략"""
-
-            if self.mirror_mode:
-                welcome_message += """
-- 30% 제한 완전 해제
-- 완벽한 달러 비율 복제
-- 기존 포지션 TP/SL 제외
-- 신규 예약 주문 완전 복제"""
-
-            welcome_message += """
+- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
 
 📈 정확한 비트코인 분석을 제공합니다.
 
@@ -1354,7 +1312,7 @@ class BitcoinPredictionSystem:
             
             # 미러 트레이딩 시작 (미러 모드일 때만)
             if self.mirror_mode and self.mirror_trading:
-                self.logger.info("미러 트레이딩 시스템 시작 중... (제한 해제)")
+                self.logger.info("미러 트레이딩 시스템 시작 중...")
                 asyncio.create_task(self.mirror_trading.start())
             
             # 스케줄러 시작
@@ -1380,31 +1338,27 @@ class BitcoinPredictionSystem:
             self.logger.info("텔레그램 봇 시작 중...")
             await self.telegram_bot.start()
             
-            mode_text = "미러 트레이딩 (달러 비율 - 제한 해제)" if self.mirror_mode else "분석 전용"
+            mode_text = "미러 트레이딩" if self.mirror_mode else "분석 전용"
             if self.ml_mode:
                 mode_text += " + ML 예측"
             
             self.logger.info(f"✅ 비트코인 예측 시스템 시작 완료 (모드: {mode_text})")
             
-            # 시작 메시지 전송
+            # 시작 메시지 전송 - 간소화
             startup_msg = f"""<b>🚀 비트코인 예측 시스템이 시작되었습니다!</b>
 
 <b>📊 운영 모드:</b> {mode_text}
 <b>🕐 시작 시각:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-<b>🔥 버전:</b> 2.2 - 비트코인 전용
+<b>🔥 버전:</b> 2.3 - 비트코인 전용
 """
             
             if self.mirror_mode:
                 startup_msg += """
-<b>🔄 미러 트레이딩 활성화 (달러 비율 - 제한 해제):</b>
+<b>🔄 미러 트레이딩 활성화:</b>
 - 비트겟 → 게이트 자동 복제
 - 총 자산 대비 동일 비율 적용
-- 30% 제한 완전 해제
 - 예약 주문도 동일 비율 복제
-- 기존 포지션/예약주문은 복제 제외
-- 기존 포지션 TP/SL은 복제 제외
-- 신규 진입만 미러링
-- 신규 예약 주문 TP/SL은 복제
+- 실시간 가격 조정
 """
             
             if self.ml_mode:
@@ -1422,12 +1376,6 @@ class BitcoinPredictionSystem:
 - 가격 임계값: {self.exception_detector.PRICE_CHANGE_THRESHOLD}%
 - 거래량 임계값: {self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
 
-<b>🎯 필터링 강화:</b>
-- 비트코인 직접 관련 뉴스만
-- 알트코인/일반 정치 뉴스 제외
-- 정확한 호재/악재 판단
-- 현실적인 예상 변동률
-
 <b>📌 활성 기능:</b>
 - 실시간 가격 모니터링
 - 비트코인 전용 뉴스 추적
@@ -1437,10 +1385,8 @@ class BitcoinPredictionSystem:
 
             if self.mirror_mode:
                 startup_msg += """
-- 완전한 달러 비율 복제 (제한 해제)
-- 예약 주문 실시간 복제
-- 기존 포지션 TP/SL 제외
-- 신규 예약 주문 TP/SL 복제"""
+- 완전한 달러 비율 복제
+- 예약 주문 실시간 복제"""
 
             startup_msg += """
 
@@ -1512,7 +1458,7 @@ class BitcoinPredictionSystem:
                 shutdown_msg += "\n\n비트코인 전용 시스템이 안전하게 종료됩니다."
                 
                 if self.mirror_mode:
-                    shutdown_msg += "\n미러 트레이딩 (제한 해제)도 함께 종료됩니다."
+                    shutdown_msg += "\n미러 트레이딩도 함께 종료됩니다."
                 
                 await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
             except:
@@ -1528,7 +1474,7 @@ class BitcoinPredictionSystem:
             
             # 미러 트레이딩 종료
             if self.mirror_mode and self.mirror_trading:
-                self.logger.info("미러 트레이딩 종료 중... (제한 해제)")
+                self.logger.info("미러 트레이딩 종료 중...")
                 await self.mirror_trading.stop()
             
             # 데이터 수집기 종료
@@ -1552,7 +1498,7 @@ class BitcoinPredictionSystem:
                 self.ml_predictor.save_predictions()
             
             self.logger.info("=" * 50)
-            self.logger.info("✅ 비트코인 전용 시스템이 안전하게 종료되었습니다 (제한 해제)")
+            self.logger.info("✅ 비트코인 전용 시스템이 안전하게 종료되었습니다")
             self.logger.info("=" * 50)
             
         except Exception as e:
@@ -1563,7 +1509,7 @@ async def main():
     """메인 함수"""
     try:
         print("\n" + "=" * 50)
-        print("🚀 비트코인 예측 시스템 v2.2 - 비트코인 전용 (제한 해제)")
+        print("🚀 비트코인 예측 시스템 v2.3 - 비트코인 전용")
         print("=" * 50 + "\n")
         
         system = BitcoinPredictionSystem()
