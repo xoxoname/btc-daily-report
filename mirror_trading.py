@@ -133,12 +133,12 @@ class MirrorTradingSystem:
         }
         
         self.monitoring = True
-        self.logger.info("미러 트레이딩 시스템 초기화 완료 - TP/SL 복제 강화")
+        self.logger.info("미러 트레이딩 시스템 초기화 완료 - 단순 예약주문 복제")
 
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("미러 트레이딩 시스템 시작 - TP/SL 복제 강화")
+            self.logger.info("미러 트레이딩 시스템 시작 - 단순 예약주문 복제")
             
             # 현재 시세 업데이트
             await self._update_current_prices()
@@ -152,7 +152,7 @@ class MirrorTradingSystem:
             # 예약 주문 초기 스냅샷 생성
             await self._create_initial_plan_order_snapshot()
             
-            # 시작 시 기존 예약 주문 복제 (TP/SL 포함)
+            # 시작 시 기존 예약 주문 복제 (단순 복제)
             await self._mirror_startup_plan_orders()
             
             # 초기 계정 상태 출력
@@ -424,7 +424,7 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 포지션 기록 실패: {e}")
 
     async def _log_account_status(self):
-        """계정 상태 로깅 - TP/SL 복제 정보 포함"""
+        """계정 상태 로깅"""
         try:
             bitget_account = await self.bitget.get_account_info()
             bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
@@ -439,7 +439,7 @@ class MirrorTradingSystem:
                 price_diff_text = f"\n시세 차이: {self.price_diff_percent:.2f}% (비트겟: ${self.bitget_current_price:,.2f}, 게이트: ${self.gate_current_price:,.2f})"
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (TP/SL 복제 강화)\n\n"
+                f"🔄 미러 트레이딩 시스템 시작 (단순 예약주문 복제)\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f} (레버리지: {bitget_leverage}x)\n"
                 f"• 게이트: ${gate_equity:,.2f}{price_diff_text}\n\n"
@@ -451,11 +451,10 @@ class MirrorTradingSystem:
                 f"• 예약 주문 취소: {self.PLAN_ORDER_CHECK_INTERVAL}초마다\n"
                 f"• 주문 체결: {self.ORDER_CHECK_INTERVAL}초마다\n"
                 f"• 시세 차이 모니터링: 1분마다\n\n"
-                f"🎯 TP/SL 복제 기능:\n"
-                f"• 예약 주문의 TP 설정 완전 복제\n"
-                f"• SL 설정도 동일하게 복제\n"
-                f"• 복제 실패 시 일반 주문으로 폴백\n"
-                f"• 실시간 TP/SL 동기화\n\n"
+                f"🎯 예약주문 복제 기능:\n"
+                f"• 비트겟 예약 주문을 게이트에 단순 복제\n"
+                f"• TP/SL은 포지션 체결 후 별도 처리\n"
+                f"• 잘못된 이중 주문 방지\n\n"
                 f"💡 실제 달러 마진 비율 동적 계산:\n"
                 f"매 거래마다 실시간으로 동일한 마진 비율 적용"
             )
@@ -541,7 +540,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(3600)
 
     async def _create_daily_report(self) -> str:
-        """일일 리포트 생성 - TP/SL 통계 포함"""
+        """일일 리포트 생성"""
         try:
             bitget_account = await self.bitget.get_account_info()
             gate_account = await self.gate.get_account_balance()
@@ -559,12 +558,6 @@ class MirrorTradingSystem:
             total_cancels = self.daily_stats['plan_order_cancel_success'] + self.daily_stats['plan_order_cancel_failed']
             if total_cancels > 0:
                 cancel_success_rate = (self.daily_stats['plan_order_cancel_success'] / total_cancels) * 100
-            
-            # TP/SL 복제 통계
-            tp_sl_success_rate = 0
-            total_tp_sl = self.daily_stats['tp_sl_mirrors_success'] + self.daily_stats['tp_sl_mirrors_failed']
-            if total_tp_sl > 0:
-                tp_sl_success_rate = (self.daily_stats['tp_sl_mirrors_success'] / total_tp_sl) * 100
             
             # 현재 시세 차이 정보 추가
             await self._update_current_prices()
@@ -597,15 +590,6 @@ class MirrorTradingSystem:
 - 취소 성공률: {cancel_success_rate:.1f}%
 - 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개
 
-🎯 TP/SL 복제 성과
-- TP/SL 복제 시도: {total_tp_sl}회
-- TP/SL 복제 성공: {self.daily_stats['tp_sl_mirrors_success']}회
-- TP/SL 복제 실패: {self.daily_stats['tp_sl_mirrors_failed']}회
-- TP/SL 복제 성공률: {tp_sl_success_rate:.1f}%
-- TP만 복제: {self.daily_stats['tp_only_mirrors']}회
-- SL만 복제: {self.daily_stats['sl_only_mirrors']}회
-- TP+SL 모두 복제: {self.daily_stats['tp_sl_both_mirrors']}회
-
 📉 포지션 관리
 - 부분 청산: {self.daily_stats['partial_closes']}회
 - 전체 청산: {self.daily_stats['full_closes']}회
@@ -621,7 +605,7 @@ class MirrorTradingSystem:
 - 실패 기록: {len(self.failed_mirrors)}건{price_diff_text}
 
 ━━━━━━━━━━━━━━━━━━━
-🎯 TP/SL 완전 복제 + 실제 달러 마진 비율 동적 계산"""
+🎯 단순 예약주문 복제 + 실제 달러 마진 비율 동적 계산"""
             
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -795,26 +779,26 @@ class MirrorTradingSystem:
             self.logger.error(f"기존 예약 주문 기록 실패: {e}")
 
     async def _mirror_startup_plan_orders(self):
-        """시작 시 기존 예약 주문 복제 - TP/SL 설정 완전 복제"""
+        """시작 시 기존 예약 주문 복제 - 단순 복제"""
         try:
-            self.logger.info("🎯 시작 시 기존 예약 주문 복제 시작 (TP/SL 완전 복제)")
+            self.logger.info("🎯 시작 시 기존 예약 주문 복제 시작 (단순 복제)")
             
             plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
             plan_orders = plan_data.get('plan_orders', [])
             tp_sl_orders = plan_data.get('tp_sl_orders', [])
             
-            all_orders = plan_orders + tp_sl_orders
+            # TP/SL 주문은 복제하지 않고 일반 예약 주문만 복제
+            orders_to_mirror = plan_orders
             
-            if not all_orders:
+            if not orders_to_mirror:
                 self.startup_plan_orders_processed = True
+                self.logger.info("복제할 일반 예약 주문이 없습니다.")
                 return
             
             mirrored_count = 0
             failed_count = 0
-            tp_sl_success_count = 0
-            tp_sl_failed_count = 0
             
-            for order in all_orders:
+            for order in orders_to_mirror:
                 try:
                     order_id = order.get('orderId', order.get('planOrderId', ''))
                     if not order_id:
@@ -824,60 +808,38 @@ class MirrorTradingSystem:
                     if self.has_startup_positions and order_id in self.startup_position_tp_sl:
                         continue
                     
-                    # 🎯 TP/SL 설정 완전 복제
-                    result = await self._process_startup_plan_order_with_enhanced_tp_sl(order)
+                    # 단순 예약 주문 복제 (TP/SL 설정 제외)
+                    result = await self._process_startup_plan_order_simple(order)
                     
                     if result == "success":
                         mirrored_count += 1
-                        # TP/SL 설정이 있었으면 성공 카운트
-                        if self._has_tp_sl_settings(order):
-                            tp_sl_success_count += 1
                     else:
                         failed_count += 1
-                        if self._has_tp_sl_settings(order):
-                            tp_sl_failed_count += 1
                     
                     self.processed_plan_orders.add(order_id)
                     await asyncio.sleep(0.5)
                     
                 except Exception as e:
                     failed_count += 1
-                    if self._has_tp_sl_settings(order):
-                        tp_sl_failed_count += 1
                     self.logger.error(f"기존 예약 주문 복제 실패: {order.get('orderId', 'unknown')} - {e}")
                     continue
             
             self.daily_stats['startup_plan_mirrors'] = mirrored_count
-            self.daily_stats['tp_sl_mirrors_success'] += tp_sl_success_count
-            self.daily_stats['tp_sl_mirrors_failed'] += tp_sl_failed_count
             self.startup_plan_orders_processed = True
             
             await self.telegram.send_message(
-                f"✅ 시작 시 기존 예약 주문 복제 완료 (TP/SL 완전 복제)\n"
+                f"✅ 시작 시 기존 예약 주문 복제 완료 (단순 복제)\n"
                 f"성공: {mirrored_count}개\n"
                 f"실패: {failed_count}개\n"
-                f"🎯 TP/SL 복제 성공: {tp_sl_success_count}개\n"
-                f"🎯 TP/SL 복제 실패: {tp_sl_failed_count}개"
+                f"복제된 예약 주문: 일반 예약 주문만\n"
+                f"TP/SL 주문: 복제 제외 (포지션 체결 후 별도 처리)"
             )
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 처리 실패: {e}")
 
-    def _has_tp_sl_settings(self, order: Dict) -> bool:
-        """주문에 TP/SL 설정이 있는지 확인"""
-        tp_price = self.bitget._extract_tp_price(order) if hasattr(self.bitget, '_extract_tp_price') else None
-        sl_price = self.bitget._extract_sl_price(order) if hasattr(self.bitget, '_extract_sl_price') else None
-        
-        # 직접 확인
-        if not tp_price:
-            tp_price = order.get('presetStopSurplusPrice', 0)
-        if not sl_price:
-            sl_price = order.get('presetStopLossPrice', 0)
-        
-        return bool(tp_price and float(tp_price) > 0) or bool(sl_price and float(sl_price) > 0)
-
-    async def _process_startup_plan_order_with_enhanced_tp_sl(self, bitget_order: Dict) -> str:
-        """시작 시 예약 주문 복제 처리 - 강화된 TP/SL 복제"""
+    async def _process_startup_plan_order_simple(self, bitget_order: Dict) -> str:
+        """시작 시 예약 주문 복제 처리 - 단순 복제"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -893,41 +855,11 @@ class MirrorTradingSystem:
             if original_trigger_price == 0:
                 return "failed"
             
-            # 🎯 강화된 TP/SL 설정 추출
-            tp_price = 0
-            sl_price = 0
-            
-            # TP 설정 추출
-            tp_fields = ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice', 'tpPrice']
-            for tp_field in tp_fields:
-                if bitget_order.get(tp_field):
-                    try:
-                        tp_price = float(bitget_order.get(tp_field))
-                        if tp_price > 0:
-                            self.logger.info(f"🎯 예약 주문 TP 설정 감지: {order_id} - TP ${tp_price:,.2f} (필드: {tp_field})")
-                            break
-                    except:
-                        continue
-            
-            # SL 설정 추출
-            sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice', 'slPrice']
-            for sl_field in sl_fields:
-                if bitget_order.get(sl_field):
-                    try:
-                        sl_price = float(bitget_order.get(sl_field))
-                        if sl_price > 0:
-                            self.logger.info(f"🛡️ 예약 주문 SL 설정 감지: {order_id} - SL ${sl_price:,.2f} (필드: {sl_field})")
-                            break
-                    except:
-                        continue
-            
             # 현재 시세 업데이트
             await self._update_current_prices()
             
             # 게이트 기준으로 트리거 가격 조정
             adjusted_trigger_price = await self._adjust_price_for_gate(original_trigger_price)
-            adjusted_tp_price = await self._adjust_price_for_gate(tp_price) if tp_price > 0 else 0
-            adjusted_sl_price = await self._adjust_price_for_gate(sl_price) if sl_price > 0 else 0
             
             # 트리거 가격 유효성 검증
             is_valid, skip_reason = await self._validate_trigger_price(adjusted_trigger_price, side)
@@ -980,12 +912,12 @@ class MirrorTradingSystem:
             except Exception as e:
                 self.logger.error(f"시작 시 레버리지 설정 실패: {e}")
             
-            # 🎯 Gate.io에 TP/SL 설정을 포함한 예약 주문 생성
-            gate_order = await self._create_enhanced_gate_plan_order(
+            # 🎯 Gate.io에 단순 예약 주문 생성 (TP/SL 제외)
+            gate_order = await self.gate.create_price_triggered_order(
                 trigger_type=gate_trigger_type,
-                trigger_price=adjusted_trigger_price,
-                tp_price=adjusted_tp_price,
-                sl_price=adjusted_sl_price,
+                trigger_price=str(adjusted_trigger_price),
+                order_type="market",
+                contract=self.GATE_CONTRACT,
                 size=gate_size
             )
             
@@ -1002,145 +934,14 @@ class MirrorTradingSystem:
                 'is_startup_order': True,
                 'original_trigger_price': original_trigger_price,
                 'adjusted_trigger_price': adjusted_trigger_price,
-                'tp_price': tp_price,
-                'adjusted_tp_price': adjusted_tp_price,
-                'sl_price': sl_price,
-                'adjusted_sl_price': adjusted_sl_price,
-                'has_tp': adjusted_tp_price > 0,
-                'has_sl': adjusted_sl_price > 0
+                'simple_mirror': True  # 단순 복제 표시
             }
-            
-            # TP/SL 통계 업데이트
-            if adjusted_tp_price > 0 and adjusted_sl_price > 0:
-                self.daily_stats['tp_sl_both_mirrors'] += 1
-            elif adjusted_tp_price > 0:
-                self.daily_stats['tp_only_mirrors'] += 1
-            elif adjusted_sl_price > 0:
-                self.daily_stats['sl_only_mirrors'] += 1
             
             return "success"
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
             return "failed"
-
-    async def _create_enhanced_gate_plan_order(self, trigger_type: str, trigger_price: float, 
-                                             tp_price: float = 0, sl_price: float = 0, size: int = 0) -> Dict:
-        """강화된 Gate.io 예약 주문 생성 - 다중 방법 시도"""
-        try:
-            # 🎯 방법 1: TP/SL 포함 조건부 주문 생성 시도
-            if tp_price > 0 or sl_price > 0:
-                try:
-                    self.logger.info(f"🎯 TP/SL 포함 조건부 주문 생성 시도: TP={tp_price}, SL={sl_price}")
-                    
-                    gate_order = await self.gate.create_conditional_order_with_tp_sl(
-                        contract=self.GATE_CONTRACT,
-                        size=size,
-                        trigger_price=trigger_price,
-                        trigger_type=trigger_type,
-                        tp_price=tp_price if tp_price > 0 else None,
-                        sl_price=sl_price if sl_price > 0 else None
-                    )
-                    
-                    self.logger.info(f"✅ TP/SL 포함 조건부 주문 생성 성공!")
-                    return gate_order
-                    
-                except Exception as e:
-                    self.logger.warning(f"⚠️ TP/SL 포함 조건부 주문 생성 실패: {e}")
-                    # 다음 방법으로 계속
-            
-            # 🎯 방법 2: 기본 TP/SL 포함 API 시도
-            if tp_price > 0 or sl_price > 0:
-                try:
-                    self.logger.info(f"🎯 기본 TP/SL 포함 API 시도")
-                    
-                    gate_order = await self.gate.create_price_triggered_order_with_tp_sl(
-                        trigger_type=trigger_type,
-                        trigger_price=str(trigger_price),
-                        order_type="market",
-                        contract=self.GATE_CONTRACT,
-                        size=size,
-                        tp_price=str(tp_price) if tp_price > 0 else None,
-                        sl_price=str(sl_price) if sl_price > 0 else None
-                    )
-                    
-                    self.logger.info(f"✅ 기본 TP/SL 포함 API 성공!")
-                    return gate_order
-                    
-                except Exception as e:
-                    self.logger.warning(f"⚠️ 기본 TP/SL 포함 API 실패: {e}")
-                    # 다음 방법으로 계속
-            
-            # 🎯 방법 3: 일반 트리거 주문 생성 후 별도 TP/SL 주문 생성
-            self.logger.info(f"🎯 일반 트리거 주문 + 별도 TP/SL 주문 생성")
-            
-            # 일반 트리거 주문 생성
-            gate_order = await self.gate.create_price_triggered_order(
-                trigger_type=trigger_type,
-                trigger_price=str(trigger_price),
-                order_type="market",
-                contract=self.GATE_CONTRACT,
-                size=size
-            )
-            
-            # 별도로 TP/SL 주문 생성 시도
-            tp_sl_orders_created = []
-            
-            if tp_price > 0:
-                try:
-                    tp_trigger_type = "ge" if size > 0 else "le"  # 롱이면 상승 브레이크, 숏이면 하락 브레이크
-                    tp_size = -size  # 반대 방향으로 청산
-                    
-                    tp_order = await self.gate.create_price_triggered_order(
-                        trigger_type=tp_trigger_type,
-                        trigger_price=str(tp_price),
-                        order_type="market",
-                        contract=self.GATE_CONTRACT,
-                        size=tp_size
-                    )
-                    
-                    tp_sl_orders_created.append(('TP', tp_order))
-                    self.logger.info(f"✅ 별도 TP 주문 생성 성공: ${tp_price}")
-                    
-                except Exception as e:
-                    self.logger.error(f"❌ 별도 TP 주문 생성 실패: {e}")
-            
-            if sl_price > 0:
-                try:
-                    sl_trigger_type = "le" if size > 0 else "ge"  # 롱이면 하락 브레이크, 숏이면 상승 브레이크
-                    sl_size = -size  # 반대 방향으로 청산
-                    
-                    sl_order = await self.gate.create_price_triggered_order(
-                        trigger_type=sl_trigger_type,
-                        trigger_price=str(sl_price),
-                        order_type="market",
-                        contract=self.GATE_CONTRACT,
-                        size=sl_size
-                    )
-                    
-                    tp_sl_orders_created.append(('SL', sl_order))
-                    self.logger.info(f"✅ 별도 SL 주문 생성 성공: ${sl_price}")
-                    
-                except Exception as e:
-                    self.logger.error(f"❌ 별도 SL 주문 생성 실패: {e}")
-            
-            # 메인 주문에 TP/SL 주문 정보 추가
-            if tp_sl_orders_created:
-                gate_order['tp_sl_orders'] = tp_sl_orders_created
-                self.logger.info(f"✅ 메인 주문 + {len(tp_sl_orders_created)}개 TP/SL 주문 생성 완료")
-            
-            return gate_order
-            
-        except Exception as e:
-            self.logger.error(f"❌ 모든 Gate.io 주문 생성 방법 실패: {e}")
-            # 최후의 수단: 일반 트리거 주문만 생성
-            return await self.gate.create_price_triggered_order(
-                trigger_type=trigger_type,
-                trigger_price=str(trigger_price),
-                order_type="market",
-                contract=self.GATE_CONTRACT,
-                size=size
-            )
 
     async def _adjust_price_for_gate(self, price: float) -> float:
         """게이트 기준으로 가격 조정"""
@@ -1278,8 +1079,8 @@ class MirrorTradingSystem:
             self.startup_position_tp_sl.clear()
 
     async def monitor_plan_orders(self):
-        """예약 주문 모니터링 - TP/SL 복제 강화"""
-        self.logger.info("🎯 예약 주문 취소 미러링 모니터링 시작 (TP/SL 복제 강화)")
+        """예약 주문 모니터링 - 단순 복제"""
+        self.logger.info("🎯 예약 주문 취소 미러링 모니터링 시작 (단순 복제)")
         consecutive_errors = 0
         
         while self.monitoring:
@@ -1293,13 +1094,14 @@ class MirrorTradingSystem:
                 current_plan_orders = plan_data.get('plan_orders', [])
                 current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
                 
-                all_current_orders = current_plan_orders + current_tp_sl_orders
+                # 일반 예약 주문만 처리 (TP/SL 주문 제외)
+                current_orders_to_monitor = current_plan_orders
                 
                 # 현재 존재하는 예약주문 ID 집합
                 current_order_ids = set()
                 current_snapshot = {}
                 
-                for order in all_current_orders:
+                for order in current_orders_to_monitor:
                     order_id = order.get('orderId', order.get('planOrderId', ''))
                     if order_id:
                         current_order_ids.add(order_id)
@@ -1309,7 +1111,7 @@ class MirrorTradingSystem:
                             'status': 'active'
                         }
                 
-                # 취소된 예약 주문 감지
+                # 취소된 예약 주문 감지 (일반 예약 주문만)
                 canceled_order_ids = self.last_plan_order_ids - current_order_ids
                 
                 # 취소된 주문 처리
@@ -1322,12 +1124,10 @@ class MirrorTradingSystem:
                     # 통계 업데이트
                     self.daily_stats['plan_order_cancels'] += len(canceled_order_ids)
                 
-                # 새로운 예약 주문 감지
+                # 새로운 예약 주문 감지 (일반 예약 주문만)
                 new_orders_count = 0
-                tp_sl_success_count = 0
-                tp_sl_failed_count = 0
                 
-                for order in all_current_orders:
+                for order in current_orders_to_monitor:
                     order_id = order.get('orderId', order.get('planOrderId', ''))
                     if not order_id:
                         continue
@@ -1345,18 +1145,12 @@ class MirrorTradingSystem:
                         self.processed_plan_orders.add(order_id)
                         continue
                     
-                    # 🎯 새로운 예약 주문 감지 - TP/SL 복제 강화
+                    # 🎯 새로운 예약 주문 감지 - 단순 복제
                     try:
-                        has_tp_sl = self._has_tp_sl_settings(order)
-                        result = await self._process_new_plan_order_with_enhanced_tp_sl(order)
+                        result = await self._process_new_plan_order_simple(order)
                         
                         if result == "success":
                             new_orders_count += 1
-                            if has_tp_sl:
-                                tp_sl_success_count += 1
-                        else:
-                            if has_tp_sl:
-                                tp_sl_failed_count += 1
                         
                         self.processed_plan_orders.add(order_id)
                         
@@ -1364,19 +1158,11 @@ class MirrorTradingSystem:
                         self.logger.error(f"새로운 예약 주문 복제 실패: {order_id} - {e}")
                         self.processed_plan_orders.add(order_id)
                         
-                        if self._has_tp_sl_settings(order):
-                            tp_sl_failed_count += 1
-                        
                         await self.telegram.send_message(
-                            f"❌ 예약 주문 복제 실패 (TP/SL 포함)\n"
+                            f"❌ 예약 주문 복제 실패 (단순 복제)\n"
                             f"비트겟 ID: {order_id}\n"
                             f"오류: {str(e)[:200]}"
                         )
-                
-                # TP/SL 통계 업데이트
-                if tp_sl_success_count > 0 or tp_sl_failed_count > 0:
-                    self.daily_stats['tp_sl_mirrors_success'] += tp_sl_success_count
-                    self.daily_stats['tp_sl_mirrors_failed'] += tp_sl_failed_count
                 
                 # 현재 상태를 다음 비교를 위해 저장
                 self.last_plan_order_ids = current_order_ids.copy()
@@ -1403,8 +1189,8 @@ class MirrorTradingSystem:
                 
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
-    async def _process_new_plan_order_with_enhanced_tp_sl(self, bitget_order: Dict) -> str:
-        """새로운 예약 주문 복제 - 강화된 TP/SL 복제"""
+    async def _process_new_plan_order_simple(self, bitget_order: Dict) -> str:
+        """새로운 예약 주문 복제 - 단순 복제"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -1420,41 +1206,11 @@ class MirrorTradingSystem:
             if original_trigger_price == 0:
                 return "failed"
             
-            # 🎯 강화된 TP/SL 설정 추출
-            tp_price = 0
-            sl_price = 0
-            
-            # TP 설정 추출
-            tp_fields = ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice', 'tpPrice']
-            for tp_field in tp_fields:
-                if bitget_order.get(tp_field):
-                    try:
-                        tp_price = float(bitget_order.get(tp_field))
-                        if tp_price > 0:
-                            self.logger.info(f"🎯 신규 예약 주문 TP 설정 감지: {order_id} - TP ${tp_price:,.2f} (필드: {tp_field})")
-                            break
-                    except:
-                        continue
-            
-            # SL 설정 추출
-            sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice', 'slPrice']
-            for sl_field in sl_fields:
-                if bitget_order.get(sl_field):
-                    try:
-                        sl_price = float(bitget_order.get(sl_field))
-                        if sl_price > 0:
-                            self.logger.info(f"🛡️ 신규 예약 주문 SL 설정 감지: {order_id} - SL ${sl_price:,.2f} (필드: {sl_field})")
-                            break
-                    except:
-                        continue
-            
             # 현재 시세 업데이트
             await self._update_current_prices()
             
             # 게이트 기준으로 트리거 가격 조정
             adjusted_trigger_price = await self._adjust_price_for_gate(original_trigger_price)
-            adjusted_tp_price = await self._adjust_price_for_gate(tp_price) if tp_price > 0 else 0
-            adjusted_sl_price = await self._adjust_price_for_gate(sl_price) if sl_price > 0 else 0
             
             # 트리거 가격 유효성 검증
             is_valid, skip_reason = await self._validate_trigger_price(adjusted_trigger_price, side)
@@ -1516,12 +1272,12 @@ class MirrorTradingSystem:
             except Exception as e:
                 self.logger.error(f"게이트 레버리지 설정 실패: {e}")
             
-            # 🎯 Gate.io에 TP/SL 설정을 포함한 예약 주문 생성
-            gate_order = await self._create_enhanced_gate_plan_order(
+            # 🎯 Gate.io에 단순 예약 주문 생성 (TP/SL 제외)
+            gate_order = await self.gate.create_price_triggered_order(
                 trigger_type=gate_trigger_type,
-                trigger_price=adjusted_trigger_price,
-                tp_price=adjusted_tp_price,
-                sl_price=adjusted_sl_price,
+                trigger_price=str(adjusted_trigger_price),
+                order_type="market",
+                contract=self.GATE_CONTRACT,
                 size=gate_size
             )
             
@@ -1540,46 +1296,26 @@ class MirrorTradingSystem:
                 'bitget_total_equity': bitget_total_equity,
                 'original_trigger_price': original_trigger_price,
                 'adjusted_trigger_price': adjusted_trigger_price,
-                'tp_price': tp_price,
-                'adjusted_tp_price': adjusted_tp_price,
-                'sl_price': sl_price,
-                'adjusted_sl_price': adjusted_sl_price,
-                'has_tp': adjusted_tp_price > 0,
-                'has_sl': adjusted_sl_price > 0
+                'simple_mirror': True  # 단순 복제 표시
             }
             
             self.daily_stats['plan_order_mirrors'] += 1
             
-            # TP/SL 통계 업데이트
-            if adjusted_tp_price > 0 and adjusted_sl_price > 0:
-                self.daily_stats['tp_sl_both_mirrors'] += 1
-            elif adjusted_tp_price > 0:
-                self.daily_stats['tp_only_mirrors'] += 1
-            elif adjusted_sl_price > 0:
-                self.daily_stats['sl_only_mirrors'] += 1
-            
             # 성공 메시지
-            tp_sl_text = ""
-            if adjusted_tp_price > 0 and adjusted_sl_price > 0:
-                tp_sl_text = f"\n🎯 TP: ${adjusted_tp_price:,.2f}\n🛡️ SL: ${adjusted_sl_price:,.2f}"
-            elif adjusted_tp_price > 0:
-                tp_sl_text = f"\n🎯 TP: ${adjusted_tp_price:,.2f}"
-            elif adjusted_sl_price > 0:
-                tp_sl_text = f"\n🛡️ SL: ${adjusted_sl_price:,.2f}"
-            
             await self.telegram.send_message(
-                f"✅ 예약 주문 복제 성공 (TP/SL 완전 복제)\n"
+                f"✅ 예약 주문 복제 성공 (단순 복제)\n"
                 f"비트겟 ID: {order_id}\n"
                 f"게이트 ID: {gate_order.get('id')}\n"
                 f"방향: {side.upper()}\n"
                 f"트리거가: ${adjusted_trigger_price:,.2f}\n"
                 f"트리거 타입: {gate_trigger_type.upper()}\n"
-                f"게이트 수량: {gate_size}{tp_sl_text}\n\n"
+                f"게이트 수량: {gate_size}\n\n"
                 f"💰 실제 달러 마진 동적 비율 복제:\n"
                 f"비트겟 실제 마진: ${bitget_required_margin:,.2f}\n"
                 f"실제 마진 비율: {margin_ratio*100:.2f}%\n"
                 f"게이트 투입 마진: ${gate_margin:,.2f} (동일 {margin_ratio*100:.2f}%)\n"
-                f"레버리지: {bitget_leverage}x"
+                f"레버리지: {bitget_leverage}x\n\n"
+                f"📝 TP/SL은 포지션 체결 후 별도 처리됩니다."
             )
             
             return "success"
@@ -1623,18 +1359,6 @@ class MirrorTradingSystem:
                     # 게이트에서 예약 주문 취소
                     await self.gate.cancel_price_triggered_order(gate_order_id)
                     
-                    # TP/SL 주문도 함께 취소 시도
-                    if 'tp_sl_orders' in mirror_info.get('gate_order', {}):
-                        tp_sl_orders = mirror_info['gate_order']['tp_sl_orders']
-                        for tp_sl_type, tp_sl_order in tp_sl_orders:
-                            try:
-                                tp_sl_order_id = tp_sl_order.get('id')
-                                if tp_sl_order_id:
-                                    await self.gate.cancel_price_triggered_order(tp_sl_order_id)
-                                    self.logger.info(f"✅ {tp_sl_type} 주문도 취소됨: {tp_sl_order_id}")
-                            except Exception as e:
-                                self.logger.warning(f"⚠️ {tp_sl_type} 주문 취소 실패: {e}")
-                    
                     # 취소 확인을 위해 대기
                     await asyncio.sleep(self.cancel_verification_delay)
                     
@@ -1647,19 +1371,8 @@ class MirrorTradingSystem:
                         self.daily_stats['plan_order_cancel_success'] += 1
                         self.daily_stats['cancel_verification_success'] += 1
                         
-                        # 성공 메시지 - TP/SL 정보 포함
-                        has_tp = mirror_info.get('has_tp', False)
-                        has_sl = mirror_info.get('has_sl', False)
-                        tp_sl_info = ""
-                        if has_tp and has_sl:
-                            tp_sl_info = " (TP/SL 포함)"
-                        elif has_tp:
-                            tp_sl_info = " (TP 포함)"
-                        elif has_sl:
-                            tp_sl_info = " (SL 포함)"
-                        
                         await self.telegram.send_message(
-                            f"🚫✅ 예약 주문 취소 동기화 완료{tp_sl_info}\n"
+                            f"🚫✅ 예약 주문 취소 동기화 완료\n"
                             f"비트겟 ID: {bitget_order_id}\n"
                             f"게이트 ID: {gate_order_id}\n"
                             f"재시도: {retry_count}회"
