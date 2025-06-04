@@ -2,37 +2,13 @@ import asyncio
 import logging
 from typing import Dict, List, Optional, Set, Tuple
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
 import json
 import traceback
 
-logger = logging.getLogger(__name__)
+# 유틸리티 클래스 import
+from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 
-@dataclass
-class PositionInfo:
-    """포지션 정보"""
-    symbol: str
-    side: str
-    size: float
-    entry_price: float
-    margin: float
-    leverage: int
-    mode: str
-    tp_orders: List[Dict] = field(default_factory=list)
-    sl_orders: List[Dict] = field(default_factory=list)
-    realized_pnl: float = 0.0
-    unrealized_pnl: float = 0.0
-    last_update: datetime = field(default_factory=datetime.now)
-    
-@dataclass
-class MirrorResult:
-    """미러링 결과"""
-    success: bool
-    action: str
-    bitget_data: Dict
-    gate_data: Optional[Dict] = None
-    error: Optional[str] = None
-    timestamp: datetime = field(default_factory=datetime.now)
+logger = logging.getLogger(__name__)
 
 class MirrorTradingSystem:
     def __init__(self, config, bitget_client, gate_client, telegram_bot):
@@ -41,6 +17,9 @@ class MirrorTradingSystem:
         self.gate = gate_client
         self.telegram = telegram_bot
         self.logger = logging.getLogger('mirror_trading')
+        
+        # 유틸리티 클래스 초기화
+        self.utils = MirrorTradingUtils(config, bitget_client, gate_client)
         
         # 미러링 상태 관리
         self.mirrored_positions: Dict[str, PositionInfo] = {}
@@ -140,7 +119,7 @@ class MirrorTradingSystem:
             'duplicate_orders_prevented': 0,
             'render_restart_skips': 0,
             'unified_tp_sl_orders': 0,
-            'duplicate_advanced_prevention': 0,  # 🔥 고급 중복 방지 통계
+            'duplicate_advanced_prevention': 0,
             'errors': []
         }
         
@@ -233,36 +212,39 @@ class MirrorTradingSystem:
             
             for i, gate_order in enumerate(gate_orders):
                 try:
-                    # 🔥🔥🔥 상세 정보 추출
-                    order_details = await self._extract_gate_order_details(gate_order)
+                    # 🔥🔥🔥 상세 정보 추출 (None 체크 강화)
+                    order_details = await self.utils.extract_gate_order_details(gate_order)
                     
                     if order_details:
-                        # 여러 방식으로 해시 생성
-                        hashes = await self._generate_multiple_order_hashes(order_details)
+                        # 여러 방식으로 해시 생성 (None 체크 강화)
+                        hashes = await self.utils.generate_multiple_order_hashes(order_details)
                         
-                        # 모든 해시를 저장하여 다양한 방식으로 중복 감지
-                        for hash_key in hashes:
-                            self.gate_existing_order_hashes.add(hash_key)
-                        
-                        # 상세 정보도 저장
-                        order_id = gate_order.get('id', f"unknown_{i}")
-                        self.gate_existing_orders_detailed[order_id] = {
-                            'gate_order': gate_order,
-                            'details': order_details,
-                            'hashes': hashes,
-                            'recorded_at': datetime.now().isoformat()
-                        }
-                        
-                        self.logger.info(f"📝 게이트 예약 주문 기록: ID={order_id}")
-                        self.logger.info(f"   - 트리거가: ${order_details['trigger_price']:.2f}")
-                        self.logger.info(f"   - 수량: {order_details['size']}")
-                        self.logger.info(f"   - 해시: {len(hashes)}개 생성")
-                        
-                        # TP/SL 정보도 로깅
-                        if order_details.get('tp_price'):
-                            self.logger.info(f"   - TP: ${order_details['tp_price']:.2f}")
-                        if order_details.get('sl_price'):
-                            self.logger.info(f"   - SL: ${order_details['sl_price']:.2f}")
+                        if hashes:  # 해시가 성공적으로 생성된 경우만 처리
+                            # 모든 해시를 저장하여 다양한 방식으로 중복 감지
+                            for hash_key in hashes:
+                                self.gate_existing_order_hashes.add(hash_key)
+                            
+                            # 상세 정보도 저장
+                            order_id = gate_order.get('id', f"unknown_{i}")
+                            self.gate_existing_orders_detailed[order_id] = {
+                                'gate_order': gate_order,
+                                'details': order_details,
+                                'hashes': hashes,
+                                'recorded_at': datetime.now().isoformat()
+                            }
+                            
+                            self.logger.info(f"📝 게이트 예약 주문 기록: ID={order_id}")
+                            self.logger.info(f"   - 트리거가: ${order_details['trigger_price']:.2f}")
+                            self.logger.info(f"   - 수량: {order_details['size']}")
+                            self.logger.info(f"   - 해시: {len(hashes)}개 생성")
+                            
+                            # TP/SL 정보도 로깅
+                            if order_details.get('tp_price'):
+                                self.logger.info(f"   - TP: ${order_details['tp_price']:.2f}")
+                            if order_details.get('sl_price'):
+                                self.logger.info(f"   - SL: ${order_details['sl_price']:.2f}")
+                        else:
+                            self.logger.warning(f"게이트 주문 해시 생성 실패: {gate_order.get('id', 'unknown')}")
                     
                 except Exception as e:
                     self.logger.warning(f"게이트 주문 처리 실패: {e}")
@@ -275,199 +257,6 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"게이트 기존 예약 주문 조회 실패: {e}")
             # 실패해도 계속 진행
-
-    async def _extract_gate_order_details(self, gate_order: Dict) -> Optional[Dict]:
-        """🔥🔥🔥 게이트 주문에서 상세 정보 추출"""
-        try:
-            # 기본 정보 추출
-            order_id = gate_order.get('id', '')
-            contract = gate_order.get('contract', self.GATE_CONTRACT)
-            
-            # 트리거 정보 추출
-            trigger_info = gate_order.get('trigger', {})
-            trigger_price = float(trigger_info.get('price', 0))
-            
-            # 초기 주문 정보 추출
-            initial_info = gate_order.get('initial', {})
-            size = int(initial_info.get('size', 0))
-            
-            # TP/SL 정보 추출
-            tp_price = None
-            sl_price = None
-            
-            # TP/SL은 여러 필드에서 추출 시도
-            for tp_field in ['stop_profit_price', 'stopProfitPrice', 'takeProfitPrice']:
-                if gate_order.get(tp_field):
-                    try:
-                        tp_price = float(gate_order[tp_field])
-                        if tp_price > 0:
-                            break
-                    except:
-                        continue
-            
-            for sl_field in ['stop_loss_price', 'stopLossPrice', 'stopPrice']:
-                if gate_order.get(sl_field):
-                    try:
-                        sl_price = float(gate_order[sl_field])
-                        if sl_price > 0:
-                            break
-                    except:
-                        continue
-            
-            if trigger_price == 0 or size == 0:
-                return None
-            
-            return {
-                'order_id': order_id,
-                'contract': contract,
-                'trigger_price': trigger_price,
-                'size': size,
-                'abs_size': abs(size),
-                'tp_price': tp_price,
-                'sl_price': sl_price,
-                'has_tp_sl': bool(tp_price or sl_price),
-                'gate_order_raw': gate_order
-            }
-            
-        except Exception as e:
-            self.logger.error(f"게이트 주문 상세 정보 추출 실패: {e}")
-            return None
-
-    async def _generate_multiple_order_hashes(self, order_details: Dict) -> List[str]:
-        """🔥🔥🔥 다양한 방식으로 주문 해시 생성 (강화된 중복 감지)"""
-        try:
-            contract = order_details['contract']
-            trigger_price = order_details['trigger_price']
-            size = order_details['size']
-            abs_size = order_details['abs_size']
-            
-            hashes = []
-            
-            # 1. 기본 해시 (기존 방식)
-            basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
-            hashes.append(basic_hash)
-            
-            # 2. 정확한 가격 해시
-            exact_price_hash = f"{contract}_{trigger_price:.8f}_{abs_size}"
-            hashes.append(exact_price_hash)
-            
-            # 3. 부호 포함 해시
-            signed_hash = f"{contract}_{trigger_price:.2f}_{size}"
-            hashes.append(signed_hash)
-            
-            # 4. 반올림된 가격 해시 (가격 차이 허용)
-            rounded_price_1 = round(trigger_price, 1)
-            rounded_hash_1 = f"{contract}_{rounded_price_1:.1f}_{abs_size}"
-            hashes.append(rounded_hash_1)
-            
-            rounded_price_0 = round(trigger_price, 0)
-            rounded_hash_0 = f"{contract}_{rounded_price_0:.0f}_{abs_size}"
-            hashes.append(rounded_hash_0)
-            
-            # 5. TP/SL 포함 해시 (있는 경우)
-            if order_details.get('has_tp_sl'):
-                tp_price = order_details.get('tp_price', 0)
-                sl_price = order_details.get('sl_price', 0)
-                tp_sl_hash = f"{contract}_{trigger_price:.2f}_{abs_size}_tp{tp_price:.2f}_sl{sl_price:.2f}"
-                hashes.append(tp_sl_hash)
-            
-            # 6. 범위 기반 해시 (가격 오차 ±0.1% 허용)
-            price_tolerance = trigger_price * 0.001  # 0.1%
-            lower_price = trigger_price - price_tolerance
-            upper_price = trigger_price + price_tolerance
-            
-            range_hash_lower = f"{contract}_{lower_price:.2f}_{abs_size}"
-            range_hash_upper = f"{contract}_{upper_price:.2f}_{abs_size}"
-            hashes.extend([range_hash_lower, range_hash_upper])
-            
-            # 중복 제거
-            unique_hashes = list(set(hashes))
-            
-            self.logger.debug(f"주문 해시 {len(unique_hashes)}개 생성: 트리거=${trigger_price:.2f}, 크기={size}")
-            
-            return unique_hashes
-            
-        except Exception as e:
-            self.logger.error(f"다중 해시 생성 실패: {e}")
-            # 기본 해시라도 반환
-            try:
-                basic_hash = f"{order_details['contract']}_{order_details['trigger_price']:.2f}_{order_details['abs_size']}"
-                return [basic_hash]
-            except:
-                return []
-
-    def _generate_order_hash_from_gate_order(self, gate_order: Dict) -> Optional[str]:
-        """게이트 주문으로부터 해시 생성 (기존 호환성 유지)"""
-        try:
-            trigger_price = gate_order.get('trigger', {}).get('price', '')
-            initial_size = gate_order.get('initial', {}).get('size', 0)
-            contract = gate_order.get('contract', '')
-            
-            if trigger_price and initial_size and contract:
-                # 간단한 해시 생성 (기존 방식)
-                hash_str = f"{contract}_{trigger_price}_{abs(int(initial_size))}"
-                return hash_str
-            
-            return None
-            
-        except Exception as e:
-            self.logger.debug(f"게이트 주문 해시 생성 실패: {e}")
-            return None
-
-    def _generate_order_hash(self, trigger_price: float, size: int, contract: str = None) -> str:
-        """주문 특성으로 해시 생성 (중복 방지용) - 기존 호환성 유지"""
-        contract = contract or self.GATE_CONTRACT
-        return f"{contract}_{trigger_price:.2f}_{abs(size)}"
-
-    async def _extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
-        """🔥 비트겟 예약 주문에서 TP/SL 정보 추출"""
-        try:
-            tp_price = None
-            sl_price = None
-            
-            # TP 가격 추출
-            tp_fields = [
-                'presetStopSurplusPrice',
-                'stopSurplusPrice', 
-                'takeProfitPrice',
-                'tpPrice'
-            ]
-            
-            for field in tp_fields:
-                value = bitget_order.get(field)
-                if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
-                    try:
-                        tp_price = float(value)
-                        if tp_price > 0:
-                            self.logger.info(f"🎯 TP 가격 추출: {field} = {tp_price}")
-                            break
-                    except:
-                        continue
-            
-            # SL 가격 추출
-            sl_fields = [
-                'presetStopLossPrice',
-                'stopLossPrice',
-                'stopPrice',
-                'slPrice'
-            ]
-            
-            for field in sl_fields:
-                value = bitget_order.get(field)
-                if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
-                    try:
-                        sl_price = float(value)
-                        if sl_price > 0:
-                            self.logger.info(f"🛡️ SL 가격 추출: {field} = {sl_price}")
-                            break
-                    except:
-                        continue
-            
-            return tp_price, sl_price
-            
-        except Exception as e:
-            self.logger.error(f"TP/SL 정보 추출 실패: {e}")
-            return None, None
 
     async def _should_skip_position_due_to_existing(self, bitget_position: Dict) -> bool:
         """🔥 렌더 재구동 시 기존 포지션 때문에 스킵해야 하는지 판단"""
@@ -500,62 +289,6 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"기존 포지션 스킵 판단 실패: {e}")
             return False
-
-    async def _calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
-        """실제 달러 마진 비율 동적 계산"""
-        try:
-            # 레버리지 정보 추출
-            bitget_leverage = 10  # 기본값
-            
-            order_leverage = bitget_order.get('leverage')
-            if order_leverage:
-                try:
-                    bitget_leverage = int(float(order_leverage))
-                except:
-                    pass
-            
-            # 계정 정보에서 레버리지 추출
-            if not order_leverage:
-                try:
-                    bitget_account = await self.bitget.get_account_info()
-                    account_leverage = bitget_account.get('crossMarginLeverage')
-                    if account_leverage:
-                        bitget_leverage = int(float(account_leverage))
-                except Exception as e:
-                    self.logger.warning(f"계정 레버리지 조회 실패: {e}")
-            
-            # 비트겟 계정 정보 조회
-            bitget_account = await self.bitget.get_account_info()
-            bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
-            
-            # 비트겟에서 이 주문이 체결될 때 사용할 실제 마진 계산
-            bitget_notional_value = size * trigger_price
-            bitget_required_margin = bitget_notional_value / bitget_leverage
-            
-            # 비트겟 총 자산 대비 실제 마진 투입 비율 계산
-            if bitget_total_equity > 0:
-                margin_ratio = bitget_required_margin / bitget_total_equity
-            else:
-                return {
-                    'success': False,
-                    'error': '비트겟 총 자산이 0이거나 음수입니다.'
-                }
-            
-            return {
-                'success': True,
-                'margin_ratio': margin_ratio,
-                'leverage': bitget_leverage,
-                'required_margin': bitget_required_margin,
-                'total_equity': bitget_total_equity,
-                'notional_value': bitget_notional_value
-            }
-            
-        except Exception as e:
-            self.logger.error(f"실제 달러 마진 비율 동적 계산 실패: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
 
     async def monitor_order_fills(self):
         """실시간 주문 체결 감지"""
@@ -627,7 +360,7 @@ class MirrorTradingSystem:
                 return
             
             # 체결된 주문의 실제 달러 마진 비율 동적 계산
-            margin_ratio_result = await self._calculate_dynamic_margin_ratio_for_filled_order(
+            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
                 size, fill_price, order
             )
             
@@ -651,7 +384,7 @@ class MirrorTradingSystem:
             result = await self._mirror_new_position(synthetic_position)
             
             if result.success:
-                self.mirrored_positions[pos_id] = await self._create_position_info(synthetic_position)
+                self.mirrored_positions[pos_id] = await self.utils.create_position_info(synthetic_position)
                 self.position_sizes[pos_id] = size
                 self.daily_stats['successful_mirrors'] += 1
                 self.daily_stats['order_mirrors'] += 1
@@ -685,45 +418,6 @@ class MirrorTradingSystem:
                 'order_id': order.get('orderId', 'unknown')
             })
 
-    async def _calculate_dynamic_margin_ratio_for_filled_order(self, size: float, fill_price: float, order: Dict) -> Dict:
-        """체결된 주문의 실제 달러 마진 비율 동적 계산"""
-        try:
-            leverage = 10
-            try:
-                order_leverage = order.get('leverage')
-                if order_leverage:
-                    leverage = int(float(order_leverage))
-                else:
-                    account = await self.bitget.get_account_info()
-                    if account:
-                        account_leverage = account.get('crossMarginLeverage')
-                        if account_leverage:
-                            leverage = int(float(account_leverage))
-            except Exception as e:
-                self.logger.warning(f"체결 주문 레버리지 조회 실패: {e}")
-            
-            bitget_account = await self.bitget.get_account_info()
-            bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
-            
-            notional = size * fill_price
-            required_margin = notional / leverage
-            margin_ratio = required_margin / bitget_total_equity if bitget_total_equity > 0 else 0
-            
-            return {
-                'success': True,
-                'margin_ratio': margin_ratio,
-                'leverage': leverage,
-                'required_margin': required_margin,
-                'total_equity': bitget_total_equity,
-                'notional_value': notional
-            }
-            
-        except Exception as e:
-            return {
-                'success': False,
-                'error': str(e)
-            }
-
     async def _record_startup_positions(self):
         """시작 시 존재하는 포지션 기록"""
         try:
@@ -731,7 +425,7 @@ class MirrorTradingSystem:
             
             for pos in bitget_positions:
                 if float(pos.get('total', 0)) > 0:
-                    pos_id = self._generate_position_id(pos)
+                    pos_id = self.utils.generate_position_id(pos)
                     self.startup_positions.add(pos_id)
                     self.position_sizes[pos_id] = float(pos.get('total', 0))
                     
@@ -825,7 +519,7 @@ class MirrorTradingSystem:
                 # 신규 미러링된 포지션만 카운팅
                 new_bitget_positions = []
                 for pos in bitget_active:
-                    pos_id = self._generate_position_id(pos)
+                    pos_id = self.utils.generate_position_id(pos)
                     if pos_id not in self.startup_positions:
                         new_bitget_positions.append(pos)
                 
@@ -838,7 +532,7 @@ class MirrorTradingSystem:
                 active_position_ids = set()
                 
                 for pos in bitget_active:
-                    pos_id = self._generate_position_id(pos)
+                    pos_id = self.utils.generate_position_id(pos)
                     active_position_ids.add(pos_id)
                     await self._process_position(pos)
                 
@@ -1018,30 +712,10 @@ class MirrorTradingSystem:
             'duplicate_orders_prevented': 0,
             'render_restart_skips': 0,
             'unified_tp_sl_orders': 0,
-            'duplicate_advanced_prevention': 0,  # 🔥 고급 중복 방지 통계 초기화
+            'duplicate_advanced_prevention': 0,
             'errors': []
         }
         self.failed_mirrors.clear()
-
-    def _generate_position_id(self, pos: Dict) -> str:
-        """포지션 고유 ID 생성"""
-        symbol = pos.get('symbol', self.SYMBOL)
-        side = pos.get('holdSide', '')
-        entry_price = pos.get('openPriceAvg', '')
-        return f"{symbol}_{side}_{entry_price}"
-
-    async def _create_position_info(self, bitget_pos: Dict) -> PositionInfo:
-        """포지션 정보 객체 생성"""
-        return PositionInfo(
-            symbol=bitget_pos.get('symbol', self.SYMBOL),
-            side=bitget_pos.get('holdSide', '').lower(),
-            size=float(bitget_pos.get('total', 0)),
-            entry_price=float(bitget_pos.get('openPriceAvg', 0)),
-            margin=float(bitget_pos.get('marginSize', 0)),
-            leverage=int(float(bitget_pos.get('leverage', 1))),
-            mode='cross' if bitget_pos.get('marginMode') == 'crossed' else 'isolated',
-            unrealized_pnl=float(bitget_pos.get('unrealizedPL', 0))
-        )
 
     async def stop(self):
         """미러 트레이딩 중지"""
@@ -1247,13 +921,18 @@ class MirrorTradingSystem:
                 return False, "none"
             
             # TP/SL 정보 추출
-            tp_price, sl_price = await self._extract_tp_sl_from_bitget_order(bitget_order)
+            tp_price, sl_price = await self.utils.extract_tp_sl_from_bitget_order(bitget_order)
             
             # 게이트 기준으로 가격 조정
-            adjusted_trigger_price = await self._adjust_price_for_gate(original_trigger_price)
+            adjusted_trigger_price = await self.utils.adjust_price_for_gate(
+                original_trigger_price,
+                self.bitget_current_price,
+                self.gate_current_price,
+                self.price_diff_percent
+            )
             
             # 실제 달러 마진 비율 동적 계산으로 게이트 사이즈 계산
-            margin_ratio_result = await self._calculate_dynamic_margin_ratio(
+            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
                 size, adjusted_trigger_price, bitget_order
             )
             
@@ -1272,7 +951,7 @@ class MirrorTradingSystem:
             if gate_size == 0:
                 gate_size = 1
                 
-            gate_size = await self._calculate_gate_order_size(side, gate_size)
+            gate_size = await self.utils.calculate_gate_order_size(side, gate_size)
             
             # 🔥🔥🔥 강화된 중복 체크
             
@@ -1287,7 +966,7 @@ class MirrorTradingSystem:
                 'has_tp_sl': bool(tp_price or sl_price)
             }
             
-            bitget_hashes = await self._generate_multiple_order_hashes(order_details)
+            bitget_hashes = await self.utils.generate_multiple_order_hashes(order_details)
             
             # 2. 기존 게이트 해시와 비교
             for bitget_hash in bitget_hashes:
@@ -1354,10 +1033,15 @@ class MirrorTradingSystem:
                 return False, "none"
             
             # 게이트 기준으로 가격 조정
-            adjusted_trigger_price = await self._adjust_price_for_gate(original_trigger_price)
+            adjusted_trigger_price = await self.utils.adjust_price_for_gate(
+                original_trigger_price,
+                self.bitget_current_price,
+                self.gate_current_price,
+                self.price_diff_percent
+            )
             
             # 실제 달러 마진 비율 동적 계산으로 게이트 사이즈 계산
-            margin_ratio_result = await self._calculate_dynamic_margin_ratio(
+            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
                 size, adjusted_trigger_price, bitget_order
             )
             
@@ -1376,10 +1060,10 @@ class MirrorTradingSystem:
             if gate_size == 0:
                 gate_size = 1
                 
-            gate_size = await self._calculate_gate_order_size(side, gate_size)
+            gate_size = await self.utils.calculate_gate_order_size(side, gate_size)
             
             # 기본 해시 생성 (기존 방식)
-            order_hash = self._generate_order_hash(adjusted_trigger_price, gate_size)
+            order_hash = self.utils.generate_order_hash(adjusted_trigger_price, gate_size)
             
             if order_hash in self.gate_existing_order_hashes:
                 self.logger.info(f"🛡️ 기본 중복 주문 발견: {bitget_order.get('orderId', 'unknown')} - 해시: {order_hash}")
@@ -1409,22 +1093,29 @@ class MirrorTradingSystem:
                 return "failed"
             
             # 🔥 TP/SL 정보 추출
-            tp_price, sl_price = await self._extract_tp_sl_from_bitget_order(bitget_order)
+            tp_price, sl_price = await self.utils.extract_tp_sl_from_bitget_order(bitget_order)
             
             # 현재 시세 업데이트
             await self._update_current_prices()
             
             # 게이트 기준으로 트리거 가격 조정
-            adjusted_trigger_price = await self._adjust_price_for_gate(original_trigger_price)
+            adjusted_trigger_price = await self.utils.adjust_price_for_gate(
+                original_trigger_price,
+                self.bitget_current_price,
+                self.gate_current_price,
+                self.price_diff_percent
+            )
             
             # 트리거 가격 유효성 검증
-            is_valid, skip_reason = await self._validate_trigger_price(adjusted_trigger_price, side)
+            is_valid, skip_reason = await self.utils.validate_trigger_price(
+                adjusted_trigger_price, side, self.gate_current_price or self.bitget_current_price
+            )
             if not is_valid:
                 self.logger.warning(f"시작 시 예약 주문 스킵됨: {order_id} - {skip_reason}")
                 return "skipped"
             
             # 실제 달러 마진 비율 동적 계산
-            margin_ratio_result = await self._calculate_dynamic_margin_ratio(
+            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
                 size, adjusted_trigger_price, bitget_order
             )
             
@@ -1456,10 +1147,12 @@ class MirrorTradingSystem:
                 gate_size = 1
             
             # 방향 처리
-            gate_size = await self._calculate_gate_order_size(side, gate_size)
+            gate_size = await self.utils.calculate_gate_order_size(side, gate_size)
             
             # Gate.io 트리거 타입 변환
-            gate_trigger_type = await self._determine_gate_trigger_type(adjusted_trigger_price)
+            gate_trigger_type = await self.utils.determine_gate_trigger_type(
+                adjusted_trigger_price, self.gate_current_price or self.bitget_current_price
+            )
             
             # 게이트 레버리지 설정
             try:
@@ -1473,9 +1166,19 @@ class MirrorTradingSystem:
             adjusted_sl_price = None
             
             if tp_price:
-                adjusted_tp_price = await self._adjust_price_for_gate(tp_price)
+                adjusted_tp_price = await self.utils.adjust_price_for_gate(
+                    tp_price,
+                    self.bitget_current_price,
+                    self.gate_current_price,
+                    self.price_diff_percent
+                )
             if sl_price:
-                adjusted_sl_price = await self._adjust_price_for_gate(sl_price)
+                adjusted_sl_price = await self.utils.adjust_price_for_gate(
+                    sl_price,
+                    self.bitget_current_price,
+                    self.gate_current_price,
+                    self.price_diff_percent
+                )
             
             # 🎯 Gate.io에 통합 TP/SL 포함 예약 주문 생성
             gate_order = await self.gate.create_unified_order_with_tp_sl(
@@ -1512,7 +1215,7 @@ class MirrorTradingSystem:
                 'has_tp_sl': gate_order.get('has_tp_sl', False)
             }
             
-            new_hashes = await self._generate_multiple_order_hashes(order_details)
+            new_hashes = await self.utils.generate_multiple_order_hashes(order_details)
             for hash_key in new_hashes:
                 self.gate_existing_order_hashes.add(hash_key)
             
@@ -1543,89 +1246,6 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"시작 시 통합 TP/SL 예약 주문 복제 실패: {e}")
             return "failed"
-
-    async def _adjust_price_for_gate(self, price: float) -> float:
-        """게이트 기준으로 가격 조정"""
-        if price == 0 or self.price_diff_percent <= 0.3:
-            return price
-        
-        if self.bitget_current_price > 0:
-            price_ratio = self.gate_current_price / self.bitget_current_price
-            adjusted_price = price * price_ratio
-            
-            # 조정 폭이 너무 크면 원본 사용
-            adjustment_percent = abs(adjusted_price - price) / price * 100
-            if adjustment_percent <= 2.0:
-                return adjusted_price
-        
-        return price
-
-    async def _validate_trigger_price(self, trigger_price: float, side: str) -> Tuple[bool, str]:
-        """트리거 가격 유효성 검증"""
-        try:
-            current_price = self.gate_current_price or self.bitget_current_price
-            
-            if current_price == 0:
-                return False, "현재 시장가를 조회할 수 없음"
-            
-            # 트리거가와 현재가가 너무 근접하면 스킵
-            price_diff_percent = abs(trigger_price - current_price) / current_price * 100
-            if price_diff_percent < 0.01:
-                return False, f"트리거가와 현재가 차이가 너무 작음 ({price_diff_percent:.4f}%)"
-            
-            if trigger_price <= 0:
-                return False, "트리거 가격이 0 이하입니다"
-            
-            # 극단적인 가격 차이 검증
-            if price_diff_percent > 100:
-                return False, f"트리거가와 현재가 차이가 너무 큼 ({price_diff_percent:.1f}%)"
-            
-            return True, "유효한 트리거 가격"
-            
-        except Exception as e:
-            self.logger.error(f"트리거 가격 검증 실패: {e}")
-            return False, f"검증 오류: {str(e)}"
-
-    async def _calculate_gate_order_size(self, side: str, base_size: int) -> int:
-        """게이트 주문 수량 계산"""
-        try:
-            if side in ['buy', 'open_long']:
-                return abs(base_size)
-            elif side in ['sell', 'open_short']:
-                return -abs(base_size)
-            elif side in ['close_long']:
-                return -abs(base_size)
-            elif side in ['close_short']:
-                return abs(base_size)
-            else:
-                if 'buy' in side.lower():
-                    return abs(base_size)
-                elif 'sell' in side.lower():
-                    return -abs(base_size)
-                else:
-                    self.logger.warning(f"알 수 없는 주문 방향: {side}, 기본값 사용")
-                    return base_size
-            
-        except Exception as e:
-            self.logger.error(f"게이트 주문 수량 계산 실패: {e}")
-            return base_size
-
-    async def _determine_gate_trigger_type(self, trigger_price: float) -> str:
-        """Gate.io 트리거 타입 결정"""
-        try:
-            current_price = self.gate_current_price or self.bitget_current_price
-            
-            if current_price == 0:
-                return "ge"
-            
-            if trigger_price > current_price:
-                return "ge"
-            else:
-                return "le"
-                
-        except Exception as e:
-            self.logger.error(f"Gate.io 트리거 타입 결정 실패: {e}")
-            return "ge"
 
     async def _record_startup_position_tp_sl(self):
         """포지션 유무에 따른 TP/SL 분류"""
@@ -1821,16 +1441,23 @@ class MirrorTradingSystem:
                 return "failed"
             
             # 🔥 TP/SL 정보 추출
-            tp_price, sl_price = await self._extract_tp_sl_from_bitget_order(bitget_order)
+            tp_price, sl_price = await self.utils.extract_tp_sl_from_bitget_order(bitget_order)
             
             # 현재 시세 업데이트
             await self._update_current_prices()
             
             # 게이트 기준으로 트리거 가격 조정
-            adjusted_trigger_price = await self._adjust_price_for_gate(original_trigger_price)
+            adjusted_trigger_price = await self.utils.adjust_price_for_gate(
+                original_trigger_price,
+                self.bitget_current_price,
+                self.gate_current_price,
+                self.price_diff_percent
+            )
             
             # 트리거 가격 유효성 검증
-            is_valid, skip_reason = await self._validate_trigger_price(adjusted_trigger_price, side)
+            is_valid, skip_reason = await self.utils.validate_trigger_price(
+                adjusted_trigger_price, side, self.gate_current_price or self.bitget_current_price
+            )
             if not is_valid:
                 await self.telegram.send_message(
                     f"⏭️ 예약 주문 스킵됨 (트리거 가격 문제)\n"
@@ -1843,7 +1470,7 @@ class MirrorTradingSystem:
                 return "skipped"
             
             # 실제 달러 마진 비율 동적 계산
-            margin_ratio_result = await self._calculate_dynamic_margin_ratio(
+            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
                 size, adjusted_trigger_price, bitget_order
             )
             
@@ -1877,10 +1504,12 @@ class MirrorTradingSystem:
                 gate_size = 1
             
             # 방향 처리
-            gate_size = await self._calculate_gate_order_size(side, gate_size)
+            gate_size = await self.utils.calculate_gate_order_size(side, gate_size)
             
             # Gate.io 트리거 타입 변환
-            gate_trigger_type = await self._determine_gate_trigger_type(adjusted_trigger_price)
+            gate_trigger_type = await self.utils.determine_gate_trigger_type(
+                adjusted_trigger_price, self.gate_current_price or self.bitget_current_price
+            )
             
             # 게이트 레버리지 설정
             try:
@@ -1894,9 +1523,19 @@ class MirrorTradingSystem:
             adjusted_sl_price = None
             
             if tp_price:
-                adjusted_tp_price = await self._adjust_price_for_gate(tp_price)
+                adjusted_tp_price = await self.utils.adjust_price_for_gate(
+                    tp_price,
+                    self.bitget_current_price,
+                    self.gate_current_price,
+                    self.price_diff_percent
+                )
             if sl_price:
-                adjusted_sl_price = await self._adjust_price_for_gate(sl_price)
+                adjusted_sl_price = await self.utils.adjust_price_for_gate(
+                    sl_price,
+                    self.bitget_current_price,
+                    self.gate_current_price,
+                    self.price_diff_percent
+                )
             
             # 🎯 Gate.io에 통합 TP/SL 포함 예약 주문 생성
             gate_order = await self.gate.create_unified_order_with_tp_sl(
@@ -1933,7 +1572,7 @@ class MirrorTradingSystem:
                 'has_tp_sl': gate_order.get('has_tp_sl', False)
             }
             
-            new_hashes = await self._generate_multiple_order_hashes(order_details)
+            new_hashes = await self.utils.generate_multiple_order_hashes(order_details)
             for hash_key in new_hashes:
                 self.gate_existing_order_hashes.add(hash_key)
             
@@ -2197,7 +1836,7 @@ class MirrorTradingSystem:
     async def _process_position(self, bitget_pos: Dict):
         """포지션 처리"""
         try:
-            pos_id = self._generate_position_id(bitget_pos)
+            pos_id = self.utils.generate_position_id(bitget_pos)
             
             if pos_id in self.startup_positions:
                 return
@@ -2215,7 +1854,7 @@ class MirrorTradingSystem:
                     result = await self._mirror_new_position(bitget_pos)
                     
                     if result.success:
-                        self.mirrored_positions[pos_id] = await self._create_position_info(bitget_pos)
+                        self.mirrored_positions[pos_id] = await self.utils.create_position_info(bitget_pos)
                         self.position_sizes[pos_id] = current_size
                         self.daily_stats['successful_mirrors'] += 1
                         self.daily_stats['position_mirrors'] += 1
@@ -2247,7 +1886,7 @@ class MirrorTradingSystem:
             self.daily_stats['errors'].append({
                 'time': datetime.now().isoformat(),
                 'error': str(e),
-                'position': self._generate_position_id(bitget_pos)
+                'position': self.utils.generate_position_id(bitget_pos)
             })
 
     async def _mirror_new_position(self, bitget_pos: Dict) -> MirrorResult:
@@ -2444,7 +2083,7 @@ class MirrorTradingSystem:
                 # 신규 미러링된 포지션만 카운팅
                 new_bitget_positions = []
                 for pos in bitget_active:
-                    pos_id = self._generate_position_id(pos)
+                    pos_id = self.utils.generate_position_id(pos)
                     if pos_id not in self.startup_positions:
                         new_bitget_positions.append(pos)
                 
