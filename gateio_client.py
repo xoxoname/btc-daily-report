@@ -1,4 +1,5 @@
 import asyncio
+import aiohttpimport asyncio
 import aiohttp
 import hmac
 import hashlib
@@ -92,6 +93,65 @@ class GateClient:
         except Exception as e:
             logger.error(f"Gate.io API 요청 중 오류: {e}")
             raise
+    
+    async def get_current_price(self, contract: str = "BTC_USDT") -> float:
+        """🔥 현재 시장가 조회 - 트리거 가격 검증용"""
+        try:
+            ticker = await self.get_ticker(contract)
+            if ticker:
+                current_price = float(ticker.get('last', ticker.get('mark_price', 0)))
+                logger.debug(f"Gate.io 현재가: ${current_price:.2f}")
+                return current_price
+            return 0.0
+        except Exception as e:
+            logger.error(f"현재가 조회 실패: {e}")
+            return 0.0
+    
+    async def validate_trigger_price(self, trigger_price: float, trigger_type: str, contract: str = "BTC_USDT") -> Tuple[bool, str, float]:
+        """🔥 트리거 가격 유효성 검증 및 조정"""
+        try:
+            current_price = await self.get_current_price(contract)
+            if current_price == 0:
+                return False, "현재가 조회 실패", trigger_price
+            
+            price_diff_percent = abs(trigger_price - current_price) / current_price * 100
+            
+            # 가격이 너무 근접한 경우 (0.01% 이하)
+            if price_diff_percent < 0.01:
+                if trigger_type == "ge":
+                    adjusted_price = current_price * 1.0005  # 0.05% 위로 조정
+                elif trigger_type == "le":
+                    adjusted_price = current_price * 0.9995  # 0.05% 아래로 조정
+                else:
+                    adjusted_price = trigger_price
+                
+                logger.warning(f"트리거가 너무 근접, 조정: ${trigger_price:.2f} → ${adjusted_price:.2f}")
+                return True, "가격 조정됨", adjusted_price
+            
+            # Gate.io 규칙 검증
+            if trigger_type == "ge":  # greater than or equal
+                if trigger_price <= current_price:
+                    # 현재가보다 0.1% 위로 조정
+                    adjusted_price = current_price * 1.001
+                    logger.warning(f"GE 트리거가가 현재가보다 낮음, 조정: ${trigger_price:.2f} → ${adjusted_price:.2f}")
+                    return True, "GE 가격 조정됨", adjusted_price
+                else:
+                    return True, "유효한 GE 트리거가", trigger_price
+            
+            elif trigger_type == "le":  # less than or equal
+                if trigger_price >= current_price:
+                    # 현재가보다 0.1% 아래로 조정
+                    adjusted_price = current_price * 0.999
+                    logger.warning(f"LE 트리거가가 현재가보다 높음, 조정: ${trigger_price:.2f} → ${adjusted_price:.2f}")
+                    return True, "LE 가격 조정됨", adjusted_price
+                else:
+                    return True, "유효한 LE 트리거가", trigger_price
+            
+            return True, "유효한 트리거가", trigger_price
+            
+        except Exception as e:
+            logger.error(f"트리거 가격 검증 실패: {e}")
+            return False, f"검증 오류: {str(e)}", trigger_price
     
     async def get_account_balance(self) -> Dict:
         """계정 잔고 조회 - 선물 계정"""
@@ -319,7 +379,7 @@ class GateClient:
     async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
                                          order_type: str, contract: str, size: int, 
                                          price: Optional[str] = None) -> Dict:
-        """가격 트리거 주문 생성 (TP/SL)
+        """🔥 개선된 가격 트리거 주문 생성 - 유효성 검증 포함
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
@@ -330,6 +390,20 @@ class GateClient:
             price: 지정가 (시장가면 None)
         """
         try:
+            # 🔥 트리거 가격 유효성 검증 및 조정
+            trigger_price_float = float(trigger_price)
+            is_valid, validation_msg, adjusted_price = await self.validate_trigger_price(
+                trigger_price_float, trigger_type, contract
+            )
+            
+            if not is_valid:
+                raise Exception(f"트리거 가격 유효성 검증 실패: {validation_msg}")
+            
+            # 조정된 가격 사용
+            if adjusted_price != trigger_price_float:
+                trigger_price = str(adjusted_price)
+                logger.info(f"🔧 트리거 가격 조정됨: {trigger_price_float:.2f} → {adjusted_price:.2f}")
+            
             endpoint = "/api/v4/futures/usdt/price_orders"
             
             initial_data = {
@@ -368,7 +442,7 @@ class GateClient:
                 }
             }
             
-            logger.info(f"Gate.io 가격 트리거 주문 생성: {data}")
+            logger.info(f"Gate.io 가격 트리거 주문 생성 (검증완료): {data}")
             response = await self._request('POST', endpoint, data=data)
             logger.info(f"✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
             return response
@@ -378,12 +452,132 @@ class GateClient:
             logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}, price={price}")
             raise
     
+    async def create_tp_sl_orders_separately(self, contract: str, position_size: int,
+                                           tp_price: Optional[float] = None,
+                                           sl_price: Optional[float] = None) -> Dict:
+        """🔥 TP/SL 주문을 별도로 생성 - 개선된 로직"""
+        try:
+            result = {
+                'tp_order': None,
+                'sl_order': None,
+                'success_count': 0,
+                'error_count': 0,
+                'errors': []
+            }
+            
+            current_price = await self.get_current_price(contract)
+            if current_price == 0:
+                raise Exception("현재가 조회 실패")
+            
+            logger.info(f"🎯 TP/SL 별도 생성 시작 - 현재가: ${current_price:.2f}, 포지션: {position_size}")
+            
+            # TP 주문 생성
+            if tp_price and tp_price > 0:
+                try:
+                    # 포지션 방향에 따른 TP 로직
+                    if position_size > 0:  # 롱 포지션
+                        # TP는 현재가보다 높아야 함 (이익 실현)
+                        if tp_price <= current_price:
+                            logger.warning(f"롱 포지션 TP가 현재가보다 낮음: ${tp_price:.2f} <= ${current_price:.2f}")
+                            tp_price = current_price * 1.005  # 0.5% 위로 조정
+                            logger.info(f"TP 가격 조정: ${tp_price:.2f}")
+                        
+                        tp_trigger_type = "ge"  # 가격이 TP 이상이 되면 매도
+                        tp_size = -abs(position_size)  # 매도 (음수)
+                        
+                    else:  # 숏 포지션
+                        # TP는 현재가보다 낮아야 함 (이익 실현)
+                        if tp_price >= current_price:
+                            logger.warning(f"숏 포지션 TP가 현재가보다 높음: ${tp_price:.2f} >= ${current_price:.2f}")
+                            tp_price = current_price * 0.995  # 0.5% 아래로 조정
+                            logger.info(f"TP 가격 조정: ${tp_price:.2f}")
+                        
+                        tp_trigger_type = "le"  # 가격이 TP 이하가 되면 매수
+                        tp_size = abs(position_size)  # 매수 (양수)
+                    
+                    logger.info(f"🎯 TP 주문 생성: {tp_trigger_type}, ${tp_price:.2f}, size={tp_size}")
+                    
+                    tp_order = await self.create_price_triggered_order(
+                        trigger_type=tp_trigger_type,
+                        trigger_price=str(tp_price),
+                        order_type="market",
+                        contract=contract,
+                        size=tp_size
+                    )
+                    
+                    result['tp_order'] = tp_order
+                    result['success_count'] += 1
+                    logger.info(f"✅ TP 주문 생성 성공: {tp_order.get('id')}")
+                    
+                except Exception as tp_error:
+                    error_msg = str(tp_error)
+                    logger.error(f"❌ TP 주문 생성 실패: {error_msg}")
+                    result['errors'].append(f"TP: {error_msg}")
+                    result['error_count'] += 1
+            
+            # SL 주문 생성
+            if sl_price and sl_price > 0:
+                try:
+                    # 포지션 방향에 따른 SL 로직
+                    if position_size > 0:  # 롱 포지션
+                        # SL은 현재가보다 낮아야 함 (손실 제한)
+                        if sl_price >= current_price:
+                            logger.warning(f"롱 포지션 SL이 현재가보다 높음: ${sl_price:.2f} >= ${current_price:.2f}")
+                            sl_price = current_price * 0.995  # 0.5% 아래로 조정
+                            logger.info(f"SL 가격 조정: ${sl_price:.2f}")
+                        
+                        sl_trigger_type = "le"  # 가격이 SL 이하가 되면 매도
+                        sl_size = -abs(position_size)  # 매도 (음수)
+                        
+                    else:  # 숏 포지션
+                        # SL은 현재가보다 높아야 함 (손실 제한)
+                        if sl_price <= current_price:
+                            logger.warning(f"숏 포지션 SL이 현재가보다 낮음: ${sl_price:.2f} <= ${current_price:.2f}")
+                            sl_price = current_price * 1.005  # 0.5% 위로 조정
+                            logger.info(f"SL 가격 조정: ${sl_price:.2f}")
+                        
+                        sl_trigger_type = "ge"  # 가격이 SL 이상이 되면 매수
+                        sl_size = abs(position_size)  # 매수 (양수)
+                    
+                    logger.info(f"🛡️ SL 주문 생성: {sl_trigger_type}, ${sl_price:.2f}, size={sl_size}")
+                    
+                    sl_order = await self.create_price_triggered_order(
+                        trigger_type=sl_trigger_type,
+                        trigger_price=str(sl_price),
+                        order_type="market",
+                        contract=contract,
+                        size=sl_size
+                    )
+                    
+                    result['sl_order'] = sl_order
+                    result['success_count'] += 1
+                    logger.info(f"✅ SL 주문 생성 성공: {sl_order.get('id')}")
+                    
+                except Exception as sl_error:
+                    error_msg = str(sl_error)
+                    logger.error(f"❌ SL 주문 생성 실패: {error_msg}")
+                    result['errors'].append(f"SL: {error_msg}")
+                    result['error_count'] += 1
+            
+            logger.info(f"🎯 TP/SL 별도 생성 완료: 성공 {result['success_count']}개, 실패 {result['error_count']}개")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ TP/SL 별도 생성 전체 실패: {e}")
+            return {
+                'tp_order': None,
+                'sl_order': None,
+                'success_count': 0,
+                'error_count': 1,
+                'errors': [str(e)]
+            }
+    
     async def create_price_triggered_order_with_tp_sl(self, trigger_type: str, trigger_price: str,
                                                      order_type: str, contract: str, size: int,
                                                      price: Optional[str] = None,
                                                      tp_price: Optional[str] = None,
                                                      sl_price: Optional[str] = None) -> Dict:
-        """TP/SL 설정이 포함된 가격 트리거 주문 생성 - auto_size 파라미터 제거
+        """🔥 TP/SL 설정이 포함된 가격 트리거 주문 생성 - 개선된 로직
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
@@ -399,7 +593,7 @@ class GateClient:
             # 먼저 기본 트리거 주문 생성
             logger.info(f"🎯 TP/SL 포함 트리거 주문 생성 시도 - TP: {tp_price}, SL: {sl_price}")
             
-            # 기본 트리거 주문 생성
+            # 기본 트리거 주문 생성 (개선된 검증 포함)
             basic_order = await self.create_price_triggered_order(
                 trigger_type=trigger_type,
                 trigger_price=trigger_price,
@@ -410,52 +604,29 @@ class GateClient:
             )
             
             # TP/SL이 설정되어 있으면 별도 주문으로 생성
-            tp_order = None
-            sl_order = None
-            
-            if tp_price:
-                try:
-                    # TP 주문 생성
-                    tp_trigger_type = "le" if size > 0 else "ge"  # 롱이면 le (가격이 TP 이하로 떨어지면), 숏이면 ge
-                    tp_size = -size  # 반대 방향으로 청산
-                    
-                    tp_order = await self.create_price_triggered_order(
-                        trigger_type=tp_trigger_type,
-                        trigger_price=tp_price,
-                        order_type="market",
-                        contract=contract,
-                        size=tp_size
-                    )
-                    logger.info(f"🎯 TP 주문 생성 성공: {tp_order.get('id')}")
-                    
-                except Exception as tp_error:
-                    logger.error(f"TP 주문 생성 실패: {tp_error}")
-            
-            if sl_price:
-                try:
-                    # SL 주문 생성
-                    sl_trigger_type = "ge" if size > 0 else "le"  # 롱이면 ge (가격이 SL 이상으로 올라가면), 숏이면 le
-                    sl_size = -size  # 반대 방향으로 청산
-                    
-                    sl_order = await self.create_price_triggered_order(
-                        trigger_type=sl_trigger_type,
-                        trigger_price=sl_price,
-                        order_type="market",
-                        contract=contract,
-                        size=sl_size
-                    )
-                    logger.info(f"🛡️ SL 주문 생성 성공: {sl_order.get('id')}")
-                    
-                except Exception as sl_error:
-                    logger.error(f"SL 주문 생성 실패: {sl_error}")
+            tp_sl_result = await self.create_tp_sl_orders_separately(
+                contract=contract,
+                position_size=size,
+                tp_price=float(tp_price) if tp_price else None,
+                sl_price=float(sl_price) if sl_price else None
+            )
             
             # 결과 반환 - 기본 주문에 TP/SL 주문 정보 추가
             result = basic_order.copy()
-            result['tp_order'] = tp_order
-            result['sl_order'] = sl_order
-            result['has_tp_sl'] = bool(tp_order or sl_order)
+            result['tp_order'] = tp_sl_result['tp_order']
+            result['sl_order'] = tp_sl_result['sl_order']
+            result['has_tp_sl'] = tp_sl_result['success_count'] > 0
+            result['tp_sl_success_count'] = tp_sl_result['success_count']
+            result['tp_sl_error_count'] = tp_sl_result['error_count']
+            result['tp_sl_errors'] = tp_sl_result['errors']
             
-            logger.info(f"✅ TP/SL 포함 트리거 주문 생성 완료: 기본={basic_order.get('id')}, TP={tp_order.get('id') if tp_order else None}, SL={sl_order.get('id') if sl_order else None}")
+            success_msg = f"기본={basic_order.get('id')}"
+            if tp_sl_result['tp_order']:
+                success_msg += f", TP={tp_sl_result['tp_order'].get('id')}"
+            if tp_sl_result['sl_order']:
+                success_msg += f", SL={tp_sl_result['sl_order'].get('id')}"
+            
+            logger.info(f"✅ TP/SL 포함 트리거 주문 생성 완료: {success_msg}")
             return result
             
         except Exception as e:
@@ -475,7 +646,7 @@ class GateClient:
                                                  trigger_price: float, trigger_type: str,
                                                  tp_price: Optional[float] = None,
                                                  sl_price: Optional[float] = None) -> Dict:
-        """TP/SL 설정이 포함된 조건부 주문 생성 (대안 방법) - auto_size 파라미터 제거"""
+        """TP/SL 설정이 포함된 조건부 주문 생성 (대안 방법)"""
         try:
             logger.info(f"조건부 주문 (TP/SL 포함) 생성 시작 - TP: {tp_price}, SL: {sl_price}")
             
@@ -489,48 +660,18 @@ class GateClient:
             )
             
             # TP/SL 별도 주문 생성
-            tp_order = None
-            sl_order = None
-            
-            if tp_price:
-                try:
-                    tp_trigger_type = "le" if size > 0 else "ge"
-                    tp_size = -size
-                    
-                    tp_order = await self.create_price_triggered_order(
-                        trigger_type=tp_trigger_type,
-                        trigger_price=str(tp_price),
-                        order_type="market",
-                        contract=contract,
-                        size=tp_size
-                    )
-                    logger.info(f"조건부 주문에 TP 설정 완료: {tp_price}")
-                    
-                except Exception as tp_error:
-                    logger.error(f"조건부 TP 주문 생성 실패: {tp_error}")
-            
-            if sl_price:
-                try:
-                    sl_trigger_type = "ge" if size > 0 else "le"
-                    sl_size = -size
-                    
-                    sl_order = await self.create_price_triggered_order(
-                        trigger_type=sl_trigger_type,
-                        trigger_price=str(sl_price),
-                        order_type="market",
-                        contract=contract,
-                        size=sl_size
-                    )
-                    logger.info(f"조건부 주문에 SL 설정 완료: {sl_price}")
-                    
-                except Exception as sl_error:
-                    logger.error(f"조건부 SL 주문 생성 실패: {sl_error}")
+            tp_sl_result = await self.create_tp_sl_orders_separately(
+                contract=contract,
+                position_size=size,
+                tp_price=tp_price,
+                sl_price=sl_price
+            )
             
             # 결과 통합
             result = main_order.copy()
-            result['tp_order'] = tp_order
-            result['sl_order'] = sl_order
-            result['has_tp_sl'] = bool(tp_order or sl_order)
+            result['tp_order'] = tp_sl_result['tp_order']
+            result['sl_order'] = tp_sl_result['sl_order']
+            result['has_tp_sl'] = tp_sl_result['success_count'] > 0
             
             logger.info(f"✅ 조건부 주문 (TP/SL 포함) 생성 성공: {result}")
             return result
