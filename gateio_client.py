@@ -108,6 +108,34 @@ class GateClient:
         """선물 계정 정보 조회 (get_account_balance와 동일)"""
         return await self.get_account_balance()
     
+    async def get_ticker(self, contract: str = "BTC_USDT") -> Dict:
+        """티커 정보 조회 - 추가된 메서드"""
+        try:
+            endpoint = f"/api/v4/futures/usdt/tickers"
+            params = {'contract': contract}
+            response = await self._request('GET', endpoint, params=params)
+            
+            # Gate.io는 리스트 형태로 반환하므로 첫 번째 요소 반환
+            if isinstance(response, list) and len(response) > 0:
+                ticker_data = response[0]
+                # last 필드가 없으면 mark_price 사용
+                if 'last' not in ticker_data and 'mark_price' in ticker_data:
+                    ticker_data['last'] = ticker_data['mark_price']
+                return ticker_data
+            elif isinstance(response, dict):
+                # last 필드가 없으면 mark_price 사용
+                if 'last' not in response and 'mark_price' in response:
+                    response['last'] = response['mark_price']
+                return response
+            else:
+                logger.warning(f"Gate.io 티커 응답 형식 이상: {response}")
+                return {}
+            
+        except Exception as e:
+            logger.error(f"Gate.io 티커 조회 실패: {e}")
+            # 티커 조회 실패 시 빈 딕셔너리 반환
+            return {}
+    
     async def get_positions(self, contract: str = "BTC_USDT") -> List[Dict]:
         """포지션 조회"""
         try:
