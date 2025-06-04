@@ -1851,12 +1851,7 @@ class MirrorTradingSystem:
             self.logger.error(f"포지션 종료 처리 실패: {e}")
             # 오류가 발생해도 미러링 기록에서는 제거
             if pos_id in self.mirrored_positions:
-                del self.mirrored_positions[pos_id]약 주문 모니터링 시스템 오류\n"
-                        f"연속 {consecutive_errors}회 실패\n"
-                        f"오류: {str(e)[:200]}"
-                    )
-                
-                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
+                del self.mirrored_positions[pos_id]
 
     async def _handle_plan_order_cancel_enhanced(self, bitget_order_id: str):
         """🔥🔥🔥🔥🔥 예약 주문 취소 처리 완전 강화 - 확실한 취소 보장"""
@@ -2150,4 +2145,8 @@ class MirrorTradingSystem:
                 
                 if consecutive_errors >= 5:
                     await self.telegram.send_message(
-                        f"⚠️ 예
+                        f"⚠️ 예약 주문 TP 모니터링 시스템 오류\n"
+                        f"연속 {consecutive_errors}회 실패"
+                    )
+                
+                await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
