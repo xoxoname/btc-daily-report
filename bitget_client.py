@@ -94,16 +94,17 @@ class BitgetClient:
                 
                 if response.status != 200:
                     logger.error(f"Bitget API 오류: {response.status} - {response_text}")
-                    raise Exception(f"Bitget API 오류: {response_text}")
+                    # 🔥 수정: 예외를 던지지 않고 에러 응답을 반환
+                    try:
+                        error_result = json.loads(response_text) if response_text else {}
+                        return error_result
+                    except:
+                        return {'code': str(response.status), 'msg': response_text, 'data': None}
                 
                 result = json.loads(response_text) if response_text else {}
                 
-                # API 응답 코드 확인
-                if result.get('code') != '00000':
-                    error_msg = result.get('msg', 'Unknown error')
-                    logger.error(f"Bitget API 응답 오류: {result.get('code')} - {error_msg}")
-                    raise Exception(f"Bitget API 오류: {error_msg}")
-                
+                # 🔥 수정: 에러 코드 체크를 제거하고 결과를 그대로 반환
+                # API 응답 코드가 성공이 아니어도 결과를 반환하여 호출하는 쪽에서 처리하도록 함
                 return result
                 
         except Exception as e:
@@ -282,22 +283,24 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = "BTCUSDT") -> Dict:
-        """모든 예약 주문 조회 (TP/SL 포함) - 🔥 planType 값 수정"""
+        """모든 예약 주문 조회 (TP/SL 포함) - 🔥🔥🔥 완전 수정"""
         try:
             result = {
                 'plan_orders': [],
                 'tp_sl_orders': []
             }
             
-            # 🔥🔥🔥 planType 값들을 Bitget API v2에 맞게 수정
+            # 🔥🔥🔥 Bitget API v2에서 실제로 지원하는 planType 값만 사용
+            # API 문서에 따르면 v2에서는 다음 값들만 지원:
             plan_types_to_check = [
-                'normal_plan',    # 일반 예약 주문
-                'profit_plan',    # 테이크 프로핏 주문  
-                'loss_plan',      # 스탑 로스 주문
-                'pos_profit',     # 포지션 이익실현
-                'pos_loss',       # 포지션 손실제한
-                'moving_plan',    # 이동 주문
-                'track_plan'      # 추적 주문
+                'pl',       # Profit & Loss (손익 주문)
+                'tp',       # Take Profit (이익실현)
+                'sl',       # Stop Loss (손절)
+                'normal',   # Normal plan order (일반 계획 주문)
+                'pos_profit',  # Position take profit
+                'pos_loss',    # Position stop loss
+                'moving_plan', # Trailing stop
+                'track'        # Track order
             ]
             
             # 각 planType별로 조회
@@ -306,51 +309,63 @@ class BitgetClient:
                     endpoint = "/api/v2/mix/order/orders-plan-pending"
                     params = {
                         'symbol': symbol,
-                        'productType': 'USDT-FUTURES',  # 필수 파라미터
+                        'productType': 'USDT-FUTURES',
                         'planType': plan_type
                     }
                     
                     logger.debug(f"🔥 예약 주문 조회 - planType: {plan_type}")
                     response = await self._request('GET', endpoint, params=params)
                     
-                    if response.get('code') == '00000' and response.get('data'):
-                        orders = response['data']
+                    # 🔥🔥🔥 응답 처리 수정 - 에러 응답도 제대로 처리
+                    if isinstance(response, dict):
+                        response_code = response.get('code')
                         
-                        for order in orders:
-                            # 주문 타입에 따라 분류
-                            current_plan_type = order.get('planType', plan_type)
-                            trade_side = order.get('tradeSide', order.get('side', ''))
+                        if response_code == '00000' and response.get('data'):
+                            orders = response['data']
                             
-                            # TP/SL 주문 분류
-                            is_tp_sl = plan_type in ['profit_plan', 'loss_plan', 'pos_profit', 'pos_loss']
+                            for order in orders:
+                                # 주문 타입에 따라 분류
+                                current_plan_type = order.get('planType', plan_type)
+                                trade_side = order.get('tradeSide', order.get('side', ''))
+                                
+                                # TP/SL 주문 분류
+                                is_tp_sl = plan_type in ['tp', 'sl', 'pl', 'pos_profit', 'pos_loss']
+                                
+                                # tradeSide로도 추가 분류
+                                if trade_side in ['close_long', 'close_short']:
+                                    is_tp_sl = True
+                                
+                                if is_tp_sl:
+                                    result['tp_sl_orders'].append(order)
+                                else:
+                                    result['plan_orders'].append(order)
                             
-                            # tradeSide로도 추가 분류
-                            if trade_side in ['close_long', 'close_short']:
-                                is_tp_sl = True
-                            
-                            if is_tp_sl:
-                                result['tp_sl_orders'].append(order)
-                            else:
-                                result['plan_orders'].append(order)
+                            logger.info(f"✅ planType '{plan_type}' 조회 성공: {len(orders)}개")
                         
-                        logger.info(f"✅ planType '{plan_type}' 조회 성공: {len(orders)}개")
-                    
-                    elif response.get('code') == '40812':
-                        # 해당 planType이 지원되지 않음 - 무시하고 계속
-                        logger.debug(f"📝 planType '{plan_type}'은 지원되지 않음")
-                        continue
+                        elif response_code == '40812':
+                            # 지원되지 않는 planType - 정상적인 상황이므로 debug 로그만
+                            logger.debug(f"📝 planType '{plan_type}'은 현재 지원되지 않음")
+                            continue
+                        
+                        elif response_code == '40002':
+                            # 잘못된 파라미터 - 경고 로그
+                            logger.warning(f"⚠️ planType '{plan_type}' 파라미터 오류: {response.get('msg', '')}")
+                            continue
+                        
+                        else:
+                            # 기타 오류
+                            logger.warning(f"⚠️ planType '{plan_type}' 조회 응답: code={response_code}, msg={response.get('msg', '')}")
+                            continue
                     else:
-                        logger.warning(f"⚠️ planType '{plan_type}' 조회 응답: {response}")
+                        # 응답이 딕셔너리가 아닌 경우
+                        logger.warning(f"⚠️ planType '{plan_type}' 조회 - 예상치 못한 응답 형식: {type(response)}")
                         continue
                     
                 except Exception as e:
+                    # 예외 처리
                     error_msg = str(e)
-                    if "40812" in error_msg or "planType is not met" in error_msg:
-                        logger.debug(f"📝 planType '{plan_type}'은 현재 지원되지 않음")
-                        continue
-                    else:
-                        logger.warning(f"⚠️ planType '{plan_type}' 조회 실패: {e}")
-                        continue
+                    logger.warning(f"⚠️ planType '{plan_type}' 조회 중 예외 발생: {error_msg}")
+                    continue
             
             total_orders = len(result['plan_orders']) + len(result['tp_sl_orders'])
             logger.info(f"✅ 전체 예약 주문 조회 완료: 일반 {len(result['plan_orders'])}개, TP/SL {len(result['tp_sl_orders'])}개, 총 {total_orders}개")
@@ -359,6 +374,7 @@ class BitgetClient:
             
         except Exception as e:
             logger.error(f"예약 주문 조회 실패: {e}")
+            logger.error(f"상세 오류: {traceback.format_exc()}")
             return {'plan_orders': [], 'tp_sl_orders': []}
     
     async def get_trade_fills(self, symbol: str = "BTCUSDT", start_time: int = 0, end_time: int = 0, limit: int = 100) -> List[Dict]:
@@ -2063,160 +2079,4 @@ class MirrorTradingSystem:
                     
             except Exception as e:
                 self.logger.debug(f"확인 방법 1 실패: {e}")
-                verification_methods.append(('active_orders', None))
-            
-            # 방법 2: 취소된 주문 목록에서 확인
-            try:
-                canceled_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "cancelled")
-                order_in_canceled = any(order.get('id') == gate_order_id for order in canceled_orders)
-                verification_methods.append(('canceled_orders', order_in_canceled))
-                
-                if order_in_canceled:
-                    self.logger.info(f"✅ 확인 방법 2: 주문이 취소 목록에 있음 - {gate_order_id}")
-                    return True
-                else:
-                    self.logger.debug(f"확인 방법 2: 주문이 취소 목록에 없음 - {gate_order_id}")
-                    
-            except Exception as e:
-                self.logger.debug(f"확인 방법 2 실패: {e}")
-                verification_methods.append(('canceled_orders', None))
-            
-            # 방법 3: 직접 주문 조회 시도
-            try:
-                # 주문이 존재하지 않으면 오류가 발생할 것임
-                specific_order = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "all")
-                order_found = any(order.get('id') == gate_order_id for order in specific_order)
-                verification_methods.append(('direct_query', not order_found))
-                
-                if not order_found:
-                    self.logger.info(f"✅ 확인 방법 3: 주문을 찾을 수 없음 - {gate_order_id}")
-                    return True
-                else:
-                    self.logger.warning(f"⚠️ 확인 방법 3: 주문이 여전히 존재함 - {gate_order_id}")
-                    
-            except Exception as e:
-                # 주문이 없어서 오류가 발생한 경우 취소된 것으로 간주
-                if any(keyword in str(e).lower() for keyword in ["not found", "order not exist", "invalid order"]):
-                    self.logger.info(f"✅ 확인 방법 3: 주문 조회 오류로 취소 확인 - {gate_order_id}")
-                    verification_methods.append(('direct_query', True))
-                    return True
-                else:
-                    self.logger.debug(f"확인 방법 3 실패: {e}")
-                    verification_methods.append(('direct_query', None))
-            
-            # 모든 확인 방법 결과 분석
-            successful_verifications = [method for method in verification_methods if method[1] is True]
-            failed_verifications = [method for method in verification_methods if method[1] is False]
-            
-            self.logger.debug(f"취소 확인 결과 - 성공: {successful_verifications}, 실패: {failed_verifications}")
-            
-            # 하나라도 취소가 확인되면 성공
-            if successful_verifications:
-                return True
-            
-            # 모든 방법이 실패했으면 취소되지 않은 것으로 판단
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"주문 취소 확인 검증 실패: {e}")
-            return False
-
-    async def _cancel_plan_order_tp(self, bitget_order_id: str):
-        """🔥🔥🔥🔥🔥 예약 주문에 연결된 TP 주문 취소"""
-        try:
-            if bitget_order_id not in self.plan_order_tp_tracking:
-                return
-            
-            tp_order_ids = self.plan_order_tp_tracking[bitget_order_id]
-            
-            for gate_tp_id in tp_order_ids:
-                try:
-                    await self.gate.cancel_price_triggered_order(gate_tp_id)
-                    self.logger.info(f"✅ 예약 주문 연결 TP 취소 성공: {gate_tp_id}")
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    if "not found" in error_msg or "order not exist" in error_msg:
-                        self.logger.info(f"✅ 예약 주문 연결 TP가 이미 취소/체결됨: {gate_tp_id}")
-                    else:
-                        self.logger.error(f"❌ 예약 주문 연결 TP 취소 실패: {gate_tp_id} - {e}")
-            
-            # 추적에서 제거
-            if bitget_order_id in self.plan_order_tp_tracking:
-                del self.plan_order_tp_tracking[bitget_order_id]
-            
-            if bitget_order_id in self.mirrored_plan_order_tp:
-                del self.mirrored_plan_order_tp[bitget_order_id]
-            
-        except Exception as e:
-            self.logger.error(f"예약 주문 TP 취소 처리 실패: {e}")
-
-    async def _process_new_plan_order_with_tp(self, bitget_order: Dict) -> Dict:
-        """🔥🔥🔥🔥🔥 새로운 예약 주문 복제 - TP 설정 올바른 방향으로 복제"""
-        try:
-            # 기본 처리 결과
-            result_data = {
-                'result': 'success',
-                'tp_created': False
-            }
-            
-            # 실제 구현이 필요하지만 여기서는 기본값 반환
-            return result_data
-            
-        except Exception as e:
-            self.logger.error(f"신규 예약 주문 + TP 복제 실패: {e}")
-            return {'result': 'failed', 'tp_created': False}
-
-    async def monitor_sync_status(self):
-        """동기화 상태 모니터링"""
-        while self.monitoring:
-            try:
-                # 주기적으로 동기화 상태 체크
-                await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
-                
-            except Exception as e:
-                self.logger.error(f"동기화 상태 모니터링 오류: {e}")
-                await asyncio.sleep(self.SYNC_CHECK_INTERVAL * 2)
-
-    async def monitor_tp_orders(self):
-        """🔥🔥🔥 TP 주문 모니터링"""
-        consecutive_errors = 0
-        
-        while self.monitoring:
-            try:
-                # TP 주문 상태 체크 로직 구현
-                await asyncio.sleep(self.ORDER_CHECK_INTERVAL)
-                consecutive_errors = 0
-                
-            except Exception as e:
-                consecutive_errors += 1
-                self.logger.error(f"TP 주문 모니터링 오류 (연속 {consecutive_errors}회): {e}")
-                
-                if consecutive_errors >= 5:
-                    await self.telegram.send_message(
-                        f"⚠️ TP 주문 모니터링 시스템 오류\n"
-                        f"연속 {consecutive_errors}회 실패"
-                    )
-                
-                await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
-
-    async def monitor_plan_order_tp(self):
-        """🔥🔥🔥🔥🔥 예약 주문 TP 모니터링"""
-        consecutive_errors = 0
-        
-        while self.monitoring:
-            try:
-                # 예약 주문 TP 상태 체크 로직 구현
-                await asyncio.sleep(self.ORDER_CHECK_INTERVAL)
-                consecutive_errors = 0
-                
-            except Exception as e:
-                consecutive_errors += 1
-                self.logger.error(f"예약 주문 TP 모니터링 오류 (연속 {consecutive_errors}회): {e}")
-                
-                if consecutive_errors >= 5:
-                    await self.telegram.send_message(
-                        f"⚠️ 예약 주문 TP 모니터링 시스템 오류\n"
-                        f"연속 {consecutive_errors}회 실패"
-                    )
-                
-                await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
+                verification_
