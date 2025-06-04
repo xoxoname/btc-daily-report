@@ -111,11 +111,15 @@ class BitgetClient:
             raise
     
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회 - 수정된 엔드포인트"""
+        """계정 정보 조회 - 파라미터 수정"""
         try:
-            # V2 API 엔드포인트 사용
+            # V2 API 엔드포인트 사용 - 파라미터 수정
             endpoint = "/api/v2/mix/account/account"
-            params = {'symbol': 'BTCUSDT', 'marginCoin': 'USDT'}
+            params = {
+                'symbol': 'BTCUSDT',
+                'marginCoin': 'USDT',
+                'productType': 'USDT-FUTURES'  # 필수 파라미터 추가
+            }
             response = await self._request('GET', endpoint, params=params)
             
             if response.get('code') == '00000' and response.get('data'):
@@ -129,11 +133,15 @@ class BitgetClient:
             return {}
     
     async def get_positions(self, symbol: str = "BTCUSDT") -> List[Dict]:
-        """포지션 조회 - 수정된 엔드포인트"""
+        """포지션 조회 - 파라미터 수정"""
         try:
-            # V2 API 엔드포인트 사용
+            # V2 API 엔드포인트 사용 - 파라미터 수정
             endpoint = "/api/v2/mix/position/all-position"
-            params = {'symbol': symbol, 'marginCoin': 'USDT'}
+            params = {
+                'symbol': symbol,
+                'marginCoin': 'USDT',
+                'productType': 'USDT-FUTURES'  # 필수 파라미터 추가
+            }
             response = await self._request('GET', endpoint, params=params)
             
             if response.get('code') == '00000' and response.get('data'):
@@ -234,15 +242,15 @@ class BitgetClient:
             return {}
     
     async def get_recent_filled_orders(self, symbol: str = "BTCUSDT", minutes: int = 5) -> List[Dict]:
-        """최근 체결 주문 조회 - 🔥🔥 파라미터 형식 수정"""
+        """최근 체결 주문 조회 - 파라미터 형식 수정"""
         try:
-            # V2 API 엔드포인트 사용
+            # V2 API 엔드포인트 사용 - 파라미터 수정
             endpoint = "/api/v2/mix/order/fills"
             
-            # 🔥🔥 수정: 올바른 파라미터 형식 사용
+            # 필수 파라미터 추가
             params = {
                 'symbol': symbol,
-                'productType': 'USDT-FUTURES'  # 필수 파라미터 추가
+                'productType': 'USDT-FUTURES'  # 필수 파라미터
             }
             
             # 시간 범위가 필요한 경우만 추가
@@ -264,18 +272,19 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = "BTCUSDT") -> Dict:
-        """모든 예약 주문 조회 (TP/SL 포함) - 🔥🔥 올바른 엔드포인트 사용"""
+        """모든 예약 주문 조회 (TP/SL 포함) - 엔드포인트 및 파라미터 수정"""
         try:
             result = {
                 'plan_orders': [],
                 'tp_sl_orders': []
             }
             
-            # 🔥🔥🔥 수정: 올바른 API v2 엔드포인트 사용
-            endpoint = "/api/v2/mix/order/orders-plan-pending"  # 올바른 엔드포인트
+            # 수정된 API v2 엔드포인트 사용
+            endpoint = "/api/v2/mix/order/orders-plan-pending"
             params = {
                 'symbol': symbol,
-                'productType': 'USDT-FUTURES'  # 필수 파라미터
+                'productType': 'USDT-FUTURES',  # 필수 파라미터
+                'planType': 'normal_plan'  # 일반 예약 주문만 조회
             }
             
             try:
@@ -290,16 +299,27 @@ class BitgetClient:
                         plan_type = order.get('planType', '')
                         order_type = order.get('orderType', '')
                         side = order.get('side', '')
+                        trade_side = order.get('tradeSide', '')
                         
-                        # TP/SL 주문 분류 로직
-                        if any(keyword in plan_type.lower() for keyword in ['profit', 'loss', 'tp', 'sl']):
-                            result['tp_sl_orders'].append(order)
-                        elif any(keyword in order_type.lower() for keyword in ['profit', 'loss', 'stop']):
-                            result['tp_sl_orders'].append(order)
-                        elif 'close' in side.lower():
+                        # TP/SL 주문 분류 로직 개선
+                        is_tp_sl = False
+                        
+                        # planType으로 구분
+                        if plan_type in ['profit_plan', 'loss_plan', 'normal_plan']:
+                            if trade_side in ['close_long', 'close_short']:
+                                is_tp_sl = True
+                        
+                        # tradeSide로 구분
+                        elif trade_side in ['close_long', 'close_short']:
+                            is_tp_sl = True
+                        
+                        # 기타 TP/SL 키워드 확인
+                        elif any(keyword in str(order).lower() for keyword in ['profit', 'loss', 'tp', 'sl', 'stop']):
+                            is_tp_sl = True
+                        
+                        if is_tp_sl:
                             result['tp_sl_orders'].append(order)
                         else:
-                            # 일반 예약 주문
                             result['plan_orders'].append(order)
                     
                     logger.info(f"✅ Bitget 예약 주문 조회 성공: 일반 {len(result['plan_orders'])}개, TP/SL {len(result['tp_sl_orders'])}개")
@@ -311,6 +331,30 @@ class BitgetClient:
                 # 오류 발생 시 빈 결과 반환
                 result = {'plan_orders': [], 'tp_sl_orders': []}
             
+            # TP/SL 주문 별도 조회 시도
+            try:
+                tp_sl_endpoint = "/api/v2/mix/order/orders-plan-pending"
+                tp_sl_params = {
+                    'symbol': symbol,
+                    'productType': 'USDT-FUTURES',
+                    'planType': 'profit_plan'  # TP 주문
+                }
+                
+                tp_response = await self._request('GET', tp_sl_endpoint, params=tp_sl_params)
+                if tp_response.get('code') == '00000' and tp_response.get('data'):
+                    result['tp_sl_orders'].extend(tp_response['data'])
+                
+                # SL 주문도 조회
+                tp_sl_params['planType'] = 'loss_plan'
+                sl_response = await self._request('GET', tp_sl_endpoint, params=tp_sl_params)
+                if sl_response.get('code') == '00000' and sl_response.get('data'):
+                    result['tp_sl_orders'].extend(sl_response['data'])
+                
+                logger.info(f"✅ TP/SL 별도 조회 완료: 추가 {len(tp_response.get('data', [])) + len(sl_response.get('data', []))}개")
+                
+            except Exception as tp_error:
+                logger.debug(f"TP/SL 별도 조회 실패 (무시): {tp_error}")
+            
             return result
             
         except Exception as e:
@@ -318,7 +362,7 @@ class BitgetClient:
             return {'plan_orders': [], 'tp_sl_orders': []}
     
     async def get_trade_fills(self, symbol: str = "BTCUSDT", start_time: int = 0, end_time: int = 0, limit: int = 100) -> List[Dict]:
-        """거래 내역 조회 - 🔥🔥 파라미터 형식 수정"""
+        """거래 내역 조회 - 파라미터 형식 수정"""
         try:
             endpoint = "/api/v2/mix/order/fills"
             params = {
@@ -344,16 +388,17 @@ class BitgetClient:
             return []
     
     async def get_enhanced_profit_history(self, days: int = 7) -> Dict:
-        """향상된 손익 내역 조회 - 수정된 엔드포인트"""
+        """향상된 손익 내역 조회 - 파라미터 수정"""
         try:
             end_time = int(time.time() * 1000)
             start_time = end_time - (days * 24 * 60 * 60 * 1000)
             
-            # V2 API 엔드포인트 사용
+            # V2 API 엔드포인트 사용 - 파라미터 수정
             endpoint = "/api/v2/mix/account/account-bill"
             params = {
                 'symbol': 'BTCUSDT',
                 'marginCoin': 'USDT',
+                'productType': 'USDT-FUTURES',  # 필수 파라미터 추가
                 'startTime': str(start_time),
                 'endTime': str(end_time),
                 'pageSize': '100'
