@@ -16,11 +16,16 @@ class TelegramBot:
     def _initialize_bot(self):
         """봇 초기화"""
         try:
+            # 환경변수명 통일 - TELEGRAM_BOT_TOKEN 사용
+            telegram_token = self.config.TELEGRAM_BOT_TOKEN
+            if not telegram_token:
+                raise ValueError("TELEGRAM_BOT_TOKEN 환경변수가 설정되지 않았습니다.")
+            
             # Bot 인스턴스 생성
-            self.bot = Bot(token=self.config.TELEGRAM_TOKEN)
+            self.bot = Bot(token=telegram_token)
             
             # Application 생성
-            self.application = Application.builder().token(self.config.TELEGRAM_TOKEN).build()
+            self.application = Application.builder().token(telegram_token).build()
             
             self.logger.info("텔레그램 봇 초기화 완료")
             
