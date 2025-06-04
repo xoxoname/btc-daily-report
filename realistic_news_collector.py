@@ -988,6 +988,17 @@ class RealisticNewsCollector:
                 
                 await asyncio.sleep(600)  # 10분 대기
                 
+                # NewsData API (새로 추가)
+                if self.newsdata_key and self.api_usage['newsdata_today'] < self.api_limits['newsdata']:
+                    try:
+                        await self._call_newsdata_enhanced()
+                        self.api_usage['newsdata_today'] += 1
+                        logger.info(f"✅ NewsData 호출 ({self.api_usage['newsdata_today']}/{self.api_limits['newsdata']})")
+                    except Exception as e:
+                        logger.error(f"NewsData 오류: {str(e)[:100]}")
+                
+                await asyncio.sleep(600)  # 10분 대기
+                
                 # Alpha Vantage
                 if self.alpha_vantage_key and self.api_usage['alpha_vantage_today'] < self.api_limits['alpha_vantage']:
                     try:
@@ -2203,14 +2214,3 @@ class RealisticNewsCollector:
                 logger.info(f"🚨 크리티컬 리포트 중복 방지: {len(self.sent_critical_reports)}개 기록")
         except Exception as e:
             logger.error(f"세션 종료 중 오류: {e}")
-                
-                # NewsData API
-                if self.newsdata_key and self.api_usage['newsdata_today'] < self.api_limits['newsdata']:
-                    try:
-                        await self._call_newsdata_enhanced()
-                        self.api_usage['newsdata_today'] += 1
-                        logger.info(f"✅ NewsData 호출 ({self.api_usage['newsdata_today']}/{self.api_limits['newsdata']})")
-                    except Exception as e:
-                        logger.error(f"NewsData 오류: {str(e)[:100]}")
-                
-                await asyncio.sleep(600)  # 10분 대기
