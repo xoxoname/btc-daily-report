@@ -340,8 +340,10 @@ class GateClient:
     
     async def create_price_triggered_order(self, trigger_type: str, trigger_price: str, 
                                          order_type: str, contract: str, size: int, 
-                                         price: Optional[str] = None) -> Dict:
-        """가격 트리거 주문 생성 - 유효성 검증 포함"""
+                                         price: Optional[str] = None,
+                                         stop_profit_price: Optional[str] = None,
+                                         stop_loss_price: Optional[str] = None) -> Dict:
+        """🔥 가격 트리거 주문 생성 - 실제 TP/SL 설정 포함"""
         try:
             # 트리거 가격 유효성 검증 및 조정
             trigger_price_float = float(trigger_price)
@@ -394,14 +396,47 @@ class GateClient:
                 }
             }
             
-            logger.info(f"Gate.io 가격 트리거 주문 생성 (검증완료): {data}")
+            # 🔥 실제 TP/SL 설정 - Gate.io API 문서에 따른 방식
+            has_tp_sl = False
+            if stop_profit_price and float(stop_profit_price) > 0:
+                data["stop_profit_price"] = str(stop_profit_price)
+                has_tp_sl = True
+                logger.info(f"🎯 실제 TP 설정: ${stop_profit_price}")
+            
+            if stop_loss_price and float(stop_loss_price) > 0:
+                data["stop_loss_price"] = str(stop_loss_price)
+                has_tp_sl = True
+                logger.info(f"🛡️ 실제 SL 설정: ${stop_loss_price}")
+            
+            logger.info(f"Gate.io 가격 트리거 주문 생성 (TP/SL 포함): {data}")
             response = await self._request('POST', endpoint, data=data)
             logger.info(f"✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
+            
+            # 응답에 TP/SL 정보 추가
+            response['has_tp_sl'] = has_tp_sl
+            response['requested_tp'] = stop_profit_price
+            response['requested_sl'] = stop_loss_price
+            
+            # TP/SL 설정 결과 확인
+            actual_tp = response.get('stop_profit_price', '')
+            actual_sl = response.get('stop_loss_price', '')
+            
+            if has_tp_sl:
+                if actual_tp and actual_tp != '':
+                    logger.info(f"✅ TP 설정 확인됨: ${actual_tp}")
+                elif stop_profit_price:
+                    logger.warning(f"⚠️ TP 설정 요청했으나 응답에 없음: {stop_profit_price}")
+                
+                if actual_sl and actual_sl != '':
+                    logger.info(f"✅ SL 설정 확인됨: ${actual_sl}")
+                elif stop_loss_price:
+                    logger.warning(f"⚠️ SL 설정 요청했으나 응답에 없음: {stop_loss_price}")
+            
             return response
             
         except Exception as e:
             logger.error(f"❌ 가격 트리거 주문 생성 실패: {e}")
-            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}, price={price}")
+            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}, price={price}, tp={stop_profit_price}, sl={stop_loss_price}")
             raise
     
     async def create_unified_order_with_tp_sl(self, trigger_type: str, trigger_price: str,
@@ -410,61 +445,81 @@ class GateClient:
                                            tp_price: Optional[str] = None,
                                            sl_price: Optional[str] = None,
                                            bitget_order_info: Optional[Dict] = None) -> Dict:
-        """🔥 통합된 TP/SL 포함 예약 주문 생성 - 비트겟과 동일한 형태로"""
+        """🔥 통합된 TP/SL 포함 예약 주문 생성 - 실제 Gate.io API TP/SL 설정"""
         try:
-            logger.info(f"🎯 통합 TP/SL 포함 예약 주문 생성 시도")
+            logger.info(f"🎯 통합 TP/SL 포함 예약 주문 생성 시도 (실제 API 설정)")
             logger.info(f"   - 트리거가: {trigger_price}")
             logger.info(f"   - TP: {tp_price}")
             logger.info(f"   - SL: {sl_price}")
             
-            # 기본 예약 주문 생성
-            basic_order = await self.create_price_triggered_order(
+            # 🔥 실제 Gate.io API에 TP/SL 정보를 전달하여 예약 주문 생성
+            order_response = await self.create_price_triggered_order(
                 trigger_type=trigger_type,
                 trigger_price=trigger_price,
                 order_type=order_type,
                 contract=contract,
                 size=size,
-                price=price
+                price=price,
+                stop_profit_price=tp_price,  # 실제 TP 설정
+                stop_loss_price=sl_price     # 실제 SL 설정
             )
             
-            basic_order_id = basic_order.get('id')
-            logger.info(f"✅ 기본 예약 주문 생성 완료: {basic_order_id}")
+            order_id = order_response.get('id')
+            logger.info(f"✅ 통합 TP/SL 예약 주문 생성 완료: {order_id}")
             
-            # 🔥 TP/SL 설정 방식 개선 - 하나의 통합 주문으로 처리
+            # TP/SL 설정 결과 검증
+            has_tp_sl = order_response.get('has_tp_sl', False)
+            actual_tp = order_response.get('stop_profit_price', '')
+            actual_sl = order_response.get('stop_loss_price', '')
+            
             if tp_price or sl_price:
-                # TP/SL을 비트겟과 동일한 방식으로 설정하는 메타데이터 추가
-                tp_sl_info = {
-                    'has_tp_sl': True,
+                tp_sl_success = False
+                tp_sl_info = f"\n\n🎯 TP/SL 설정 결과:"
+                
+                if tp_price and actual_tp and actual_tp != '':
+                    tp_sl_info += f"\n✅ TP 성공: ${actual_tp}"
+                    tp_sl_success = True
+                elif tp_price:
+                    tp_sl_info += f"\n❌ TP 실패: 요청 ${tp_price} → 응답 '{actual_tp}'"
+                
+                if sl_price and actual_sl and actual_sl != '':
+                    tp_sl_info += f"\n✅ SL 성공: ${actual_sl}"
+                    tp_sl_success = True
+                elif sl_price:
+                    tp_sl_info += f"\n❌ SL 실패: 요청 ${sl_price} → 응답 '{actual_sl}'"
+                
+                if tp_sl_success:
+                    tp_sl_info += f"\n🎯 Gate.io 네이티브 TP/SL 설정 완료"
+                else:
+                    tp_sl_info += f"\n⚠️ TP/SL 설정이 반영되지 않았습니다."
+                
+                logger.info(tp_sl_info)
+                
+                # 결과에 상세 정보 추가
+                order_response.update({
+                    'has_tp_sl': tp_sl_success,
                     'tp_price': tp_price,
                     'sl_price': sl_price,
-                    'bitget_style': True,  # 비트겟 스타일 TP/SL 설정
-                    'unified_order': True,  # 통합 주문 표시
-                    'original_order_id': basic_order_id
-                }
-                
-                # 기본 주문에 TP/SL 정보 추가
-                basic_order.update(tp_sl_info)
-                
-                logger.info(f"🎯 비트겟 스타일 TP/SL 설정 완료")
-                if tp_price:
-                    logger.info(f"   ✅ TP: ${tp_price}")
-                if sl_price:
-                    logger.info(f"   ✅ SL: ${sl_price}")
-                
-                return basic_order
+                    'actual_tp_price': actual_tp,
+                    'actual_sl_price': actual_sl,
+                    'unified_order': True,
+                    'bitget_style': True,
+                    'tp_sl_status': 'success' if tp_sl_success else 'failed'
+                })
             else:
                 logger.info(f"📝 TP/SL 설정 없는 일반 예약 주문")
-                basic_order.update({
+                order_response.update({
                     'has_tp_sl': False,
                     'unified_order': True,
                     'bitget_style': False
                 })
-                return basic_order
+            
+            return order_response
             
         except Exception as e:
             logger.error(f"❌ 통합 TP/SL 예약 주문 생성 실패: {e}")
             # 폴백: 일반 예약 주문만 생성
-            logger.info("🔄 폴백: 일반 예약 주문만 생성")
+            logger.info("🔄 폴백: TP/SL 없는 일반 예약 주문 생성")
             fallback_order = await self.create_price_triggered_order(
                 trigger_type=trigger_type,
                 trigger_price=trigger_price,
@@ -472,12 +527,14 @@ class GateClient:
                 contract=contract,
                 size=size,
                 price=price
+                # TP/SL 제외
             )
             fallback_order.update({
                 'has_tp_sl': False,
                 'unified_order': True,
                 'bitget_style': False,
-                'fallback': True
+                'fallback': True,
+                'error': str(e)
             })
             return fallback_order
     
