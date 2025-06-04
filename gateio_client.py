@@ -383,7 +383,7 @@ class GateClient:
                                                      price: Optional[str] = None,
                                                      tp_price: Optional[str] = None,
                                                      sl_price: Optional[str] = None) -> Dict:
-        """TP/SL 설정이 포함된 가격 트리거 주문 생성
+        """TP/SL 설정이 포함된 가격 트리거 주문 생성 - auto_size 파라미터 제거
         
         Args:
             trigger_type: 트리거 타입 (ge=이상, le=이하)
@@ -396,62 +396,67 @@ class GateClient:
             sl_price: Stop Loss 가격
         """
         try:
-            endpoint = "/api/v4/futures/usdt/price_orders"
+            # 먼저 기본 트리거 주문 생성
+            logger.info(f"🎯 TP/SL 포함 트리거 주문 생성 시도 - TP: {tp_price}, SL: {sl_price}")
             
-            initial_data = {
-                "type": order_type,
-                "contract": contract,
-                "size": size
-            }
+            # 기본 트리거 주문 생성
+            basic_order = await self.create_price_triggered_order(
+                trigger_type=trigger_type,
+                trigger_price=trigger_price,
+                order_type=order_type,
+                contract=contract,
+                size=size,
+                price=price
+            )
             
-            # 가격 설정
-            if order_type == "limit":
-                if price:
-                    initial_data["price"] = str(price)
-                else:
-                    initial_data["price"] = str(trigger_price)
-            elif order_type == "market":
-                initial_data["price"] = str(trigger_price)
+            # TP/SL이 설정되어 있으면 별도 주문으로 생성
+            tp_order = None
+            sl_order = None
             
-            # TP/SL 설정 추가
             if tp_price:
-                initial_data["auto_size"] = "close_position"  # TP/SL은 포지션 전체 청산
-                if size > 0:  # 롱 포지션의 경우
-                    initial_data["take_profit_price"] = str(tp_price)
-                else:  # 숏 포지션의 경우
-                    initial_data["take_profit_price"] = str(tp_price)
-                logger.info(f"TP 설정 추가: {tp_price}")
+                try:
+                    # TP 주문 생성
+                    tp_trigger_type = "le" if size > 0 else "ge"  # 롱이면 le (가격이 TP 이하로 떨어지면), 숏이면 ge
+                    tp_size = -size  # 반대 방향으로 청산
+                    
+                    tp_order = await self.create_price_triggered_order(
+                        trigger_type=tp_trigger_type,
+                        trigger_price=tp_price,
+                        order_type="market",
+                        contract=contract,
+                        size=tp_size
+                    )
+                    logger.info(f"🎯 TP 주문 생성 성공: {tp_order.get('id')}")
+                    
+                except Exception as tp_error:
+                    logger.error(f"TP 주문 생성 실패: {tp_error}")
             
             if sl_price:
-                initial_data["auto_size"] = "close_position"  # TP/SL은 포지션 전체 청산
-                if size > 0:  # 롱 포지션의 경우
-                    initial_data["stop_loss_price"] = str(sl_price)
-                else:  # 숏 포지션의 경우
-                    initial_data["stop_loss_price"] = str(sl_price)
-                logger.info(f"SL 설정 추가: {sl_price}")
+                try:
+                    # SL 주문 생성
+                    sl_trigger_type = "ge" if size > 0 else "le"  # 롱이면 ge (가격이 SL 이상으로 올라가면), 숏이면 le
+                    sl_size = -size  # 반대 방향으로 청산
+                    
+                    sl_order = await self.create_price_triggered_order(
+                        trigger_type=sl_trigger_type,
+                        trigger_price=sl_price,
+                        order_type="market",
+                        contract=contract,
+                        size=sl_size
+                    )
+                    logger.info(f"🛡️ SL 주문 생성 성공: {sl_order.get('id')}")
+                    
+                except Exception as sl_error:
+                    logger.error(f"SL 주문 생성 실패: {sl_error}")
             
-            # 트리거 rule 설정
-            if trigger_type == "ge":
-                rule_value = 1
-            elif trigger_type == "le":
-                rule_value = 2
-            else:
-                rule_value = 1
+            # 결과 반환 - 기본 주문에 TP/SL 주문 정보 추가
+            result = basic_order.copy()
+            result['tp_order'] = tp_order
+            result['sl_order'] = sl_order
+            result['has_tp_sl'] = bool(tp_order or sl_order)
             
-            data = {
-                "initial": initial_data,
-                "trigger": {
-                    "strategy_type": 0,
-                    "price_type": 0,
-                    "price": str(trigger_price),
-                    "rule": rule_value
-                }
-            }
-            
-            logger.info(f"Gate.io TP/SL 포함 트리거 주문 생성: {data}")
-            response = await self._request('POST', endpoint, data=data)
-            logger.info(f"✅ Gate.io TP/SL 포함 트리거 주문 생성 성공: {response}")
-            return response
+            logger.info(f"✅ TP/SL 포함 트리거 주문 생성 완료: 기본={basic_order.get('id')}, TP={tp_order.get('id') if tp_order else None}, SL={sl_order.get('id') if sl_order else None}")
+            return result
             
         except Exception as e:
             logger.error(f"❌ TP/SL 포함 트리거 주문 생성 실패: {e}")
@@ -470,49 +475,65 @@ class GateClient:
                                                  trigger_price: float, trigger_type: str,
                                                  tp_price: Optional[float] = None,
                                                  sl_price: Optional[float] = None) -> Dict:
-        """TP/SL 설정이 포함된 조건부 주문 생성 (대안 방법)"""
+        """TP/SL 설정이 포함된 조건부 주문 생성 (대안 방법) - auto_size 파라미터 제거"""
         try:
-            endpoint = "/api/v4/futures/usdt/price_orders"
+            logger.info(f"조건부 주문 (TP/SL 포함) 생성 시작 - TP: {tp_price}, SL: {sl_price}")
             
-            # 기본 주문 설정
-            initial_order = {
-                "type": "market",
-                "contract": contract,
-                "size": size,
-                "price": str(trigger_price)
-            }
+            # 기본 트리거 주문 생성
+            main_order = await self.create_price_triggered_order(
+                trigger_type=trigger_type,
+                trigger_price=str(trigger_price),
+                order_type="market",
+                contract=contract,
+                size=size
+            )
             
-            # TP/SL 설정이 있으면 추가
-            if tp_price or sl_price:
-                initial_order["auto_size"] = "close_position"
-                
-                if tp_price:
-                    initial_order["take_profit_price"] = str(tp_price)
-                    initial_order["take_profit_type"] = "fill_price"
-                    logger.info(f"조건부 주문에 TP 설정: {tp_price}")
-                
-                if sl_price:
-                    initial_order["stop_loss_price"] = str(sl_price)
-                    initial_order["stop_loss_type"] = "fill_price"
-                    logger.info(f"조건부 주문에 SL 설정: {sl_price}")
+            # TP/SL 별도 주문 생성
+            tp_order = None
+            sl_order = None
             
-            # 트리거 조건 설정
-            trigger_rule = 1 if trigger_type == "ge" else 2
+            if tp_price:
+                try:
+                    tp_trigger_type = "le" if size > 0 else "ge"
+                    tp_size = -size
+                    
+                    tp_order = await self.create_price_triggered_order(
+                        trigger_type=tp_trigger_type,
+                        trigger_price=str(tp_price),
+                        order_type="market",
+                        contract=contract,
+                        size=tp_size
+                    )
+                    logger.info(f"조건부 주문에 TP 설정 완료: {tp_price}")
+                    
+                except Exception as tp_error:
+                    logger.error(f"조건부 TP 주문 생성 실패: {tp_error}")
             
-            order_data = {
-                "initial": initial_order,
-                "trigger": {
-                    "strategy_type": 0,
-                    "price_type": 0,
-                    "price": str(trigger_price),
-                    "rule": trigger_rule
-                }
-            }
+            if sl_price:
+                try:
+                    sl_trigger_type = "ge" if size > 0 else "le"
+                    sl_size = -size
+                    
+                    sl_order = await self.create_price_triggered_order(
+                        trigger_type=sl_trigger_type,
+                        trigger_price=str(sl_price),
+                        order_type="market",
+                        contract=contract,
+                        size=sl_size
+                    )
+                    logger.info(f"조건부 주문에 SL 설정 완료: {sl_price}")
+                    
+                except Exception as sl_error:
+                    logger.error(f"조건부 SL 주문 생성 실패: {sl_error}")
             
-            logger.info(f"조건부 주문 (TP/SL 포함) 생성: {order_data}")
-            response = await self._request('POST', endpoint, data=order_data)
-            logger.info(f"✅ 조건부 주문 (TP/SL 포함) 생성 성공: {response}")
-            return response
+            # 결과 통합
+            result = main_order.copy()
+            result['tp_order'] = tp_order
+            result['sl_order'] = sl_order
+            result['has_tp_sl'] = bool(tp_order or sl_order)
+            
+            logger.info(f"✅ 조건부 주문 (TP/SL 포함) 생성 성공: {result}")
+            return result
             
         except Exception as e:
             logger.error(f"❌ 조건부 주문 (TP/SL 포함) 생성 실패: {e}")
