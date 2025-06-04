@@ -285,7 +285,7 @@ class BitgetClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅
+                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -296,7 +296,26 @@ class BitgetClient:
                             trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
                             size = order.get('size', order.get('volume', 'unknown'))
                             
+                            # 🔥🔥🔥 TP/SL 정보 상세 로깅
+                            tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
+                            sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
+                            
                             logger.info(f"  📝 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}")
+                            
+                            if tp_price:
+                                logger.info(f"      🎯 TP 설정 발견: {tp_price}")
+                            if sl_price:
+                                logger.info(f"      🛡️ SL 설정 발견: {sl_price}")
+                            
+                            # 🔥🔥🔥 모든 필드 확인하여 TP/SL 관련 필드 찾기
+                            tp_sl_fields = {}
+                            for field_name, field_value in order.items():
+                                if any(keyword in field_name.lower() for keyword in ['stop', 'profit', 'loss', 'tp', 'sl']):
+                                    if field_value and str(field_value) not in ['0', '0.0', '', 'null']:
+                                        tp_sl_fields[field_name] = field_value
+                            
+                            if tp_sl_fields:
+                                logger.info(f"      🔍 TP/SL 관련 필드들: {tp_sl_fields}")
                         
                         # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
                         break
@@ -387,7 +406,7 @@ class BitgetClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅
+                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -398,7 +417,16 @@ class BitgetClient:
                             trigger_price = order.get('triggerPrice', order.get('executePrice', 'unknown'))
                             size = order.get('size', order.get('volume', 'unknown'))
                             
+                            # 🔥🔥🔥 TP/SL 정보 상세 로깅
+                            tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
+                            sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
+                            
                             logger.info(f"  📝 V1 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}")
+                            
+                            if tp_price:
+                                logger.info(f"      🎯 V1 TP 설정 발견: {tp_price}")
+                            if sl_price:
+                                logger.info(f"      🛡️ V1 SL 설정 발견: {sl_price}")
                         
                         # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
                         break
@@ -495,7 +523,16 @@ class BitgetClient:
                 trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
                 size = order.get('size', order.get('volume', 'unknown'))
                 order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
+                
+                # 🔥🔥🔥 TP/SL 정보도 로깅
+                tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
+                sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
+                
                 logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}, 타입: {order_type}")
+                if tp_price:
+                    logger.info(f"     🎯 TP: {tp_price}")
+                if sl_price:
+                    logger.info(f"     🛡️ SL: {sl_price}")
         else:
             # 🔥🔥🔥 수정: WARNING → DEBUG로 변경하여 빨간 로그 제거
             logger.debug("📝 현재 예약 주문이 없습니다.")
@@ -523,7 +560,7 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """🔥 모든 플랜 주문과 TP/SL 조회 - 개선된 분류"""
+        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 개선된 분류 + TP 정보 강화"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -551,11 +588,17 @@ class BitgetClient:
                     order.get('reduceOnly') == 'true'):
                     is_tp_sl = True
                 
-                # TP/SL 가격이 설정된 경우도 확인
-                elif (order.get('presetStopSurplusPrice') or 
-                      order.get('presetStopLossPrice')):
-                    # 이 경우는 일반 주문에 TP/SL이 설정된 것이므로 plan_orders로 분류
-                    pass
+                # 🔥🔥🔥 TP/SL 가격이 설정된 경우 처리 개선
+                tp_price = self._extract_tp_price(order)
+                sl_price = self._extract_sl_price(order)
+                
+                # TP/SL이 설정된 일반 주문은 plan_orders에 분류하되 TP/SL 정보 보존
+                if tp_price or sl_price:
+                    logger.info(f"🎯 TP/SL 설정이 있는 예약 주문 발견: {order.get('orderId', order.get('planOrderId'))}")
+                    if tp_price:
+                        logger.info(f"   TP: {tp_price}")
+                    if sl_price:
+                        logger.info(f"   SL: {sl_price}")
                 
                 if is_tp_sl:
                     tp_sl_orders.append(order)
@@ -580,13 +623,16 @@ class BitgetClient:
                     order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
                     side = order.get('side', order.get('tradeSide', 'unknown'))
                     price = order.get('price', order.get('triggerPrice', 'unknown'))
-                    tp_price = order.get('presetStopSurplusPrice', '')
-                    sl_price = order.get('presetStopLossPrice', '')
+                    
+                    # 🔥🔥🔥 강화된 TP/SL 추출
+                    tp_price = self._extract_tp_price(order)
+                    sl_price = self._extract_sl_price(order)
+                    
                     logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 가격: {price}")
                     if tp_price:
-                        logger.info(f"     TP 설정: {tp_price}")
+                        logger.info(f"     🎯 TP 설정: {tp_price}")
                     if sl_price:
-                        logger.info(f"     SL 설정: {sl_price}")
+                        logger.info(f"     🛡️ SL 설정: {sl_price}")
             
             if tp_sl_orders:
                 logger.info("📊 TP/SL 주문 목록:")
@@ -606,6 +652,65 @@ class BitgetClient:
                 'total_count': 0,
                 'error': str(e)
             }
+    
+    def _extract_tp_price(self, order: Dict) -> Optional[float]:
+        """🔥🔥🔥 TP 가격 추출 - 모든 가능한 필드 확인"""
+        try:
+            # 가능한 TP 필드명들
+            tp_fields = [
+                'presetStopSurplusPrice',  # 주요 필드
+                'stopSurplusPrice',
+                'takeProfitPrice',
+                'tpPrice',
+                'stopProfit',
+                'profitPrice'
+            ]
+            
+            for field in tp_fields:
+                value = order.get(field)
+                if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
+                    try:
+                        tp_price = float(value)
+                        if tp_price > 0:
+                            logger.debug(f"TP 가격 추출 성공: {field} = {tp_price}")
+                            return tp_price
+                    except:
+                        continue
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"TP 가격 추출 오류: {e}")
+            return None
+    
+    def _extract_sl_price(self, order: Dict) -> Optional[float]:
+        """🔥🔥🔥 SL 가격 추출 - 모든 가능한 필드 확인"""
+        try:
+            # 가능한 SL 필드명들
+            sl_fields = [
+                'presetStopLossPrice',  # 주요 필드
+                'stopLossPrice',
+                'stopPrice',
+                'slPrice',
+                'lossPrice'
+            ]
+            
+            for field in sl_fields:
+                value = order.get(field)
+                if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
+                    try:
+                        sl_price = float(value)
+                        if sl_price > 0:
+                            logger.debug(f"SL 가격 추출 성공: {field} = {sl_price}")
+                            return sl_price
+                    except:
+                        continue
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"SL 가격 추출 오류: {e}")
+            return None
     
     async def get_account_info(self) -> Dict:
         """계정 정보 조회 (V2 API)"""
