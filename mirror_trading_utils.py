@@ -53,12 +53,7 @@ class MirrorTradingUtils:
             sl_price = None
             
             # TP 가격 추출
-            tp_fields = [
-                'presetStopSurplusPrice',
-                'stopSurplusPrice', 
-                'takeProfitPrice',
-                'tpPrice'
-            ]
+            tp_fields = ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice', 'tpPrice']
             
             for field in tp_fields:
                 value = bitget_order.get(field)
@@ -72,12 +67,7 @@ class MirrorTradingUtils:
                         continue
             
             # SL 가격 추출
-            sl_fields = [
-                'presetStopLossPrice',
-                'stopLossPrice',
-                'stopPrice',
-                'slPrice'
-            ]
+            sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice', 'slPrice']
             
             for field in sl_fields:
                 value = bitget_order.get(field)
@@ -204,28 +194,28 @@ class MirrorTradingUtils:
             
             hashes = []
             
-            # 1. 기본 해시 (기존 방식) - 안전한 포맷팅
+            # 1. 기본 해시 (기존 방식)
             try:
                 basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
                 hashes.append(basic_hash)
             except Exception as e:
                 self.logger.warning(f"기본 해시 생성 실패: {e}")
             
-            # 2. 정확한 가격 해시 - 안전한 포맷팅
+            # 2. 정확한 가격 해시
             try:
                 exact_price_hash = f"{contract}_{trigger_price:.8f}_{abs_size}"
                 hashes.append(exact_price_hash)
             except Exception as e:
                 self.logger.warning(f"정확한 가격 해시 생성 실패: {e}")
             
-            # 3. 부호 포함 해시 - 안전한 포맷팅
+            # 3. 부호 포함 해시
             try:
                 signed_hash = f"{contract}_{trigger_price:.2f}_{size}"
                 hashes.append(signed_hash)
             except Exception as e:
                 self.logger.warning(f"부호 포함 해시 생성 실패: {e}")
             
-            # 4. 반올림된 가격 해시 (가격 차이 허용) - 안전한 포맷팅
+            # 4. 반올림된 가격 해시 (가격 차이 허용)
             try:
                 rounded_price_1 = round(trigger_price, 1)
                 rounded_hash_1 = f"{contract}_{rounded_price_1:.1f}_{abs_size}"
@@ -237,7 +227,7 @@ class MirrorTradingUtils:
             except Exception as e:
                 self.logger.warning(f"반올림 해시 생성 실패: {e}")
             
-            # 5. TP/SL 포함 해시 (있는 경우) - None 체크 및 안전한 포맷팅
+            # 5. TP/SL 포함 해시 (있는 경우)
             try:
                 if order_details.get('has_tp_sl'):
                     tp_price = order_details.get('tp_price', 0) or 0
@@ -246,18 +236,6 @@ class MirrorTradingUtils:
                     hashes.append(tp_sl_hash)
             except Exception as e:
                 self.logger.warning(f"TP/SL 해시 생성 실패: {e}")
-            
-            # 6. 범위 기반 해시 (가격 오차 ±0.1% 허용) - 안전한 포맷팅
-            try:
-                price_tolerance = trigger_price * 0.001  # 0.1%
-                lower_price = trigger_price - price_tolerance
-                upper_price = trigger_price + price_tolerance
-                
-                range_hash_lower = f"{contract}_{lower_price:.2f}_{abs_size}"
-                range_hash_upper = f"{contract}_{upper_price:.2f}_{abs_size}"
-                hashes.extend([range_hash_lower, range_hash_upper])
-            except Exception as e:
-                self.logger.warning(f"범위 기반 해시 생성 실패: {e}")
             
             # 중복 제거
             unique_hashes = list(set(hashes))
@@ -286,34 +264,6 @@ class MirrorTradingUtils:
                 self.logger.error(f"폴백 해시 생성도 실패: {fallback_error}")
             
             return []
-    
-    def generate_order_hash_from_gate_order(self, gate_order: Dict) -> Optional[str]:
-        """게이트 주문으로부터 해시 생성 (기존 호환성 유지) - None 체크 강화"""
-        try:
-            trigger_info = gate_order.get('trigger', {}) or {}
-            trigger_price = trigger_info.get('price', '')
-            
-            initial_info = gate_order.get('initial', {}) or {}
-            initial_size = initial_info.get('size', 0)
-            
-            contract = gate_order.get('contract', '') or ''
-            
-            if trigger_price and initial_size and contract:
-                # None 체크 및 안전한 변환
-                try:
-                    trigger_price_float = float(trigger_price)
-                    initial_size_int = int(initial_size)
-                    hash_str = f"{contract}_{trigger_price_float:.2f}_{abs(initial_size_int)}"
-                    return hash_str
-                except (ValueError, TypeError) as e:
-                    self.logger.warning(f"해시 생성 시 변환 실패: {e}")
-                    return None
-            
-            return None
-            
-        except Exception as e:
-            self.logger.debug(f"게이트 주문 해시 생성 실패: {e}")
-            return None
     
     def generate_order_hash(self, trigger_price: float, size: int, contract: str = None) -> str:
         """주문 특성으로 해시 생성 (중복 방지용) - None 체크 강화"""
