@@ -1,3 +1,6 @@
+## config.py
+
+```python
 import os
 from dotenv import load_dotenv
 
@@ -10,7 +13,7 @@ class Config:
         self.MIRROR_TRADING_MODE = os.getenv('MIRROR_TRADING_MODE', 'false').lower() == 'true'
         
         # Telegram 설정
-        self.TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
         self.TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
         
         # Bitget API 설정
@@ -50,7 +53,7 @@ class Config:
         """필수 설정 검증"""
         # 기본 필수 설정 (항상 필요)
         required_configs = {
-            'TELEGRAM_TOKEN': self.TELEGRAM_TOKEN,
+            'TELEGRAM_BOT_TOKEN': self.TELEGRAM_BOT_TOKEN,
             'TELEGRAM_CHAT_ID': self.TELEGRAM_CHAT_ID,
             'BITGET_API_KEY': self.BITGET_API_KEY,
             'BITGET_SECRET_KEY': self.BITGET_SECRET_KEY,
@@ -95,7 +98,7 @@ class Config:
             print("📊 운영 모드: 분석 전용 모드")
         
         print("\n✅ 필수 API:")
-        print(f"  • Telegram Bot: {'설정됨' if self.TELEGRAM_TOKEN else '미설정'}")
+        print(f"  • Telegram Bot: {'설정됨' if self.TELEGRAM_BOT_TOKEN else '미설정'}")
         print(f"  • Bitget API: {'설정됨' if self.BITGET_API_KEY else '미설정'}")
         
         if self.MIRROR_TRADING_MODE:
@@ -188,7 +191,7 @@ class Config:
     def get_active_apis(self):
         """활성화된 API 목록 반환"""
         active_apis = {
-            'telegram': bool(self.TELEGRAM_TOKEN),
+            'telegram': bool(self.TELEGRAM_BOT_TOKEN),
             'bitget': bool(self.BITGET_API_KEY),
             'gate': bool(self.GATE_API_KEY),
             'openai': bool(self.OPENAI_API_KEY),
