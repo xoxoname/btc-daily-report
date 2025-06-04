@@ -1,249 +1,392 @@
-import os
-from typing import Optional
+import asyncio
+import aiohttp
+import hmac
+import hashlib
+import time
+import json
+import logging
+import base64
+from typing import Dict, List, Optional, Set, Tuple
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+import traceback
 
-class Config:
-    """설정 클래스"""
+logger = logging.getLogger(__name__)
+
+class BitgetClient:
+    """Bitget API V2 클라이언트"""
     
-    def __init__(self):
-        # Telegram 봇 설정
-        self.TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-        self.TELEGRAM_TOKEN = self.TELEGRAM_BOT_TOKEN  # 하위 호환성을 위해 추가
-        self.TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+    def __init__(self, config):
+        self.config = config
+        self.api_key = config.BITGET_APIKEY
+        self.api_secret = config.BITGET_APISECRET
+        self.passphrase = config.BITGET_PASSPHRASE
+        self.base_url = "https://api.bitget.com"
+        self.session = None
         
-        # Bitget API 설정 (환경변수명 통일)
-        self.BITGET_APIKEY = os.getenv('BITGET_APIKEY')
-        self.BITGET_APISECRET = os.getenv('BITGET_APISECRET')
-        self.BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+        # 심볼 설정 - V2 API 형식
+        self.symbol = "BTCUSDT_UMCBL"  # USDT-M 선물
         
-        # Gate.io API 설정
-        self.GATE_API_KEY = os.getenv('GATE_API_KEY')
-        self.GATE_API_SECRET = os.getenv('GATE_API_SECRET')
+    async def initialize(self):
+        """클라이언트 초기화"""
+        if not self.session:
+            timeout = aiohttp.ClientTimeout(total=30)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+            logger.info("Bitget 클라이언트 초기화 완료")
+    
+    def _generate_signature(self, timestamp: str, method: str, request_path: str, body: str = "") -> str:
+        """API 서명 생성 - V2 방식"""
+        try:
+            # V2 API 서명 메시지 형식
+            message = timestamp + method.upper() + request_path + body
+            
+            # Base64로 인코딩된 secret key 사용
+            secret_key = base64.b64decode(self.api_secret)
+            
+            # HMAC-SHA256 서명
+            signature = hmac.new(
+                secret_key,
+                message.encode('utf-8'),
+                hashlib.sha256
+            ).digest()
+            
+            # Base64 인코딩
+            return base64.b64encode(signature).decode('utf-8')
+            
+        except Exception as e:
+            logger.error(f"서명 생성 실패: {e}")
+            # 폴백: 기존 방식
+            message = timestamp + method.upper() + request_path + body
+            signature = hmac.new(
+                self.api_secret.encode('utf-8'),
+                message.encode('utf-8'),
+                hashlib.sha256
+            ).digest()
+            return base64.b64encode(signature).decode('utf-8')
+    
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None) -> Dict:
+        """API 요청"""
+        if not self.session:
+            await self.initialize()
         
-        # AI API 설정
-        self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-        self.ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+        url = f"{self.base_url}{endpoint}"
+        timestamp = str(int(time.time() * 1000))
         
-        # 뉴스 API 설정
-        self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
-        self.NEWSDATA_KEY = os.getenv('SDATA_KEY')  # 환경변수명과 일치
-        self.ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')
+        query_string = ""
+        if params:
+            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+            if query_string:
+                url += f"?{query_string}"
         
-        # 암호화폐 API 설정
-        self.COINGECKO_API_KEY = os.getenv('COINGECKO_API_KEY')
-        self.CRYPTOCOMPARE_API_KEY = os.getenv('CRYPTOCOMPARE_API_KEY')
+        body = ""
+        if data:
+            body = json.dumps(data, separators=(',', ':'))
         
-        # 미러 트레이딩 설정
-        self.ENABLE_MIRROR_TRADING = os.getenv('ENABLE_MIRROR_TRADING', 'false').lower() == 'true'
-        self.MIRROR_TRADING_MODE = os.getenv('MIRROR_TRADING_MODE', 'conservative').lower()
-        self.MIRROR_CHECK_INTERVAL = int(os.getenv('MIRROR_CHECK_INTERVAL', '5'))
+        request_path = endpoint
+        if query_string:
+            request_path += f"?{query_string}"
         
-        # 거래 설정
-        self.symbol = "BTCUSDT"
-        self.base_currency = "BTC"
-        self.quote_currency = "USDT"
+        signature = self._generate_signature(timestamp, method, request_path, body)
         
-        # 필수 설정 검증
-        self._validate_required_settings()
-    
-    def _validate_required_settings(self):
-        """필수 설정 검증"""
-        required_settings = [
-            ('TELEGRAM_BOT_TOKEN', self.TELEGRAM_BOT_TOKEN),
-            ('TELEGRAM_CHAT_ID', self.TELEGRAM_CHAT_ID),
-        ]
-        
-        missing_settings = []
-        for name, value in required_settings:
-            if not value:
-                missing_settings.append(name)
-        
-        if missing_settings:
-            raise ValueError(f"필수 환경변수가 설정되지 않았습니다: {', '.join(missing_settings)}")
-    
-    def has_bitget_api(self) -> bool:
-        """Bitget API 설정 확인"""
-        return all([
-            self.BITGET_APIKEY,
-            self.BITGET_APISECRET,
-            self.BITGET_PASSPHRASE
-        ])
-    
-    def has_gate_api(self) -> bool:
-        """Gate.io API 설정 확인"""
-        return all([
-            self.GATE_API_KEY,
-            self.GATE_API_SECRET
-        ])
-    
-    def has_openai_api(self) -> bool:
-        """OpenAI API 설정 확인"""
-        return bool(self.OPENAI_API_KEY)
-    
-    def has_anthropic_api(self) -> bool:
-        """Anthropic API 설정 확인"""
-        return bool(self.ANTHROPIC_API_KEY)
-    
-    def has_newsapi(self) -> bool:
-        """NewsAPI 설정 확인"""
-        return bool(self.NEWSAPI_KEY)
-    
-    def has_newsdata(self) -> bool:
-        """NewsData API 설정 확인"""
-        return bool(self.NEWSDATA_KEY)
-    
-    def has_alpha_vantage(self) -> bool:
-        """Alpha Vantage API 설정 확인"""
-        return bool(self.ALPHA_VANTAGE_KEY)
-    
-    def has_coingecko_api(self) -> bool:
-        """CoinGecko API 설정 확인"""
-        return bool(self.COINGECKO_API_KEY)
-    
-    def has_cryptocompare_api(self) -> bool:
-        """CryptoCompare API 설정 확인"""
-        return bool(self.CRYPTOCOMPARE_API_KEY)
-    
-    def can_enable_mirror_trading(self) -> bool:
-        """미러 트레이딩 활성화 가능 여부"""
-        return self.ENABLE_MIRROR_TRADING and self.has_bitget_api() and self.has_gate_api()
-    
-    def get_api_status_summary(self) -> dict:
-        """API 설정 상태 요약"""
-        return {
-            'telegram': bool(self.TELEGRAM_BOT_TOKEN and self.TELEGRAM_CHAT_ID),
-            'bitget': self.has_bitget_api(),
-            'gate': self.has_gate_api(),
-            'openai': self.has_openai_api(),
-            'anthropic': self.has_anthropic_api(),
-            'newsapi': self.has_newsapi(),
-            'newsdata': self.has_newsdata(),
-            'alpha_vantage': self.has_alpha_vantage(),
-            'coingecko': self.has_coingecko_api(),
-            'cryptocompare': self.has_cryptocompare_api(),
-            'mirror_trading_enabled': self.can_enable_mirror_trading()
-        }
-    
-    def get_missing_apis(self) -> list:
-        """설정되지 않은 API 목록"""
-        missing = []
-        status = self.get_api_status_summary()
-        
-        api_names = {
-            'telegram': 'Telegram Bot',
-            'bitget': 'Bitget API',
-            'gate': 'Gate.io API',
-            'openai': 'OpenAI GPT',
-            'anthropic': 'Claude (Anthropic)',
-            'newsapi': 'NewsAPI',
-            'newsdata': 'NewsData',
-            'alpha_vantage': 'Alpha Vantage',
-            'coingecko': 'CoinGecko',
-            'cryptocompare': 'CryptoCompare'
+        headers = {
+            'ACCESS-KEY': self.api_key,
+            'ACCESS-SIGN': signature,
+            'ACCESS-TIMESTAMP': timestamp,
+            'ACCESS-PASSPHRASE': self.passphrase,
+            'Content-Type': 'application/json',
+            'locale': 'en-US'
         }
         
-        for key, name in api_names.items():
-            if not status.get(key, False):
-                missing.append(name)
-        
-        return missing
+        try:
+            logger.debug(f"Bitget API 요청: {method} {url}")
+            if body:
+                logger.debug(f"요청 본문: {body}")
+            
+            async with self.session.request(method, url, headers=headers, data=body) as response:
+                response_text = await response.text()
+                logger.debug(f"Bitget 응답: {response.status} - {response_text[:500]}")
+                
+                if response.status != 200:
+                    logger.error(f"Bitget API 오류: {response.status} - {response_text}")
+                    raise Exception(f"Bitget API 오류: {response_text}")
+                
+                result = json.loads(response_text) if response_text else {}
+                
+                # V2 API 오류 체크
+                if result.get('code') != '00000':
+                    error_msg = result.get('msg', 'Unknown error')
+                    logger.error(f"Bitget API 오류 응답: {result}")
+                    raise Exception(f"Bitget API 오류: {error_msg}")
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"Bitget API 요청 중 오류: {e}")
+            raise
     
-    def print_status(self):
-        """설정 상태 출력"""
-        print("=" * 50)
-        print("🚀 비트코인 예측 시스템 v2.2 - 비트코인 전용 (제한 해제)")
-        print("=" * 50)
-        print("🔧 API 설정 상태:")
-        print("━" * 50)
-        
-        # 운영 모드
-        if self.can_enable_mirror_trading():
-            print("🔄 운영 모드: 미러 트레이딩 모드")
-        else:
-            print("📊 운영 모드: 분석 전용 모드")
-        
-        # 필수 API
-        status = self.get_api_status_summary()
-        required_apis = ['telegram', 'bitget', 'gate']
-        
-        if all(status.get(api, False) for api in required_apis):
-            print("✅ 필수 API:")
-            print("  • Telegram Bot: 설정됨")
-            print("  • Bitget API: 설정됨")
-            print("  • Gate.io API: 설정됨")
-        else:
-            print("❌ 필수 API 누락:")
-            for api in required_apis:
-                api_names = {'telegram': 'Telegram Bot', 'bitget': 'Bitget API', 'gate': 'Gate.io API'}
-                if not status.get(api, False):
-                    print(f"  • {api_names[api]}: 미설정")
-        
-        # 추가 API
-        optional_apis = ['openai', 'anthropic', 'newsapi', 'newsdata', 'alpha_vantage', 'coingecko', 'cryptocompare']
-        available_apis = [api for api in optional_apis if status.get(api, False)]
-        missing_apis = [api for api in optional_apis if not status.get(api, False)]
-        
-        if available_apis:
-            print(f"✅ 사용 가능한 추가 API ({len(available_apis)}개):")
-            api_names = {
-                'openai': 'OpenAI GPT',
-                'anthropic': 'Claude (Anthropic)',
-                'newsapi': 'NewsAPI',
-                'newsdata': 'NewsData',
-                'alpha_vantage': 'Alpha Vantage',
-                'coingecko': 'CoinGecko',
-                'cryptocompare': 'CryptoCompare'
+    async def get_account_info(self) -> Dict:
+        """계정 정보 조회 - V2 API"""
+        try:
+            # V2 API 엔드포인트
+            endpoint = "/api/v2/mix/account/account"
+            params = {
+                'symbol': self.symbol,
+                'marginCoin': 'USDT'
             }
-            for api in available_apis:
-                print(f"  • {api_names[api]}")
-        
-        if missing_apis:
-            print(f"⚠️  미설정 API ({len(missing_apis)}개):")
-            api_names = {
-                'openai': 'OpenAI GPT',
-                'anthropic': 'Claude (Anthropic)',
-                'newsapi': 'NewsAPI',
-                'newsdata': 'NewsData',
-                'alpha_vantage': 'Alpha Vantage',
-                'coingecko': 'CoinGecko',
-                'cryptocompare': 'CryptoCompare'
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('data'):
+                return response['data']
+            else:
+                logger.error(f"계정 정보 조회 실패: {response}")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"계정 정보 조회 실패: {e}")
+            return {}
+    
+    async def get_positions(self, symbol: str = None) -> List[Dict]:
+        """포지션 조회 - V2 API"""
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            # V2 API 엔드포인트
+            endpoint = "/api/v2/mix/position/all-position"
+            params = {
+                'symbol': symbol,
+                'marginCoin': 'USDT'
             }
-            for api in missing_apis:
-                print(f"  • {api_names[api]}")
-        
-        # AI 번역 설정
-        if self.has_anthropic_api() and self.has_openai_api():
-            print("🤖 AI 번역 설정: Claude 우선, GPT 백업")
-        elif self.has_openai_api():
-            print("🤖 AI 번역 설정: GPT만 사용")
-        elif self.has_anthropic_api():
-            print("🤖 AI 번역 설정: Claude만 사용")
-        else:
-            print("⚠️  AI 번역 비활성화: OpenAI 또는 Claude API 필요")
-        
-        # 미러 트레이딩 설정
-        if self.can_enable_mirror_trading():
-            print("💡 미러 트레이딩 설정:")
-            print("  • 기준 거래소: Bitget")
-            print("  • 미러 거래소: Gate.io")
-            print("  • 미러링 방식: 마진 비율 기반")
-            print("  • 기존 포지션: 복제 제외")
-            print("  • 신규 진입만 미러링")
-        
-        # 추가 설정 안내
-        if missing_apis:
-            print("💡 추가 API 설정 방법:")
-            print("  환경변수에 추가:")
-            for api in missing_apis:
-                env_names = {
-                    'openai': 'OPENAI_API_KEY',
-                    'anthropic': 'ANTHROPIC_API_KEY',
-                    'newsapi': 'NEWSAPI_KEY',
-                    'newsdata': 'SDATA_KEY',
-                    'alpha_vantage': 'ALPHA_VANTAGE_KEY',
-                    'coingecko': 'COINGECKO_API_KEY',
-                    'cryptocompare': 'CRYPTOCOMPARE_API_KEY'
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('data'):
+                return response['data']
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"포지션 조회 실패: {e}")
+            return []
+    
+    async def get_ticker(self, symbol: str = None) -> Dict:
+        """티커 정보 조회 - V2 API"""
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            # V2 API 엔드포인트
+            endpoint = "/api/v2/mix/market/ticker"
+            params = {'symbol': symbol}
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('data'):
+                return response['data']
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"티커 조회 실패: {e}")
+            return {}
+    
+    async def get_kline(self, symbol: str, granularity: str, limit: int = 100) -> List[List]:
+        """K라인 데이터 조회 - V2 API"""
+        try:
+            endpoint = "/api/v2/mix/market/candles"
+            params = {
+                'symbol': symbol or self.symbol,
+                'granularity': granularity,
+                'limit': str(limit)
+            }
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('data'):
+                return response['data']
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"K라인 데이터 조회 실패: {e}")
+            return []
+    
+    async def get_funding_rate(self, symbol: str = None) -> Dict:
+        """펀딩비 조회 - V2 API"""
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            endpoint = "/api/v2/mix/market/current-fund-rate"
+            params = {'symbol': symbol}
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('data'):
+                return response['data']
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"펀딩비 조회 실패: {e}")
+            return {}
+    
+    async def get_open_interest(self, symbol: str = None) -> Dict:
+        """미결제약정 조회 - V2 API"""
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            endpoint = "/api/v2/mix/market/open-interest"
+            params = {'symbol': symbol}
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('data'):
+                return response['data']
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"미결제약정 조회 실패: {e}")
+            return {}
+    
+    async def get_recent_filled_orders(self, symbol: str = None, minutes: int = 5) -> List[Dict]:
+        """최근 체결 주문 조회 - V2 API"""
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            endpoint = "/api/v2/mix/order/fills"
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (minutes * 60 * 1000)
+            
+            params = {
+                'symbol': symbol,
+                'startTime': str(start_time),
+                'endTime': str(end_time)
+            }
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('data'):
+                return response['data']
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"최근 체결 주문 조회 실패: {e}")
+            return []
+    
+    async def get_trade_fills(self, symbol: str = None, start_time: int = None, 
+                            end_time: int = None, limit: int = 100) -> List[Dict]:
+        """거래 내역 조회 - V2 API"""
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            endpoint = "/api/v2/mix/order/fills"
+            params = {
+                'symbol': symbol,
+                'limit': str(limit)
+            }
+            
+            if start_time:
+                params['startTime'] = str(start_time)
+            if end_time:
+                params['endTime'] = str(end_time)
+            
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('data'):
+                return response['data']
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"거래 내역 조회 실패: {e}")
+            return []
+    
+    async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
+        """모든 예약 주문 조회 (TP/SL 포함) - V2 API"""
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            result = {
+                'plan_orders': [],
+                'tp_sl_orders': []
+            }
+            
+            # 일반 예약 주문 조회
+            try:
+                endpoint = "/api/v2/mix/order/plan-pending"
+                params = {'symbol': symbol}
+                response = await self._request('GET', endpoint, params=params)
+                
+                if response.get('data'):
+                    result['plan_orders'] = response['data']
+            except Exception as e:
+                logger.warning(f"예약 주문 조회 실패: {e}")
+            
+            # TP/SL 주문 조회
+            try:
+                endpoint = "/api/v2/mix/order/plan-pending"
+                params = {
+                    'symbol': symbol,
+                    'planType': 'profit_plan'
                 }
-                if api in env_names:
-                    print(f"  • {env_names[api]}")
-        
-        print("━" * 50)
+                response = await self._request('GET', endpoint, params=params)
+                
+                if response.get('data'):
+                    result['tp_sl_orders'].extend(response['data'])
+            except Exception as e:
+                logger.warning(f"TP/SL 주문 조회 실패: {e}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"예약 주문 조회 실패: {e}")
+            return {'plan_orders': [], 'tp_sl_orders': []}
+    
+    async def get_enhanced_profit_history(self, days: int = 7) -> Dict:
+        """향상된 손익 내역 조회 - V2 API"""
+        try:
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (days * 24 * 60 * 60 * 1000)
+            
+            endpoint = "/api/v2/mix/account/account-bill"
+            params = {
+                'symbol': self.symbol,
+                'marginCoin': 'USDT',
+                'startTime': str(start_time),
+                'endTime': str(end_time),
+                'pageSize': '100'
+            }
+            
+            response = await self._request('GET', endpoint, params=params)
+            
+            total_pnl = 0.0
+            
+            if response.get('data'):
+                for record in response['data']:
+                    change = float(record.get('amount', 0))
+                    business_type = record.get('businessType', '')
+                    
+                    # 실현 손익만 계산
+                    if business_type in ['close_long', 'close_short', 'delivery_long', 'delivery_short']:
+                        total_pnl += change
+            
+            return {
+                'total_pnl': total_pnl,
+                'average_daily': total_pnl / days if days > 0 else 0,
+                'days': days
+            }
+            
+        except Exception as e:
+            logger.error(f"손익 내역 조회 실패: {e}")
+            return {
+                'total_pnl': 0.0,
+                'average_daily': 0.0,
+                'days': days
+            }
+    
+    async def close(self):
+        """세션 종료"""
+        if self.session:
+            await self.session.close()
+            logger.info("Bitget 클라이언트 세션 종료")
