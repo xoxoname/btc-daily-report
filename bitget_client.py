@@ -154,11 +154,14 @@ class BitgetClient:
             return []
     
     async def get_ticker(self, symbol: str = "BTCUSDT") -> Dict:
-        """티커 정보 조회 - 수정된 엔드포인트"""
+        """티커 정보 조회 - 파라미터 수정"""
         try:
-            # V2 API 엔드포인트 사용
+            # V2 API 엔드포인트 사용 - 필수 파라미터 추가
             endpoint = "/api/v2/mix/market/ticker"
-            params = {'symbol': symbol}
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES'  # 🔥 필수 파라미터 추가
+            }
             response = await self._request('GET', endpoint, params=params)
             
             if response.get('code') == '00000' and response.get('data'):
@@ -177,14 +180,15 @@ class BitgetClient:
             return {}
     
     async def get_kline(self, symbol: str, granularity: str, limit: int = 100) -> List[List]:
-        """K라인 데이터 조회 - 수정된 엔드포인트"""
+        """K라인 데이터 조회 - 파라미터 수정"""
         try:
-            # V2 API 엔드포인트 사용
+            # V2 API 엔드포인트 사용 - 필수 파라미터 추가
             endpoint = "/api/v2/mix/market/candles"
             params = {
                 'symbol': symbol,
                 'granularity': granularity,
-                'limit': str(limit)
+                'limit': str(limit),
+                'productType': 'USDT-FUTURES'  # 🔥 필수 파라미터 추가
             }
             response = await self._request('GET', endpoint, params=params)
             
@@ -198,11 +202,14 @@ class BitgetClient:
             return []
     
     async def get_funding_rate(self, symbol: str = "BTCUSDT") -> Dict:
-        """펀딩비 조회 - 수정된 엔드포인트"""
+        """펀딩비 조회 - 파라미터 수정"""
         try:
-            # V2 API 엔드포인트 사용
+            # V2 API 엔드포인트 사용 - 필수 파라미터 추가
             endpoint = "/api/v2/mix/market/current-fund-rate"
-            params = {'symbol': symbol}
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES'  # 🔥 필수 파라미터 추가
+            }
             response = await self._request('GET', endpoint, params=params)
             
             if response.get('code') == '00000' and response.get('data'):
@@ -220,11 +227,14 @@ class BitgetClient:
             return {}
     
     async def get_open_interest(self, symbol: str = "BTCUSDT") -> Dict:
-        """미결제약정 조회 - 수정된 엔드포인트"""
+        """미결제약정 조회 - 파라미터 수정"""
         try:
-            # V2 API 엔드포인트 사용
+            # V2 API 엔드포인트 사용 - 필수 파라미터 추가
             endpoint = "/api/v2/mix/market/open-interest"
-            params = {'symbol': symbol}
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES'  # 🔥 필수 파라미터 추가
+            }
             response = await self._request('GET', endpoint, params=params)
             
             if response.get('code') == '00000' and response.get('data'):
@@ -272,88 +282,78 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = "BTCUSDT") -> Dict:
-        """모든 예약 주문 조회 (TP/SL 포함) - 엔드포인트 및 파라미터 수정"""
+        """모든 예약 주문 조회 (TP/SL 포함) - 🔥 planType 값 수정"""
         try:
             result = {
                 'plan_orders': [],
                 'tp_sl_orders': []
             }
             
-            # 수정된 API v2 엔드포인트 사용
-            endpoint = "/api/v2/mix/order/orders-plan-pending"
-            params = {
-                'symbol': symbol,
-                'productType': 'USDT-FUTURES',  # 필수 파라미터
-                'planType': 'normal_plan'  # 일반 예약 주문만 조회
-            }
+            # 🔥🔥🔥 planType 값들을 Bitget API v2에 맞게 수정
+            plan_types_to_check = [
+                'normal_plan',    # 일반 예약 주문
+                'profit_plan',    # 테이크 프로핏 주문  
+                'loss_plan',      # 스탑 로스 주문
+                'pos_profit',     # 포지션 이익실현
+                'pos_loss',       # 포지션 손실제한
+                'moving_plan',    # 이동 주문
+                'track_plan'      # 추적 주문
+            ]
             
-            try:
-                logger.debug(f"Bitget 예약 주문 조회 요청: {endpoint}, params: {params}")
-                response = await self._request('GET', endpoint, params=params)
-                
-                if response.get('code') == '00000' and response.get('data'):
-                    all_orders = response['data']
+            # 각 planType별로 조회
+            for plan_type in plan_types_to_check:
+                try:
+                    endpoint = "/api/v2/mix/order/orders-plan-pending"
+                    params = {
+                        'symbol': symbol,
+                        'productType': 'USDT-FUTURES',  # 필수 파라미터
+                        'planType': plan_type
+                    }
                     
-                    # 주문 타입에 따라 분류
-                    for order in all_orders:
-                        plan_type = order.get('planType', '')
-                        order_type = order.get('orderType', '')
-                        side = order.get('side', '')
-                        trade_side = order.get('tradeSide', '')
+                    logger.debug(f"🔥 예약 주문 조회 - planType: {plan_type}")
+                    response = await self._request('GET', endpoint, params=params)
+                    
+                    if response.get('code') == '00000' and response.get('data'):
+                        orders = response['data']
                         
-                        # TP/SL 주문 분류 로직 개선
-                        is_tp_sl = False
-                        
-                        # planType으로 구분
-                        if plan_type in ['profit_plan', 'loss_plan', 'normal_plan']:
+                        for order in orders:
+                            # 주문 타입에 따라 분류
+                            current_plan_type = order.get('planType', plan_type)
+                            trade_side = order.get('tradeSide', order.get('side', ''))
+                            
+                            # TP/SL 주문 분류
+                            is_tp_sl = plan_type in ['profit_plan', 'loss_plan', 'pos_profit', 'pos_loss']
+                            
+                            # tradeSide로도 추가 분류
                             if trade_side in ['close_long', 'close_short']:
                                 is_tp_sl = True
+                            
+                            if is_tp_sl:
+                                result['tp_sl_orders'].append(order)
+                            else:
+                                result['plan_orders'].append(order)
                         
-                        # tradeSide로 구분
-                        elif trade_side in ['close_long', 'close_short']:
-                            is_tp_sl = True
-                        
-                        # 기타 TP/SL 키워드 확인
-                        elif any(keyword in str(order).lower() for keyword in ['profit', 'loss', 'tp', 'sl', 'stop']):
-                            is_tp_sl = True
-                        
-                        if is_tp_sl:
-                            result['tp_sl_orders'].append(order)
-                        else:
-                            result['plan_orders'].append(order)
+                        logger.info(f"✅ planType '{plan_type}' 조회 성공: {len(orders)}개")
                     
-                    logger.info(f"✅ Bitget 예약 주문 조회 성공: 일반 {len(result['plan_orders'])}개, TP/SL {len(result['tp_sl_orders'])}개")
-                else:
-                    logger.warning(f"예약 주문 조회 응답 확인: {response}")
+                    elif response.get('code') == '40812':
+                        # 해당 planType이 지원되지 않음 - 무시하고 계속
+                        logger.debug(f"📝 planType '{plan_type}'은 지원되지 않음")
+                        continue
+                    else:
+                        logger.warning(f"⚠️ planType '{plan_type}' 조회 응답: {response}")
+                        continue
                     
-            except Exception as e:
-                logger.warning(f"예약 주문 조회 실패: {e}")
-                # 오류 발생 시 빈 결과 반환
-                result = {'plan_orders': [], 'tp_sl_orders': []}
+                except Exception as e:
+                    error_msg = str(e)
+                    if "40812" in error_msg or "planType is not met" in error_msg:
+                        logger.debug(f"📝 planType '{plan_type}'은 현재 지원되지 않음")
+                        continue
+                    else:
+                        logger.warning(f"⚠️ planType '{plan_type}' 조회 실패: {e}")
+                        continue
             
-            # TP/SL 주문 별도 조회 시도
-            try:
-                tp_sl_endpoint = "/api/v2/mix/order/orders-plan-pending"
-                tp_sl_params = {
-                    'symbol': symbol,
-                    'productType': 'USDT-FUTURES',
-                    'planType': 'profit_plan'  # TP 주문
-                }
-                
-                tp_response = await self._request('GET', tp_sl_endpoint, params=tp_sl_params)
-                if tp_response.get('code') == '00000' and tp_response.get('data'):
-                    result['tp_sl_orders'].extend(tp_response['data'])
-                
-                # SL 주문도 조회
-                tp_sl_params['planType'] = 'loss_plan'
-                sl_response = await self._request('GET', tp_sl_endpoint, params=tp_sl_params)
-                if sl_response.get('code') == '00000' and sl_response.get('data'):
-                    result['tp_sl_orders'].extend(sl_response['data'])
-                
-                logger.info(f"✅ TP/SL 별도 조회 완료: 추가 {len(tp_response.get('data', [])) + len(sl_response.get('data', []))}개")
-                
-            except Exception as tp_error:
-                logger.debug(f"TP/SL 별도 조회 실패 (무시): {tp_error}")
+            total_orders = len(result['plan_orders']) + len(result['tp_sl_orders'])
+            logger.info(f"✅ 전체 예약 주문 조회 완료: 일반 {len(result['plan_orders'])}개, TP/SL {len(result['tp_sl_orders'])}개, 총 {total_orders}개")
             
             return result
             
