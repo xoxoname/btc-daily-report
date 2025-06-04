@@ -7,6 +7,7 @@ class Config:
     def __init__(self):
         # Telegram 봇 설정
         self.TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.TELEGRAM_TOKEN = self.TELEGRAM_BOT_TOKEN  # 하위 호환성을 위해 추가
         self.TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
         
         # Bitget API 설정 (환경변수명 통일)
@@ -35,6 +36,11 @@ class Config:
         self.ENABLE_MIRROR_TRADING = os.getenv('ENABLE_MIRROR_TRADING', 'false').lower() == 'true'
         self.MIRROR_TRADING_MODE = os.getenv('MIRROR_TRADING_MODE', 'conservative').lower()
         self.MIRROR_CHECK_INTERVAL = int(os.getenv('MIRROR_CHECK_INTERVAL', '5'))
+        
+        # 거래 설정
+        self.symbol = "BTCUSDT"
+        self.base_currency = "BTC"
+        self.quote_currency = "USDT"
         
         # 필수 설정 검증
         self._validate_required_settings()
