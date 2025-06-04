@@ -234,18 +234,24 @@ class BitgetClient:
             return {}
     
     async def get_recent_filled_orders(self, symbol: str = "BTCUSDT", minutes: int = 5) -> List[Dict]:
-        """최근 체결 주문 조회 - 수정된 엔드포인트"""
+        """최근 체결 주문 조회 - 🔥🔥 파라미터 형식 수정"""
         try:
             # V2 API 엔드포인트 사용
             endpoint = "/api/v2/mix/order/fills"
-            end_time = int(time.time() * 1000)
-            start_time = end_time - (minutes * 60 * 1000)
             
+            # 🔥🔥 수정: 올바른 파라미터 형식 사용
             params = {
                 'symbol': symbol,
-                'startTime': str(start_time),
-                'endTime': str(end_time)
+                'productType': 'USDT-FUTURES'  # 필수 파라미터 추가
             }
+            
+            # 시간 범위가 필요한 경우만 추가
+            if minutes and minutes > 0:
+                end_time = int(time.time() * 1000)
+                start_time = end_time - (minutes * 60 * 1000)
+                params['startTime'] = str(start_time)
+                params['endTime'] = str(end_time)
+            
             response = await self._request('GET', endpoint, params=params)
             
             if response.get('code') == '00000' and response.get('data'):
@@ -258,19 +264,18 @@ class BitgetClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = "BTCUSDT") -> Dict:
-        """모든 예약 주문 조회 (TP/SL 포함) - 수정된 엔드포인트 및 파라미터"""
+        """모든 예약 주문 조회 (TP/SL 포함) - 🔥🔥 올바른 엔드포인트 사용"""
         try:
             result = {
                 'plan_orders': [],
                 'tp_sl_orders': []
             }
             
-            # 🔥🔥🔥 수정: 올바른 API v2 파라미터 사용
-            endpoint = "/api/v2/mix/order/plan-orders-pending"
+            # 🔥🔥🔥 수정: 올바른 API v2 엔드포인트 사용
+            endpoint = "/api/v2/mix/order/orders-plan-pending"  # 올바른 엔드포인트
             params = {
                 'symbol': symbol,
-                'marginCoin': 'USDT',
-                'productType': 'umcbl'  # USDT-M 계약
+                'productType': 'USDT-FUTURES'  # 필수 파라미터
             }
             
             try:
@@ -313,11 +318,12 @@ class BitgetClient:
             return {'plan_orders': [], 'tp_sl_orders': []}
     
     async def get_trade_fills(self, symbol: str = "BTCUSDT", start_time: int = 0, end_time: int = 0, limit: int = 100) -> List[Dict]:
-        """거래 내역 조회 - 추가된 메서드"""
+        """거래 내역 조회 - 🔥🔥 파라미터 형식 수정"""
         try:
             endpoint = "/api/v2/mix/order/fills"
             params = {
                 'symbol': symbol,
+                'productType': 'USDT-FUTURES',  # 필수 파라미터 추가
                 'limit': str(limit)
             }
             
