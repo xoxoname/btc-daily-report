@@ -389,7 +389,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(60)  # 오류 시 1분 대기
 
     async def monitor_sync_status(self):
-        """포지션 동기화 상태 모니터링 - 개선된 원인 분석"""
+        """🔥🔥🔥 포지션 동기화 상태 모니터링 - 개선된 원인 분석"""
         sync_retry_count = 0
         
         while self.monitoring:
@@ -403,33 +403,57 @@ class MirrorTradingSystem:
                     sync_retry_count += 1
                     
                     if sync_retry_count >= 3:  # 3회 연속 불일치
-                        # 🔥🔥🔥 실제 원인 분석
+                        # 🔥🔥🔥 실제 원인 분석 - 개선된 로직
                         valid_price_diff = self._get_valid_price_difference()
                         
                         # 가능한 원인들 분석
                         possible_causes = []
                         
+                        # 1. 시세 차이 원인
                         if valid_price_diff and valid_price_diff > self.price_sync_threshold:
-                            possible_causes.append(f"시세 차이 (${valid_price_diff:.2f})")
+                            possible_causes.append(f"시세 차이 큼 (${valid_price_diff:.2f})")
                         
+                        # 2. 가격 조회 실패 원인
                         if self.bitget_price_failures > 0 or self.gate_price_failures > 0:
                             possible_causes.append(f"가격 조회 실패 (비트겟: {self.bitget_price_failures}회, 게이트: {self.gate_price_failures}회)")
                         
-                        if len(self.position_manager.mirrored_positions) > 0:
+                        # 3. 렌더 재구동 원인
+                        if self.position_manager.render_restart_detected:
                             possible_causes.append("렌더 재구동 후 기존 포지션 존재")
                         
-                        if not possible_causes:
-                            possible_causes.append("알 수 없는 원인")
+                        # 4. 시스템 초기화 중
+                        startup_time = datetime.now() - self.position_manager.startup_time if hasattr(self.position_manager, 'startup_time') else timedelta(minutes=10)
+                        if startup_time.total_seconds() < 300:  # 5분 이내
+                            possible_causes.append("시스템 초기화 중 (정상)")
                         
+                        # 5. 실제 포지션 차이
+                        actual_diff = abs(sync_status['bitget_total_count'] - sync_status['gate_total_count'])
+                        if actual_diff > 1:
+                            possible_causes.append(f"실제 포지션 개수 차이 (비트겟: {sync_status['bitget_total_count']}개, 게이트: {sync_status['gate_total_count']}개)")
+                        
+                        # 6. 시세 차이로 인한 포지션 ID 불일치
+                        if valid_price_diff and valid_price_diff > 5:  # 5달러 이상 차이
+                            possible_causes.append(f"시세 차이로 인한 포지션 매칭 오류 (±{valid_price_diff:.1f}$)")
+                        
+                        # 7. 원인 없음
+                        if not possible_causes:
+                            possible_causes.append("알 수 없는 원인 (대부분 정상적인 일시적 차이)")
+                        
+                        # 🔥🔥🔥 메시지 톤 개선 - 덜 경고스럽게
                         await self.telegram.send_message(
-                            f"⚠️ 포지션 동기화 불일치 분석\n"
+                            f"📊 포지션 동기화 상태 분석\n"
                             f"비트겟 신규: {sync_status['bitget_new_count']}개\n"
                             f"게이트 신규: {sync_status['gate_new_count']}개\n"
                             f"차이: {sync_status['position_diff']}개\n"
                             f"연속 감지: {sync_retry_count}회\n\n"
-                            f"🔍 가능한 원인:\n"
+                            f"🔍 분석된 원인:\n"
                             f"• {chr(10).join(possible_causes)}\n\n"
-                            f"💡 대부분 정상적인 상황입니다."
+                            f"📈 상세 정보:\n"
+                            f"• 비트겟 전체: {sync_status['bitget_total_count']}개\n"
+                            f"• 게이트 전체: {sync_status['gate_total_count']}개\n"
+                            f"• 현재 시세 차이: ${sync_status.get('price_diff', 0):.2f}\n"
+                            f"• 동기화 수정: {self.daily_stats.get('sync_status_corrected', 0)}회\n\n"
+                            f"💡 대부분 정상적인 상황이며 자동으로 해결됩니다."
                         )
                         
                         sync_retry_count = 0  # 리셋
@@ -523,13 +547,19 @@ class MirrorTradingSystem:
 - 전체 청산: {self.daily_stats['full_closes']}회
 - 총 거래량: ${self.daily_stats['total_volume']:,.2f}
 
+🔧 시세차이 대응:
+- 시세차이 지연: {self.daily_stats['price_sync_delays']}회
+- 포지션 체결 대기: {self.daily_stats['successful_position_waits']}회
+- 체결 대기 타임아웃: {self.daily_stats['position_wait_timeouts']}회
+- 동기화 상태 수정: {self.daily_stats.get('sync_status_corrected', 0)}회
+
 🔄 현재 미러링 상태:
 - 활성 포지션: {len(self.mirrored_positions)}개
 - 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개
 - 실패 기록: {len(self.failed_mirrors)}건
 
 ━━━━━━━━━━━━━━━━━━━
-🎯 시세차이 문제 해결 + 코드 분할 완료"""
+🎯 시세차이 문제 해결 + 동기화 상태 개선 완료"""
             
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -566,6 +596,7 @@ class MirrorTradingSystem:
             'price_sync_delays': 0,        # 🔥🔥🔥 시세 차이로 인한 지연
             'position_wait_timeouts': 0,   # 🔥🔥🔥 포지션 체결 대기 타임아웃
             'successful_position_waits': 0, # 🔥🔥🔥 성공적인 포지션 체결 대기
+            'sync_status_corrected': 0,    # 🔥🔥🔥 동기화 상태 수정 카운터
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -618,7 +649,8 @@ class MirrorTradingSystem:
                 f"• 강화된 레버리지 설정\n"
                 f"• 코드 3개 파일로 분할\n"
                 f"• 포지션 체결 대기 시간: {self.position_wait_timeout}초\n"
-                f"• 가격 조회 실패 시 자동 복구"
+                f"• 가격 조회 실패 시 자동 복구\n"
+                f"• 동기화 상태 확인 로직 개선"
             )
             
         except Exception as e:
