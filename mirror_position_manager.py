@@ -9,7 +9,7 @@ from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 logger = logging.getLogger(__name__)
 
 class MirrorPositionManager:
-    """🔥🔥🔥 포지션 및 주문 관리 클래스 - 중복 복제 및 클로즈 주문 오인 문제 해결"""
+    """🔥🔥🔥 포지션 및 주문 관리 클래스 - 예약 주문 동기화 강화 및 TP/SL 통합 처리"""
     
     def __init__(self, config, bitget_client, gate_client, telegram_bot, utils):
         self.config = config
@@ -31,11 +31,17 @@ class MirrorPositionManager:
         # 주문 체결 추적
         self.processed_orders: Set[str] = set()
         
-        # 🔥🔥🔥 예약 주문 추적 관리 - 중복 방지 강화
+        # 🔥🔥🔥 예약 주문 추적 관리 - 동기화 강화
         self.mirrored_plan_orders: Dict[str, Dict] = {}
         self.processed_plan_orders: Set[str] = set()
         self.startup_plan_orders: Set[str] = set()
         self.startup_plan_orders_processed: bool = False
+        
+        # 🔥🔥🔥 예약 주문 동기화 시스템 추가
+        self.last_bitget_orders_snapshot: Dict[str, Dict] = {}
+        self.last_gate_orders_snapshot: Dict[str, Dict] = {}
+        self.order_sync_check_interval: int = 30  # 30초마다 동기화 체크
+        self.last_sync_check_time: datetime = datetime.min
         
         # 🔥🔥🔥 중복 복제 방지 시스템 강화
         self.order_processing_locks: Dict[str, asyncio.Lock] = {}
@@ -75,6 +81,9 @@ class MirrorPositionManager:
         self.bitget_to_gate_order_mapping: Dict[str, str] = {}
         self.gate_to_bitget_order_mapping: Dict[str, str] = {}
         
+        # 🔥🔥🔥 TP/SL 통합 주문 추적
+        self.integrated_tp_sl_orders: Dict[str, Dict] = {}  # bitget_order_id -> {gate_main_order_id, related_tp_sl_ids}
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -113,13 +122,16 @@ class MirrorPositionManager:
             'close_order_position_wait_success': 0,
             'close_order_delayed_for_position': 0,
             'close_order_skipped_no_position': 0,
-            'duplicate_time_prevention': 0,  # 🔥🔥🔥 시간 기반 중복 방지
-            'successful_order_cancels': 0,   # 🔥🔥🔥 성공적인 주문 취소
-            'failed_order_cancels': 0,       # 🔥🔥🔥 실패한 주문 취소
+            'duplicate_time_prevention': 0,
+            'successful_order_cancels': 0,
+            'failed_order_cancels': 0,
+            'sync_corrections': 0,  # 🔥🔥🔥 동기화 수정 횟수
+            'sync_deletions': 0,    # 🔥🔥🔥 동기화 삭제 횟수
+            'tp_sl_integrated_orders': 0,  # 🔥🔥🔥 통합 TP/SL 주문 수
             'errors': []
         }
         
-        self.logger.info("🔥🔥🔥 미러 포지션 매니저 초기화 완료 - 중복 복제 방지 및 취소 동기화 강화")
+        self.logger.info("🔥🔥🔥 미러 포지션 매니저 초기화 완료 - 예약 주문 동기화 및 TP/SL 통합 처리 강화")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -130,7 +142,7 @@ class MirrorPositionManager:
     async def initialize(self):
         """포지션 매니저 초기화"""
         try:
-            self.logger.info("🔥🔥🔥 포지션 매니저 초기화 시작 (중복 방지 강화)")
+            self.logger.info("🔥🔥🔥 포지션 매니저 초기화 시작 (동기화 강화)")
             
             # 렌더 재구동 시 기존 게이트 포지션 확인
             await self._check_existing_gate_positions()
@@ -149,18 +161,60 @@ class MirrorPositionManager:
             # 시작 시 기존 예약 주문 복제
             await self._mirror_startup_plan_orders()
             
+            # 🔥🔥🔥 초기 동기화 체크
+            await self._initialize_order_snapshots()
+            
             self.logger.info("✅ 포지션 매니저 초기화 완료")
             
         except Exception as e:
             self.logger.error(f"포지션 매니저 초기화 실패: {e}")
             raise
 
+    async def _initialize_order_snapshots(self):
+        """🔥🔥🔥 초기 주문 스냅샷 생성"""
+        try:
+            # 비트겟 예약 주문 스냅샷
+            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            bitget_orders = plan_data.get('plan_orders', []) + plan_data.get('tp_sl_orders', [])
+            
+            for order in bitget_orders:
+                order_id = order.get('orderId', order.get('planOrderId', ''))
+                if order_id:
+                    self.last_bitget_orders_snapshot[order_id] = {
+                        'order_data': order.copy(),
+                        'timestamp': datetime.now().isoformat(),
+                        'status': 'active'
+                    }
+            
+            # 게이트 예약 주문 스냅샷
+            gate_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+            
+            for order in gate_orders:
+                order_id = order.get('id', '')
+                if order_id:
+                    self.last_gate_orders_snapshot[order_id] = {
+                        'order_data': order.copy(),
+                        'timestamp': datetime.now().isoformat(),
+                        'status': 'active'
+                    }
+            
+            self.logger.info(f"✅ 초기 주문 스냅샷 완료: 비트겟 {len(self.last_bitget_orders_snapshot)}개, 게이트 {len(self.last_gate_orders_snapshot)}개")
+            
+        except Exception as e:
+            self.logger.error(f"초기 주문 스냅샷 생성 실패: {e}")
+
     async def monitor_plan_orders_cycle(self):
-        """🔥🔥🔥 예약 주문 모니터링 사이클 - 중복 방지 및 취소 동기화 강화"""
+        """🔥🔥🔥 예약 주문 모니터링 사이클 - 동기화 체크 추가"""
         try:
             if not self.startup_plan_orders_processed:
                 await asyncio.sleep(0.1)
                 return
+            
+            # 🔥🔥🔥 정기적인 동기화 체크
+            current_time = datetime.now()
+            if (current_time - self.last_sync_check_time).total_seconds() >= self.order_sync_check_interval:
+                await self._perform_order_synchronization()
+                self.last_sync_check_time = current_time
             
             # 🔥🔥🔥 시세 차이 확인 - 더 관대한 임계값 (100달러)
             price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
@@ -353,6 +407,263 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
 
+    async def _perform_order_synchronization(self):
+        """🔥🔥🔥 비트겟과 게이트 예약 주문 동기화"""
+        try:
+            self.logger.info("🔄 예약 주문 동기화 체크 시작")
+            
+            # 현재 비트겟 예약 주문 조회
+            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            current_bitget_orders = {}
+            
+            for order in plan_data.get('plan_orders', []) + plan_data.get('tp_sl_orders', []):
+                order_id = order.get('orderId', order.get('planOrderId', ''))
+                if order_id:
+                    current_bitget_orders[order_id] = order
+            
+            # 현재 게이트 예약 주문 조회
+            gate_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+            current_gate_orders = {}
+            
+            for order in gate_orders:
+                order_id = order.get('id', '')
+                if order_id:
+                    current_gate_orders[order_id] = order
+            
+            # 🔥🔥🔥 동기화 분석
+            sync_issues = await self._analyze_order_synchronization(current_bitget_orders, current_gate_orders)
+            
+            if sync_issues['total_issues'] > 0:
+                self.logger.warning(f"🔍 동기화 문제 발견: {sync_issues['total_issues']}건")
+                await self._fix_synchronization_issues(sync_issues)
+            else:
+                self.logger.debug("✅ 예약 주문 동기화 상태 양호")
+            
+            # 스냅샷 업데이트
+            self.last_bitget_orders_snapshot = {
+                order_id: {
+                    'order_data': order.copy(),
+                    'timestamp': datetime.now().isoformat(),
+                    'status': 'active'
+                }
+                for order_id, order in current_bitget_orders.items()
+            }
+            
+            self.last_gate_orders_snapshot = {
+                order_id: {
+                    'order_data': order.copy(),
+                    'timestamp': datetime.now().isoformat(),
+                    'status': 'active'
+                }
+                for order_id, order in current_gate_orders.items()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"예약 주문 동기화 실패: {e}")
+
+    async def _analyze_order_synchronization(self, bitget_orders: Dict, gate_orders: Dict) -> Dict:
+        """🔥🔥🔥 주문 동기화 상태 분석"""
+        try:
+            issues = {
+                'missing_in_gate': [],      # 비트겟에는 있지만 게이트에 없는 주문
+                'extra_in_gate': [],        # 게이트에는 있지만 비트겟에 없는 주문
+                'price_mismatch': [],       # 가격이 맞지 않는 주문
+                'size_mismatch': [],        # 수량이 맞지 않는 주문
+                'tp_sl_mismatch': [],       # TP/SL이 맞지 않는 주문
+                'total_issues': 0
+            }
+            
+            # 비트겟 주문들을 분석하여 게이트에서 찾기
+            for bitget_order_id, bitget_order in bitget_orders.items():
+                # 스타트업 주문은 스킵
+                if bitget_order_id in self.startup_plan_orders:
+                    continue
+                
+                # 미러링 기록에서 대응하는 게이트 주문 찾기
+                if bitget_order_id in self.mirrored_plan_orders:
+                    mirror_info = self.mirrored_plan_orders[bitget_order_id]
+                    expected_gate_order_id = mirror_info.get('gate_order_id')
+                    
+                    # 게이트에서 해당 주문이 존재하는지 확인
+                    if expected_gate_order_id not in gate_orders:
+                        issues['missing_in_gate'].append({
+                            'bitget_order_id': bitget_order_id,
+                            'expected_gate_id': expected_gate_order_id,
+                            'bitget_order': bitget_order
+                        })
+                    else:
+                        # 주문이 존재하면 상세 비교
+                        gate_order = gate_orders[expected_gate_order_id]
+                        mismatch = await self._compare_order_details(bitget_order, gate_order, mirror_info)
+                        
+                        if mismatch['has_issues']:
+                            if mismatch['price_issue']:
+                                issues['price_mismatch'].append(mismatch)
+                            if mismatch['size_issue']:
+                                issues['size_mismatch'].append(mismatch)
+                            if mismatch['tp_sl_issue']:
+                                issues['tp_sl_mismatch'].append(mismatch)
+                else:
+                    # 미러링 기록에 없는 비트겟 주문 (누락된 복제)
+                    issues['missing_in_gate'].append({
+                        'bitget_order_id': bitget_order_id,
+                        'expected_gate_id': None,
+                        'bitget_order': bitget_order
+                    })
+            
+            # 게이트에만 있는 예약 주문 찾기 (비트겟 매핑이 없는 것들)
+            for gate_order_id, gate_order in gate_orders.items():
+                bitget_order_id = self.gate_to_bitget_order_mapping.get(gate_order_id)
+                
+                if not bitget_order_id or bitget_order_id not in bitget_orders:
+                    # 게이트 기존 주문이 아닌 경우만 문제로 간주
+                    if gate_order_id not in self.gate_existing_orders_detailed:
+                        issues['extra_in_gate'].append({
+                            'gate_order_id': gate_order_id,
+                            'gate_order': gate_order,
+                            'mapped_bitget_id': bitget_order_id
+                        })
+            
+            issues['total_issues'] = (
+                len(issues['missing_in_gate']) + 
+                len(issues['extra_in_gate']) + 
+                len(issues['price_mismatch']) + 
+                len(issues['size_mismatch']) + 
+                len(issues['tp_sl_mismatch'])
+            )
+            
+            return issues
+            
+        except Exception as e:
+            self.logger.error(f"주문 동기화 분석 실패: {e}")
+            return {'total_issues': 0, 'missing_in_gate': [], 'extra_in_gate': [], 'price_mismatch': [], 'size_mismatch': [], 'tp_sl_mismatch': []}
+
+    async def _compare_order_details(self, bitget_order: Dict, gate_order: Dict, mirror_info: Dict) -> Dict:
+        """🔥🔥🔥 주문 상세 비교"""
+        try:
+            result = {
+                'has_issues': False,
+                'price_issue': False,
+                'size_issue': False,
+                'tp_sl_issue': False,
+                'bitget_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', '')),
+                'gate_order_id': gate_order.get('id', ''),
+                'issues': []
+            }
+            
+            # 트리거 가격 비교
+            bitget_trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if bitget_order.get(price_field):
+                    bitget_trigger_price = float(bitget_order.get(price_field))
+                    break
+            
+            gate_trigger_info = gate_order.get('trigger', {})
+            gate_trigger_price = float(gate_trigger_info.get('price', 0))
+            
+            if bitget_trigger_price > 0 and gate_trigger_price > 0:
+                price_diff_percent = abs(bitget_trigger_price - gate_trigger_price) / bitget_trigger_price * 100
+                
+                # 10% 이상 차이나면 문제로 간주
+                if price_diff_percent > 10:
+                    result['price_issue'] = True
+                    result['has_issues'] = True
+                    result['issues'].append(f"가격 차이: 비트겟 ${bitget_trigger_price:.2f}, 게이트 ${gate_trigger_price:.2f} ({price_diff_percent:.1f}%)")
+            
+            # 수량 비교 (저장된 미러 정보 기준)
+            expected_gate_size = mirror_info.get('size', 0)
+            gate_initial_info = gate_order.get('initial', {})
+            actual_gate_size = int(gate_initial_info.get('size', 0))
+            
+            if expected_gate_size != 0 and actual_gate_size != 0:
+                size_diff_percent = abs(expected_gate_size - actual_gate_size) / abs(expected_gate_size) * 100
+                
+                # 5% 이상 차이나면 문제로 간주
+                if size_diff_percent > 5:
+                    result['size_issue'] = True
+                    result['has_issues'] = True
+                    result['issues'].append(f"수량 차이: 예상 {expected_gate_size}, 실제 {actual_gate_size} ({size_diff_percent:.1f}%)")
+            
+            # TP/SL 비교
+            expected_tp = mirror_info.get('adjusted_tp_price')
+            expected_sl = mirror_info.get('adjusted_sl_price')
+            
+            actual_tp = gate_order.get('stop_profit_price', '')
+            actual_sl = gate_order.get('stop_loss_price', '')
+            
+            tp_sl_issue = False
+            
+            if expected_tp and (not actual_tp or actual_tp == '' or abs(float(expected_tp) - float(actual_tp or 0)) / float(expected_tp) > 0.05):
+                tp_sl_issue = True
+                result['issues'].append(f"TP 불일치: 예상 ${expected_tp:.2f}, 실제 '{actual_tp}'")
+            
+            if expected_sl and (not actual_sl or actual_sl == '' or abs(float(expected_sl) - float(actual_sl or 0)) / float(expected_sl) > 0.05):
+                tp_sl_issue = True
+                result['issues'].append(f"SL 불일치: 예상 ${expected_sl:.2f}, 실제 '{actual_sl}'")
+            
+            if tp_sl_issue:
+                result['tp_sl_issue'] = True
+                result['has_issues'] = True
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"주문 상세 비교 실패: {e}")
+            return {'has_issues': False, 'price_issue': False, 'size_issue': False, 'tp_sl_issue': False, 'issues': []}
+
+    async def _fix_synchronization_issues(self, sync_issues: Dict):
+        """🔥🔥🔥 동기화 문제 해결"""
+        try:
+            fixed_count = 0
+            
+            # 1. 게이트에 누락된 비트겟 주문들 복제
+            for missing_order in sync_issues['missing_in_gate']:
+                try:
+                    bitget_order = missing_order['bitget_order']
+                    bitget_order_id = missing_order['bitget_order_id']
+                    
+                    self.logger.info(f"🔄 누락된 주문 복제: {bitget_order_id}")
+                    
+                    result = await self._process_new_plan_order_with_position_wait(bitget_order)
+                    
+                    if result == "success":
+                        fixed_count += 1
+                        self.daily_stats['sync_corrections'] += 1
+                        self.logger.info(f"✅ 누락 주문 복제 완료: {bitget_order_id}")
+                    
+                except Exception as e:
+                    self.logger.error(f"누락 주문 복제 실패: {missing_order['bitget_order_id']} - {e}")
+            
+            # 2. 게이트에만 있는 잘못된 주문들 삭제
+            for extra_order in sync_issues['extra_in_gate']:
+                try:
+                    gate_order_id = extra_order['gate_order_id']
+                    
+                    self.logger.info(f"🗑️ 잘못된 게이트 주문 삭제: {gate_order_id}")
+                    
+                    await self.gate.cancel_price_triggered_order(gate_order_id)
+                    fixed_count += 1
+                    self.daily_stats['sync_deletions'] += 1
+                    self.logger.info(f"✅ 잘못된 주문 삭제 완료: {gate_order_id}")
+                    
+                except Exception as e:
+                    self.logger.error(f"잘못된 주문 삭제 실패: {gate_order_id} - {e}")
+            
+            # 동기화 결과 알림
+            if fixed_count > 0:
+                await self.telegram.send_message(
+                    f"🔄 예약 주문 동기화 완료\n"
+                    f"수정된 문제: {fixed_count}건\n"
+                    f"- 누락 복제: {len(sync_issues['missing_in_gate'])}건\n"
+                    f"- 잘못된 주문 삭제: {len(sync_issues['extra_in_gate'])}건\n"
+                    f"- 가격 불일치: {len(sync_issues['price_mismatch'])}건\n"
+                    f"- 수량 불일치: {len(sync_issues['size_mismatch'])}건\n"
+                    f"- TP/SL 불일치: {len(sync_issues['tp_sl_mismatch'])}건"
+                )
+            
+        except Exception as e:
+            self.logger.error(f"동기화 문제 해결 실패: {e}")
+
     async def _cleanup_expired_timestamps(self):
         """🔥🔥🔥 만료된 타임스탬프 정리"""
         try:
@@ -459,6 +770,20 @@ class MirrorPositionManager:
                         del self.gate_to_bitget_order_mapping[gate_id]
                 return
             
+            # 🔥🔥🔥 통합 TP/SL 주문인 경우 관련 주문들도 함께 취소
+            if bitget_order_id in self.integrated_tp_sl_orders:
+                integrated_info = self.integrated_tp_sl_orders[bitget_order_id]
+                related_tp_sl_ids = integrated_info.get('related_tp_sl_ids', [])
+                
+                for related_id in related_tp_sl_ids:
+                    try:
+                        await self.gate.cancel_price_triggered_order(related_id)
+                        self.logger.info(f"✅ 관련 TP/SL 주문 취소: {related_id}")
+                    except Exception as related_error:
+                        self.logger.warning(f"관련 TP/SL 주문 취소 실패: {related_id} - {related_error}")
+                
+                del self.integrated_tp_sl_orders[bitget_order_id]
+            
             # 🔥🔥🔥 게이트에서 주문 상태 먼저 확인
             try:
                 gate_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
@@ -529,7 +854,7 @@ class MirrorPositionManager:
                 del self.mirrored_plan_orders[bitget_order_id]
 
     async def _process_new_plan_order_with_position_wait(self, bitget_order: Dict) -> str:
-        """🔥🔥🔥 새로운 예약 주문 복제 - 중복 방지 및 매핑 추가"""
+        """🔥🔥🔥 새로운 예약 주문 복제 - TP/SL 통합 처리 개선"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -566,7 +891,7 @@ class MirrorPositionManager:
             if original_trigger_price == 0:
                 return "failed"
             
-            # TP/SL 정보 추출
+            # TP/SL 정보 추출 (강화된 방식)
             tp_price, sl_price = await self.utils.extract_tp_sl_from_bitget_order(bitget_order)
             
             # 게이트 기준으로 트리거 가격 조정
@@ -655,18 +980,37 @@ class MirrorPositionManager:
                     self.price_diff_percent
                 )
             
-            # Gate.io에 통합 TP/SL 포함 예약 주문 생성
-            gate_order = await self.gate.create_unified_order_with_tp_sl(
-                trigger_type=gate_trigger_type,
-                trigger_price=str(adjusted_trigger_price),
-                order_type="market",
-                contract=self.GATE_CONTRACT,
-                size=gate_size,
-                tp_price=str(adjusted_tp_price) if adjusted_tp_price else None,
-                sl_price=str(adjusted_sl_price) if adjusted_sl_price else None,
-                bitget_order_info=bitget_order,
-                wait_execution=not is_close_order
-            )
+            # 🔥🔥🔥 통합 TP/SL 처리 방식 결정
+            if not reduce_only_flag and (adjusted_tp_price or adjusted_sl_price):
+                # 오픈 주문 + TP/SL → 통합 처리
+                self.logger.info(f"🎯 통합 TP/SL 처리 모드: {order_id}")
+                
+                gate_order = await self.gate.create_unified_order_with_tp_sl(
+                    trigger_type=gate_trigger_type,
+                    trigger_price=str(adjusted_trigger_price),
+                    order_type="market",
+                    contract=self.GATE_CONTRACT,
+                    size=gate_size,
+                    tp_price=str(adjusted_tp_price) if adjusted_tp_price else None,
+                    sl_price=str(adjusted_sl_price) if adjusted_sl_price else None,
+                    bitget_order_info=bitget_order,
+                    wait_execution=True
+                )
+                
+                self.daily_stats['tp_sl_integrated_orders'] += 1
+                
+            else:
+                # 일반 예약 주문 처리
+                self.logger.info(f"📝 일반 예약 주문 처리: {order_id}")
+                
+                gate_order = await self.gate.create_price_triggered_order(
+                    trigger_type=gate_trigger_type,
+                    trigger_price=str(adjusted_trigger_price),
+                    order_type="market",
+                    contract=self.GATE_CONTRACT,
+                    size=gate_size,
+                    reduce_only=reduce_only_flag
+                )
             
             gate_order_id = gate_order.get('id')
             
@@ -675,6 +1019,17 @@ class MirrorPositionManager:
                 self.bitget_to_gate_order_mapping[order_id] = gate_order_id
                 self.gate_to_bitget_order_mapping[gate_order_id] = order_id
                 self.logger.info(f"주문 매핑 기록: {order_id} ↔ {gate_order_id}")
+            
+            # 🔥🔥🔥 통합 TP/SL 주문인 경우 추가 추적
+            if gate_order.get('staged_execution') and gate_order.get('tp_sl_pending'):
+                self.integrated_tp_sl_orders[order_id] = {
+                    'gate_main_order_id': gate_order_id,
+                    'related_tp_sl_ids': [],  # 나중에 생성될 TP/SL 주문 ID들
+                    'tp_price': adjusted_tp_price,
+                    'sl_price': adjusted_sl_price,
+                    'created_at': datetime.now().isoformat()
+                }
+                self.logger.info(f"🎯 통합 TP/SL 주문 추적 등록: {order_id}")
             
             # 통계 업데이트
             if gate_order.get('has_tp_sl', False):
@@ -724,7 +1079,8 @@ class MirrorPositionManager:
                 'unified_order': True,
                 'is_close_order': is_close_order,
                 'reduce_only': reduce_only_flag,
-                'position_wait_enabled': not is_close_order
+                'position_wait_enabled': not is_close_order,
+                'integrated_tp_sl': gate_order.get('staged_execution', False)
             }
             
             self.daily_stats['plan_order_mirrors'] += 1
@@ -732,19 +1088,21 @@ class MirrorPositionManager:
             # 성공 메시지
             order_type = "클로즈 주문" if is_close_order else "예약 주문"
             tp_sl_info = ""
-            if gate_order.get('has_tp_sl', False):
-                tp_sl_info = f"\n\n🎯 통합 TP/SL 설정:"
+            if gate_order.get('has_tp_sl', False) or gate_order.get('tp_sl_pending', False):
+                tp_sl_info = f"\n\n🎯 TP/SL 처리:"
                 if adjusted_tp_price:
                     tp_sl_info += f"\n• TP: ${adjusted_tp_price:,.2f}"
                 if adjusted_sl_price:
                     tp_sl_info += f"\n• SL: ${adjusted_sl_price:,.2f}"
+                if gate_order.get('tp_sl_pending'):
+                    tp_sl_info += f"\n• 단계별 처리: 포지션 체결 후 TP/SL 자동 설정"
             
             position_wait_info = ""
-            if not is_close_order:
-                position_wait_info = f"\n🕐 포지션 체결 대기 활성화됨"
+            if not is_close_order and gate_order.get('staged_execution'):
+                position_wait_info = f"\n🕐 포지션 체결 대기 및 TP/SL 자동 설정 활성화됨"
             
             await self.telegram.send_message(
-                f"✅ {order_type} 복제 성공\n"
+                f"✅ {order_type} 복제 성공 (통합 처리)\n"
                 f"비트겟 ID: {order_id}\n"
                 f"게이트 ID: {gate_order_id}\n"
                 f"방향: {side.upper()}\n"
@@ -874,6 +1232,10 @@ class MirrorPositionManager:
                             self.logger.info(f"✅ 롱 포지션 체결 확인: {size} (주문: {bitget_order_id})")
                             self.daily_stats['successful_position_waits'] += 1
                             
+                            # 🔥🔥🔥 통합 TP/SL 주문인 경우 TP/SL 자동 설정 트리거
+                            if bitget_order_id in self.integrated_tp_sl_orders:
+                                asyncio.create_task(self._create_delayed_tp_sl_orders(bitget_order_id))
+                            
                             await self.telegram.send_message(
                                 f"✅ 포지션 체결 확인됨\n"
                                 f"비트겟 주문: {bitget_order_id}\n"
@@ -885,6 +1247,10 @@ class MirrorPositionManager:
                         elif expected_side == "short" and size < 0:
                             self.logger.info(f"✅ 숏 포지션 체결 확인: {size} (주문: {bitget_order_id})")
                             self.daily_stats['successful_position_waits'] += 1
+                            
+                            # 🔥🔥🔥 통합 TP/SL 주문인 경우 TP/SL 자동 설정 트리거
+                            if bitget_order_id in self.integrated_tp_sl_orders:
+                                asyncio.create_task(self._create_delayed_tp_sl_orders(bitget_order_id))
                             
                             await self.telegram.send_message(
                                 f"✅ 포지션 체결 확인됨\n"
@@ -912,6 +1278,68 @@ class MirrorPositionManager:
             
         except Exception as e:
             self.logger.error(f"포지션 체결 대기 중 오류: {e}")
+
+    async def _create_delayed_tp_sl_orders(self, bitget_order_id: str):
+        """🔥🔥🔥 지연된 TP/SL 주문 생성"""
+        try:
+            if bitget_order_id not in self.integrated_tp_sl_orders:
+                return
+            
+            integrated_info = self.integrated_tp_sl_orders[bitget_order_id]
+            tp_price = integrated_info.get('tp_price')
+            sl_price = integrated_info.get('sl_price')
+            
+            if not tp_price and not sl_price:
+                return
+            
+            self.logger.info(f"🎯 지연된 TP/SL 주문 생성 시작: {bitget_order_id}")
+            
+            # 현재 포지션 확인
+            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+            if not gate_positions or gate_positions[0].get('size', 0) == 0:
+                self.logger.warning(f"TP/SL 설정을 위한 포지션이 없음: {bitget_order_id}")
+                return
+            
+            current_position = gate_positions[0]
+            position_size = int(current_position.get('size', 0))
+            
+            tp_sl_result = await self.gate.create_tp_sl_orders_for_planned_position(
+                contract=self.GATE_CONTRACT,
+                planned_position_size=position_size,
+                tp_price=tp_price,
+                sl_price=sl_price
+            )
+            
+            # 생성된 TP/SL 주문 ID들 추적
+            related_ids = []
+            if tp_sl_result.get('tp_order'):
+                tp_order_id = tp_sl_result['tp_order'].get('id')
+                if tp_order_id:
+                    related_ids.append(tp_order_id)
+            
+            if tp_sl_result.get('sl_order'):
+                sl_order_id = tp_sl_result['sl_order'].get('id')
+                if sl_order_id:
+                    related_ids.append(sl_order_id)
+            
+            # 통합 정보 업데이트
+            self.integrated_tp_sl_orders[bitget_order_id]['related_tp_sl_ids'] = related_ids
+            
+            if tp_sl_result['success_count'] > 0:
+                self.logger.info(f"✅ 지연된 TP/SL 설정 완료: {bitget_order_id} - {tp_sl_result['success_count']}개 성공")
+                
+                await self.telegram.send_message(
+                    f"🎯 TP/SL 자동 설정 완료\n"
+                    f"비트겟 주문: {bitget_order_id}\n"
+                    f"성공: {tp_sl_result['success_count']}개\n"
+                    f"실패: {tp_sl_result['error_count']}개\n"
+                    f"관련 주문 ID: {', '.join(related_ids)}"
+                )
+            else:
+                self.logger.warning(f"⚠️ 지연된 TP/SL 설정 실패: {bitget_order_id} - {tp_sl_result['errors']}")
+                
+        except Exception as e:
+            self.logger.error(f"지연된 TP/SL 주문 생성 실패: {e}")
 
     async def _set_gate_leverage_enhanced(self, leverage: int, max_retries: int = 5) -> bool:
         """강화된 게이트 레버리지 설정"""
@@ -1491,12 +1919,13 @@ class MirrorPositionManager:
             self.startup_plan_orders_processed = True
             
             await self.telegram.send_message(
-                f"✅ 시작 시 기존 예약 주문 복제 완료\n"
+                f"✅ 시작 시 기존 예약 주문 복제 완료 (동기화 강화)\n"
                 f"성공: {mirrored_count}개\n"
                 f"• 클로즈 주문: {close_order_count}개\n"
                 f"실패: {failed_count}개\n"
                 f"중복 방지: {duplicate_count}개\n"
-                f"가격 중복 방지: {price_duplicate_count}개"
+                f"가격 중복 방지: {price_duplicate_count}개\n\n"
+                f"🔄 30초마다 자동 동기화 활성화"
             )
             
         except Exception as e:
