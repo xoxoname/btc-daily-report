@@ -44,6 +44,13 @@ class MirrorTradingSystem:
         self.price_sync_threshold: float = 15.0  # 15달러 이상 차이나면 대기
         self.position_wait_timeout: int = 180    # 포지션 체결 대기 3분
         
+        # 🔥🔥🔥 시세 조회 실패 관리
+        self.last_valid_bitget_price: float = 0.0
+        self.last_valid_gate_price: float = 0.0
+        self.bitget_price_failures: int = 0
+        self.gate_price_failures: int = 0
+        self.max_price_failures: int = 5  # 5회 연속 실패까지 허용
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -117,6 +124,14 @@ class MirrorTradingSystem:
                 # 🔥🔥🔥 시세 차이 확인 후 처리
                 await self._update_current_prices()
                 
+                # 🔥🔥🔥 유효한 시세 차이인지 확인 (0 가격 제외)
+                valid_price_diff = self._get_valid_price_difference()
+                if valid_price_diff is None:
+                    # 시세 조회 실패 시 처리 지연하지 않음
+                    pass
+                elif valid_price_diff > self.price_sync_threshold:
+                    self.logger.debug(f"시세 차이 확인됨: ${valid_price_diff:.2f}, 주문 처리 계속 진행")
+                
                 filled_orders = await self.bitget.get_recent_filled_orders(
                     symbol=self.SYMBOL, 
                     minutes=1
@@ -129,12 +144,6 @@ class MirrorTradingSystem:
                     
                     reduce_only = order.get('reduceOnly', 'false')
                     if reduce_only == 'true' or reduce_only is True:
-                        continue
-                    
-                    # 🔥🔥🔥 시세 차이가 큰 경우 처리 지연
-                    if abs(self.bitget_current_price - self.gate_current_price) > self.price_sync_threshold:
-                        self.logger.warning(f"시세 차이 큼 ({abs(self.bitget_current_price - self.gate_current_price):.2f}$), 주문 처리 지연: {order_id}")
-                        await asyncio.sleep(5)  # 5초 대기
                         continue
                     
                     await self.position_manager.process_filled_order(order)
@@ -200,40 +209,88 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.CHECK_INTERVAL * 2)
 
     async def _update_current_prices(self):
-        """🔥🔥🔥 양쪽 거래소 현재 시세 업데이트 - 강화된 버전"""
+        """🔥🔥🔥 양쪽 거래소 현재 시세 업데이트 - 강화된 오류 처리"""
         try:
-            # 비트겟 현재가
-            bitget_ticker = await self.bitget.get_ticker(self.SYMBOL)
-            if bitget_ticker:
-                self.bitget_current_price = float(bitget_ticker.get('last', 0))
+            # 비트겟 현재가 조회
+            try:
+                bitget_ticker = await self.bitget.get_ticker(self.SYMBOL)
+                if bitget_ticker and bitget_ticker.get('last'):
+                    new_bitget_price = float(bitget_ticker.get('last', 0))
+                    if new_bitget_price > 0:
+                        self.bitget_current_price = new_bitget_price
+                        self.last_valid_bitget_price = new_bitget_price
+                        self.bitget_price_failures = 0
+                    else:
+                        raise ValueError("비트겟 가격이 0 또는 None")
+                else:
+                    raise ValueError("비트겟 티커 응답 없음")
+                    
+            except Exception as bitget_error:
+                self.bitget_price_failures += 1
+                self.logger.warning(f"비트겟 시세 조회 실패 ({self.bitget_price_failures}회): {bitget_error}")
+                
+                # 🔥🔥🔥 이전 유효 가격 사용 또는 게이트 가격으로 대체
+                if self.last_valid_bitget_price > 0:
+                    self.bitget_current_price = self.last_valid_bitget_price
+                    self.logger.info(f"비트겟 이전 유효 가격 사용: ${self.bitget_current_price:.2f}")
+                elif self.gate_current_price > 0:
+                    self.bitget_current_price = self.gate_current_price
+                    self.logger.info(f"게이트 가격으로 비트겟 가격 대체: ${self.bitget_current_price:.2f}")
             
-            # 게이트 현재가
+            # 게이트 현재가 조회
             try:
                 gate_ticker = await self.gate.get_ticker(self.GATE_CONTRACT)
-                if gate_ticker:
-                    self.gate_current_price = float(gate_ticker.get('last', 0))
+                if gate_ticker and gate_ticker.get('last'):
+                    new_gate_price = float(gate_ticker.get('last', 0))
+                    if new_gate_price > 0:
+                        self.gate_current_price = new_gate_price
+                        self.last_valid_gate_price = new_gate_price
+                        self.gate_price_failures = 0
+                    else:
+                        # 폴백: 계약 정보에서 조회
+                        gate_contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
+                        for price_field in ['last_price', 'mark_price', 'index_price']:
+                            if gate_contract_info.get(price_field):
+                                fallback_price = float(gate_contract_info[price_field])
+                                if fallback_price > 0:
+                                    self.gate_current_price = fallback_price
+                                    self.last_valid_gate_price = fallback_price
+                                    self.gate_price_failures = 0
+                                    break
+                        else:
+                            raise ValueError("게이트 모든 가격 필드가 0 또는 None")
                 else:
-                    # 폴백: 계약 정보에서 조회
-                    gate_contract_info = await self.gate.get_contract_info(self.GATE_CONTRACT)
-                    if 'last_price' in gate_contract_info:
-                        self.gate_current_price = float(gate_contract_info['last_price'])
-                    elif 'mark_price' in gate_contract_info:
-                        self.gate_current_price = float(gate_contract_info['mark_price'])
+                    raise ValueError("게이트 티커 응답 없음")
+                    
             except Exception as gate_error:
-                self.logger.warning(f"게이트 시세 조회 실패, 비트겟 시세 사용: {gate_error}")
-                self.gate_current_price = self.bitget_current_price
+                self.gate_price_failures += 1
+                self.logger.warning(f"게이트 시세 조회 실패 ({self.gate_price_failures}회): {gate_error}")
+                
+                # 🔥🔥🔥 이전 유효 가격 사용 또는 비트겟 가격으로 대체
+                if self.last_valid_gate_price > 0:
+                    self.gate_current_price = self.last_valid_gate_price
+                    self.logger.info(f"게이트 이전 유효 가격 사용: ${self.gate_current_price:.2f}")
+                elif self.bitget_current_price > 0:
+                    self.gate_current_price = self.bitget_current_price
+                    self.logger.info(f"비트겟 가격으로 게이트 가격 대체: ${self.gate_current_price:.2f}")
             
-            # 🔥🔥🔥 시세 차이 계산 및 로깅
+            # 🔥🔥🔥 시세 차이 계산 (개선된 로직)
             if self.bitget_current_price > 0 and self.gate_current_price > 0:
                 price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
                 self.price_diff_percent = price_diff_abs / self.bitget_current_price * 100
                 
-                # 큰 시세 차이 감지 시 로깅
-                if price_diff_abs > self.price_sync_threshold:
-                    self.logger.warning(f"⚠️ 큰 시세 차이 감지: 비트겟 ${self.bitget_current_price:.2f}, 게이트 ${self.gate_current_price:.2f}, 차이 ${price_diff_abs:.2f}")
+                # 🔥 정상적인 시세 차이만 로깅 (극단적인 차이 제외)
+                if price_diff_abs <= 1000:  # 1000달러 이하의 정상적인 차이만
+                    if price_diff_abs > self.price_sync_threshold:
+                        self.logger.debug(f"시세 차이: 비트겟 ${self.bitget_current_price:.2f}, 게이트 ${self.gate_current_price:.2f}, 차이 ${price_diff_abs:.2f}")
+                else:
+                    self.logger.warning(f"비정상적인 시세 차이 감지: ${price_diff_abs:.2f}, 이전 가격 유지")
+                    # 비정상적인 차이는 무시하고 이전 가격 유지
+                    return
                     
             else:
                 self.price_diff_percent = 0.0
+                self.logger.warning(f"시세 조회 실패: 비트겟={self.bitget_current_price}, 게이트={self.gate_current_price}")
             
             self.last_price_update = datetime.now()
             
@@ -247,42 +304,75 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"시세 업데이트 실패: {e}")
 
+    def _get_valid_price_difference(self) -> Optional[float]:
+        """🔥🔥🔥 유효한 시세 차이 반환 (0 가격 제외)"""
+        try:
+            if self.bitget_current_price <= 0 or self.gate_current_price <= 0:
+                return None
+            
+            price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
+            
+            # 비정상적으로 큰 차이는 None 반환
+            if price_diff_abs > 1000:
+                return None
+                
+            return price_diff_abs
+            
+        except Exception as e:
+            self.logger.error(f"시세 차이 계산 실패: {e}")
+            return None
+
     async def monitor_price_differences(self):
-        """🔥🔥🔥 거래소 간 시세 차이 모니터링 - 강화된 버전"""
+        """🔥🔥🔥 거래소 간 시세 차이 모니터링 - 강화된 오류 처리"""
         consecutive_errors = 0
         last_warning_time = datetime.min
+        last_normal_report_time = datetime.min
         
         while self.monitoring:
             try:
                 await self._update_current_prices()
                 
-                # 시세 차이가 임계값을 초과하는 경우 주기적 경고
-                price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
+                # 🔥🔥🔥 유효한 시세 차이만 확인
+                valid_price_diff = self._get_valid_price_difference()
+                
+                if valid_price_diff is None:
+                    # 시세 조회 실패 또는 비정상적인 차이
+                    self.logger.debug("유효하지 않은 시세 차이, 경고 생략")
+                    consecutive_errors = 0
+                    await asyncio.sleep(30)
+                    continue
+                
                 now = datetime.now()
                 
-                if (price_diff_abs > self.price_sync_threshold and 
+                # 🔥🔥🔥 정상적인 시세 차이 경고 (임계값 초과 시만)
+                if (valid_price_diff > self.price_sync_threshold and 
                     (now - last_warning_time).total_seconds() > 300):  # 5분마다 경고
                     
                     await self.telegram.send_message(
-                        f"⚠️ 시세 차이 경고\n"
+                        f"⚠️ 정상적인 시세 차이 경고\n"
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
                         f"게이트: ${self.gate_current_price:,.2f}\n"
-                        f"차이: ${price_diff_abs:.2f} (임계값: ${self.price_sync_threshold})\n"
+                        f"차이: ${valid_price_diff:.2f} (임계값: ${self.price_sync_threshold})\n"
                         f"백분율: {self.price_diff_percent:.3f}%\n\n"
-                        f"🔄 미러링 지연 처리 활성화됨"
+                        f"🔄 미러링 정상 진행 중"
                     )
                     last_warning_time = now
                 
-                # 1시간마다 상세 시세 차이 리포트
-                if (now - self.last_price_update).total_seconds() > 3600:
-                    if self.price_diff_percent > 0.1:  # 0.1% 이상 차이
-                        await self.telegram.send_message(
-                            f"📊 시간당 시세 차이 리포트\n"
-                            f"비트겟: ${self.bitget_current_price:,.2f}\n"
-                            f"게이트: ${self.gate_current_price:,.2f}\n"
-                            f"차이: ${price_diff_abs:.2f} ({self.price_diff_percent:.3f}%)\n"
-                            f"상태: {'⚠️ 주의' if price_diff_abs > self.price_sync_threshold else '✅ 정상'}"
-                        )
+                # 🔥🔥🔥 1시간마다 정상 상태 리포트 (경고가 아님)
+                elif ((now - last_normal_report_time).total_seconds() > 3600 and 
+                      self.price_diff_percent > 0.05):  # 0.05% 이상 차이 시만
+                    
+                    status_emoji = "✅" if valid_price_diff <= self.price_sync_threshold else "⚠️"
+                    
+                    await self.telegram.send_message(
+                        f"📊 시간당 시세 현황 리포트\n"
+                        f"비트겟: ${self.bitget_current_price:,.2f}\n"
+                        f"게이트: ${self.gate_current_price:,.2f}\n"
+                        f"차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)\n"
+                        f"상태: {status_emoji} {'정상' if valid_price_diff <= self.price_sync_threshold else '주의'}\n"
+                        f"실패 횟수: 비트겟 {self.bitget_price_failures}회, 게이트 {self.gate_price_failures}회"
+                    )
+                    last_normal_report_time = now
                 
                 consecutive_errors = 0
                 await asyncio.sleep(30)  # 30초마다 체크
@@ -299,7 +389,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(60)  # 오류 시 1분 대기
 
     async def monitor_sync_status(self):
-        """포지션 동기화 상태 모니터링"""
+        """포지션 동기화 상태 모니터링 - 개선된 원인 분석"""
         sync_retry_count = 0
         
         while self.monitoring:
@@ -313,17 +403,33 @@ class MirrorTradingSystem:
                     sync_retry_count += 1
                     
                     if sync_retry_count >= 3:  # 3회 연속 불일치
-                        # 시세 차이 정보 포함한 경고
-                        price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
+                        # 🔥🔥🔥 실제 원인 분석
+                        valid_price_diff = self._get_valid_price_difference()
+                        
+                        # 가능한 원인들 분석
+                        possible_causes = []
+                        
+                        if valid_price_diff and valid_price_diff > self.price_sync_threshold:
+                            possible_causes.append(f"시세 차이 (${valid_price_diff:.2f})")
+                        
+                        if self.bitget_price_failures > 0 or self.gate_price_failures > 0:
+                            possible_causes.append(f"가격 조회 실패 (비트겟: {self.bitget_price_failures}회, 게이트: {self.gate_price_failures}회)")
+                        
+                        if len(self.position_manager.mirrored_positions) > 0:
+                            possible_causes.append("렌더 재구동 후 기존 포지션 존재")
+                        
+                        if not possible_causes:
+                            possible_causes.append("알 수 없는 원인")
                         
                         await self.telegram.send_message(
-                            f"⚠️ 포지션 동기화 불일치 지속\n"
+                            f"⚠️ 포지션 동기화 불일치 분석\n"
                             f"비트겟 신규: {sync_status['bitget_new_count']}개\n"
                             f"게이트 신규: {sync_status['gate_new_count']}개\n"
                             f"차이: {sync_status['position_diff']}개\n"
-                            f"시세 차이: ${price_diff_abs:.2f}\n"
                             f"연속 감지: {sync_retry_count}회\n\n"
-                            f"🔄 시세 차이가 원인일 수 있습니다."
+                            f"🔍 가능한 원인:\n"
+                            f"• {chr(10).join(possible_causes)}\n\n"
+                            f"💡 대부분 정상적인 상황입니다."
                         )
                         
                         sync_retry_count = 0  # 리셋
@@ -354,7 +460,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(3600)
 
     async def _create_daily_report(self) -> str:
-        """🔥🔥🔥 일일 리포트 생성 - 시세 차이 정보 포함"""
+        """🔥🔥🔥 일일 리포트 생성 - 개선된 시세 차이 정보"""
         try:
             bitget_account = await self.bitget.get_account_info()
             gate_account = await self.gate.get_account_balance()
@@ -367,9 +473,25 @@ class MirrorTradingSystem:
                 success_rate = (self.daily_stats['successful_mirrors'] / 
                               self.daily_stats['total_mirrored']) * 100
             
-            # 시세 차이 통계
+            # 🔥🔥🔥 시세 차이 통계 (개선)
             await self._update_current_prices()
-            price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
+            valid_price_diff = self._get_valid_price_difference()
+            
+            price_status_info = ""
+            if valid_price_diff is not None:
+                price_status = "✅ 정상" if valid_price_diff <= self.price_sync_threshold else "⚠️ 주의"
+                price_status_info = f"""📈 시세 차이 현황:
+- 비트겟: ${self.bitget_current_price:,.2f}
+- 게이트: ${self.gate_current_price:,.2f}
+- 차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)
+- 상태: {price_status}
+- 조회 실패: 비트겟 {self.bitget_price_failures}회, 게이트 {self.gate_price_failures}회"""
+            else:
+                price_status_info = f"""📈 시세 차이 현황:
+- 시세 조회에 문제가 있었습니다
+- 비트겟 조회 실패: {self.bitget_price_failures}회
+- 게이트 조회 실패: {self.gate_price_failures}회
+- 마지막 유효 가격: 비트겟 ${self.last_valid_bitget_price:.2f}, 게이트 ${self.last_valid_gate_price:.2f}"""
             
             report = f"""📊 미러 트레이딩 일일 리포트 (시세차이 문제 해결)
 📅 {datetime.now().strftime('%Y-%m-%d')}
@@ -379,11 +501,7 @@ class MirrorTradingSystem:
 - 비트겟: ${bitget_equity:,.2f}
 - 게이트: ${gate_equity:,.2f}
 
-📈 시세 차이 현황:
-- 비트겟: ${self.bitget_current_price:,.2f}
-- 게이트: ${self.gate_current_price:,.2f}
-- 차이: ${price_diff_abs:.2f} ({self.price_diff_percent:.3f}%)
-- {'⚠️ 임계값 초과' if price_diff_abs > self.price_sync_threshold else '✅ 정상 범위'}
+{price_status_info}
 
 ⚡ 실시간 포지션 미러링:
 - 주문 체결 기반: {self.daily_stats['order_mirrors']}회
@@ -445,17 +563,22 @@ class MirrorTradingSystem:
             'unified_tp_sl_orders': 0,
             'duplicate_advanced_prevention': 0,
             'price_duplicate_prevention': 0,
-            'price_sync_delays': 0,  # 🔥🔥🔥 시세 차이로 인한 지연 카운트
-            'position_wait_timeouts': 0,  # 🔥🔥🔥 포지션 체결 대기 타임아웃
+            'price_sync_delays': 0,        # 🔥🔥🔥 시세 차이로 인한 지연
+            'position_wait_timeouts': 0,   # 🔥🔥🔥 포지션 체결 대기 타임아웃
+            'successful_position_waits': 0, # 🔥🔥🔥 성공적인 포지션 체결 대기
             'errors': []
         }
         self.failed_mirrors.clear()
+        
+        # 🔥🔥🔥 시세 조회 실패 카운터 리셋
+        self.bitget_price_failures = 0
+        self.gate_price_failures = 0
         
         # 포지션 매니저의 통계도 동기화
         self.position_manager.daily_stats = self.daily_stats
 
     async def _log_account_status(self):
-        """🔥🔥🔥 계정 상태 로깅 - 시세 차이 정보 포함"""
+        """🔥🔥🔥 계정 상태 로깅 - 개선된 시세 차이 정보"""
         try:
             bitget_account = await self.bitget.get_account_info()
             bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
@@ -463,30 +586,39 @@ class MirrorTradingSystem:
             gate_account = await self.gate.get_account_balance()
             gate_equity = float(gate_account.get('total', 0))
             
-            # 시세 차이 정보
-            price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
-            price_status = "정상" if price_diff_abs <= self.price_sync_threshold else "주의 필요"
+            # 🔥🔥🔥 시세 차이 정보 (개선)
+            valid_price_diff = self._get_valid_price_difference()
+            
+            if valid_price_diff is not None:
+                price_status = "정상" if valid_price_diff <= self.price_sync_threshold else "주의 필요"
+                price_info = f"""📈 시세 상태:
+• 비트겟: ${self.bitget_current_price:,.2f}
+• 게이트: ${self.gate_current_price:,.2f}
+• 차이: ${valid_price_diff:.2f} ({price_status})
+• 임계값: ${self.price_sync_threshold}"""
+            else:
+                price_info = f"""📈 시세 상태:
+• 시세 조회 중 문제 발생
+• 시스템이 자동으로 복구 중
+• 임계값: ${self.price_sync_threshold}"""
             
             await self.telegram.send_message(
                 f"🔄 미러 트레이딩 시스템 시작 (시세차이 문제 해결)\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}\n\n"
-                f"📈 시세 상태:\n"
-                f"• 비트겟: ${self.bitget_current_price:,.2f}\n"
-                f"• 게이트: ${self.gate_current_price:,.2f}\n"
-                f"• 차이: ${price_diff_abs:.2f} ({price_status})\n"
-                f"• 임계값: ${self.price_sync_threshold}\n\n"
+                f"{price_info}\n\n"
                 f"📊 현재 상태:\n"
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
                 f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
                 f"⚡ 개선 사항:\n"
-                f"• 시세 차이 실시간 모니터링\n"
+                f"• 시세 차이 실시간 모니터링 및 오류 처리 강화\n"
                 f"• 포지션 체결 확인 후 클로즈 주문 생성\n"
                 f"• 강화된 레버리지 설정\n"
                 f"• 코드 3개 파일로 분할\n"
-                f"• 포지션 체결 대기 시간: {self.position_wait_timeout}초"
+                f"• 포지션 체결 대기 시간: {self.position_wait_timeout}초\n"
+                f"• 가격 조회 실패 시 자동 복구"
             )
             
         except Exception as e:
