@@ -197,26 +197,11 @@ class GateioMirrorClient:
             try:
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
                 
-                # 🔥🔥🔥 수정된 데이터 구조 - Gate.io 공식 문서에 맞춰 조정
+                # 🔥🔥🔥 수정된 데이터 구조 - leverage를 문자열로 전송
                 data = {
-                    "leverage": leverage,  # 문자열이 아닌 정수로 전송
-                    "cross_leverage_limit": cross_leverage_limit
+                    "leverage": str(leverage),  # 문자열로 전송
+                    "cross_leverage_limit": str(cross_leverage_limit) if cross_leverage_limit > 0 else "0"
                 }
-                
-                # 현재 포지션 모드 조회 시도
-                try:
-                    positions = await self.get_positions(contract)
-                    if positions and len(positions) > 0:
-                        current_pos = positions[0]
-                        # 모드가 있으면 추가
-                        if 'mode' in current_pos:
-                            data["mode"] = current_pos.get('mode', 'single')
-                        else:
-                            data["mode"] = "single"
-                    else:
-                        data["mode"] = "single"
-                except Exception:
-                    data["mode"] = "single"
                 
                 logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
                 logger.debug(f"레버리지 설정 데이터: {json.dumps(data, indent=2)}")
@@ -245,29 +230,31 @@ class GateioMirrorClient:
                 # 🔥🔥🔥 특정 오류에 대한 대체 방법 시도
                 if "MISSING_REQUIRED_PARAM" in error_msg and "leverage" in error_msg:
                     try:
-                        # 대체 방법 1: 문자열로 전송
-                        logger.info(f"레버리지 파라미터를 문자열로 재시도: {attempt + 1}")
+                        # 대체 방법 1: 정수로 전송
+                        logger.info(f"레버리지 파라미터를 정수로 재시도: {attempt + 1}")
                         alt_data = {
-                            "leverage": str(leverage),
-                            "cross_leverage_limit": str(cross_leverage_limit) if cross_leverage_limit > 0 else "0"
+                            "leverage": leverage,  # 정수로 전송
                         }
                         response = await self._request('POST', endpoint, data=alt_data)
                         await asyncio.sleep(1.0)
-                        logger.info(f"✅ Gate.io 레버리지 설정 완료 (문자열 방식): {contract} - {leverage}x")
+                        logger.info(f"✅ Gate.io 레버리지 설정 완료 (정수 방식): {contract} - {leverage}x")
                         return response
                     except Exception as alt_error:
-                        logger.warning(f"대체 방법도 실패: {alt_error}")
+                        logger.warning(f"정수 방법도 실패: {alt_error}")
                         
-                        # 대체 방법 2: 최소한의 파라미터만 전송
+                        # 대체 방법 2: mode 파라미터 포함
                         try:
-                            logger.info(f"최소 파라미터로 재시도: {attempt + 1}")
-                            minimal_data = {"leverage": leverage}
-                            response = await self._request('POST', endpoint, data=minimal_data)
+                            logger.info(f"mode 파라미터 포함하여 재시도: {attempt + 1}")
+                            mode_data = {
+                                "leverage": str(leverage),
+                                "mode": "single"
+                            }
+                            response = await self._request('POST', endpoint, data=mode_data)
                             await asyncio.sleep(1.0)
-                            logger.info(f"✅ Gate.io 레버리지 설정 완료 (최소 파라미터): {contract} - {leverage}x")
+                            logger.info(f"✅ Gate.io 레버리지 설정 완료 (mode 포함): {contract} - {leverage}x")
                             return response
-                        except Exception as minimal_error:
-                            logger.warning(f"최소 파라미터 방법도 실패: {minimal_error}")
+                        except Exception as mode_error:
+                            logger.warning(f"mode 파라미터 방법도 실패: {mode_error}")
                 
                 if attempt < retry_count - 1:
                     await asyncio.sleep(2.0)
@@ -391,8 +378,13 @@ class GateioMirrorClient:
             logger.info(f"   - 비트겟 ID: {order_id}")
             logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
             logger.info(f"   - 트리거가: ${trigger_price:.2f}")
-            logger.info(f"   - TP: ${tp_price:.2f if tp_price else 0}")
-            logger.info(f"   - SL: ${sl_price:.2f if sl_price else 0}")
+            
+            # 🔥🔥🔥 f-string 포맷팅 오류 수정
+            tp_display = f"${tp_price:.2f}" if tp_price is not None else "없음"
+            sl_display = f"${sl_price:.2f}" if sl_price is not None else "없음"
+            
+            logger.info(f"   - TP: {tp_display}")
+            logger.info(f"   - SL: {sl_display}")
             logger.info(f"   - 게이트 사이즈: {final_size}")
             
             # 🔥 TP/SL 포함 통합 주문 생성
