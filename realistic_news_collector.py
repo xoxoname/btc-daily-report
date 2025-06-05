@@ -89,7 +89,7 @@ class RealisticNewsCollector:
                                 article['title_ko'] = article.get('title', '')
                             
                             # 요약 (선택적)
-                            if self.translator.should_use_gpt_summary(article):
+                            if self.translator.should_use_claude_summary(article):
                                 summary = await self.translator.summarize_article(
                                     article['title'],
                                     article.get('description', '')
@@ -97,10 +97,10 @@ class RealisticNewsCollector:
                                 if summary:
                                     article['summary'] = summary
                             
-                            # 중복 체크 후 이벤트 생성
+                            # 중복 체크 후 이벤트 생성 - await 추가
                             if not self.processor.is_duplicate_emergency(article):
                                 article['expected_change'] = self.processor.estimate_price_impact(article)
-                                event = self.processor.create_emergency_event(article, self.translator)
+                                event = await self.processor.create_emergency_event(article, self.translator)
                                 
                                 if event and self.data_collector:
                                     self.data_collector.events_buffer.append(event)
