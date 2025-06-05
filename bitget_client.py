@@ -394,6 +394,150 @@ class BitgetClient:
             logger.error(f"티커 데이터 정규화 실패: {e}")
             return ticker_data
     
+    async def get_funding_rate(self, symbol: str = None) -> Dict:
+        """🔥🔥🔥 펀딩비 조회 - 새로 추가된 메서드"""
+        symbol = symbol or self.config.symbol
+        
+        # 여러 엔드포인트 시도
+        funding_endpoints = [
+            "/api/v2/mix/market/current-funding-rate",
+            "/api/mix/v1/market/current-fundRate",
+            "/api/v2/mix/market/funding-time"
+        ]
+        
+        for i, endpoint in enumerate(funding_endpoints):
+            try:
+                logger.debug(f"펀딩비 조회 시도 {i + 1}/{len(funding_endpoints)}: {endpoint}")
+                
+                if endpoint == "/api/v2/mix/market/current-funding-rate":
+                    # V2 엔드포인트
+                    params = {
+                        'symbol': symbol,
+                        'productType': 'USDT-FUTURES'
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, list) and len(response) > 0:
+                        funding_data = response[0]
+                    elif isinstance(response, dict):
+                        funding_data = response
+                    else:
+                        logger.warning(f"V2 펀딩비: 예상치 못한 응답 형식: {type(response)}")
+                        continue
+                    
+                elif endpoint == "/api/mix/v1/market/current-fundRate":
+                    # V1 엔드포인트
+                    v1_symbol = f"{symbol}_UMCBL"
+                    params = {
+                        'symbol': v1_symbol
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, dict):
+                        funding_data = response
+                    else:
+                        logger.warning(f"V1 펀딩비: 예상치 못한 응답 형식: {type(response)}")
+                        continue
+                
+                elif endpoint == "/api/v2/mix/market/funding-time":
+                    # V2 펀딩 시간 엔드포인트 (펀딩비 포함)
+                    params = {
+                        'symbol': symbol,
+                        'productType': 'USDT-FUTURES'
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, list) and len(response) > 0:
+                        funding_data = response[0]
+                    elif isinstance(response, dict):
+                        funding_data = response
+                    else:
+                        logger.warning(f"V2 펀딩 시간: 예상치 못한 응답 형식: {type(response)}")
+                        continue
+                
+                # 펀딩비 데이터 검증 및 정규화
+                if funding_data and self._validate_funding_data(funding_data):
+                    normalized_funding = self._normalize_funding_data(funding_data, endpoint)
+                    logger.info(f"✅ 펀딩비 조회 성공 ({endpoint}): {normalized_funding.get('fundingRate', 'N/A')}")
+                    return normalized_funding
+                else:
+                    logger.warning(f"펀딩비 데이터 검증 실패: {endpoint}")
+                    continue
+                    
+            except Exception as e:
+                logger.warning(f"펀딩비 엔드포인트 {endpoint} 실패: {e}")
+                continue
+        
+        # 모든 엔드포인트 실패
+        logger.error("모든 펀딩비 엔드포인트 실패")
+        return {}
+    
+    def _validate_funding_data(self, funding_data: Dict) -> bool:
+        """펀딩비 데이터 유효성 검증"""
+        try:
+            if not isinstance(funding_data, dict):
+                return False
+            
+            # 펀딩비 필드 확인
+            funding_fields = ['fundingRate', 'fundRate', 'rate', 'currentFundingRate']
+            
+            for field in funding_fields:
+                value = funding_data.get(field)
+                if value is not None:
+                    try:
+                        rate = float(value)
+                        # 펀딩비는 보통 -1 ~ 1 범위
+                        if -1 <= rate <= 1:
+                            return True
+                    except:
+                        continue
+            
+            logger.warning(f"유효한 펀딩비 필드 없음: {list(funding_data.keys())}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"펀딩비 데이터 검증 오류: {e}")
+            return False
+    
+    def _normalize_funding_data(self, funding_data: Dict, endpoint: str) -> Dict:
+        """펀딩비 데이터 정규화"""
+        try:
+            normalized = {}
+            
+            # 펀딩비 필드 정규화
+            funding_fields = ['fundingRate', 'fundRate', 'rate', 'currentFundingRate']
+            
+            for field in funding_fields:
+                value = funding_data.get(field)
+                if value is not None:
+                    try:
+                        normalized['fundingRate'] = float(value)
+                        break
+                    except:
+                        continue
+            
+            # 기본값 설정
+            if 'fundingRate' not in normalized:
+                normalized['fundingRate'] = 0
+            
+            # 추가 필드들
+            time_fields = ['fundingTime', 'nextFundingTime', 'fundTime']
+            for field in time_fields:
+                value = funding_data.get(field)
+                if value is not None:
+                    normalized[field] = value
+                    break
+            
+            # 원본 데이터도 포함
+            normalized['_original'] = funding_data
+            normalized['_endpoint'] = endpoint
+            
+            return normalized
+            
+        except Exception as e:
+            logger.error(f"펀딩비 데이터 정규화 실패: {e}")
+            return funding_data
+    
     async def get_positions(self, symbol: str = None) -> List[Dict]:
         """포지션 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
