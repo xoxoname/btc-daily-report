@@ -827,12 +827,15 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 처리 실패: {e}")
 
-    def _is_existing_position_close_order(self, order: Dict) -> bool:
-        """🔥 기존 포지션의 클로즈 주문인지 확인"""
+def _is_existing_position_close_order(self, order: Dict) -> bool:
+        """🔥 기존 포지션의 클로즈 주문인지 확인 - 수정됨"""
         try:
-            # 현재 활성 포지션이 없으면 기존 포지션의 클로즈가 아님
-            if len(self.startup_positions_detailed) == 0:
-                return False
+            # 🔥 모든 클로즈 주문을 복제하도록 변경 (기존 포지션 여부와 관계없이)
+            return False  # 항상 False 반환하여 모든 클로즈 주문 복제
+            
+        except Exception as e:
+            self.logger.error(f"기존 포지션 클로즈 주문 확인 실패: {e}")
+            return False
             
             side = order.get('side', order.get('tradeSide', '')).lower()
             reduce_only = order.get('reduceOnly', False)
