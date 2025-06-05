@@ -9,7 +9,7 @@ from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 logger = logging.getLogger(__name__)
 
 class MirrorPositionManager:
-    """🔥🔥🔥 포지션 및 주문 관리 클래스 - 시세차이 문제 해결"""
+    """🔥🔥🔥 포지션 및 주문 관리 클래스 - 시세차이 문제 해결 + 클로즈 주문 체크 강화"""
     
     def __init__(self, config, bitget_client, gate_client, telegram_bot, utils):
         self.config = config
@@ -41,12 +41,12 @@ class MirrorPositionManager:
         self.last_plan_order_ids: Set[str] = set()
         self.plan_order_snapshot: Dict[str, Dict] = {}
         
-        # 🔥🔥🔥 시세 차이 관리
+        # 🔥🔥🔥 시세 차이 관리 - 개선된 임계값
         self.bitget_current_price: float = 0.0
         self.gate_current_price: float = 0.0
         self.price_diff_percent: float = 0.0
-        self.price_sync_threshold: float = 15.0  # 15달러 임계값
-        self.position_wait_timeout: int = 180    # 3분 대기
+        self.price_sync_threshold: float = 30.0  # 30달러로 상향 조정 (기존 15달러)
+        self.position_wait_timeout: int = 300    # 5분으로 연장 (기존 180초)
         
         # 🔥 가격 기반 중복 방지 시스템
         self.mirrored_trigger_prices: Set[str] = set()
@@ -93,10 +93,12 @@ class MirrorPositionManager:
             'position_wait_timeouts': 0,   # 🔥🔥🔥 포지션 체결 대기 타임아웃
             'successful_position_waits': 0, # 🔥🔥🔥 성공적인 포지션 체결 대기
             'sync_status_corrected': 0,    # 🔥🔥🔥 동기화 상태 수정 카운터
+            'close_order_position_check_failed': 0,  # 🔥🔥🔥 클로즈 주문 포지션 체크 실패
+            'close_order_position_wait_success': 0,  # 🔥🔥🔥 클로즈 주문 포지션 대기 성공
             'errors': []
         }
         
-        self.logger.info("🔥🔥🔥 미러 포지션 매니저 초기화 완료 - 시세차이 문제 해결")
+        self.logger.info("🔥🔥🔥 미러 포지션 매니저 초기화 완료 - 시세차이 문제 해결 + 클로즈 주문 체크 강화")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -298,7 +300,7 @@ class MirrorPositionManager:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
 
     async def _process_new_plan_order_with_position_wait(self, bitget_order: Dict) -> str:
-        """🔥🔥🔥 새로운 예약 주문 복제 - 포지션 체결 대기 포함"""
+        """🔥🔥🔥 새로운 예약 주문 복제 - 클로즈 주문 포지션 체크 강화"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -310,21 +312,18 @@ class MirrorPositionManager:
             
             self.logger.info(f"🔍 새로운 주문 처리: {order_id}, is_close_order={is_close_order}")
             
-            # 🔥🔥🔥 클로즈 주문의 경우 포지션 존재 확인
+            # 🔥🔥🔥 클로즈 주문의 경우 포지션 존재 확인 강화
             if is_close_order:
-                gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
-                has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
+                position_check_result = await self._enhanced_position_check_for_close_order(order_id, side)
                 
-                if not has_position:
+                if position_check_result == "no_position":
+                    self.daily_stats['close_order_position_check_failed'] += 1
                     self.logger.warning(f"클로즈 주문이지만 게이트에 포지션 없음: {order_id}")
-                    # 포지션이 없으면 대기 후 다시 확인
-                    await asyncio.sleep(5)
-                    gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
-                    has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
-                    
-                    if not has_position:
-                        self.logger.warning(f"포지션 없음으로 클로즈 주문 스킵: {order_id}")
-                        return "skipped"
+                    return "skipped"
+                elif position_check_result == "position_found_after_wait":
+                    self.daily_stats['close_order_position_wait_success'] += 1
+                    self.logger.info(f"포지션 대기 후 발견, 클로즈 주문 진행: {order_id}")
+                # position_check_result == "position_exists"면 바로 진행
             
             # 트리거 가격 추출
             original_trigger_price = 0
@@ -442,9 +441,9 @@ class MirrorPositionManager:
             if gate_order.get('has_tp_sl', False):
                 self.daily_stats['unified_tp_sl_orders'] += 1
             
-            # 🔥🔥🔥 포지션 체결 대기 (오픈 주문만)
+            # 🔥🔥🔥 포지션 체결 대기 (오픈 주문만) - 연장된 타임아웃 사용
             if not is_close_order and gate_order.get('staged_execution'):
-                self.logger.info(f"🕐 포지션 체결 대기 시작: {order_id}")
+                self.logger.info(f"🕐 포지션 체결 대기 시작: {order_id} (타임아웃: {self.position_wait_timeout}초)")
                 
                 # 비동기로 포지션 체결 대기 및 성공 확인
                 asyncio.create_task(self._wait_and_confirm_position_execution(
@@ -504,7 +503,7 @@ class MirrorPositionManager:
             
             position_wait_info = ""
             if not is_close_order:
-                position_wait_info = f"\n🕐 포지션 체결 대기 활성화됨"
+                position_wait_info = f"\n🕐 포지션 체결 대기 활성화됨 ({self.position_wait_timeout}초)"
             
             await self.telegram.send_message(
                 f"✅ {order_type} 복제 성공 (시세차이 고려)\n"
@@ -531,15 +530,80 @@ class MirrorPositionManager:
             })
             return "failed"
 
-    async def _wait_and_confirm_position_execution(self, bitget_order_id: str, expected_size: int, gate_order_id: str):
-        """🔥🔥🔥 포지션 체결 대기 및 확인"""
+    async def _enhanced_position_check_for_close_order(self, order_id: str, side: str) -> str:
+        """🔥🔥🔥 클로즈 주문을 위한 강화된 포지션 체크"""
         try:
-            self.logger.info(f"🕐 포지션 체결 대기 시작: {bitget_order_id}")
+            self.logger.info(f"🔍 클로즈 주문 포지션 체크 시작: {order_id}, side={side}")
+            
+            # 1차 포지션 체크
+            gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+            has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
+            
+            if has_position:
+                self.logger.info(f"✅ 1차 체크: 게이트 포지션 존재 확인")
+                return "position_exists"
+            
+            # 2차: 최대 30초 대기 후 재확인 (클로즈 주문의 경우 포지션이 먼저 생성되어야 함)
+            self.logger.info(f"🕐 1차 체크 실패, 30초 대기 후 재확인: {order_id}")
+            max_wait_time = 30
+            check_interval = 5
+            
+            for attempt in range(max_wait_time // check_interval):
+                await asyncio.sleep(check_interval)
+                
+                try:
+                    gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+                    has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
+                    
+                    if has_position:
+                        self.logger.info(f"✅ {(attempt + 1) * check_interval}초 후 포지션 발견: {order_id}")
+                        return "position_found_after_wait"
+                    
+                    self.logger.debug(f"🔍 {(attempt + 1) * check_interval}초: 포지션 없음, 계속 대기")
+                    
+                except Exception as check_error:
+                    self.logger.warning(f"포지션 체크 중 오류 (시도 {attempt + 1}): {check_error}")
+                    continue
+            
+            # 3차: 최종 확인
+            try:
+                gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+                has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
+                
+                if has_position:
+                    self.logger.info(f"✅ 최종 확인: 포지션 존재")
+                    return "position_exists"
+                else:
+                    self.logger.warning(f"❌ 최종 확인: 클로즈 주문을 위한 포지션 없음: {order_id}")
+                    
+                    # 상세 정보 로깅
+                    bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+                    bitget_active = [pos for pos in bitget_positions if float(pos.get('total', 0)) > 0]
+                    
+                    self.logger.warning(f"포지션 상태 분석:")
+                    self.logger.warning(f"  - 비트겟 활성 포지션: {len(bitget_active)}개")
+                    self.logger.warning(f"  - 게이트 포지션: {len(gate_positions)}개")
+                    self.logger.warning(f"  - 시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}")
+                    
+                    return "no_position"
+                    
+            except Exception as final_error:
+                self.logger.error(f"최종 포지션 체크 실패: {final_error}")
+                return "no_position"
+            
+        except Exception as e:
+            self.logger.error(f"강화된 포지션 체크 실패: {e}")
+            return "no_position"
+
+    async def _wait_and_confirm_position_execution(self, bitget_order_id: str, expected_size: int, gate_order_id: str):
+        """🔥🔥🔥 포지션 체결 대기 및 확인 - 연장된 타임아웃"""
+        try:
+            self.logger.info(f"🕐 포지션 체결 대기 시작: {bitget_order_id} (타임아웃: {self.position_wait_timeout}초)")
             
             expected_side = "long" if expected_size > 0 else "short"
             start_time = datetime.now()
             
-            # 최대 3분 대기
+            # 연장된 대기 시간 사용 (5분)
             while (datetime.now() - start_time).total_seconds() < self.position_wait_timeout:
                 await asyncio.sleep(10)  # 10초마다 체크
                 
@@ -580,14 +644,15 @@ class MirrorPositionManager:
             
             # 타임아웃
             self.daily_stats['position_wait_timeouts'] += 1
-            self.logger.warning(f"⏰ 포지션 체결 대기 타임아웃: {bitget_order_id}")
+            self.logger.warning(f"⏰ 포지션 체결 대기 타임아웃: {bitget_order_id} ({self.position_wait_timeout}초)")
             
             await self.telegram.send_message(
                 f"⏰ 포지션 체결 대기 타임아웃\n"
                 f"비트겟 주문: {bitget_order_id}\n"
                 f"게이트 주문: {gate_order_id}\n"
                 f"대기 시간: {self.position_wait_timeout}초\n"
-                f"시세 차이가 원인일 수 있습니다."
+                f"시세 차이가 원인일 수 있습니다.\n"
+                f"현재 시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}"
             )
             
         except Exception as e:
