@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트"""
+    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제"""
     
     def __init__(self, config):
         self.config = config
@@ -21,6 +21,10 @@ class GateioMirrorClient:
         self.base_url = "https://api.gateio.ws"
         self.session = None
         self._initialize_session()
+        
+        # TP/SL 설정 상수
+        self.TP_SL_TIMEOUT = 10
+        self.MAX_TP_SL_RETRIES = 3
         
     def _initialize_session(self):
         """세션 초기화"""
@@ -287,46 +291,50 @@ class GateioMirrorClient:
         
         return False
     
-    async def create_perfect_mirror_order(self, bitget_order: Dict, gate_price: float, gate_margin: float, 
-                                        gate_size: int, leverage: int) -> Dict:
-        """🔥 완벽한 미러링 주문 생성 - TP/SL 포함"""
+    async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
+                                       leverage: int, current_gate_price: float) -> Dict:
+        """🔥 완벽한 TP/SL 미러링 주문 생성"""
         try:
             # 비트겟 주문 정보 추출
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
-            trigger_price = 0
             
+            # 트리거 가격 추출
+            trigger_price = 0
             for price_field in ['triggerPrice', 'price', 'executePrice']:
                 if bitget_order.get(price_field):
                     trigger_price = float(bitget_order.get(price_field))
                     break
             
-            # TP/SL 정보 추출 (강화된 방식)
+            if trigger_price <= 0:
+                raise Exception("유효한 트리거 가격을 찾을 수 없습니다")
+            
+            # 🔥 TP/SL 정보 정확하게 추출
             tp_price = None
             sl_price = None
             
-            # TP 추출
-            tp_fields = ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice', 'tpPrice', 'stopProfit']
+            # TP 추출 - 비트겟 공식 필드
+            tp_fields = ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice']
             for field in tp_fields:
                 value = bitget_order.get(field)
                 if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
                     try:
                         tp_price = float(value)
                         if tp_price > 0:
-                            logger.info(f"🎯 비트겟 TP 추출: {field} = {tp_price}")
+                            logger.info(f"🎯 비트겟 TP 추출: {field} = ${tp_price:.2f}")
                             break
                     except:
                         continue
             
-            # SL 추출
-            sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice', 'slPrice', 'lossPrice']
+            # SL 추출 - 비트겟 공식 필드
+            sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice']
             for field in sl_fields:
                 value = bitget_order.get(field)
                 if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
                     try:
                         sl_price = float(value)
                         if sl_price > 0:
-                            logger.info(f"🛡️ 비트겟 SL 추출: {field} = {sl_price}")
+                            logger.info(f"🛡️ 비트겟 SL 추출: {field} = ${sl_price:.2f}")
                             break
                     except:
                         continue
@@ -335,52 +343,49 @@ class GateioMirrorClient:
             reduce_only = bitget_order.get('reduceOnly', False)
             is_close_order = ('close' in side or reduce_only is True or reduce_only == 'true')
             
-            # Gate.io 트리거 타입 결정
-            gate_trigger_type = "ge" if trigger_price > gate_price else "le"
-            
-            # Gate.io 사이즈 조정 (방향 포함)
+            # Gate.io 사이즈 조정
             if is_close_order:
                 # 클로즈 주문: reduce_only=True
                 final_size = gate_size
                 reduce_only_flag = True
             else:
-                # 오픈 주문: reduce_only=False
+                # 오픈 주문: 방향 고려
                 if 'short' in side or 'sell' in side:
                     final_size = -abs(gate_size)
                 else:
                     final_size = abs(gate_size)
                 reduce_only_flag = False
             
-            logger.info(f"🔍 주문 정보 최종 확인:")
+            # Gate.io 트리거 타입 결정
+            gate_trigger_type = "ge" if trigger_price > current_gate_price else "le"
+            
+            logger.info(f"🔍 완벽 미러링 주문 생성:")
             logger.info(f"   - 비트겟 ID: {order_id}")
-            logger.info(f"   - 방향: {side}")
+            logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
             logger.info(f"   - 트리거가: ${trigger_price:.2f}")
             logger.info(f"   - TP: ${tp_price:.2f if tp_price else 0}")
             logger.info(f"   - SL: ${sl_price:.2f if sl_price else 0}")
             logger.info(f"   - 게이트 사이즈: {final_size}")
-            logger.info(f"   - 클로즈 주문: {is_close_order}")
             
-            # 🔥 Gate.io 통합 TP/SL 주문 생성
+            # 🔥 TP/SL 포함 통합 주문 생성
             if tp_price or sl_price:
                 logger.info(f"🎯 TP/SL 포함 통합 주문 생성")
                 
-                gate_order = await self.create_unified_order_with_tp_sl(
-                    trigger_type=gate_trigger_type,
-                    trigger_price=str(trigger_price),
-                    order_type="market",
-                    contract="BTC_USDT",
-                    size=final_size,
-                    tp_price=str(tp_price) if tp_price else None,
-                    sl_price=str(sl_price) if sl_price else None,
-                    reduce_only=reduce_only_flag
+                gate_order = await self.create_conditional_order_with_tp_sl(
+                    trigger_price=trigger_price,
+                    order_size=final_size,
+                    tp_price=tp_price,
+                    sl_price=sl_price,
+                    reduce_only=reduce_only_flag,
+                    trigger_type=gate_trigger_type
                 )
                 
-                # TP/SL 설정 결과 확인
-                has_tp_sl = gate_order.get('has_tp_sl', False)
+                # TP/SL 설정 확인
                 actual_tp = gate_order.get('stop_profit_price', '')
                 actual_sl = gate_order.get('stop_loss_price', '')
+                has_tp_sl = bool(actual_tp or actual_sl)
                 
-                result = {
+                return {
                     'success': True,
                     'gate_order_id': gate_order.get('id'),
                     'gate_order': gate_order,
@@ -391,27 +396,18 @@ class GateioMirrorClient:
                     'actual_sl_price': actual_sl,
                     'is_close_order': is_close_order,
                     'reduce_only': reduce_only_flag,
-                    'perfect_mirror': has_tp_sl and (tp_price or sl_price)
+                    'perfect_mirror': has_tp_sl
                 }
-                
-                if has_tp_sl:
-                    logger.info(f"✅ 완벽한 TP/SL 미러링 성공: {order_id}")
-                else:
-                    logger.warning(f"⚠️ TP/SL 설정 부분 실패: {order_id}")
-                
-                return result
                 
             else:
                 # TP/SL 없는 일반 주문
                 logger.info(f"📝 일반 예약 주문 생성 (TP/SL 없음)")
                 
                 gate_order = await self.create_price_triggered_order(
-                    trigger_type=gate_trigger_type,
-                    trigger_price=str(trigger_price),
-                    order_type="market",
-                    contract="BTC_USDT",
-                    size=final_size,
-                    reduce_only=reduce_only_flag
+                    trigger_price=trigger_price,
+                    order_size=final_size,
+                    reduce_only=reduce_only_flag,
+                    trigger_type=gate_trigger_type
                 )
                 
                 return {
@@ -425,7 +421,7 @@ class GateioMirrorClient:
                 }
             
         except Exception as e:
-            logger.error(f"완벽한 미러링 주문 생성 실패: {e}")
+            logger.error(f"완벽한 TP/SL 미러링 주문 생성 실패: {e}")
             return {
                 'success': False,
                 'error': str(e),
@@ -433,116 +429,70 @@ class GateioMirrorClient:
                 'perfect_mirror': False
             }
     
-    async def create_unified_order_with_tp_sl(self, trigger_type: str, trigger_price: str,
-                                           order_type: str, contract: str, size: int,
-                                           tp_price: Optional[str] = None,
-                                           sl_price: Optional[str] = None,
-                                           reduce_only: bool = False) -> Dict:
-        """TP/SL 포함 통합 주문 생성"""
+    async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
+                                                tp_price: Optional[float] = None,
+                                                sl_price: Optional[float] = None,
+                                                reduce_only: bool = False,
+                                                trigger_type: str = "ge") -> Dict:
+        """🔥 TP/SL 포함 조건부 주문 생성 - Gate.io 공식 API"""
         try:
-            # 트리거 가격 유효성 검증
-            trigger_price_float = float(trigger_price)
-            is_valid, validation_msg, adjusted_price = await self.validate_trigger_price(
-                trigger_price_float, trigger_type, contract
-            )
-            
-            if not is_valid:
-                raise Exception(f"트리거 가격 유효성 검증 실패: {validation_msg}")
-            
-            if adjusted_price != trigger_price_float:
-                trigger_price = str(adjusted_price)
-                logger.info(f"🔧 트리거 가격 조정: {trigger_price_float:.2f} → {adjusted_price:.2f}")
-            
             endpoint = "/api/v4/futures/usdt/price_orders"
             
+            # 기본 주문 데이터
             initial_data = {
-                "type": order_type,
-                "contract": contract,
-                "size": size
+                "type": "market",  # 시장가 주문
+                "contract": "BTC_USDT",
+                "size": order_size,
+                "price": str(trigger_price)  # Gate.io는 시장가에도 price 필수
             }
             
             if reduce_only:
                 initial_data["reduce_only"] = True
-                logger.info(f"🔴 클로즈 주문: reduce_only=True")
-            else:
-                logger.info(f"🟢 오픈 주문: reduce_only 미설정")
             
-            # Gate.io API 요구사항에 따라 시장가에도 price 필수
-            initial_data["price"] = str(trigger_price)
-            
-            # 트리거 rule 설정
+            # 트리거 rule 설정 (Gate.io 공식 문서)
             rule_value = 1 if trigger_type == "ge" else 2
             
             data = {
                 "initial": initial_data,
                 "trigger": {
-                    "strategy_type": 0,
-                    "price_type": 0,
+                    "strategy_type": 0,  # 가격 기반 트리거
+                    "price_type": 0,     # 마크 가격 기준
                     "price": str(trigger_price),
-                    "rule": rule_value
+                    "rule": rule_value   # 1: >=, 2: <=
                 }
             }
             
-            # TP/SL 설정
-            has_tp_sl = False
-            if tp_price and float(tp_price) > 0:
+            # 🔥 TP/SL 설정 (Gate.io 공식 필드)
+            if tp_price and tp_price > 0:
                 data["stop_profit_price"] = str(tp_price)
-                has_tp_sl = True
-                logger.info(f"🎯 TP 설정: ${tp_price}")
+                logger.info(f"🎯 TP 설정: ${tp_price:.2f}")
             
-            if sl_price and float(sl_price) > 0:
+            if sl_price and sl_price > 0:
                 data["stop_loss_price"] = str(sl_price)
-                has_tp_sl = True
-                logger.info(f"🛡️ SL 설정: ${sl_price}")
+                logger.info(f"🛡️ SL 설정: ${sl_price:.2f}")
             
-            logger.info(f"Gate.io 통합 TP/SL 주문 생성: {data}")
+            logger.info(f"Gate.io TP/SL 통합 주문 데이터: {json.dumps(data, indent=2)}")
+            
             response = await self._request('POST', endpoint, data=data)
             
-            # 응답 검증
-            actual_tp = response.get('stop_profit_price', '')
-            actual_sl = response.get('stop_loss_price', '')
-            
-            response.update({
-                'has_tp_sl': has_tp_sl and (actual_tp or actual_sl),
-                'requested_tp': tp_price,
-                'requested_sl': sl_price,
-                'reduce_only': reduce_only
-            })
-            
-            if has_tp_sl:
-                if actual_tp:
-                    logger.info(f"✅ TP 설정 확인: ${actual_tp}")
-                if actual_sl:
-                    logger.info(f"✅ SL 설정 확인: ${actual_sl}")
+            logger.info(f"✅ Gate.io TP/SL 통합 주문 생성 성공: {response.get('id')}")
             
             return response
             
         except Exception as e:
-            logger.error(f"통합 TP/SL 주문 생성 실패: {e}")
+            logger.error(f"TP/SL 포함 조건부 주문 생성 실패: {e}")
             raise
     
-    async def create_price_triggered_order(self, trigger_type: str, trigger_price: str,
-                                         order_type: str, contract: str, size: int,
-                                         reduce_only: bool = False) -> Dict:
+    async def create_price_triggered_order(self, trigger_price: float, order_size: int,
+                                         reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
         """일반 가격 트리거 주문 생성"""
         try:
-            trigger_price_float = float(trigger_price)
-            is_valid, validation_msg, adjusted_price = await self.validate_trigger_price(
-                trigger_price_float, trigger_type, contract
-            )
-            
-            if not is_valid:
-                raise Exception(f"트리거 가격 유효성 검증 실패: {validation_msg}")
-            
-            if adjusted_price != trigger_price_float:
-                trigger_price = str(adjusted_price)
-            
             endpoint = "/api/v4/futures/usdt/price_orders"
             
             initial_data = {
-                "type": order_type,
-                "contract": contract,
-                "size": size,
+                "type": "market",
+                "contract": "BTC_USDT",
+                "size": order_size,
                 "price": str(trigger_price)
             }
             
@@ -567,47 +517,6 @@ class GateioMirrorClient:
         except Exception as e:
             logger.error(f"가격 트리거 주문 생성 실패: {e}")
             raise
-    
-    async def validate_trigger_price(self, trigger_price: float, trigger_type: str, 
-                                   contract: str) -> Tuple[bool, str, float]:
-        """트리거 가격 유효성 검증 및 조정"""
-        try:
-            current_price = await self.get_current_price(contract)
-            if current_price == 0:
-                return False, "현재가 조회 실패", trigger_price
-            
-            price_diff_percent = abs(trigger_price - current_price) / current_price * 100
-            
-            # 가격이 너무 근접한 경우 조정
-            if price_diff_percent < 0.01:
-                if trigger_type == "ge":
-                    adjusted_price = current_price * 1.0005
-                elif trigger_type == "le":
-                    adjusted_price = current_price * 0.9995
-                else:
-                    adjusted_price = trigger_price
-                
-                return True, "가격 조정됨", adjusted_price
-            
-            # Gate.io 규칙 검증
-            if trigger_type == "ge":
-                if trigger_price <= current_price:
-                    adjusted_price = current_price * 1.001
-                    return True, "GE 가격 조정됨", adjusted_price
-                else:
-                    return True, "유효한 GE 트리거가", trigger_price
-            elif trigger_type == "le":
-                if trigger_price >= current_price:
-                    adjusted_price = current_price * 0.999
-                    return True, "LE 가격 조정됨", adjusted_price
-                else:
-                    return True, "유효한 LE 트리거가", trigger_price
-            
-            return True, "유효한 트리거가", trigger_price
-            
-        except Exception as e:
-            logger.error(f"트리거 가격 검증 실패: {e}")
-            return False, f"검증 오류: {str(e)}", trigger_price
     
     async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
         """가격 트리거 주문 조회"""
