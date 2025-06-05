@@ -354,18 +354,35 @@ class GateClient:
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
                           retry_count: int = 5) -> Dict:
-        """🔥🔥🔥 레버리지 설정 - 강화된 로직"""
+        """🔥🔥🔥 레버리지 설정 - 강화된 로직 및 MISSING_REQUIRED_PARAM 오류 해결"""
         for attempt in range(retry_count):
             try:
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
                 
-                # 🔥 레버리지를 문자열로 전달
+                # 🔥🔥🔥 Gate.io API 요구사항에 맞춘 필수 파라미터 추가
                 data = {
-                    "leverage": str(leverage)
+                    "leverage": str(leverage),
+                    "cross_leverage_limit": str(cross_leverage_limit) if cross_leverage_limit > 0 else "0"
                 }
                 
-                if cross_leverage_limit > 0:
-                    data["cross_leverage_limit"] = str(cross_leverage_limit)
+                # 🔥🔥🔥 추가 파라미터 시도 (Gate.io API 요구사항 충족)
+                # 현재 포지션 정보 조회하여 필요한 파라미터 추가
+                try:
+                    positions = await self.get_positions(contract)
+                    if positions and len(positions) > 0:
+                        current_pos = positions[0]
+                        # 현재 포지션의 마진 모드 확인
+                        if 'mode' in current_pos:
+                            data["mode"] = current_pos.get('mode', 'single')
+                        elif 'margin_mode' in current_pos:
+                            data["mode"] = current_pos.get('margin_mode', 'single')
+                        else:
+                            data["mode"] = "single"  # 기본값
+                    else:
+                        data["mode"] = "single"  # 포지션이 없는 경우 기본값
+                except Exception as pos_error:
+                    logger.debug(f"포지션 조회 실패, 기본 모드 사용: {pos_error}")
+                    data["mode"] = "single"
                 
                 logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
                 logger.info(f"레버리지 설정 데이터: {data}")
@@ -393,6 +410,46 @@ class GateClient:
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"❌ Gate.io 레버리지 설정 시도 {attempt + 1} 실패: {error_msg}")
+                
+                # 🔥🔥🔥 MISSING_REQUIRED_PARAM 오류에 대한 추가 처리
+                if "MISSING_REQUIRED_PARAM" in error_msg:
+                    logger.warning(f"필수 파라미터 누락 오류, 대안적 접근 시도")
+                    
+                    # 대안 1: 더 많은 파라미터 포함
+                    try:
+                        alternative_data = {
+                            "leverage": str(leverage),
+                            "cross_leverage_limit": "0",
+                            "mode": "single"
+                        }
+                        
+                        # 계정 정보에서 추가 필요 파라미터 확인
+                        try:
+                            account_info = await self.get_account_balance()
+                            if 'mode' in str(account_info).lower():
+                                alternative_data["margin_mode"] = "single"
+                        except:
+                            pass
+                        
+                        logger.info(f"대안적 레버리지 설정 시도: {alternative_data}")
+                        response = await self._request('POST', endpoint, data=alternative_data)
+                        logger.info(f"✅ 대안적 레버리지 설정 성공: {response}")
+                        await asyncio.sleep(1.0)
+                        return response
+                        
+                    except Exception as alt_error:
+                        logger.warning(f"대안적 레버리지 설정도 실패: {alt_error}")
+                        
+                        # 대안 2: 기본 파라미터만으로 시도
+                        try:
+                            basic_data = {"leverage": str(leverage)}
+                            logger.info(f"기본 파라미터만으로 레버리지 설정 시도: {basic_data}")
+                            response = await self._request('POST', endpoint, data=basic_data)
+                            logger.info(f"✅ 기본 레버리지 설정 성공: {response}")
+                            await asyncio.sleep(1.0)
+                            return response
+                        except Exception as basic_error:
+                            logger.warning(f"기본 레버리지 설정도 실패: {basic_error}")
                 
                 # 특정 오류의 경우 재시도 중단
                 if "invalid argument" in error_msg.lower() or "invalid protocol" in error_msg.lower():
