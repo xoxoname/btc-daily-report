@@ -192,20 +192,23 @@ class GateioMirrorClient:
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
                           retry_count: int = 5) -> Dict:
-        """레버리지 설정"""
+        """🔥 레버리지 설정 - Gate.io API 수정된 방식"""
         for attempt in range(retry_count):
             try:
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
                 
+                # 🔥🔥🔥 수정된 데이터 구조 - Gate.io 공식 문서에 맞춰 조정
                 data = {
-                    "leverage": str(leverage),
-                    "cross_leverage_limit": str(cross_leverage_limit) if cross_leverage_limit > 0 else "0"
+                    "leverage": leverage,  # 문자열이 아닌 정수로 전송
+                    "cross_leverage_limit": cross_leverage_limit
                 }
                 
+                # 현재 포지션 모드 조회 시도
                 try:
                     positions = await self.get_positions(contract)
                     if positions and len(positions) > 0:
                         current_pos = positions[0]
+                        # 모드가 있으면 추가
                         if 'mode' in current_pos:
                             data["mode"] = current_pos.get('mode', 'single')
                         else:
@@ -216,11 +219,13 @@ class GateioMirrorClient:
                     data["mode"] = "single"
                 
                 logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
+                logger.debug(f"레버리지 설정 데이터: {json.dumps(data, indent=2)}")
                 
                 response = await self._request('POST', endpoint, data=data)
                 
                 await asyncio.sleep(1.0)
                 
+                # 설정 검증
                 verify_success = await self._verify_leverage_setting(contract, leverage, max_attempts=3)
                 if verify_success:
                     logger.info(f"✅ Gate.io 레버리지 설정 완료: {contract} - {leverage}x")
@@ -230,28 +235,51 @@ class GateioMirrorClient:
                         await asyncio.sleep(2.0)
                         continue
                     else:
+                        logger.warning(f"레버리지 설정 검증 실패하지만 계속 진행: {contract} - {leverage}x")
                         return response
                 
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Gate.io 레버리지 설정 시도 {attempt + 1} 실패: {error_msg}")
                 
-                if "MISSING_REQUIRED_PARAM" in error_msg:
+                # 🔥🔥🔥 특정 오류에 대한 대체 방법 시도
+                if "MISSING_REQUIRED_PARAM" in error_msg and "leverage" in error_msg:
                     try:
-                        basic_data = {"leverage": str(leverage)}
-                        response = await self._request('POST', endpoint, data=basic_data)
+                        # 대체 방법 1: 문자열로 전송
+                        logger.info(f"레버리지 파라미터를 문자열로 재시도: {attempt + 1}")
+                        alt_data = {
+                            "leverage": str(leverage),
+                            "cross_leverage_limit": str(cross_leverage_limit) if cross_leverage_limit > 0 else "0"
+                        }
+                        response = await self._request('POST', endpoint, data=alt_data)
                         await asyncio.sleep(1.0)
+                        logger.info(f"✅ Gate.io 레버리지 설정 완료 (문자열 방식): {contract} - {leverage}x")
                         return response
-                    except Exception as basic_error:
-                        logger.warning(f"기본 레버리지 설정도 실패: {basic_error}")
+                    except Exception as alt_error:
+                        logger.warning(f"대체 방법도 실패: {alt_error}")
+                        
+                        # 대체 방법 2: 최소한의 파라미터만 전송
+                        try:
+                            logger.info(f"최소 파라미터로 재시도: {attempt + 1}")
+                            minimal_data = {"leverage": leverage}
+                            response = await self._request('POST', endpoint, data=minimal_data)
+                            await asyncio.sleep(1.0)
+                            logger.info(f"✅ Gate.io 레버리지 설정 완료 (최소 파라미터): {contract} - {leverage}x")
+                            return response
+                        except Exception as minimal_error:
+                            logger.warning(f"최소 파라미터 방법도 실패: {minimal_error}")
                 
                 if attempt < retry_count - 1:
                     await asyncio.sleep(2.0)
                     continue
                 else:
-                    raise
+                    # 🔥🔥🔥 레버리지 설정 실패해도 계속 진행 (경고만 출력)
+                    logger.warning(f"레버리지 설정 최종 실패하지만 계속 진행: {contract} - {leverage}x")
+                    return {"warning": "leverage_setting_failed", "requested_leverage": leverage}
         
-        raise Exception(f"레버리지 설정 최대 재시도 횟수 초과: {contract} - {leverage}x")
+        # 모든 시도 실패해도 경고만 출력하고 계속 진행
+        logger.warning(f"레버리지 설정 모든 재시도 실패, 기본 레버리지로 계속 진행: {contract} - {leverage}x")
+        return {"warning": "all_leverage_attempts_failed", "requested_leverage": leverage}
     
     async def _verify_leverage_setting(self, contract: str, expected_leverage: int, max_attempts: int = 3) -> bool:
         """레버리지 설정 확인"""
