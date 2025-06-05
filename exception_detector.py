@@ -61,7 +61,7 @@ class ExceptionDetector:
         self.logger.info(f"예외 감지기 초기화 완료 - 가격 {self.PRICE_CHANGE_THRESHOLD}%, 거래량 {self.VOLUME_SPIKE_THRESHOLD}배, 가격 검증 강화")
     
     def _validate_price_data(self, price_data: Dict) -> Optional[float]:
-        """🔥🔥 가격 데이터 검증 및 정제 - 오류 방지 강화"""
+        """🔥🔥 가격 데이터 검증 및 정제 - Bitget API 응답 구조에 맞게 개선"""
         try:
             if not price_data:
                 self.logger.debug("가격 데이터가 None 또는 빈 값")
@@ -73,8 +73,19 @@ class ExceptionDetector:
             
             current_price = None
             
-            # 🔥🔥 더 많은 필드에서 가격 추출 시도
-            price_fields = ['last', 'close', 'price', 'lastPrice', 'closePrice', 'mark', 'markPrice']
+            # 🔥🔥 Bitget API 응답 구조에 맞는 필드들
+            price_fields = [
+                'lastPr',        # Bitget 주요 필드
+                'last',          # 일반적인 필드
+                'close',         # 종가
+                'price',         # 가격
+                'lastPrice',     # 최종 가격
+                'closePrice',    # 종가
+                'mark',          # 마크 가격
+                'markPrice'      # 마크 가격
+            ]
+            
+            self.logger.debug(f"🔍 원본 ticker 데이터: {price_data}")
             
             for field in price_fields:
                 if field in price_data:
@@ -83,10 +94,10 @@ class ExceptionDetector:
                         if price_value is not None and str(price_value).strip():
                             current_price = float(price_value)
                             if current_price > 0:
-                                self.logger.debug(f"가격 데이터 '{field}' 필드에서 추출: ${current_price:,.2f}")
+                                self.logger.debug(f"✅ 가격 데이터 '{field}' 필드에서 추출: ${current_price:,.2f}")
                                 break
                     except (ValueError, TypeError) as e:
-                        self.logger.debug(f"'{field}' 필드 변환 실패: {price_data.get(field)} - {e}")
+                        self.logger.debug(f"❌ '{field}' 필드 변환 실패: {price_data.get(field)} - {e}")
                         continue
             
             # 가격이 여전히 None이거나 0이면
@@ -94,36 +105,40 @@ class ExceptionDetector:
                 self.price_error_count += 1
                 self.last_price_error_time = datetime.now()
                 
-                if self.price_error_count <= 3:  # 처음 몇 번만 로그
-                    self.logger.warning(f"유효하지 않은 가격 데이터: {current_price} (오류 {self.price_error_count}회)")
-                    self.logger.debug(f"원본 데이터: {price_data}")
+                if self.price_error_count <= 3:  # 처음 몇 번만 상세 로그
+                    self.logger.warning(f"❌ 유효하지 않은 가격 데이터: {current_price} (오류 {self.price_error_count}회)")
                     
                     # 🔥🔥 더 자세한 디버깅 정보
                     available_fields = list(price_data.keys()) if isinstance(price_data, dict) else []
-                    self.logger.debug(f"사용 가능한 필드들: {available_fields}")
+                    self.logger.warning(f"🔍 사용 가능한 필드들: {available_fields}")
+                    
+                    # 필드별 값 확인
+                    for field in available_fields[:10]:  # 처음 10개만
+                        value = price_data.get(field)
+                        self.logger.debug(f"  - {field}: {value} (type: {type(value)})")
                 
                 # 마지막 유효한 가격이 있으면 사용
                 if self.last_valid_price and self.last_valid_price > self.price_validation_threshold:
-                    self.logger.debug(f"마지막 유효 가격 사용: ${self.last_valid_price:,.0f}")
+                    self.logger.debug(f"🔄 마지막 유효 가격 사용: ${self.last_valid_price:,.0f}")
                     return self.last_valid_price
                 
                 return None
             
             # 최소 가격 임계값 체크 (비트코인은 보통 $1000 이상)
             if current_price < self.price_validation_threshold:
-                self.logger.warning(f"가격이 임계값보다 낮음: ${current_price:,.2f} < ${self.price_validation_threshold}")
+                self.logger.warning(f"❌ 가격이 임계값보다 낮음: ${current_price:,.2f} < ${self.price_validation_threshold}")
                 return None
             
             # 최대 가격 체크 (비현실적인 가격 방지 - 예: $1,000,000 이상)
             if current_price > 1_000_000:
-                self.logger.warning(f"가격이 비현실적으로 높음: ${current_price:,.2f}")
+                self.logger.warning(f"❌ 가격이 비현실적으로 높음: ${current_price:,.2f}")
                 return None
             
             # 급격한 가격 변동 체크 (API 오류 방지)
             if self.last_valid_price and self.last_valid_price > 0:
                 change_ratio = abs(current_price - self.last_valid_price) / self.last_valid_price
                 if change_ratio > self.max_price_change_ratio:
-                    self.logger.warning(f"급격한 가격 변동 감지: {change_ratio*100:.1f}% (${self.last_valid_price:,.0f} → ${current_price:,.0f})")
+                    self.logger.warning(f"⚠️ 급격한 가격 변동 감지: {change_ratio*100:.1f}% (${self.last_valid_price:,.0f} → ${current_price:,.0f})")
                     # 너무 급격한 변동은 API 오류일 가능성이 높으므로 마지막 유효 가격 사용
                     return self.last_valid_price
             
@@ -131,10 +146,11 @@ class ExceptionDetector:
             self.last_valid_price = current_price
             self.price_error_count = 0  # 오류 카운트 리셋
             
+            self.logger.debug(f"✅ 유효한 가격 데이터 확인: ${current_price:,.0f}")
             return current_price
             
         except Exception as e:
-            self.logger.error(f"가격 데이터 검증 중 오류: {e}")
+            self.logger.error(f"❌ 가격 데이터 검증 중 오류: {e}")
             self.logger.debug(f"오류 발생 데이터: {price_data}")
             return self.last_valid_price  # 오류 시 마지막 유효 가격 반환
     
@@ -185,12 +201,12 @@ class ExceptionDetector:
             # 반응 데이터 저장
             self.news_market_reactions[news_hash] = reaction_data
             
-            self.logger.info(f"뉴스 시장 반응 체크: {time_elapsed:.1f}시간 후 - 가격 {price_change_pct:+.2f}%, 거래량 {volume_change_pct:+.1f}%, 반응: {reaction_level}")
+            self.logger.info(f"📊 뉴스 시장 반응 체크: {time_elapsed:.1f}시간 후 - 가격 {price_change_pct:+.2f}%, 거래량 {volume_change_pct:+.1f}%, 반응: {reaction_level}")
             
             return reaction_data
             
         except Exception as e:
-            self.logger.error(f"뉴스 시장 반응 체크 실패: {e}")
+            self.logger.error(f"❌ 뉴스 시장 반응 체크 실패: {e}")
             return {}
     
     def _classify_market_reaction(self, price_change_pct: float, volume_change_pct: float, time_elapsed: float) -> str:
@@ -225,39 +241,41 @@ class ExceptionDetector:
         """현재 시장 데이터 조회 - 가격 검증 포함"""
         try:
             if not self.bitget_client:
-                self.logger.warning("Bitget 클라이언트가 없어서 시장 데이터 조회 불가")
+                self.logger.warning("⚠️ Bitget 클라이언트가 없어서 시장 데이터 조회 불가")
                 return None
             
             ticker = await self.bitget_client.get_ticker('BTCUSDT')
             if not ticker:
-                self.logger.warning("Ticker 데이터 조회 실패")
+                self.logger.warning("⚠️ Ticker 데이터 조회 실패")
                 return None
             
-            self.logger.debug(f"원본 ticker 데이터: {ticker}")
+            self.logger.debug(f"🔍 원본 ticker 데이터: {ticker}")
             
             # 가격 데이터 검증
             validated_price = self._validate_price_data(ticker)
             if validated_price is None:
-                self.logger.warning("가격 데이터 검증 실패")
+                self.logger.warning("⚠️ 가격 데이터 검증 실패")
                 return None
             
             volume = 0.0
-            volume_fields = ['baseVolume', 'volume', 'vol', 'quoteVolume']
+            volume_fields = ['baseVolume', 'volume', 'vol', 'quoteVolume', 'baseVol', 'quoteVol']
             for field in volume_fields:
                 try:
                     if field in ticker and ticker[field] is not None:
                         volume = float(ticker[field])
                         if volume > 0:
+                            self.logger.debug(f"✅ 거래량 '{field}' 필드에서 추출: {volume:,.0f}")
                             break
                 except (ValueError, TypeError):
                     continue
             
             change_24h = 0.0
-            change_fields = ['changeUtc', 'change', 'priceChangePercent', 'changePercent']
+            change_fields = ['changeUtc', 'change', 'priceChangePercent', 'changePercent', 'change24h']
             for field in change_fields:
                 try:
                     if field in ticker and ticker[field] is not None:
                         change_24h = float(ticker[field])
+                        self.logger.debug(f"✅ 변동률 '{field}' 필드에서 추출: {change_24h:.4f}")
                         break
                 except (ValueError, TypeError):
                     continue
@@ -268,12 +286,12 @@ class ExceptionDetector:
                 'change_24h': change_24h
             }
             
-            self.logger.debug(f"시장 데이터 추출 완료: 가격=${validated_price:,.0f}, 거래량={volume:,.0f}, 변동={change_24h:.3f}")
+            self.logger.debug(f"✅ 시장 데이터 추출 완료: 가격=${validated_price:,.0f}, 거래량={volume:,.0f}, 변동={change_24h:.4f}")
             
             return market_data
             
         except Exception as e:
-            self.logger.error(f"시장 데이터 조회 실패: {e}")
+            self.logger.error(f"❌ 시장 데이터 조회 실패: {e}")
             return None
     
     def _generate_exception_hash(self, anomaly: Dict) -> str:
@@ -408,7 +426,7 @@ class ExceptionDetector:
                 anomalies.append(funding_anomaly)
                 
         except Exception as e:
-            self.logger.error(f"이상 징후 감지 중 오류: {e}")
+            self.logger.error(f"❌ 이상 징후 감지 중 오류: {e}")
         
         return anomalies
     
@@ -459,7 +477,7 @@ class ExceptionDetector:
                 
                 # 🔥🔥 추가 검증 - 최소 가격이 0보다 커야 함
                 if min_price_5min <= 0:
-                    self.logger.warning(f"5분 이력에 유효하지 않은 가격: {min_price_5min}")
+                    self.logger.warning(f"⚠️ 5분 이력에 유효하지 않은 가격: {min_price_5min}")
                     return None
                 
                 change_5min = ((max_price_5min - min_price_5min) / min_price_5min) * 100
@@ -482,7 +500,7 @@ class ExceptionDetector:
                         }
             
         except Exception as e:
-            self.logger.error(f"단기 변동성 체크 오류: {e}")
+            self.logger.error(f"❌ 단기 변동성 체크 오류: {e}")
         
         return None
     
@@ -503,7 +521,7 @@ class ExceptionDetector:
                 return None
             
             change_24h = 0.0
-            change_fields = ['changeUtc', 'change', 'priceChangePercent', 'changePercent']
+            change_fields = ['changeUtc', 'change', 'priceChangePercent', 'changePercent', 'change24h']
             for field in change_fields:
                 try:
                     if field in ticker and ticker[field] is not None:
@@ -530,7 +548,7 @@ class ExceptionDetector:
                     }
             
         except Exception as e:
-            self.logger.error(f"가격 변동 체크 오류: {e}")
+            self.logger.error(f"❌ 가격 변동 체크 오류: {e}")
         
         return None
     
@@ -550,7 +568,7 @@ class ExceptionDetector:
                 return None
             
             volume_24h = 0.0
-            volume_fields = ['baseVolume', 'volume', 'vol', 'quoteVolume']
+            volume_fields = ['baseVolume', 'volume', 'vol', 'quoteVolume', 'baseVol', 'quoteVol']
             for field in volume_fields:
                 try:
                     if field in ticker and ticker[field] is not None:
@@ -578,7 +596,7 @@ class ExceptionDetector:
                     }
             
         except Exception as e:
-            self.logger.error(f"거래량 체크 오류: {e}")
+            self.logger.error(f"❌ 거래량 체크 오류: {e}")
         
         return None
     
@@ -622,7 +640,7 @@ class ExceptionDetector:
                     }
             
         except Exception as e:
-            self.logger.error(f"펀딩비 체크 오류: {e}")
+            self.logger.error(f"❌ 펀딩비 체크 오류: {e}")
         
         return None
     
@@ -750,7 +768,7 @@ class ExceptionDetector:
             return True
             
         except Exception as e:
-            self.logger.error(f"알림 전송 실패: {e}")
+            self.logger.error(f"❌ 알림 전송 실패: {e}")
             return False
     
     def _is_on_cooldown(self, alert_type: str, key: str) -> bool:
