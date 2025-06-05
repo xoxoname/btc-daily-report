@@ -199,223 +199,6 @@ class MirrorTradingSystem:
             if sync_analysis['requires_action']:
                 await self._fix_sync_issues(sync_analysis)
             else:
-                price_status_info = f"""📈 시세 차이 현황:
-- 시세 조회에 문제가 있었습니다
-- 비트겟 조회 실패: {self.bitget_price_failures}회
-- 게이트 조회 실패: {self.gate_price_failures}회
-- 마지막 유효 가격: 비트겟 ${self.last_valid_bitget_price:.2f}, 게이트 ${self.last_valid_gate_price:.2f}"""
-            
-            # TP/SL 미러링 성과 통계
-            perfect_mirrors = self.daily_stats.get('perfect_mirrors', 0)
-            partial_mirrors = self.daily_stats.get('partial_mirrors', 0)
-            tp_sl_success = self.daily_stats.get('tp_sl_success', 0)
-            tp_sl_failed = self.daily_stats.get('tp_sl_failed', 0)
-            
-            report = f"""📊 미러 트레이딩 일일 리포트 (완벽한 TP/SL 미러링 v3.0)
-📅 {datetime.now().strftime('%Y-%m-%d')}
-━━━━━━━━━━━━━━━━━━━
-
-💰 계정 잔고:
-- 비트겟: ${bitget_equity:,.2f}
-- 게이트: ${gate_equity:,.2f}
-
-{price_status_info}
-
-⚡ 실시간 포지션 미러링:
-- 주문 체결 기반: {self.daily_stats['order_mirrors']}회
-- 포지션 기반: {self.daily_stats['position_mirrors']}회
-- 총 시도: {self.daily_stats['total_mirrored']}회
-- 성공: {self.daily_stats['successful_mirrors']}회
-- 실패: {self.daily_stats['failed_mirrors']}회
-- 성공률: {success_rate:.1f}%
-
-🎯 완벽한 TP/SL 미러링 성과:
-- 완벽한 미러링: {perfect_mirrors}회 ✨
-- 부분 미러링: {partial_mirrors}회
-- TP/SL 성공: {tp_sl_success}회 🎯
-- TP/SL 실패: {tp_sl_failed}회 ❌
-- 완벽 성공률: {(perfect_mirrors / max(perfect_mirrors + partial_mirrors, 1) * 100):.1f}%
-
-🔄 예약 주문 미러링 (통합 TP/SL):
-- 시작 시 복제: {self.daily_stats['startup_plan_mirrors']}회
-- 신규 미러링: {self.daily_stats['plan_order_mirrors']}회
-- 통합 TP/SL 주문: {self.daily_stats.get('tp_sl_integrated_orders', 0)}회
-- 취소 동기화: {self.daily_stats['plan_order_cancels']}회
-- 성공적인 취소: {self.daily_stats.get('successful_order_cancels', 0)}회
-- 실패한 취소: {self.daily_stats.get('failed_order_cancels', 0)}회
-- 클로즈 주문: {self.daily_stats['close_order_mirrors']}회
-- 중복 방지: {self.daily_stats['duplicate_orders_prevented']}회
-
-📈 동기화 강화 성과:
-- 자동 동기화 수정: {self.daily_stats.get('sync_corrections', 0)}회
-- 고아 주문 삭제: {self.daily_stats.get('sync_deletions', 0)}회
-- 동기화 체크 횟수: {int(24 * 3600 / 30)}회 (30초마다)
-- 통합 TP/SL 처리: {self.daily_stats.get('unified_tp_sl_orders', 0)}회
-
-📉 포지션 관리:
-- 부분 청산: {self.daily_stats['partial_closes']}회
-- 전체 청산: {self.daily_stats['full_closes']}회
-- 총 거래량: ${self.daily_stats['total_volume']:,.2f}
-
-🔧 더욱 관대한 시세차이 대응 (임계값: {self.price_sync_threshold}$):
-- 시세차이 지연: {self.daily_stats.get('price_sync_delays', 0)}회
-- 포지션 체결 대기: {self.daily_stats.get('successful_position_waits', 0)}회
-- 체결 대기 타임아웃: {self.daily_stats.get('position_wait_timeouts', 0)}회
-- 동기화 상태 수정: {self.daily_stats.get('sync_status_corrected', 0)}회
-
-🔄 현재 미러링 상태:
-- 활성 포지션: {len(self.mirrored_positions)}개
-- 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개
-- 완벽한 TP/SL 주문: {len([o for o in self.position_manager.mirrored_plan_orders.values() if o.get('perfect_mirror')])}개
-- 실패 기록: {len(self.failed_mirrors)}건
-
-━━━━━━━━━━━━━━━━━━━
-🎯 v3.0 완벽한 TP/SL 미러링 성과:
-📈 비트겟 TP/SL → 게이트 통합 주문: 100% 완벽 복제
-📈 예약 주문 자동 동기화: 30초마다 실행
-📈 중복 복제 방지: 시간/가격/해시 기반 다중 검증
-📈 고아 주문 자동 삭제: 비트겟에 없는 게이트 주문 정리
-📈 클로즈 주문 포지션 체크: 포지션 없으면 자동 스킵
-📈 시세차이 관대한 처리: 100달러 임계값
-📈 완벽성: 비트겟 설정이 게이트에서 그대로 재현됨"""
-            
-            if self.daily_stats.get('errors'):
-                report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
-            
-            return report
-            
-        except Exception as e:
-            self.logger.error(f"리포트 생성 실패: {e}")
-            return f"📊 일일 리포트 생성 실패\n오류: {str(e)}"
-
-    def _reset_daily_stats(self):
-        """일일 통계 초기화"""
-        self.daily_stats = {
-            'total_mirrored': 0,
-            'successful_mirrors': 0,
-            'failed_mirrors': 0,
-            'partial_closes': 0,
-            'full_closes': 0,
-            'total_volume': 0.0,
-            'order_mirrors': 0,
-            'position_mirrors': 0,
-            'plan_order_mirrors': 0,
-            'plan_order_cancels': 0,
-            'plan_order_cancel_success': 0,
-            'plan_order_cancel_failed': 0,
-            'startup_plan_mirrors': 0,
-            'close_order_mirrors': 0,
-            'close_order_skipped': 0,
-            'duplicate_orders_prevented': 0,
-            'render_restart_skips': 0,
-            'perfect_mirrors': 0,  # 완벽한 TP/SL 미러링 카운트
-            'partial_mirrors': 0,  # 부분 미러링 카운트
-            'tp_sl_success': 0,    # TP/SL 성공 카운트
-            'tp_sl_failed': 0,     # TP/SL 실패 카운트
-            'unified_tp_sl_orders': 0,
-            'duplicate_advanced_prevention': 0,
-            'price_duplicate_prevention': 0,
-            'price_sync_delays': 0,
-            'position_wait_timeouts': 0,
-            'successful_position_waits': 0,
-            'sync_status_corrected': 0,
-            'close_order_position_check_failed': 0,
-            'close_order_position_wait_success': 0,
-            'close_order_delayed_for_position': 0,
-            'close_order_skipped_no_position': 0,
-            'duplicate_time_prevention': 0,
-            'successful_order_cancels': 0,
-            'failed_order_cancels': 0,
-            'sync_corrections': 0,      # 🔥🔥🔥 동기화 수정
-            'sync_deletions': 0,        # 🔥🔥🔥 동기화 삭제
-            'tp_sl_integrated_orders': 0,  # 🔥🔥🔥 통합 TP/SL 주문
-            'errors': []
-        }
-        self.failed_mirrors.clear()
-        
-        # 시세 조회 실패 카운터 리셋
-        self.bitget_price_failures = 0
-        self.gate_price_failures = 0
-        
-        # 포지션 매니저의 통계도 동기화
-        self.position_manager.daily_stats = self.daily_stats
-
-    async def _log_account_status(self):
-        """🔥🔥🔥 계정 상태 로깅 - 완벽한 TP/SL 미러링 정보 포함"""
-        try:
-            # 기본 클라이언트로 계정 조회
-            bitget_account = await self.bitget.get_account_info()
-            bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
-            
-            gate_account = await self.gate_mirror.get_account_balance()
-            gate_equity = float(gate_account.get('total', 0))
-            
-            # 시세 차이 정보
-            valid_price_diff = self._get_valid_price_difference()
-            
-            if valid_price_diff is not None:
-                price_status = "정상" if valid_price_diff <= self.price_sync_threshold else "범위 초과"
-                price_info = f"""📈 시세 상태:
-• 비트겟: ${self.bitget_current_price:,.2f}
-• 게이트: ${self.gate_current_price:,.2f}
-• 차이: ${valid_price_diff:.2f} ({price_status})
-• 임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)"""
-            else:
-                price_info = f"""📈 시세 상태:
-• 시세 조회 중 문제 발생
-• 시스템이 자동으로 복구 중
-• 임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)"""
-            
-            await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (v3.0 완벽한 TP/SL 미러링)\n\n"
-                f"💰 계정 잔고:\n"
-                f"• 비트겟: ${bitget_equity:,.2f}\n"
-                f"• 게이트: ${gate_equity:,.2f}\n\n"
-                f"{price_info}\n\n"
-                f"📊 현재 상태:\n"
-                f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
-                f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
-                f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
-                f"⚡ v3.0 핵심 개선 사항:\n"
-                f"• 🎯 완벽한 TP/SL 미러링: 비트겟 설정이 게이트에서 100% 재현\n"
-                f"• 🔄 예약 주문 자동 동기화: 30초마다 실행\n"
-                f"• 🛡️ 중복 복제 방지: 다중 해시 검증 시스템\n"
-                f"• 🗑️ 고아 주문 자동 정리: 매칭되지 않는 주문 삭제\n"
-                f"• 📊 클로즈 주문 포지션 체크: 포지션 없으면 스킵\n"
-                f"• 💱 시세차이 관대한 처리: 100달러 임계값\n"
-                f"• ⏰ 지연 복제 문제 해결: 실시간 감지 및 즉시 처리\n"
-                f"• 🔗 통합 주문 생성: TP/SL이 하나의 주문으로 복제됨\n\n"
-                f"💡 이제 비트겟의 TP가 설정된 예약 주문이\n"
-                f"게이트에서도 하나의 통합 주문으로 정확히 복제됩니다!\n\n"
-                f"🔄 30초마다 자동으로 동기화되어 누락이나\n"
-                f"불일치 문제가 자동으로 해결됩니다.\n\n"
-                f"🎯 완벽성: 이상한 값 없이\n"
-                f"비트겟과 완전히 동일한 설정으로 미러링됩니다."
-            )
-            
-        except Exception as e:
-            self.logger.error(f"계정 상태 조회 실패: {e}")
-
-    async def stop(self):
-        """미러 트레이딩 중지"""
-        self.monitoring = False
-        
-        try:
-            # 포지션 매니저 중지
-            await self.position_manager.stop()
-            
-            # Bitget 미러링 클라이언트 종료
-            await self.bitget_mirror.close()
-            
-            # Gate.io 미러링 클라이언트 종료
-            await self.gate_mirror.close()
-            
-            final_report = await self._create_daily_report()
-            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료 (v3.0)\n\n{final_report}")
-        except:
-            pass
-        
-        self.logger.info("미러 트레이딩 시스템 중지"):
                 self.logger.debug(f"✅ 예약 주문 동기화 상태 양호: 비트겟 {len(all_bitget_orders)}개, 게이트 {len(gate_orders)}개")
             
         except Exception as e:
@@ -1073,4 +856,221 @@ class MirrorTradingSystem:
 - 차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)
 - 상태: {price_status} (임계값: ${self.price_sync_threshold}$ - 100달러로 더욱 관대하게)
 - 조회 실패: 비트겟 {self.bitget_price_failures}회, 게이트 {self.gate_price_failures}회"""
-            else
+            else:
+                price_status_info = f"""📈 시세 차이 현황:
+- 시세 조회에 문제가 있었습니다
+- 비트겟 조회 실패: {self.bitget_price_failures}회
+- 게이트 조회 실패: {self.gate_price_failures}회
+- 마지막 유효 가격: 비트겟 ${self.last_valid_bitget_price:.2f}, 게이트 ${self.last_valid_gate_price:.2f}"""
+            
+            # TP/SL 미러링 성과 통계
+            perfect_mirrors = self.daily_stats.get('perfect_mirrors', 0)
+            partial_mirrors = self.daily_stats.get('partial_mirrors', 0)
+            tp_sl_success = self.daily_stats.get('tp_sl_success', 0)
+            tp_sl_failed = self.daily_stats.get('tp_sl_failed', 0)
+            
+            report = f"""📊 미러 트레이딩 일일 리포트 (완벽한 TP/SL 미러링 v3.0)
+📅 {datetime.now().strftime('%Y-%m-%d')}
+━━━━━━━━━━━━━━━━━━━
+
+💰 계정 잔고:
+- 비트겟: ${bitget_equity:,.2f}
+- 게이트: ${gate_equity:,.2f}
+
+{price_status_info}
+
+⚡ 실시간 포지션 미러링:
+- 주문 체결 기반: {self.daily_stats['order_mirrors']}회
+- 포지션 기반: {self.daily_stats['position_mirrors']}회
+- 총 시도: {self.daily_stats['total_mirrored']}회
+- 성공: {self.daily_stats['successful_mirrors']}회
+- 실패: {self.daily_stats['failed_mirrors']}회
+- 성공률: {success_rate:.1f}%
+
+🎯 완벽한 TP/SL 미러링 성과:
+- 완벽한 미러링: {perfect_mirrors}회 ✨
+- 부분 미러링: {partial_mirrors}회
+- TP/SL 성공: {tp_sl_success}회 🎯
+- TP/SL 실패: {tp_sl_failed}회 ❌
+- 완벽 성공률: {(perfect_mirrors / max(perfect_mirrors + partial_mirrors, 1) * 100):.1f}%
+
+🔄 예약 주문 미러링 (통합 TP/SL):
+- 시작 시 복제: {self.daily_stats['startup_plan_mirrors']}회
+- 신규 미러링: {self.daily_stats['plan_order_mirrors']}회
+- 통합 TP/SL 주문: {self.daily_stats.get('tp_sl_integrated_orders', 0)}회
+- 취소 동기화: {self.daily_stats['plan_order_cancels']}회
+- 성공적인 취소: {self.daily_stats.get('successful_order_cancels', 0)}회
+- 실패한 취소: {self.daily_stats.get('failed_order_cancels', 0)}회
+- 클로즈 주문: {self.daily_stats['close_order_mirrors']}회
+- 중복 방지: {self.daily_stats['duplicate_orders_prevented']}회
+
+📈 동기화 강화 성과:
+- 자동 동기화 수정: {self.daily_stats.get('sync_corrections', 0)}회
+- 고아 주문 삭제: {self.daily_stats.get('sync_deletions', 0)}회
+- 동기화 체크 횟수: {int(24 * 3600 / 30)}회 (30초마다)
+- 통합 TP/SL 처리: {self.daily_stats.get('unified_tp_sl_orders', 0)}회
+
+📉 포지션 관리:
+- 부분 청산: {self.daily_stats['partial_closes']}회
+- 전체 청산: {self.daily_stats['full_closes']}회
+- 총 거래량: ${self.daily_stats['total_volume']:,.2f}
+
+🔧 더욱 관대한 시세차이 대응 (임계값: {self.price_sync_threshold}$):
+- 시세차이 지연: {self.daily_stats.get('price_sync_delays', 0)}회
+- 포지션 체결 대기: {self.daily_stats.get('successful_position_waits', 0)}회
+- 체결 대기 타임아웃: {self.daily_stats.get('position_wait_timeouts', 0)}회
+- 동기화 상태 수정: {self.daily_stats.get('sync_status_corrected', 0)}회
+
+🔄 현재 미러링 상태:
+- 활성 포지션: {len(self.mirrored_positions)}개
+- 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개
+- 완벽한 TP/SL 주문: {len([o for o in self.position_manager.mirrored_plan_orders.values() if o.get('perfect_mirror')])}개
+- 실패 기록: {len(self.failed_mirrors)}건
+
+━━━━━━━━━━━━━━━━━━━
+🎯 v3.0 완벽한 TP/SL 미러링 성과:
+📈 비트겟 TP/SL → 게이트 통합 주문: 100% 완벽 복제
+📈 예약 주문 자동 동기화: 30초마다 실행
+📈 중복 복제 방지: 시간/가격/해시 기반 다중 검증
+📈 고아 주문 자동 삭제: 비트겟에 없는 게이트 주문 정리
+📈 클로즈 주문 포지션 체크: 포지션 없으면 자동 스킵
+📈 시세차이 관대한 처리: 100달러 임계값
+📈 완벽성: 비트겟 설정이 게이트에서 그대로 재현됨"""
+            
+            if self.daily_stats.get('errors'):
+                report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
+            
+            return report
+            
+        except Exception as e:
+            self.logger.error(f"리포트 생성 실패: {e}")
+            return f"📊 일일 리포트 생성 실패\n오류: {str(e)}"
+
+    def _reset_daily_stats(self):
+        """일일 통계 초기화"""
+        self.daily_stats = {
+            'total_mirrored': 0,
+            'successful_mirrors': 0,
+            'failed_mirrors': 0,
+            'partial_closes': 0,
+            'full_closes': 0,
+            'total_volume': 0.0,
+            'order_mirrors': 0,
+            'position_mirrors': 0,
+            'plan_order_mirrors': 0,
+            'plan_order_cancels': 0,
+            'plan_order_cancel_success': 0,
+            'plan_order_cancel_failed': 0,
+            'startup_plan_mirrors': 0,
+            'close_order_mirrors': 0,
+            'close_order_skipped': 0,
+            'duplicate_orders_prevented': 0,
+            'render_restart_skips': 0,
+            'perfect_mirrors': 0,  # 완벽한 TP/SL 미러링 카운트
+            'partial_mirrors': 0,  # 부분 미러링 카운트
+            'tp_sl_success': 0,    # TP/SL 성공 카운트
+            'tp_sl_failed': 0,     # TP/SL 실패 카운트
+            'unified_tp_sl_orders': 0,
+            'duplicate_advanced_prevention': 0,
+            'price_duplicate_prevention': 0,
+            'price_sync_delays': 0,
+            'position_wait_timeouts': 0,
+            'successful_position_waits': 0,
+            'sync_status_corrected': 0,
+            'close_order_position_check_failed': 0,
+            'close_order_position_wait_success': 0,
+            'close_order_delayed_for_position': 0,
+            'close_order_skipped_no_position': 0,
+            'duplicate_time_prevention': 0,
+            'successful_order_cancels': 0,
+            'failed_order_cancels': 0,
+            'sync_corrections': 0,      # 🔥🔥🔥 동기화 수정
+            'sync_deletions': 0,        # 🔥🔥🔥 동기화 삭제
+            'tp_sl_integrated_orders': 0,  # 🔥🔥🔥 통합 TP/SL 주문
+            'errors': []
+        }
+        self.failed_mirrors.clear()
+        
+        # 시세 조회 실패 카운터 리셋
+        self.bitget_price_failures = 0
+        self.gate_price_failures = 0
+        
+        # 포지션 매니저의 통계도 동기화
+        self.position_manager.daily_stats = self.daily_stats
+
+    async def _log_account_status(self):
+        """🔥🔥🔥 계정 상태 로깅 - 완벽한 TP/SL 미러링 정보 포함"""
+        try:
+            # 기본 클라이언트로 계정 조회
+            bitget_account = await self.bitget.get_account_info()
+            bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
+            
+            gate_account = await self.gate_mirror.get_account_balance()
+            gate_equity = float(gate_account.get('total', 0))
+            
+            # 시세 차이 정보
+            valid_price_diff = self._get_valid_price_difference()
+            
+            if valid_price_diff is not None:
+                price_status = "정상" if valid_price_diff <= self.price_sync_threshold else "범위 초과"
+                price_info = f"""📈 시세 상태:
+• 비트겟: ${self.bitget_current_price:,.2f}
+• 게이트: ${self.gate_current_price:,.2f}
+• 차이: ${valid_price_diff:.2f} ({price_status})
+• 임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)"""
+            else:
+                price_info = f"""📈 시세 상태:
+• 시세 조회 중 문제 발생
+• 시스템이 자동으로 복구 중
+• 임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)"""
+            
+            await self.telegram.send_message(
+                f"🔄 미러 트레이딩 시스템 시작 (v3.0 완벽한 TP/SL 미러링)\n\n"
+                f"💰 계정 잔고:\n"
+                f"• 비트겟: ${bitget_equity:,.2f}\n"
+                f"• 게이트: ${gate_equity:,.2f}\n\n"
+                f"{price_info}\n\n"
+                f"📊 현재 상태:\n"
+                f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
+                f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
+                f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
+                f"⚡ v3.0 핵심 개선 사항:\n"
+                f"• 🎯 완벽한 TP/SL 미러링: 비트겟 설정이 게이트에서 100% 재현\n"
+                f"• 🔄 예약 주문 자동 동기화: 30초마다 실행\n"
+                f"• 🛡️ 중복 복제 방지: 다중 해시 검증 시스템\n"
+                f"• 🗑️ 고아 주문 자동 정리: 매칭되지 않는 주문 삭제\n"
+                f"• 📊 클로즈 주문 포지션 체크: 포지션 없으면 스킵\n"
+                f"• 💱 시세차이 관대한 처리: 100달러 임계값\n"
+                f"• ⏰ 지연 복제 문제 해결: 실시간 감지 및 즉시 처리\n"
+                f"• 🔗 통합 주문 생성: TP/SL이 하나의 주문으로 복제됨\n\n"
+                f"💡 이제 비트겟의 TP가 설정된 예약 주문이\n"
+                f"게이트에서도 하나의 통합 주문으로 정확히 복제됩니다!\n\n"
+                f"🔄 30초마다 자동으로 동기화되어 누락이나\n"
+                f"불일치 문제가 자동으로 해결됩니다.\n\n"
+                f"🎯 완벽성: 이상한 값 없이\n"
+                f"비트겟과 완전히 동일한 설정으로 미러링됩니다."
+            )
+            
+        except Exception as e:
+            self.logger.error(f"계정 상태 조회 실패: {e}")
+
+    async def stop(self):
+        """미러 트레이딩 중지"""
+        self.monitoring = False
+        
+        try:
+            # 포지션 매니저 중지
+            await self.position_manager.stop()
+            
+            # Bitget 미러링 클라이언트 종료
+            await self.bitget_mirror.close()
+            
+            # Gate.io 미러링 클라이언트 종료
+            await self.gate_mirror.close()
+            
+            final_report = await self._create_daily_report()
+            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료 (v3.0)\n\n{final_report}")
+        except:
+            pass
+        
+        self.logger.info("미러 트레이딩 시스템 중지")
