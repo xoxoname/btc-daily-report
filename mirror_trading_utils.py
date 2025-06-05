@@ -193,19 +193,7 @@ class MirrorTradingUtils:
                 return []
             
             hashes = []
-            # 🔥 0. 가격만으로 해시 생성 (중복 체크 강화) - 이 부분을 추가
-            try:
-                price_only_hash = f"{contract}_price_{trigger_price:.2f}"
-                hashes.append(price_only_hash)
-                
-                # 가격 범위 해시 ($50 오차 범위)
-                price_range_low = int((trigger_price - 50) / 100) * 100
-                price_range_high = int((trigger_price + 50) / 100) * 100
-                price_range_hash = f"{contract}_range_{price_range_low}_{price_range_high}"
-                hashes.append(price_range_hash)
-            except Exception as e:
-                self.logger.warning(f"가격 해시 생성 실패: {e}")
-          
+            
             # 1. 기본 해시 (기존 방식)
             try:
                 basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
