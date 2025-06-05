@@ -9,7 +9,7 @@ from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 logger = logging.getLogger(__name__)
 
 class MirrorPositionManager:
-    """포지션 및 주문 관리 클래스 - TP/SL 완전 미러링 개선"""
+    """포지션 및 주문 관리 클래스 - TP/SL 완전 미러링 개선 + 포지션 종료 시 클로즈 주문 자동 삭제"""
     
     def __init__(self, config, bitget_client, gate_client, gate_mirror_client, telegram_bot, utils):
         self.config = config
@@ -72,6 +72,11 @@ class MirrorPositionManager:
         self.bitget_to_gate_order_mapping: Dict[str, str] = {}
         self.gate_to_bitget_order_mapping: Dict[str, str] = {}
         
+        # 🔥🔥🔥 포지션 종료 시 클로즈 주문 정리 관련
+        self.position_close_monitoring: bool = True
+        self.last_position_check: datetime = datetime.min
+        self.position_check_interval: int = 30  # 30초마다 포지션 상태 체크
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -99,10 +104,12 @@ class MirrorPositionManager:
             'partial_mirrors': 0,
             'tp_sl_success': 0,
             'tp_sl_failed': 0,
+            'auto_close_order_cleanups': 0,  # 🔥🔥🔥 추가
+            'position_closed_cleanups': 0,   # 🔥🔥🔥 추가
             'errors': []
         }
         
-        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - TP/SL 완전 미러링 개선")
+        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - TP/SL 완전 미러링 개선 + 자동 클로즈 주문 정리")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -156,6 +163,9 @@ class MirrorPositionManager:
             
             # 만료된 주문 처리 타임스탬프 정리
             await self._cleanup_expired_timestamps()
+            
+            # 🔥🔥🔥 포지션 종료 시 클로즈 주문 자동 정리
+            await self._check_and_cleanup_close_orders_if_no_position()
             
             # 현재 비트겟 예약 주문 조회
             plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
@@ -314,6 +324,96 @@ class MirrorPositionManager:
                 
         except Exception as e:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
+
+    async def _check_and_cleanup_close_orders_if_no_position(self):
+        """🔥🔥🔥 포지션이 없으면 게이트의 클로즈 주문들을 자동 정리"""
+        try:
+            current_time = datetime.now()
+            
+            # 30초마다만 체크
+            if (current_time - self.last_position_check).total_seconds() < self.position_check_interval:
+                return
+            
+            self.last_position_check = current_time
+            
+            if not self.position_close_monitoring:
+                return
+            
+            # 현재 게이트 포지션 상태 확인
+            gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
+            has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
+            
+            if has_position:
+                # 포지션이 있으면 정리할 필요 없음
+                return
+            
+            # 포지션이 없으면 게이트의 클로즈 주문들 찾기
+            gate_orders = await self.gate_mirror.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+            
+            close_orders_to_delete = []
+            
+            for gate_order in gate_orders:
+                try:
+                    initial_info = gate_order.get('initial', {})
+                    reduce_only = initial_info.get('reduce_only', False)
+                    
+                    if reduce_only:
+                        # reduce_only=True인 주문은 클로즈 주문
+                        close_orders_to_delete.append(gate_order)
+                        
+                except Exception as e:
+                    self.logger.debug(f"게이트 주문 분석 중 오류: {e}")
+                    continue
+            
+            if close_orders_to_delete:
+                self.logger.info(f"🗑️ 포지션 없음 → {len(close_orders_to_delete)}개 클로즈 주문 자동 정리 시작")
+                
+                deleted_count = 0
+                for close_order in close_orders_to_delete:
+                    try:
+                        gate_order_id = close_order.get('id')
+                        if gate_order_id:
+                            await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                            deleted_count += 1
+                            
+                            # 미러링 기록에서도 제거
+                            bitget_order_id = self.gate_to_bitget_order_mapping.get(gate_order_id)
+                            if bitget_order_id:
+                                if bitget_order_id in self.mirrored_plan_orders:
+                                    del self.mirrored_plan_orders[bitget_order_id]
+                                del self.gate_to_bitget_order_mapping[gate_order_id]
+                                if bitget_order_id in self.bitget_to_gate_order_mapping:
+                                    del self.bitget_to_gate_order_mapping[bitget_order_id]
+                            
+                            self.logger.info(f"✅ 클로즈 주문 삭제 완료: {gate_order_id}")
+                            
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        if any(keyword in error_msg for keyword in [
+                            "not found", "order not exist", "invalid order",
+                            "order does not exist", "auto_order_not_found"
+                        ]):
+                            # 이미 취소되었거나 체결된 주문
+                            deleted_count += 1
+                            self.logger.info(f"클로즈 주문이 이미 처리됨: {gate_order_id}")
+                        else:
+                            self.logger.error(f"클로즈 주문 삭제 실패: {gate_order_id} - {e}")
+                
+                if deleted_count > 0:
+                    self.daily_stats['auto_close_order_cleanups'] += deleted_count
+                    self.daily_stats['position_closed_cleanups'] += 1
+                    
+                    await self.telegram.send_message(
+                        f"🗑️ 자동 클로즈 주문 정리 완료\n"
+                        f"포지션 상태: 없음 (모두 익절/손절됨)\n"
+                        f"정리된 클로즈 주문: {deleted_count}개\n"
+                        f"게이트가 깔끔하게 정리되었습니다! ✨"
+                    )
+                    
+                    self.logger.info(f"🎯 포지션 종료로 인한 클로즈 주문 자동 정리 완료: {deleted_count}개")
+            
+        except Exception as e:
+            self.logger.error(f"포지션 없음 시 클로즈 주문 정리 실패: {e}")
 
     async def _process_perfect_mirror_order(self, bitget_order: Dict) -> str:
         """🔥 완벽한 미러링 주문 처리"""
