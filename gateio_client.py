@@ -240,7 +240,7 @@ class GateClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None, 
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """시장가/지정가 주문 생성"""
+        """🔥🔥🔥 시장가/지정가 주문 생성 - reduce_only 플래그 수정"""
         try:
             endpoint = "/api/v4/futures/usdt/orders"
             
@@ -256,13 +256,22 @@ class GateClient:
             else:
                 logger.info(f"시장가 주문 생성: {contract}, 수량: {size}")
             
+            # 🔥🔥🔥 reduce_only 플래그 올바른 처리
             if reduce_only:
                 data["reduce_only"] = True
-                logger.info(f"포지션 감소 전용 주문")
+                logger.info(f"포지션 감소 전용 주문 (클로즈): reduce_only=True")
+            else:
+                # reduce_only가 False인 경우 명시적으로 설정하지 않음 (Gate.io 기본값)
+                logger.info(f"포지션 증가 주문 (오픈): reduce_only 미설정")
             
             if iceberg > 0:
                 data["iceberg"] = iceberg
                 logger.info(f"빙산 주문: {iceberg}")
+            
+            # 🔥🔥🔥 주문 방향 확인 로그 강화
+            order_direction = "매수(롱)" if size > 0 else "매도(숏)"
+            order_type = "클로즈" if reduce_only else "오픈"
+            logger.info(f"🔍 Gate.io 주문 생성: {order_type} {order_direction}, 수량={size}, reduce_only={reduce_only}")
             
             logger.info(f"Gate.io 주문 생성 요청: {data}")
             response = await self._request('POST', endpoint, data=data)
@@ -317,7 +326,7 @@ class GateClient:
         raise Exception(f"레버리지 설정 최대 재시도 횟수 초과: {contract} - {leverage}x")
     
     async def _verify_leverage_setting(self, contract: str, expected_leverage: int) -> bool:
-        """레버리지 설정 확인"""
+        """레버리지 설정 확인 검증"""
         try:
             positions = await self.get_positions(contract)
             if positions:
@@ -342,8 +351,9 @@ class GateClient:
                                          order_type: str, contract: str, size: int, 
                                          price: Optional[str] = None,
                                          stop_profit_price: Optional[str] = None,
-                                         stop_loss_price: Optional[str] = None) -> Dict:
-        """🔥 가격 트리거 주문 생성 - 실제 TP/SL 설정 포함"""
+                                         stop_loss_price: Optional[str] = None,
+                                         reduce_only: bool = False) -> Dict:
+        """🔥🔥🔥 가격 트리거 주문 생성 - reduce_only 플래그 추가 지원"""
         try:
             # 트리거 가격 유효성 검증 및 조정
             trigger_price_float = float(trigger_price)
@@ -366,6 +376,13 @@ class GateClient:
                 "contract": contract,
                 "size": size
             }
+            
+            # 🔥🔥🔥 reduce_only 플래그 처리
+            if reduce_only:
+                initial_data["reduce_only"] = True
+                logger.info(f"🔴 클로즈 주문: reduce_only=True 설정")
+            else:
+                logger.info(f"🟢 오픈 주문: reduce_only 미설정")
             
             if order_type == "limit":
                 if price:
@@ -408,6 +425,11 @@ class GateClient:
                 has_tp_sl = True
                 logger.info(f"🛡️ 실제 SL 설정: ${stop_loss_price}")
             
+            # 🔥🔥🔥 주문 방향 및 타입 확인 로그 강화
+            order_direction = "매수(롱)" if size > 0 else "매도(숏)"
+            order_purpose = "클로즈" if reduce_only else "오픈"
+            logger.info(f"🔍 Gate.io 트리거 주문: {order_purpose} {order_direction}, 수량={size}, reduce_only={reduce_only}")
+            
             logger.info(f"Gate.io 가격 트리거 주문 생성 (TP/SL 포함): {data}")
             response = await self._request('POST', endpoint, data=data)
             logger.info(f"✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
@@ -416,6 +438,7 @@ class GateClient:
             response['has_tp_sl'] = has_tp_sl
             response['requested_tp'] = stop_profit_price
             response['requested_sl'] = stop_loss_price
+            response['reduce_only'] = reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
             
             # TP/SL 설정 결과 확인
             actual_tp = response.get('stop_profit_price', '')
@@ -436,7 +459,7 @@ class GateClient:
             
         except Exception as e:
             logger.error(f"❌ 가격 트리거 주문 생성 실패: {e}")
-            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}, price={price}, tp={stop_profit_price}, sl={stop_loss_price}")
+            logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}, price={price}, tp={stop_profit_price}, sl={stop_loss_price}, reduce_only={reduce_only}")
             raise
     
     async def create_unified_order_with_tp_sl(self, trigger_type: str, trigger_price: str,
@@ -445,14 +468,34 @@ class GateClient:
                                            tp_price: Optional[str] = None,
                                            sl_price: Optional[str] = None,
                                            bitget_order_info: Optional[Dict] = None) -> Dict:
-        """🔥 통합된 TP/SL 포함 예약 주문 생성 - 실제 Gate.io API TP/SL 설정"""
+        """🔥🔥🔥 통합된 TP/SL 포함 예약 주문 생성 - reduce_only 플래그 자동 판단"""
         try:
-            logger.info(f"🎯 통합 TP/SL 포함 예약 주문 생성 시도 (실제 API 설정)")
+            logger.info(f"🎯 통합 TP/SL 포함 예약 주문 생성 시도 (reduce_only 자동 판단)")
             logger.info(f"   - 트리거가: {trigger_price}")
             logger.info(f"   - TP: {tp_price}")
             logger.info(f"   - SL: {sl_price}")
             
-            # 🔥 실제 Gate.io API에 TP/SL 정보를 전달하여 예약 주문 생성
+            # 🔥🔥🔥 비트겟 주문 정보에서 reduce_only 판단
+            reduce_only = False
+            if bitget_order_info:
+                side = bitget_order_info.get('side', bitget_order_info.get('tradeSide', '')).lower()
+                bitget_reduce_only = bitget_order_info.get('reduceOnly', False)
+                
+                # 클로즈 주문인지 판단
+                is_close_order = (
+                    'close' in side or 
+                    bitget_reduce_only is True or 
+                    bitget_reduce_only == 'true'
+                )
+                
+                if is_close_order:
+                    reduce_only = True
+                    logger.info(f"🔴 클로즈 주문 감지: side={side}, bitget_reduce_only={bitget_reduce_only} → reduce_only=True")
+                else:
+                    reduce_only = False
+                    logger.info(f"🟢 오픈 주문 감지: side={side}, bitget_reduce_only={bitget_reduce_only} → reduce_only=False")
+            
+            # 🔥 실제 Gate.io API에 TP/SL 정보와 reduce_only 플래그를 전달하여 예약 주문 생성
             order_response = await self.create_price_triggered_order(
                 trigger_type=trigger_type,
                 trigger_price=trigger_price,
@@ -461,7 +504,8 @@ class GateClient:
                 size=size,
                 price=price,
                 stop_profit_price=tp_price,  # 실제 TP 설정
-                stop_loss_price=sl_price     # 실제 SL 설정
+                stop_loss_price=sl_price,    # 실제 SL 설정
+                reduce_only=reduce_only      # 🔥🔥🔥 reduce_only 플래그 전달
             )
             
             order_id = order_response.get('id')
@@ -504,14 +548,16 @@ class GateClient:
                     'actual_sl_price': actual_sl,
                     'unified_order': True,
                     'bitget_style': True,
-                    'tp_sl_status': 'success' if tp_sl_success else 'failed'
+                    'tp_sl_status': 'success' if tp_sl_success else 'failed',
+                    'reduce_only': reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
                 })
             else:
                 logger.info(f"📝 TP/SL 설정 없는 일반 예약 주문")
                 order_response.update({
                     'has_tp_sl': False,
                     'unified_order': True,
-                    'bitget_style': False
+                    'bitget_style': False,
+                    'reduce_only': reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
                 })
             
             return order_response
@@ -526,7 +572,8 @@ class GateClient:
                 order_type=order_type,
                 contract=contract,
                 size=size,
-                price=price
+                price=price,
+                reduce_only=reduce_only  # 🔥🔥🔥 reduce_only 플래그 유지
                 # TP/SL 제외
             )
             fallback_order.update({
@@ -534,7 +581,8 @@ class GateClient:
                 'unified_order': True,
                 'bitget_style': False,
                 'fallback': True,
-                'error': str(e)
+                'error': str(e),
+                'reduce_only': reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
             })
             return fallback_order
     
@@ -591,7 +639,8 @@ class GateClient:
                         trigger_price=str(tp_price),
                         order_type="market",
                         contract=contract,
-                        size=tp_size
+                        size=tp_size,
+                        reduce_only=True  # 🔥🔥🔥 TP는 항상 클로즈 주문
                     )
                     
                     result['tp_order'] = tp_order
@@ -634,7 +683,8 @@ class GateClient:
                         trigger_price=str(sl_price),
                         order_type="market",
                         contract=contract,
-                        size=sl_size
+                        size=sl_size,
+                        reduce_only=True  # 🔥🔥🔥 SL은 항상 클로즈 주문
                     )
                     
                     result['sl_order'] = sl_order
@@ -742,7 +792,7 @@ class GateClient:
             raise
     
     async def close_position(self, contract: str, size: Optional[int] = None) -> Dict:
-        """포지션 종료"""
+        """🔥🔥🔥 포지션 종료 - reduce_only 플래그 사용"""
         try:
             positions = await self.get_positions(contract)
             
@@ -763,11 +813,12 @@ class GateClient:
             
             logger.info(f"Gate.io 포지션 종료: {contract}, 현재 사이즈: {position_size}, 종료 사이즈: {close_size}")
             
+            # 🔥🔥🔥 포지션 종료는 항상 reduce_only=True
             result = await self.place_order(
                 contract=contract,
                 size=close_size,
                 price=None,
-                reduce_only=True
+                reduce_only=True  # 🔥🔥🔥 포지션 종료는 클로즈 주문
             )
             
             logger.info(f"✅ Gate.io 포지션 종료 성공: {result}")
