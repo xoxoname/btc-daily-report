@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 시세차이 문제 해결"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 시세차이 문제 해결 및 더 관대한 설정"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -44,23 +44,23 @@ class MirrorTradingUtils:
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
         self.MIN_MARGIN = 1.0
-        self.MAX_PRICE_DIFF_PERCENT = 1.0
+        self.MAX_PRICE_DIFF_PERCENT = 2.0  # 1.0% → 2.0%로 더 관대하게
         
-        # 🔥🔥🔥 트리거 가격 검증 임계값 완전히 제거 - 거의 모든 가격 허용
-        self.TRIGGER_PRICE_MIN_DIFF_PERCENT = 0.0  # 0.0%로 설정하여 거의 모든 가격 허용
-        self.ALLOW_VERY_CLOSE_PRICES = True  # 시장가와 매우 가까운 가격도 허용
+        # 🔥🔥🔥 트리거 가격 검증 완전히 제거 - 거의 모든 가격 허용
+        self.TRIGGER_PRICE_MIN_DIFF_PERCENT = 0.0
+        self.ALLOW_VERY_CLOSE_PRICES = True
         
-        # 🔥🔥🔥 시세 차이 관리 강화
-        self.PRICE_SYNC_THRESHOLD = 15.0  # 15달러 임계값
-        self.PRICE_ADJUSTMENT_ENABLED = True  # 가격 조정 활성화
+        # 🔥🔥🔥 시세 차이 관리 더욱 관대하게
+        self.PRICE_SYNC_THRESHOLD = 100.0  # 15달러 → 100달러로 대폭 상향
+        self.PRICE_ADJUSTMENT_ENABLED = True
         
-        # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값
-        self.ABNORMAL_PRICE_DIFF_THRESHOLD = 1000.0  # 1000달러 이상은 비정상으로 간주
+        # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값도 상향
+        self.ABNORMAL_PRICE_DIFF_THRESHOLD = 2000.0  # 1000달러 → 2000달러로 상향
         
-        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 시세차이 문제 해결")
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 더욱 관대한 설정 적용")
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
-        """🔥 비트겟 예약 주문에서 TP/SL 정보 추출"""
+        """비트겟 예약 주문에서 TP/SL 정보 추출"""
         try:
             tp_price = None
             sl_price = None
@@ -100,7 +100,7 @@ class MirrorTradingUtils:
             return None, None
     
     async def extract_gate_order_details(self, gate_order: Dict) -> Optional[Dict]:
-        """🔥🔥🔥 게이트 주문에서 상세 정보 추출 - None 체크 강화"""
+        """게이트 주문에서 상세 정보 추출"""
         try:
             # 기본 정보 추출 - None 체크 강화
             order_id = gate_order.get('id', '') or ''
@@ -138,7 +138,6 @@ class MirrorTradingUtils:
             tp_price = None
             sl_price = None
             
-            # TP/SL은 여러 필드에서 추출 시도
             for tp_field in ['stop_profit_price', 'stopProfitPrice', 'takeProfitPrice']:
                 tp_value = gate_order.get(tp_field)
                 if tp_value and tp_value != '' and str(tp_value) != '0':
@@ -180,7 +179,7 @@ class MirrorTradingUtils:
             return None
     
     async def generate_multiple_order_hashes(self, order_details: Dict) -> List[str]:
-        """🔥🔥🔥 다양한 방식으로 주문 해시 생성 - 가격 기반 중복 방지 강화"""
+        """🔥🔥🔥 다양한 방식으로 주문 해시 생성 - 더 관대한 가격 범위"""
         try:
             # None 체크 및 기본값 설정
             contract = order_details.get('contract') or self.GATE_CONTRACT
@@ -188,7 +187,6 @@ class MirrorTradingUtils:
             size = order_details.get('size', 0)
             abs_size = order_details.get('abs_size', abs(size))
             
-            # 필수 값들이 None이거나 유효하지 않으면 빈 리스트 반환
             if trigger_price is None or size is None:
                 self.logger.warning(f"필수 값이 None - trigger_price: {trigger_price}, size: {size}")
                 return []
@@ -207,12 +205,12 @@ class MirrorTradingUtils:
             
             hashes = []
             
-            # 🔥 1. 가격 기반 해시 (중복 방지 핵심) - 수량 무관
+            # 🔥🔥🔥 가격 기반 해시 (중복 방지 핵심) - 더 관대한 범위
             try:
+                # 기본 가격 해시들
                 price_only_hash = f"{contract}_price_{trigger_price:.2f}"
                 hashes.append(price_only_hash)
                 
-                # 더 정밀한 가격 해시
                 precise_price_hash = f"{contract}_price_{trigger_price:.8f}"
                 hashes.append(precise_price_hash)
                 
@@ -228,28 +226,28 @@ class MirrorTradingUtils:
             except Exception as e:
                 self.logger.warning(f"가격 기반 해시 생성 실패: {e}")
             
-            # 2. 기본 해시 (기존 방식)
+            # 기본 해시
             try:
                 basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
                 hashes.append(basic_hash)
             except Exception as e:
                 self.logger.warning(f"기본 해시 생성 실패: {e}")
             
-            # 3. 정확한 가격 해시
+            # 정확한 가격 해시
             try:
                 exact_price_hash = f"{contract}_{trigger_price:.8f}_{abs_size}"
                 hashes.append(exact_price_hash)
             except Exception as e:
                 self.logger.warning(f"정확한 가격 해시 생성 실패: {e}")
             
-            # 4. 부호 포함 해시
+            # 부호 포함 해시
             try:
                 signed_hash = f"{contract}_{trigger_price:.2f}_{size}"
                 hashes.append(signed_hash)
             except Exception as e:
                 self.logger.warning(f"부호 포함 해시 생성 실패: {e}")
             
-            # 5. 반올림된 가격 해시 (가격 차이 허용)
+            # 반올림된 가격 해시
             try:
                 rounded_price_1 = round(trigger_price, 1)
                 rounded_hash_1 = f"{contract}_{rounded_price_1:.1f}_{abs_size}"
@@ -261,7 +259,7 @@ class MirrorTradingUtils:
             except Exception as e:
                 self.logger.warning(f"반올림 해시 생성 실패: {e}")
             
-            # 6. TP/SL 포함 해시 (있는 경우)
+            # TP/SL 포함 해시
             try:
                 if order_details.get('has_tp_sl'):
                     tp_price = order_details.get('tp_price', 0) or 0
@@ -269,13 +267,12 @@ class MirrorTradingUtils:
                     tp_sl_hash = f"{contract}_{trigger_price:.2f}_{abs_size}_tp{tp_price:.2f}_sl{sl_price:.2f}"
                     hashes.append(tp_sl_hash)
                     
-                    # 🔥 TP/SL 있는 주문의 가격 기반 해시도 추가
                     tp_sl_price_hash = f"{contract}_price_{trigger_price:.2f}_withTPSL"
                     hashes.append(tp_sl_price_hash)
             except Exception as e:
                 self.logger.warning(f"TP/SL 해시 생성 실패: {e}")
             
-            # 🔥 7. 가격 범위 해시 (유사한 가격 감지)
+            # 🔥🔥🔥 더 관대한 가격 범위 해시 (±100달러)
             try:
                 # 100달러 단위로 반올림한 가격 해시
                 price_range_100 = round(trigger_price / 100) * 100
@@ -287,8 +284,8 @@ class MirrorTradingUtils:
                 range_hash_50 = f"{contract}_range50_{price_range_50:.0f}"
                 hashes.append(range_hash_50)
                 
-                # 🔥🔥🔥 시세 차이를 고려한 가격 범위 해시 (±20달러)
-                for offset in [-20, -10, 0, 10, 20]:
+                # 🔥🔥🔥 더 넓은 시세 차이를 고려한 가격 범위 해시 (±50달러)
+                for offset in [-50, -30, -20, -10, 0, 10, 20, 30, 50]:
                     adjusted_price = trigger_price + offset
                     if adjusted_price > 0:
                         offset_hash = f"{contract}_offset_{adjusted_price:.0f}"
@@ -309,7 +306,6 @@ class MirrorTradingUtils:
             
         except Exception as e:
             self.logger.error(f"다중 해시 생성 실패: {e}")
-            # 🔥 에러 발생 시에도 기본 해시라도 생성 시도
             try:
                 trigger_price = order_details.get('trigger_price')
                 size = order_details.get('size', 0)
@@ -327,11 +323,10 @@ class MirrorTradingUtils:
             return []
     
     def generate_order_hash(self, trigger_price: float, size: int, contract: str = None) -> str:
-        """주문 특성으로 해시 생성 (중복 방지용) - None 체크 강화"""
+        """주문 특성으로 해시 생성 (중복 방지용)"""
         try:
             contract = contract or self.GATE_CONTRACT
             
-            # None 체크 및 안전한 변환
             if trigger_price is None or size is None:
                 return f"{contract}_unknown_unknown"
             
@@ -345,7 +340,7 @@ class MirrorTradingUtils:
             return f"{contract or self.GATE_CONTRACT}_error_error"
     
     def generate_price_based_hash(self, trigger_price: float, contract: str = None) -> str:
-        """🔥 가격 기반 해시 생성 (수량 무관 중복 방지)"""
+        """가격 기반 해시 생성 (수량 무관 중복 방지)"""
         try:
             contract = contract or self.GATE_CONTRACT
             
@@ -361,21 +356,21 @@ class MirrorTradingUtils:
     
     async def adjust_price_for_gate(self, price: float, bitget_current_price: float = 0, 
                                    gate_current_price: float = 0, price_diff_percent: float = 0) -> float:
-        """🔥🔥🔥 게이트 기준으로 가격 조정 - 시세차이 문제 해결 (개선된 버전)"""
+        """🔥🔥🔥 게이트 기준으로 가격 조정 - 더욱 관대한 버전"""
         try:
             if price is None or price <= 0:
                 return price or 0
             
-            # 🔥🔥🔥 비정상적인 시세 차이 감지 및 처리
+            # 🔥🔥🔥 더욱 관대한 비정상적인 시세 차이 감지
             if (bitget_current_price > 0 and gate_current_price > 0):
                 price_diff_abs = abs(bitget_current_price - gate_current_price)
                 
-                # 비정상적인 시세 차이 (1000달러 이상)는 조정하지 않음
+                # 더 높은 임계값으로 비정상적인 시세 차이 판단 (2000달러 이상)
                 if price_diff_abs > self.ABNORMAL_PRICE_DIFF_THRESHOLD:
                     self.logger.warning(f"비정상적인 시세 차이 감지 (${price_diff_abs:.2f}), 가격 조정 건너뜀")
                     return price
                 
-                # 정상 범위 내에서만 조정
+                # 더 관대한 정상 범위 내에서만 조정 (100달러 이상)
                 if (self.PRICE_ADJUSTMENT_ENABLED and 
                     price_diff_abs > self.PRICE_SYNC_THRESHOLD and
                     price_diff_abs <= self.ABNORMAL_PRICE_DIFF_THRESHOLD):
@@ -384,24 +379,21 @@ class MirrorTradingUtils:
                     price_ratio = gate_current_price / bitget_current_price
                     adjusted_price = price * price_ratio
                     
-                    # 조정 폭 검증 (너무 큰 조정은 방지)
+                    # 조정 폭 검증 (더 관대하게 10% 이하 조정 허용)
                     adjustment_percent = abs(adjusted_price - price) / price * 100
                     
-                    if adjustment_percent <= 5.0:  # 5% 이하 조정만 허용
-                        self.logger.info(f"🔧 정상적인 시세 차이로 가격 조정: ${price:.2f} → ${adjusted_price:.2f} (차이: ${price_diff_abs:.2f})")
+                    if adjustment_percent <= 10.0:  # 5% → 10%로 더 관대하게
+                        self.logger.info(f"🔧 가격 조정: ${price:.2f} → ${adjusted_price:.2f} (차이: ${price_diff_abs:.2f})")
                         return adjusted_price
                     else:
                         self.logger.warning(f"⚠️ 조정 폭이 너무 큼 ({adjustment_percent:.1f}%), 원본 가격 사용")
                         return price
                 else:
-                    # 시세 차이가 임계값 이하인 경우 원본 사용
                     return price
             elif bitget_current_price <= 0 or gate_current_price <= 0:
-                # 시세 조회 실패 시 원본 가격 사용
                 self.logger.debug("시세 조회 실패로 가격 조정 건너뜀")
                 return price
             
-            # 기본적으로 원본 가격 반환
             return price
             
         except Exception as e:
@@ -409,78 +401,73 @@ class MirrorTradingUtils:
             return price or 0
     
     async def validate_trigger_price(self, trigger_price: float, side: str, current_price: float = 0) -> Tuple[bool, str]:
-        """🔥🔥🔥 트리거 가격 유효성 검증 - 시세차이 고려하여 완전 완화"""
+        """🔥🔥🔥 트리거 가격 유효성 검증 - 더욱 관대한 설정"""
         try:
             if trigger_price is None or trigger_price <= 0:
                 return False, "트리거 가격이 None이거나 0 이하입니다"
             
             if current_price <= 0:
-                # 🔥🔥🔥 현재가 조회 실패해도 허용
-                self.logger.info("현재 시장가를 조회할 수 없지만 트리거 가격 허용")
+                self.logger.info("현재가 조회 실패하지만 트리거 가격 허용")
                 return True, "현재가 조회 실패하지만 허용"
             
-            # 🔥🔥🔥 시장가와의 차이 계산하되 거의 모든 가격 허용
+            # 🔥🔥🔥 더욱 관대한 가격 차이 허용
             price_diff_percent = abs(trigger_price - current_price) / current_price * 100
             price_diff_abs = abs(trigger_price - current_price)
             
-            # 🔥🔥🔥 비정상적인 가격 차이 감지
+            # 🔥🔥🔥 더 높은 임계값으로 비정상적인 가격 차이 감지 (2000달러)
             if price_diff_abs > self.ABNORMAL_PRICE_DIFF_THRESHOLD:
                 self.logger.warning(f"비정상적인 가격 차이 감지: ${price_diff_abs:.2f}")
                 return False, f"트리거가와 현재가 차이가 비정상적 (${price_diff_abs:.2f})"
             
-            # 🔥🔥🔥 시세 차이 문제를 고려하여 극도로 완화된 검증
+            # 🔥🔥🔥 극도로 관대한 검증 - 거의 모든 가격 허용
             if self.ALLOW_VERY_CLOSE_PRICES:
                 # 시장가와 완전히 동일한 경우에만 경고하되 허용
                 if price_diff_percent == 0.0:
                     self.logger.info(f"트리거가와 현재가가 완전히 동일하지만 허용: {trigger_price}")
                     return True, f"동일한 가격이지만 허용 (차이: {price_diff_percent:.8f}%)"
                 
-                # 🔥🔥🔥 매우 근접한 가격도 모두 허용 (시세 차이 고려)
-                if price_diff_percent < 0.0001:  # 0.0001% 미만
+                # 매우 근접한 가격도 모두 허용
+                if price_diff_percent < 0.001:  # 0.001% 미만
                     self.logger.info(f"매우 근접한 트리거가 허용: 차이 {price_diff_percent:.8f}%")
                     return True, f"매우 근접한 트리거가 허용 (차이: {price_diff_percent:.8f}%)"
                 
-                # 🔥🔥🔥 일반적인 가격 차이도 모두 허용 (시세 차이 때문에 더욱 관대)
-                if price_diff_percent < 50:  # 50% 미만은 모두 허용 (더 관대하게 조정)
-                    return True, f"시세차이 고려 허용 가능한 트리거 가격 (차이: {price_diff_percent:.4f}%)"
+                # 🔥🔥🔥 일반적인 가격 차이도 더욱 관대하게 허용 (80% 미만)
+                if price_diff_percent < 80:  # 50% → 80%로 더 관대하게 조정
+                    return True, f"관대한 설정으로 허용 가능한 트리거 가격 (차이: {price_diff_percent:.4f}%)"
                 
-                # 극단적인 가격 차이만 차단 (50% 이상)
-                if price_diff_percent >= 50:
+                # 극단적인 가격 차이만 차단 (80% 이상)
+                if price_diff_percent >= 80:
                     self.logger.warning(f"극단적인 가격 차이: {price_diff_percent:.1f}%")
                     return False, f"트리거가와 현재가 차이가 너무 극단적 ({price_diff_percent:.1f}%)"
             
-            # 기본적으로 모든 가격 허용 (시세 차이 문제 해결)
-            return True, f"시세차이 고려 모든 트리거 가격 허용 (차이: {price_diff_percent:.4f}%)"
+            # 기본적으로 모든 가격 허용
+            return True, f"관대한 설정으로 모든 트리거 가격 허용 (차이: {price_diff_percent:.4f}%)"
             
         except Exception as e:
             self.logger.error(f"트리거 가격 검증 실패하지만 허용: {e}")
-            # 🔥🔥🔥 검증 실패해도 허용 (시세 차이 문제 고려)
-            return True, f"검증 오류이지만 시세차이 고려하여 허용: {str(e)[:100]}"
+            return True, f"검증 오류이지만 관대한 설정으로 허용: {str(e)[:100]}"
     
     async def calculate_gate_order_size_fixed(self, side: str, base_size: int, is_close_order: bool = False) -> Tuple[int, bool]:
-        """🔥🔥🔥 수정된 게이트 주문 수량 계산 - 클로즈/오픈 구분 명확화"""
+        """게이트 주문 수량 계산 - 클로즈/오픈 구분 명확화"""
         try:
             side_lower = side.lower()
             reduce_only = False
             
             self.logger.info(f"🔍 주문 타입 분석: side='{side}', is_close_order={is_close_order}")
             
-            # 🔥 클로즈 주문 처리 (가장 중요!)
+            # 클로즈 주문 처리
             if is_close_order or 'close' in side_lower:
                 reduce_only = True
                 
                 if 'close_long' in side_lower:
-                    # 롱 포지션 종료 = 매도 (음수 사이즈)
                     gate_size = -abs(base_size)
                     self.logger.info(f"🔴 클로즈 롱: 기존 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
                     
                 elif 'close_short' in side_lower:
-                    # 숏 포지션 종료 = 매수 (양수 사이즈)
                     gate_size = abs(base_size)
                     self.logger.info(f"🟢 클로즈 숏: 기존 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {gate_size})")
                     
                 else:
-                    # 일반적인 클로즈 주문 - side로 판단
                     if 'sell' in side_lower or 'short' in side_lower:
                         gate_size = -abs(base_size)
                         self.logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
@@ -488,22 +475,19 @@ class MirrorTradingUtils:
                         gate_size = abs(base_size)
                         self.logger.info(f"🟢 클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {gate_size})")
                         
-            # 🔥 오픈 주문 처리
+            # 오픈 주문 처리
             else:
                 reduce_only = False
                 
                 if 'open_long' in side_lower or ('buy' in side_lower and 'sell' not in side_lower):
-                    # 롱 포지션 오픈 = 매수 (양수 사이즈)
                     gate_size = abs(base_size)
                     self.logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {gate_size})")
                     
                 elif 'open_short' in side_lower or 'sell' in side_lower:
-                    # 숏 포지션 오픈 = 매도 (음수 사이즈)
                     gate_size = -abs(base_size)
                     self.logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {gate_size})")
                     
                 else:
-                    # 기본값 - 원래 사이즈 유지
                     gate_size = base_size
                     self.logger.warning(f"⚠️ 알 수 없는 주문 방향: {side}, 원본 사이즈 유지: {gate_size}")
             
@@ -515,7 +499,7 @@ class MirrorTradingUtils:
             return base_size, False
     
     async def calculate_gate_order_size(self, side: str, base_size: int) -> int:
-        """🔥 기존 호환성을 위한 래퍼 메서드"""
+        """기존 호환성을 위한 래퍼 메서드"""
         try:
             is_close_order = 'close' in side.lower()
             gate_size, _ = await self.calculate_gate_order_size_fixed(side, base_size, is_close_order)
@@ -540,7 +524,7 @@ class MirrorTradingUtils:
             return "ge"
     
     async def calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
-        """🔥🔥🔥 실제 달러 마진 비율 동적 계산 - 시세차이 고려"""
+        """실제 달러 마진 비율 동적 계산"""
         try:
             if size is None or trigger_price is None:
                 return {
@@ -646,7 +630,7 @@ class MirrorTradingUtils:
         )
     
     async def get_price_difference_info(self, bitget_price: float, gate_price: float) -> Dict:
-        """🔥🔥🔥 시세 차이 정보 제공 - 개선된 버전"""
+        """시세 차이 정보 제공"""
         try:
             if bitget_price <= 0 or gate_price <= 0:
                 return {
@@ -694,7 +678,7 @@ class MirrorTradingUtils:
             }
     
     async def should_delay_processing(self, bitget_price: float, gate_price: float) -> Tuple[bool, str]:
-        """🔥🔥🔥 시세 차이로 인한 처리 지연 여부 판단 - 개선된 버전"""
+        """시세 차이로 인한 처리 지연 여부 판단"""
         try:
             price_info = await self.get_price_difference_info(bitget_price, gate_price)
             
