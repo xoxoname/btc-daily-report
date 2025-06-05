@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 시세차이 문제 해결 및 더 관대한 설정"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 클로즈 주문 방향 수정"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -57,7 +57,7 @@ class MirrorTradingUtils:
         # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값도 상향
         self.ABNORMAL_PRICE_DIFF_THRESHOLD = 2000.0  # 1000달러 → 2000달러로 상향
         
-        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 더욱 관대한 설정 적용")
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 클로즈 주문 방향 수정 버전")
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
         """비트겟 예약 주문에서 TP/SL 정보 추출"""
@@ -448,26 +448,29 @@ class MirrorTradingUtils:
             return True, f"검증 오류이지만 관대한 설정으로 허용: {str(e)[:100]}"
     
     async def calculate_gate_order_size_fixed(self, side: str, base_size: int, is_close_order: bool = False) -> Tuple[int, bool]:
-        """게이트 주문 수량 계산 - 클로즈/오픈 구분 명확화"""
+        """🔥🔥🔥 게이트 주문 수량 계산 - 클로즈 주문 방향 수정"""
         try:
             side_lower = side.lower()
             reduce_only = False
             
             self.logger.info(f"🔍 주문 타입 분석: side='{side}', is_close_order={is_close_order}")
             
-            # 클로즈 주문 처리
+            # 🔥🔥🔥 클로즈 주문 처리 - 수정된 로직
             if is_close_order or 'close' in side_lower:
                 reduce_only = True
                 
-                if 'close_long' in side_lower:
+                if 'close_long' in side_lower or side_lower == 'close long':
+                    # 롱 포지션 종료 → 매도 (음수)
                     gate_size = -abs(base_size)
-                    self.logger.info(f"🔴 클로즈 롱: 기존 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
+                    self.logger.info(f"🔴 클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
                     
-                elif 'close_short' in side_lower:
+                elif 'close_short' in side_lower or side_lower == 'close short':
+                    # 숏 포지션 종료 → 매수 (양수)
                     gate_size = abs(base_size)
-                    self.logger.info(f"🟢 클로즈 숏: 기존 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {gate_size})")
+                    self.logger.info(f"🟢 클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {gate_size})")
                     
                 else:
+                    # 일반적인 매도/매수 기반 판단 (클로즈 주문)
                     if 'sell' in side_lower or 'short' in side_lower:
                         gate_size = -abs(base_size)
                         self.logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
