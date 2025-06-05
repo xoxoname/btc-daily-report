@@ -54,6 +54,9 @@ class MirrorTradingUtils:
         self.PRICE_SYNC_THRESHOLD = 15.0  # 15달러 임계값
         self.PRICE_ADJUSTMENT_ENABLED = True  # 가격 조정 활성화
         
+        # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값
+        self.ABNORMAL_PRICE_DIFF_THRESHOLD = 1000.0  # 1000달러 이상은 비정상으로 간주
+        
         self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 시세차이 문제 해결")
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
@@ -358,19 +361,24 @@ class MirrorTradingUtils:
     
     async def adjust_price_for_gate(self, price: float, bitget_current_price: float = 0, 
                                    gate_current_price: float = 0, price_diff_percent: float = 0) -> float:
-        """🔥🔥🔥 게이트 기준으로 가격 조정 - 시세차이 문제 해결"""
+        """🔥🔥🔥 게이트 기준으로 가격 조정 - 시세차이 문제 해결 (개선된 버전)"""
         try:
             if price is None or price <= 0:
                 return price or 0
             
-            # 🔥🔥🔥 시세 차이가 임계값을 초과하는 경우 조정
-            if (self.PRICE_ADJUSTMENT_ENABLED and 
-                bitget_current_price > 0 and gate_current_price > 0):
-                
+            # 🔥🔥🔥 비정상적인 시세 차이 감지 및 처리
+            if (bitget_current_price > 0 and gate_current_price > 0):
                 price_diff_abs = abs(bitget_current_price - gate_current_price)
                 
-                # 시세 차이가 임계값을 초과하는 경우
-                if price_diff_abs > self.PRICE_SYNC_THRESHOLD:
+                # 비정상적인 시세 차이 (1000달러 이상)는 조정하지 않음
+                if price_diff_abs > self.ABNORMAL_PRICE_DIFF_THRESHOLD:
+                    self.logger.warning(f"비정상적인 시세 차이 감지 (${price_diff_abs:.2f}), 가격 조정 건너뜀")
+                    return price
+                
+                # 정상 범위 내에서만 조정
+                if (self.PRICE_ADJUSTMENT_ENABLED and 
+                    price_diff_abs > self.PRICE_SYNC_THRESHOLD and
+                    price_diff_abs <= self.ABNORMAL_PRICE_DIFF_THRESHOLD):
                     
                     # 가격 비율 계산
                     price_ratio = gate_current_price / bitget_current_price
@@ -380,7 +388,7 @@ class MirrorTradingUtils:
                     adjustment_percent = abs(adjusted_price - price) / price * 100
                     
                     if adjustment_percent <= 5.0:  # 5% 이하 조정만 허용
-                        self.logger.info(f"🔧 시세 차이로 가격 조정: ${price:.2f} → ${adjusted_price:.2f} (차이: ${price_diff_abs:.2f})")
+                        self.logger.info(f"🔧 정상적인 시세 차이로 가격 조정: ${price:.2f} → ${adjusted_price:.2f} (차이: ${price_diff_abs:.2f})")
                         return adjusted_price
                     else:
                         self.logger.warning(f"⚠️ 조정 폭이 너무 큼 ({adjustment_percent:.1f}%), 원본 가격 사용")
@@ -388,6 +396,10 @@ class MirrorTradingUtils:
                 else:
                     # 시세 차이가 임계값 이하인 경우 원본 사용
                     return price
+            elif bitget_current_price <= 0 or gate_current_price <= 0:
+                # 시세 조회 실패 시 원본 가격 사용
+                self.logger.debug("시세 조회 실패로 가격 조정 건너뜀")
+                return price
             
             # 기본적으로 원본 가격 반환
             return price
@@ -409,6 +421,12 @@ class MirrorTradingUtils:
             
             # 🔥🔥🔥 시장가와의 차이 계산하되 거의 모든 가격 허용
             price_diff_percent = abs(trigger_price - current_price) / current_price * 100
+            price_diff_abs = abs(trigger_price - current_price)
+            
+            # 🔥🔥🔥 비정상적인 가격 차이 감지
+            if price_diff_abs > self.ABNORMAL_PRICE_DIFF_THRESHOLD:
+                self.logger.warning(f"비정상적인 가격 차이 감지: ${price_diff_abs:.2f}")
+                return False, f"트리거가와 현재가 차이가 비정상적 (${price_diff_abs:.2f})"
             
             # 🔥🔥🔥 시세 차이 문제를 고려하여 극도로 완화된 검증
             if self.ALLOW_VERY_CLOSE_PRICES:
@@ -423,11 +441,11 @@ class MirrorTradingUtils:
                     return True, f"매우 근접한 트리거가 허용 (차이: {price_diff_percent:.8f}%)"
                 
                 # 🔥🔥🔥 일반적인 가격 차이도 모두 허용 (시세 차이 때문에 더욱 관대)
-                if price_diff_percent < 100:  # 100% 미만은 모두 허용 (시세 차이 고려)
+                if price_diff_percent < 50:  # 50% 미만은 모두 허용 (더 관대하게 조정)
                     return True, f"시세차이 고려 허용 가능한 트리거 가격 (차이: {price_diff_percent:.4f}%)"
                 
-                # 극단적인 가격 차이만 차단 (100% 이상)
-                if price_diff_percent >= 100:
+                # 극단적인 가격 차이만 차단 (50% 이상)
+                if price_diff_percent >= 50:
                     self.logger.warning(f"극단적인 가격 차이: {price_diff_percent:.1f}%")
                     return False, f"트리거가와 현재가 차이가 너무 극단적 ({price_diff_percent:.1f}%)"
             
@@ -628,31 +646,38 @@ class MirrorTradingUtils:
         )
     
     async def get_price_difference_info(self, bitget_price: float, gate_price: float) -> Dict:
-        """🔥🔥🔥 시세 차이 정보 제공"""
+        """🔥🔥🔥 시세 차이 정보 제공 - 개선된 버전"""
         try:
             if bitget_price <= 0 or gate_price <= 0:
                 return {
                     'price_diff_abs': 0,
                     'price_diff_percent': 0,
                     'exceeds_threshold': False,
-                    'status': 'invalid_prices'
+                    'status': 'invalid_prices',
+                    'is_abnormal': True
                 }
             
             price_diff_abs = abs(bitget_price - gate_price)
             price_diff_percent = price_diff_abs / bitget_price * 100
             exceeds_threshold = price_diff_abs > self.PRICE_SYNC_THRESHOLD
+            is_abnormal = price_diff_abs > self.ABNORMAL_PRICE_DIFF_THRESHOLD
             
-            status = 'normal'
-            if exceeds_threshold:
+            if is_abnormal:
+                status = 'abnormal_difference'
+            elif exceeds_threshold:
                 status = 'high_difference'
             elif price_diff_abs > self.PRICE_SYNC_THRESHOLD * 0.5:
                 status = 'moderate_difference'
+            else:
+                status = 'normal'
             
             return {
                 'price_diff_abs': price_diff_abs,
                 'price_diff_percent': price_diff_percent,
                 'exceeds_threshold': exceeds_threshold,
                 'threshold': self.PRICE_SYNC_THRESHOLD,
+                'abnormal_threshold': self.ABNORMAL_PRICE_DIFF_THRESHOLD,
+                'is_abnormal': is_abnormal,
                 'status': status,
                 'bitget_price': bitget_price,
                 'gate_price': gate_price
@@ -664,18 +689,26 @@ class MirrorTradingUtils:
                 'price_diff_abs': 0,
                 'price_diff_percent': 0,
                 'exceeds_threshold': False,
-                'status': 'error'
+                'status': 'error',
+                'is_abnormal': True
             }
     
     async def should_delay_processing(self, bitget_price: float, gate_price: float) -> Tuple[bool, str]:
-        """🔥🔥🔥 시세 차이로 인한 처리 지연 여부 판단"""
+        """🔥🔥🔥 시세 차이로 인한 처리 지연 여부 판단 - 개선된 버전"""
         try:
             price_info = await self.get_price_difference_info(bitget_price, gate_price)
             
-            if price_info['exceeds_threshold']:
-                delay_reason = (f"시세 차이 임계값 초과: ${price_info['price_diff_abs']:.2f} "
-                              f"(임계값: ${self.PRICE_SYNC_THRESHOLD})")
+            # 비정상적인 시세 차이는 처리 지연
+            if price_info['is_abnormal']:
+                delay_reason = (f"비정상적인 시세 차이: ${price_info['price_diff_abs']:.2f} "
+                              f"(비정상 임계값: ${self.ABNORMAL_PRICE_DIFF_THRESHOLD})")
                 return True, delay_reason
+            
+            # 정상 범위 내의 높은 시세 차이
+            if price_info['exceeds_threshold']:
+                delay_reason = (f"정상 범위 내 높은 시세 차이: ${price_info['price_diff_abs']:.2f} "
+                              f"(임계값: ${self.PRICE_SYNC_THRESHOLD})")
+                return False, delay_reason  # 지연하지 않고 계속 진행
             
             return False, "정상 처리 가능"
             
