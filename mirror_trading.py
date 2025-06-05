@@ -862,12 +862,9 @@ def _is_existing_position_close_order(self, order: Dict) -> bool:
             self.logger.error(f"기존 포지션 클로즈 주문 확인 실패: {e}")
             return False
 
-    async def _is_duplicate_order_advanced(self, bitget_order: Dict) -> Tuple[bool, str]:
-        """🔥🔥🔥 강화된 중복 주문 확인"""
+async def _is_duplicate_order_advanced(self, bitget_order: Dict) -> Tuple[bool, str]:
+        """🔥🔥🔥 강화된 중복 주문 확인 - 가격 기반 중복 체크 강화"""
         try:
-            side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
-            size = float(bitget_order.get('size', 0))
-            
             # 트리거 가격 추출
             original_trigger_price = 0
             for price_field in ['triggerPrice', 'price', 'executePrice']:
@@ -878,8 +875,8 @@ def _is_existing_position_close_order(self, order: Dict) -> bool:
             if original_trigger_price == 0:
                 return False, "none"
             
-            # TP/SL 정보 추출
-            tp_price, sl_price = await self.utils.extract_tp_sl_from_bitget_order(bitget_order)
+            # 🔥 현재 시세 업데이트
+            await self._update_current_prices()
             
             # 게이트 기준으로 가격 조정
             adjusted_trigger_price = await self.utils.adjust_price_for_gate(
@@ -889,7 +886,35 @@ def _is_existing_position_close_order(self, order: Dict) -> bool:
                 self.price_diff_percent
             )
             
-            # 실제 달러 마진 비율 동적 계산으로 게이트 사이즈 계산
+            # 🔥🔥🔥 가격 기반 중복 체크 (수량과 관계없이)
+            price_tolerance = 50.0  # $50 오차 허용
+            
+            # 현재 게이트 예약 주문들과 비교
+            try:
+                gate_orders = await self.gate.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+                
+                for gate_order in gate_orders:
+                    gate_trigger_info = gate_order.get('trigger', {})
+                    if not gate_trigger_info:
+                        continue
+                    
+                    gate_trigger_price = float(gate_trigger_info.get('price', 0))
+                    if gate_trigger_price == 0:
+                        continue
+                    
+                    # 🔥 가격 차이가 허용 오차 내에 있으면 중복으로 판단
+                    price_diff = abs(adjusted_trigger_price - gate_trigger_price)
+                    if price_diff <= price_tolerance:
+                        self.logger.info(f"🛡️ 동일 가격 중복 주문 발견: 비트겟 ${adjusted_trigger_price:.2f} ≈ 게이트 ${gate_trigger_price:.2f} (차이: ${price_diff:.2f})")
+                        return True, "price_duplicate"
+                
+            except Exception as e:
+                self.logger.warning(f"게이트 기존 주문 조회 실패: {e}")
+            
+            # 🔥🔥🔥 기존 해시 기반 중복 체크도 유지
+            side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
+            size = float(bitget_order.get('size', 0))
+            
             margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
                 size, adjusted_trigger_price, bitget_order
             )
@@ -911,9 +936,8 @@ def _is_existing_position_close_order(self, order: Dict) -> bool:
                 
             gate_size = await self.utils.calculate_gate_order_size(side, gate_size)
             
-            # 🔥🔥🔥 강화된 중복 체크
+            tp_price, sl_price = await self.utils.extract_tp_sl_from_bitget_order(bitget_order)
             
-            # 1. 기본 해시들 생성
             order_details = {
                 'contract': self.GATE_CONTRACT,
                 'trigger_price': adjusted_trigger_price,
@@ -926,11 +950,10 @@ def _is_existing_position_close_order(self, order: Dict) -> bool:
             
             bitget_hashes = await self.utils.generate_multiple_order_hashes(order_details)
             
-            # 2. 기존 게이트 해시와 비교
             for bitget_hash in bitget_hashes:
                 if bitget_hash in self.gate_existing_order_hashes:
-                    self.logger.info(f"🛡️ 강화된 중복 주문 발견: {bitget_order.get('orderId', 'unknown')}")
-                    return True, "advanced"
+                    self.logger.info(f"🛡️ 해시 기반 중복 주문 발견: {bitget_order.get('orderId', 'unknown')}")
+                    return True, "hash_duplicate"
             
             return False, "none"
             
