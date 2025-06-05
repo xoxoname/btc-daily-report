@@ -48,6 +48,9 @@ class MirrorTradingSystem:
         self.max_cancel_retry: int = 3
         self.cancel_verification_delay: float = 2.0
         
+        # 🔥 가격 기반 중복 방지 시스템 추가
+        self.mirrored_trigger_prices: Set[str] = set()  # 가격 기반 중복 방지
+        
         # 🔥 렌더 재구동 시 기존 게이트 포지션 확인
         self.existing_gate_positions: Dict = {}
         self.render_restart_detected: bool = False
@@ -100,22 +103,23 @@ class MirrorTradingSystem:
             'plan_order_cancel_failed': 0,
             'startup_plan_mirrors': 0,
             'plan_order_skipped_already_mirrored': 0,
-            'close_order_mirrors': 0,  # 🔥 클로즈 주문 복제 통계 추가
+            'close_order_mirrors': 0,
             'close_order_skipped': 0,
             'duplicate_orders_prevented': 0,
             'render_restart_skips': 0,
             'unified_tp_sl_orders': 0,
             'duplicate_advanced_prevention': 0,
+            'price_duplicate_prevention': 0,  # 🔥 가격 중복 방지 통계 추가
             'errors': []
         }
         
         self.monitoring = True
-        self.logger.info("미러 트레이딩 시스템 초기화 완료 - 클로즈 주문 복제 개선")
+        self.logger.info("미러 트레이딩 시스템 초기화 완료 - 클로즈 주문 복제 및 가격 중복 방지 개선")
 
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("미러 트레이딩 시스템 시작 - 클로즈 주문 복제 개선")
+            self.logger.info("미러 트레이딩 시스템 시작 - 클로즈 주문 복제 및 가격 중복 방지 개선")
             
             # 현재 시세 업데이트
             await self._update_current_prices()
@@ -123,7 +127,7 @@ class MirrorTradingSystem:
             # 🔥 렌더 재구동 시 기존 게이트 포지션 확인
             await self._check_existing_gate_positions()
             
-            # 🔥🔥🔥 게이트 기존 예약 주문 확인
+            # 🔥🔥🔥 게이트 기존 예약 주문 확인 및 가격 기록
             await self._record_gate_existing_orders_advanced()
             
             # 초기 포지션 및 예약 주문 기록
@@ -183,7 +187,7 @@ class MirrorTradingSystem:
             self.render_restart_detected = False
 
     async def _record_gate_existing_orders_advanced(self):
-        """🔥🔥🔥 게이트 기존 예약 주문 기록 - 강화된 중복 방지"""
+        """🔥🔥🔥 게이트 기존 예약 주문 기록 - 가격 기반 중복 방지 강화"""
         try:
             self.logger.info("🔍 게이트 기존 예약 주문 조회 중...")
             
@@ -195,6 +199,11 @@ class MirrorTradingSystem:
                     order_details = await self.utils.extract_gate_order_details(gate_order)
                     
                     if order_details:
+                        # 🔥 가격 기반 중복 방지를 위한 트리거 가격 기록
+                        trigger_price = order_details['trigger_price']
+                        price_key = f"{self.GATE_CONTRACT}_{trigger_price:.2f}"
+                        self.mirrored_trigger_prices.add(price_key)
+                        
                         hashes = await self.utils.generate_multiple_order_hashes(order_details)
                         
                         if hashes:
@@ -206,20 +215,390 @@ class MirrorTradingSystem:
                                 'gate_order': gate_order,
                                 'details': order_details,
                                 'hashes': hashes,
+                                'trigger_price': trigger_price,
                                 'recorded_at': datetime.now().isoformat()
                             }
                             
-                            self.logger.info(f"📝 게이트 예약 주문 기록: ID={order_id}")
+                            self.logger.info(f"📝 게이트 예약 주문 기록: ID={order_id}, 가격=${trigger_price:.2f}")
                     
                 except Exception as e:
                     self.logger.warning(f"게이트 주문 처리 실패: {e}")
                     continue
             
             self.logger.info(f"✅ 게이트 기존 예약 주문 기록 완료: {len(self.gate_existing_orders_detailed)}개")
+            self.logger.info(f"🔥 기록된 트리거 가격: {len(self.mirrored_trigger_prices)}개")
             
         except Exception as e:
             self.logger.error(f"게이트 기존 예약 주문 조회 실패: {e}")
 
+    def _is_existing_position_close_order(self, order: Dict) -> bool:
+        """🔥 기존 포지션의 클로즈 주문인지 확인 - 개선된 로직"""
+        try:
+            side = order.get('side', order.get('tradeSide', '')).lower()
+            reduce_only = order.get('reduceOnly', False)
+            
+            # 🔥 클로즈 주문이 아니면 False (더 관대하게 처리)
+            if not ('close' in side or reduce_only is True or reduce_only == 'true'):
+                return False
+            
+            # 🔥 기존 포지션이 없으면 새로운 클로즈 주문으로 판단
+            if len(self.startup_positions_detailed) == 0:
+                self.logger.info(f"기존 포지션이 없어서 새로운 클로즈 주문으로 판단: {order.get('orderId')}")
+                return False
+            
+            # 🔥 더 관대한 매칭 로직 - 일단 모든 클로즈 주문을 복제 시도
+            # 너무 엄격한 조건으로 인해 정상적인 클로즈 주문도 스킵되는 것을 방지
+            self.logger.info(f"클로즈 주문 감지, 복제 시도: {order.get('orderId')}")
+            return False  # 🔥 일단 모든 클로즈 주문을 새로운 주문으로 처리
+            
+        except Exception as e:
+            self.logger.error(f"기존 포지션 클로즈 주문 확인 실패: {e}")
+            return False
+
+    async def _is_price_duplicate(self, trigger_price: float) -> bool:
+        """🔥 가격 기반 중복 체크"""
+        try:
+            price_key = f"{self.GATE_CONTRACT}_{trigger_price:.2f}"
+            
+            if price_key in self.mirrored_trigger_prices:
+                self.logger.info(f"🛡️ 가격 중복 감지: {trigger_price:.2f}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"가격 중복 체크 실패: {e}")
+            return False
+
+    async def _add_trigger_price(self, trigger_price: float):
+        """🔥 트리거 가격을 중복 방지 목록에 추가"""
+        try:
+            price_key = f"{self.GATE_CONTRACT}_{trigger_price:.2f}"
+            self.mirrored_trigger_prices.add(price_key)
+            self.logger.debug(f"트리거 가격 추가: {trigger_price:.2f}")
+        except Exception as e:
+            self.logger.error(f"트리거 가격 추가 실패: {e}")
+
+    async def _remove_trigger_price(self, trigger_price: float):
+        """🔥 트리거 가격을 중복 방지 목록에서 제거"""
+        try:
+            price_key = f"{self.GATE_CONTRACT}_{trigger_price:.2f}"
+            if price_key in self.mirrored_trigger_prices:
+                self.mirrored_trigger_prices.remove(price_key)
+                self.logger.debug(f"트리거 가격 제거: {trigger_price:.2f}")
+        except Exception as e:
+            self.logger.error(f"트리거 가격 제거 실패: {e}")
+
+    async def monitor_plan_orders(self):
+        """🔥 예약 주문 모니터링 - 클로즈 주문 복제 및 가격 중복 방지 개선"""
+        self.logger.info("🎯 예약 주문 취소 미러링 모니터링 시작 (클로즈 주문 복제 및 가격 중복 방지 개선)")
+        consecutive_errors = 0
+        
+        while self.monitoring:
+            try:
+                if not self.startup_plan_orders_processed:
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                # 현재 비트겟 예약 주문 조회
+                plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+                current_plan_orders = plan_data.get('plan_orders', [])
+                current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
+                
+                # 🔥 클로즈 주문도 모니터링 대상에 포함 - 더 관대한 조건
+                orders_to_monitor = []
+                orders_to_monitor.extend(current_plan_orders)
+                
+                # TP/SL 주문 중에서 클로즈 주문 추가 - 더 관대하게
+                for tp_sl_order in current_tp_sl_orders:
+                    side = tp_sl_order.get('side', tp_sl_order.get('tradeSide', '')).lower()
+                    reduce_only = tp_sl_order.get('reduceOnly', False)
+                    
+                    # 🔥 클로즈 주문 판단을 더 관대하게
+                    is_close_order = (
+                        'close' in side or 
+                        reduce_only is True or 
+                        reduce_only == 'true'
+                    )
+                    
+                    if is_close_order:
+                        # 🔥 더 관대한 조건으로 변경
+                        orders_to_monitor.append(tp_sl_order)
+                        self.logger.info(f"클로즈 주문 모니터링 대상 추가: {tp_sl_order.get('orderId')}")
+                
+                # 현재 존재하는 예약주문 ID 집합
+                current_order_ids = set()
+                current_snapshot = {}
+                
+                for order in orders_to_monitor:
+                    order_id = order.get('orderId', order.get('planOrderId', ''))
+                    if order_id:
+                        current_order_ids.add(order_id)
+                        current_snapshot[order_id] = {
+                            'order_data': order.copy(),
+                            'timestamp': datetime.now().isoformat(),
+                            'status': 'active'
+                        }
+                
+                # 취소된 예약 주문 감지
+                canceled_order_ids = self.last_plan_order_ids - current_order_ids
+                
+                # 취소된 주문 처리
+                if canceled_order_ids:
+                    self.logger.info(f"{len(canceled_order_ids)}개의 예약 주문 취소 감지: {canceled_order_ids}")
+                    
+                    for canceled_order_id in canceled_order_ids:
+                        await self._handle_plan_order_cancel(canceled_order_id)
+                    
+                    self.daily_stats['plan_order_cancels'] += len(canceled_order_ids)
+                
+                # 새로운 예약 주문 감지
+                new_orders_count = 0
+                new_close_orders_count = 0
+                
+                for order in orders_to_monitor:
+                    order_id = order.get('orderId', order.get('planOrderId', ''))
+                    if not order_id:
+                        continue
+                    
+                    # 이미 처리된 주문은 스킵
+                    if order_id in self.processed_plan_orders:
+                        continue
+                    
+                    # 시작 시 존재했던 주문인지 확인
+                    if order_id in self.startup_plan_orders:
+                        self.processed_plan_orders.add(order_id)
+                        continue
+                    
+                    # 🔥 가격 기반 중복 체크 먼저 수행
+                    trigger_price = 0
+                    for price_field in ['triggerPrice', 'price', 'executePrice']:
+                        if order.get(price_field):
+                            trigger_price = float(order.get(price_field))
+                            break
+                    
+                    if trigger_price > 0:
+                        is_price_duplicate = await self._is_price_duplicate(trigger_price)
+                        if is_price_duplicate:
+                            self.daily_stats['price_duplicate_prevention'] += 1
+                            self.logger.info(f"🛡️ 가격 중복으로 스킵: {order_id}, 가격=${trigger_price:.2f}")
+                            self.processed_plan_orders.add(order_id)
+                            continue
+                    
+                    # 🔥🔥🔥 기존 강화된 중복 복제 확인
+                    is_duplicate, duplicate_type = await self._is_duplicate_order_advanced(order)
+                    if is_duplicate:
+                        if duplicate_type == "advanced":
+                            self.daily_stats['duplicate_advanced_prevention'] += 1
+                            self.logger.info(f"🛡️ 강화된 중복 감지로 스킵: {order_id}")
+                        else:
+                            self.daily_stats['duplicate_orders_prevented'] += 1
+                            self.logger.info(f"🛡️ 기본 중복 감지로 스킵: {order_id}")
+                        
+                        self.processed_plan_orders.add(order_id)
+                        continue
+                    
+                    # 🎯 새로운 예약 주문 감지 - 클로즈 주문 포함
+                    try:
+                        # 클로즈 주문인지 확인
+                        side = order.get('side', order.get('tradeSide', '')).lower()
+                        is_close_order = 'close' in side or order.get('reduceOnly', False)
+                        
+                        result = await self._process_new_plan_order_unified(order)
+                        
+                        if result == "success":
+                            new_orders_count += 1
+                            if is_close_order:
+                                new_close_orders_count += 1
+                                self.daily_stats['close_order_mirrors'] += 1
+                            
+                            # 🔥 성공적으로 복제되면 가격 기록
+                            if trigger_price > 0:
+                                await self._add_trigger_price(trigger_price)
+                        elif result == "skipped" and is_close_order:
+                            self.daily_stats['close_order_skipped'] += 1
+                        
+                        self.processed_plan_orders.add(order_id)
+                        
+                    except Exception as e:
+                        self.logger.error(f"새로운 예약 주문 복제 실패: {order_id} - {e}")
+                        self.processed_plan_orders.add(order_id)
+                        
+                        await self.telegram.send_message(
+                            f"❌ 예약 주문 복제 실패 (클로즈 주문 포함)\n"
+                            f"비트겟 ID: {order_id}\n"
+                            f"오류: {str(e)[:200]}"
+                        )
+                
+                # 클로즈 주문 복제 성공 시 알림
+                if new_close_orders_count > 0:
+                    await self.telegram.send_message(
+                        f"✅ 클로즈 주문 복제 성공\n"
+                        f"클로즈 주문: {new_close_orders_count}개\n"
+                        f"전체 신규 복제: {new_orders_count}개"
+                    )
+                
+                # 현재 상태를 다음 비교를 위해 저장
+                self.last_plan_order_ids = current_order_ids.copy()
+                self.plan_order_snapshot = current_snapshot.copy()
+                
+                # 오래된 주문 ID 정리
+                if len(self.processed_plan_orders) > 500:
+                    recent_orders = list(self.processed_plan_orders)[-250:]
+                    self.processed_plan_orders = set(recent_orders)
+                
+                consecutive_errors = 0
+                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                self.logger.error(f"예약 주문 모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
+                
+                if consecutive_errors >= 5:
+                    await self.telegram.send_message(
+                        f"⚠️ 예약 주문 모니터링 시스템 오류\n"
+                        f"연속 {consecutive_errors}회 실패\n"
+                        f"오류: {str(e)[:200]}"
+                    )
+                
+                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
+
+    async def _handle_plan_order_cancel(self, bitget_order_id: str):
+        """🔥 예약 주문 취소 처리 - 가격 기록도 함께 제거"""
+        try:
+            self.logger.info(f"예약 주문 취소 처리 시작: {bitget_order_id}")
+            
+            # 미러링된 주문인지 확인
+            if bitget_order_id not in self.mirrored_plan_orders:
+                self.logger.info(f"미러링되지 않은 주문이므로 취소 처리 스킵: {bitget_order_id}")
+                return
+            
+            mirror_info = self.mirrored_plan_orders[bitget_order_id]
+            gate_order_id = mirror_info.get('gate_order_id')
+            order_hashes = mirror_info.get('order_hashes', [])
+            is_close_order = mirror_info.get('is_close_order', False)
+            trigger_price = mirror_info.get('adjusted_trigger_price')  # 🔥 트리거 가격 정보
+            
+            if not gate_order_id:
+                self.logger.warning(f"게이트 주문 ID가 없음: {bitget_order_id}")
+                del self.mirrored_plan_orders[bitget_order_id]
+                return
+            
+            # 🔥 개선된 취소 처리 - 오류 처리 강화
+            cancel_success = False
+            retry_count = 0
+            
+            while retry_count < self.max_cancel_retry and not cancel_success:
+                try:
+                    retry_count += 1
+                    self.logger.info(f"게이트 예약 주문 취소 시도 {retry_count}/{self.max_cancel_retry}: {gate_order_id}")
+                    
+                    # 게이트에서 예약 주문 취소
+                    await self.gate.cancel_price_triggered_order(gate_order_id)
+                    
+                    # 취소 확인을 위해 대기
+                    await asyncio.sleep(self.cancel_verification_delay)
+                    
+                    # 취소 확인
+                    verification_success = await self._verify_order_cancellation(gate_order_id)
+                    
+                    if verification_success:
+                        cancel_success = True
+                        self.logger.info(f"게이트 예약 주문 취소 확인됨: {gate_order_id}")
+                        self.daily_stats['plan_order_cancel_success'] += 1
+                        
+                        order_type = "클로즈 주문" if is_close_order else "예약 주문"
+                        
+                        await self.telegram.send_message(
+                            f"🚫✅ {order_type} 취소 동기화 완료\n"
+                            f"비트겟 ID: {bitget_order_id}\n"
+                            f"게이트 ID: {gate_order_id}\n"
+                            f"재시도: {retry_count}회"
+                        )
+                        break
+                    else:
+                        self.logger.warning(f"취소 시도했지만 주문이 여전히 존재함 (재시도 {retry_count}/{self.max_cancel_retry})")
+                        
+                        if retry_count < self.max_cancel_retry:
+                            wait_time = min(self.cancel_verification_delay * retry_count, 10.0)
+                            await asyncio.sleep(wait_time)
+                        
+                except Exception as cancel_error:
+                    error_msg = str(cancel_error).lower()
+                    
+                    # 🔥 개선된 오류 처리
+                    if any(keyword in error_msg for keyword in [
+                        "not found", "order not exist", "invalid order", 
+                        "order does not exist", "auto_order_not_found"
+                    ]):
+                        # 주문이 이미 취소되었거나 체결됨
+                        cancel_success = True
+                        self.logger.info(f"게이트 예약 주문이 이미 취소/체결됨: {gate_order_id}")
+                        self.daily_stats['plan_order_cancel_success'] += 1
+                        
+                        order_type = "클로즈 주문" if is_close_order else "예약 주문"
+                        
+                        await self.telegram.send_message(
+                            f"🚫✅ {order_type} 취소 처리 완료\n"
+                            f"비트겟 ID: {bitget_order_id}\n"
+                            f"게이트 주문이 이미 취소되었거나 체결되었습니다."
+                        )
+                        break
+                    else:
+                        self.logger.error(f"게이트 예약 주문 취소 실패 (시도 {retry_count}/{self.max_cancel_retry}): {cancel_error}")
+                        
+                        if retry_count >= self.max_cancel_retry:
+                            # 최종 실패
+                            self.daily_stats['plan_order_cancel_failed'] += 1
+                            
+                            order_type = "클로즈 주문" if is_close_order else "예약 주문"
+                            
+                            await self.telegram.send_message(
+                                f"❌ {order_type} 취소 최종 실패\n"
+                                f"비트겟 ID: {bitget_order_id}\n"
+                                f"게이트 ID: {gate_order_id}\n"
+                                f"오류: {str(cancel_error)[:200]}\n"
+                                f"재시도: {retry_count}회"
+                            )
+                        else:
+                            wait_time = min(3.0 * retry_count, 15.0)
+                            await asyncio.sleep(wait_time)
+            
+            # 미러링 기록에서 제거
+            if bitget_order_id in self.mirrored_plan_orders:
+                del self.mirrored_plan_orders[bitget_order_id]
+                self.logger.info(f"미러링 기록에서 제거됨: {bitget_order_id}")
+            
+            # 🔥 트리거 가격 기록 제거
+            if trigger_price:
+                await self._remove_trigger_price(trigger_price)
+            
+            # 🔥🔥🔥 강화된 해시 제거
+            if order_hashes:
+                for hash_key in order_hashes:
+                    if hash_key in self.gate_existing_order_hashes:
+                        self.gate_existing_order_hashes.remove(hash_key)
+                self.logger.info(f"주문 해시 {len(order_hashes)}개 제거됨")
+            
+            # 🔥🔥🔥 상세 정보에서도 제거
+            if gate_order_id and gate_order_id in self.gate_existing_orders_detailed:
+                del self.gate_existing_orders_detailed[gate_order_id]
+                self.logger.info(f"게이트 상세 정보에서 제거됨: {gate_order_id}")
+            
+        except Exception as e:
+            self.logger.error(f"예약 주문 취소 처리 중 예외 발생: {e}")
+            
+            # 오류 발생 시에도 미러링 기록에서 제거
+            if bitget_order_id in self.mirrored_plan_orders:
+                del self.mirrored_plan_orders[bitget_order_id]
+            
+            await self.telegram.send_message(
+                f"❌ 예약 주문 취소 처리 중 오류\n"
+                f"비트겟 ID: {bitget_order_id}\n"
+                f"오류: {str(e)[:200]}"
+            )
+
+    # 나머지 기존 메서드들은 동일하게 유지...
     async def _should_skip_position_due_to_existing(self, bitget_position: Dict) -> bool:
         """🔥 렌더 재구동 시 기존 포지션 때문에 스킵해야 하는지 판단"""
         try:
@@ -431,7 +810,7 @@ class MirrorTradingSystem:
                 restart_info = f"\n🔄 렌더 재구동 감지: 기존 게이트 포지션 있음"
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (클로즈 주문 복제 개선){restart_info}\n\n"
+                f"🔄 미러 트레이딩 시스템 시작 (클로즈 주문 복제 및 가격 중복 방지 개선){restart_info}\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}{price_diff_text}\n\n"
@@ -439,10 +818,11 @@ class MirrorTradingSystem:
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.startup_plan_orders)}개\n"
                 f"• 게이트 기존 예약 주문: {len(self.gate_existing_orders_detailed)}개\n"
-                f"• 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n\n"
+                f"• 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n"
+                f"• 기록된 트리거 가격: {len(self.mirrored_trigger_prices)}개\n\n"
                 f"⚡ 개선 사항:\n"
-                f"• 클로즈 주문 복제 지원\n"
-                f"• 강화된 중복 방지\n"
+                f"• 클로즈 주문 복제 지원 강화\n"
+                f"• 가격 기반 중복 방지\n"
                 f"• 실제 달러 마진 비율 동적 계산"
             )
             
@@ -541,6 +921,13 @@ class MirrorTradingSystem:
 - 클로즈 주문 복제: {self.daily_stats['close_order_mirrors']}회
 - 클로즈 주문 스킵: {self.daily_stats['close_order_skipped']}회"""
             
+            # 🔥 가격 중복 방지 통계 추가
+            price_duplicate_stats = f"""
+🛡️ 중복 방지 성과:
+- 가격 기반 중복 방지: {self.daily_stats['price_duplicate_prevention']}회
+- 강화된 중복 방지: {self.daily_stats['duplicate_advanced_prevention']}회
+- 기본 중복 방지: {self.daily_stats['duplicate_orders_prevented']}회"""
+            
             # 현재 시세 차이 정보 추가
             await self._update_current_prices()
             price_diff_text = ""
@@ -567,8 +954,7 @@ class MirrorTradingSystem:
 🔄 예약 주문 미러링
 - 시작 시 예약 주문 복제: {self.daily_stats['startup_plan_mirrors']}회
 - 신규 예약 주문 미러링: {self.daily_stats['plan_order_mirrors']}회
-- 예약 주문 취소 동기화: {self.daily_stats['plan_order_cancels']}회
-- 중복 방지: {self.daily_stats['duplicate_orders_prevented']}회{close_stats}
+- 예약 주문 취소 동기화: {self.daily_stats['plan_order_cancels']}회{close_stats}{price_duplicate_stats}
 
 📉 포지션 관리
 - 부분 청산: {self.daily_stats['partial_closes']}회
@@ -582,10 +968,11 @@ class MirrorTradingSystem:
 🔄 현재 미러링 상태
 - 활성 포지션: {len(self.mirrored_positions)}개
 - 현재 복제된 예약 주문: {len(self.mirrored_plan_orders)}개
+- 기록된 트리거 가격: {len(self.mirrored_trigger_prices)}개
 - 실패 기록: {len(self.failed_mirrors)}건{price_diff_text}
 
 ━━━━━━━━━━━━━━━━━━━
-🎯 클로즈 주문 복제 개선 + 강화된 중복 방지"""
+🎯 클로즈 주문 복제 + 가격 중복 방지 개선"""
             
             if self.daily_stats['errors']:
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -618,6 +1005,7 @@ class MirrorTradingSystem:
             'render_restart_skips': 0,
             'unified_tp_sl_orders': 0,
             'duplicate_advanced_prevention': 0,
+            'price_duplicate_prevention': 0,
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -729,7 +1117,7 @@ class MirrorTradingSystem:
     async def _mirror_startup_plan_orders(self):
         """🔥 시작 시 기존 예약 주문 복제 - 클로즈 주문 포함 개선"""
         try:
-            self.logger.info("🎯 시작 시 기존 예약 주문 복제 시작 (클로즈 주문 포함)")
+            self.logger.info("🎯 시작 시 기존 예약 주문 복제 시작 (클로즈 주문 및 가격 중복 방지 포함)")
             
             plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
             plan_orders = plan_data.get('plan_orders', [])
@@ -741,7 +1129,7 @@ class MirrorTradingSystem:
             # 일반 예약 주문 추가
             orders_to_mirror.extend(plan_orders)
             
-            # 🔥 TP/SL 주문 중에서 클로즈 주문도 추가 (조건부)
+            # 🔥 TP/SL 주문 중에서 클로즈 주문도 추가 (더 관대한 조건)
             for tp_sl_order in tp_sl_orders:
                 side = tp_sl_order.get('side', tp_sl_order.get('tradeSide', '')).lower()
                 reduce_only = tp_sl_order.get('reduceOnly', False)
@@ -754,10 +1142,9 @@ class MirrorTradingSystem:
                 )
                 
                 if is_close_order:
-                    # 🔥 기존 포지션의 클로즈가 아닌 새로운 클로즈 주문인지 확인
-                    if not self._is_existing_position_close_order(tp_sl_order):
-                        orders_to_mirror.append(tp_sl_order)
-                        self.logger.info(f"🔄 클로즈 주문 복제 대상에 추가: {tp_sl_order.get('orderId')}")
+                    # 🔥 더 관대한 조건으로 변경
+                    orders_to_mirror.append(tp_sl_order)
+                    self.logger.info(f"🔄 클로즈 주문 복제 대상에 추가: {tp_sl_order.get('orderId')}")
             
             if not orders_to_mirror:
                 self.startup_plan_orders_processed = True
@@ -767,6 +1154,7 @@ class MirrorTradingSystem:
             mirrored_count = 0
             failed_count = 0
             duplicate_count = 0
+            price_duplicate_count = 0
             close_order_count = 0
             
             for order in orders_to_mirror:
@@ -778,6 +1166,21 @@ class MirrorTradingSystem:
                     # 클로즈 주문인지 확인
                     side = order.get('side', order.get('tradeSide', '')).lower()
                     is_close_order = 'close' in side or order.get('reduceOnly', False)
+                    
+                    # 🔥 가격 기반 중복 체크 먼저 수행
+                    trigger_price = 0
+                    for price_field in ['triggerPrice', 'price', 'executePrice']:
+                        if order.get(price_field):
+                            trigger_price = float(order.get(price_field))
+                            break
+                    
+                    if trigger_price > 0:
+                        is_price_duplicate = await self._is_price_duplicate(trigger_price)
+                        if is_price_duplicate:
+                            price_duplicate_count += 1
+                            self.logger.info(f"🛡️ 가격 중복으로 스킵: {order_id}, 가격=${trigger_price:.2f}")
+                            self.processed_plan_orders.add(order_id)
+                            continue
                     
                     # 🔥🔥🔥 강화된 중복 복제 확인
                     is_duplicate, duplicate_type = await self._is_duplicate_order_advanced(order)
@@ -801,6 +1204,10 @@ class MirrorTradingSystem:
                         if is_close_order:
                             close_order_count += 1
                             self.daily_stats['close_order_mirrors'] += 1
+                        
+                        # 🔥 성공적으로 복제되면 가격 기록
+                        if trigger_price > 0:
+                            await self._add_trigger_price(trigger_price)
                     else:
                         failed_count += 1
                     
@@ -813,51 +1220,21 @@ class MirrorTradingSystem:
                     continue
             
             self.daily_stats['startup_plan_mirrors'] = mirrored_count
+            self.daily_stats['price_duplicate_prevention'] = price_duplicate_count
             self.startup_plan_orders_processed = True
             
             await self.telegram.send_message(
-                f"✅ 시작 시 기존 예약 주문 복제 완료 (클로즈 주문 포함)\n"
+                f"✅ 시작 시 기존 예약 주문 복제 완료 (클로즈 주문 및 가격 중복 방지 포함)\n"
                 f"성공: {mirrored_count}개\n"
                 f"• 클로즈 주문: {close_order_count}개\n"
                 f"실패: {failed_count}개\n"
                 f"중복 방지: {duplicate_count}개\n"
+                f"가격 중복 방지: {price_duplicate_count}개\n"
                 f"복제 방식: 통합 TP/SL 예약 주문 (비트겟과 동일한 형태)"
             )
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 처리 실패: {e}")
-
-    def _is_existing_position_close_order(self, order: Dict) -> bool:
-        """🔥 기존 포지션의 클로즈 주문인지 확인"""
-        try:
-            # 현재 활성 포지션이 없으면 기존 포지션의 클로즈가 아님
-            if len(self.startup_positions_detailed) == 0:
-                return False
-            
-            side = order.get('side', order.get('tradeSide', '')).lower()
-            reduce_only = order.get('reduceOnly', False)
-            
-            # 클로즈 주문이 아니면 False
-            if not ('close' in side or reduce_only is True or reduce_only == 'true'):
-                return False
-            
-            # 기존 포지션과 매칭되는지 확인
-            for pos_id, pos_info in self.startup_positions_detailed.items():
-                pos_side = pos_info['side'].lower()
-                
-                # 롱 포지션의 클로즈 주문인지 확인
-                if pos_side == 'long' and ('close_long' in side or ('sell' in side and reduce_only)):
-                    return True
-                
-                # 숏 포지션의 클로즈 주문인지 확인
-                if pos_side == 'short' and ('close_short' in side or ('buy' in side and reduce_only)):
-                    return True
-            
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"기존 포지션 클로즈 주문 확인 실패: {e}")
-            return False
 
     async def _is_duplicate_order_advanced(self, bitget_order: Dict) -> Tuple[bool, str]:
         """🔥🔥🔥 강화된 중복 주문 확인"""
@@ -1099,161 +1476,6 @@ class MirrorTradingSystem:
             self.logger.error(f"시작 시 통합 TP/SL 예약 주문 복제 실패: {e}")
             return "failed"
 
-    async def monitor_plan_orders(self):
-        """🔥 예약 주문 모니터링 - 클로즈 주문 복제 개선"""
-        self.logger.info("🎯 예약 주문 취소 미러링 모니터링 시작 (클로즈 주문 복제 개선)")
-        consecutive_errors = 0
-        
-        while self.monitoring:
-            try:
-                if not self.startup_plan_orders_processed:
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # 현재 비트겟 예약 주문 조회
-                plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-                current_plan_orders = plan_data.get('plan_orders', [])
-                current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
-                
-                # 🔥 클로즈 주문도 모니터링 대상에 포함
-                orders_to_monitor = []
-                orders_to_monitor.extend(current_plan_orders)
-                
-                # TP/SL 주문 중에서 클로즈 주문 추가
-                for tp_sl_order in current_tp_sl_orders:
-                    side = tp_sl_order.get('side', tp_sl_order.get('tradeSide', '')).lower()
-                    reduce_only = tp_sl_order.get('reduceOnly', False)
-                    
-                    # 클로즈 주문인지 확인
-                    is_close_order = (
-                        'close' in side or 
-                        reduce_only is True or 
-                        reduce_only == 'true'
-                    )
-                    
-                    if is_close_order:
-                        # 기존 포지션의 클로즈가 아닌 새로운 클로즈 주문만 추가
-                        if not self._is_existing_position_close_order(tp_sl_order):
-                            orders_to_monitor.append(tp_sl_order)
-                
-                # 현재 존재하는 예약주문 ID 집합
-                current_order_ids = set()
-                current_snapshot = {}
-                
-                for order in orders_to_monitor:
-                    order_id = order.get('orderId', order.get('planOrderId', ''))
-                    if order_id:
-                        current_order_ids.add(order_id)
-                        current_snapshot[order_id] = {
-                            'order_data': order.copy(),
-                            'timestamp': datetime.now().isoformat(),
-                            'status': 'active'
-                        }
-                
-                # 취소된 예약 주문 감지
-                canceled_order_ids = self.last_plan_order_ids - current_order_ids
-                
-                # 취소된 주문 처리
-                if canceled_order_ids:
-                    self.logger.info(f"{len(canceled_order_ids)}개의 예약 주문 취소 감지: {canceled_order_ids}")
-                    
-                    for canceled_order_id in canceled_order_ids:
-                        await self._handle_plan_order_cancel(canceled_order_id)
-                    
-                    self.daily_stats['plan_order_cancels'] += len(canceled_order_ids)
-                
-                # 새로운 예약 주문 감지
-                new_orders_count = 0
-                new_close_orders_count = 0
-                
-                for order in orders_to_monitor:
-                    order_id = order.get('orderId', order.get('planOrderId', ''))
-                    if not order_id:
-                        continue
-                    
-                    # 이미 처리된 주문은 스킵
-                    if order_id in self.processed_plan_orders:
-                        continue
-                    
-                    # 시작 시 존재했던 주문인지 확인
-                    if order_id in self.startup_plan_orders:
-                        self.processed_plan_orders.add(order_id)
-                        continue
-                    
-                    # 🔥🔥🔥 강화된 중복 복제 확인
-                    is_duplicate, duplicate_type = await self._is_duplicate_order_advanced(order)
-                    if is_duplicate:
-                        if duplicate_type == "advanced":
-                            self.daily_stats['duplicate_advanced_prevention'] += 1
-                            self.logger.info(f"🛡️ 강화된 중복 감지로 스킵: {order_id}")
-                        else:
-                            self.daily_stats['duplicate_orders_prevented'] += 1
-                            self.logger.info(f"🛡️ 기본 중복 감지로 스킵: {order_id}")
-                        
-                        self.processed_plan_orders.add(order_id)
-                        continue
-                    
-                    # 🎯 새로운 예약 주문 감지 - 클로즈 주문 포함
-                    try:
-                        # 클로즈 주문인지 확인
-                        side = order.get('side', order.get('tradeSide', '')).lower()
-                        is_close_order = 'close' in side or order.get('reduceOnly', False)
-                        
-                        result = await self._process_new_plan_order_unified(order)
-                        
-                        if result == "success":
-                            new_orders_count += 1
-                            if is_close_order:
-                                new_close_orders_count += 1
-                                self.daily_stats['close_order_mirrors'] += 1
-                        elif result == "skipped" and is_close_order:
-                            self.daily_stats['close_order_skipped'] += 1
-                        
-                        self.processed_plan_orders.add(order_id)
-                        
-                    except Exception as e:
-                        self.logger.error(f"새로운 예약 주문 복제 실패: {order_id} - {e}")
-                        self.processed_plan_orders.add(order_id)
-                        
-                        await self.telegram.send_message(
-                            f"❌ 예약 주문 복제 실패 (클로즈 주문 포함)\n"
-                            f"비트겟 ID: {order_id}\n"
-                            f"오류: {str(e)[:200]}"
-                        )
-                
-                # 클로즈 주문 복제 성공 시 알림
-                if new_close_orders_count > 0:
-                    await self.telegram.send_message(
-                        f"✅ 클로즈 주문 복제 성공\n"
-                        f"클로즈 주문: {new_close_orders_count}개\n"
-                        f"전체 신규 복제: {new_orders_count}개"
-                    )
-                
-                # 현재 상태를 다음 비교를 위해 저장
-                self.last_plan_order_ids = current_order_ids.copy()
-                self.plan_order_snapshot = current_snapshot.copy()
-                
-                # 오래된 주문 ID 정리
-                if len(self.processed_plan_orders) > 500:
-                    recent_orders = list(self.processed_plan_orders)[-250:]
-                    self.processed_plan_orders = set(recent_orders)
-                
-                consecutive_errors = 0
-                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL)
-                
-            except Exception as e:
-                consecutive_errors += 1
-                self.logger.error(f"예약 주문 모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
-                
-                if consecutive_errors >= 5:
-                    await self.telegram.send_message(
-                        f"⚠️ 예약 주문 모니터링 시스템 오류\n"
-                        f"연속 {consecutive_errors}회 실패\n"
-                        f"오류: {str(e)[:200]}"
-                    )
-                
-                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
-
     async def _process_new_plan_order_unified(self, bitget_order: Dict) -> str:
         """🔥 새로운 예약 주문 복제 - 통합 TP/SL 방식 (클로즈 주문 포함)"""
         try:
@@ -1469,136 +1691,6 @@ class MirrorTradingSystem:
                 'plan_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', 'unknown'))
             })
             return "failed"
-
-    async def _handle_plan_order_cancel(self, bitget_order_id: str):
-        """🔥 예약 주문 취소 처리 - 오류 처리 개선"""
-        try:
-            self.logger.info(f"예약 주문 취소 처리 시작: {bitget_order_id}")
-            
-            # 미러링된 주문인지 확인
-            if bitget_order_id not in self.mirrored_plan_orders:
-                self.logger.info(f"미러링되지 않은 주문이므로 취소 처리 스킵: {bitget_order_id}")
-                return
-            
-            mirror_info = self.mirrored_plan_orders[bitget_order_id]
-            gate_order_id = mirror_info.get('gate_order_id')
-            order_hashes = mirror_info.get('order_hashes', [])
-            is_close_order = mirror_info.get('is_close_order', False)
-            
-            if not gate_order_id:
-                self.logger.warning(f"게이트 주문 ID가 없음: {bitget_order_id}")
-                del self.mirrored_plan_orders[bitget_order_id]
-                return
-            
-            # 🔥 개선된 취소 처리 - 오류 처리 강화
-            cancel_success = False
-            retry_count = 0
-            
-            while retry_count < self.max_cancel_retry and not cancel_success:
-                try:
-                    retry_count += 1
-                    self.logger.info(f"게이트 예약 주문 취소 시도 {retry_count}/{self.max_cancel_retry}: {gate_order_id}")
-                    
-                    # 게이트에서 예약 주문 취소
-                    await self.gate.cancel_price_triggered_order(gate_order_id)
-                    
-                    # 취소 확인을 위해 대기
-                    await asyncio.sleep(self.cancel_verification_delay)
-                    
-                    # 취소 확인
-                    verification_success = await self._verify_order_cancellation(gate_order_id)
-                    
-                    if verification_success:
-                        cancel_success = True
-                        self.logger.info(f"게이트 예약 주문 취소 확인됨: {gate_order_id}")
-                        self.daily_stats['plan_order_cancel_success'] += 1
-                        
-                        order_type = "클로즈 주문" if is_close_order else "예약 주문"
-                        
-                        await self.telegram.send_message(
-                            f"🚫✅ {order_type} 취소 동기화 완료\n"
-                            f"비트겟 ID: {bitget_order_id}\n"
-                            f"게이트 ID: {gate_order_id}\n"
-                            f"재시도: {retry_count}회"
-                        )
-                        break
-                    else:
-                        self.logger.warning(f"취소 시도했지만 주문이 여전히 존재함 (재시도 {retry_count}/{self.max_cancel_retry})")
-                        
-                        if retry_count < self.max_cancel_retry:
-                            wait_time = min(self.cancel_verification_delay * retry_count, 10.0)
-                            await asyncio.sleep(wait_time)
-                        
-                except Exception as cancel_error:
-                    error_msg = str(cancel_error).lower()
-                    
-                    # 🔥 개선된 오류 처리
-                    if any(keyword in error_msg for keyword in [
-                        "not found", "order not exist", "invalid order", 
-                        "order does not exist", "auto_order_not_found"
-                    ]):
-                        # 주문이 이미 취소되었거나 체결됨
-                        cancel_success = True
-                        self.logger.info(f"게이트 예약 주문이 이미 취소/체결됨: {gate_order_id}")
-                        self.daily_stats['plan_order_cancel_success'] += 1
-                        
-                        order_type = "클로즈 주문" if is_close_order else "예약 주문"
-                        
-                        await self.telegram.send_message(
-                            f"🚫✅ {order_type} 취소 처리 완료\n"
-                            f"비트겟 ID: {bitget_order_id}\n"
-                            f"게이트 주문이 이미 취소되었거나 체결되었습니다."
-                        )
-                        break
-                    else:
-                        self.logger.error(f"게이트 예약 주문 취소 실패 (시도 {retry_count}/{self.max_cancel_retry}): {cancel_error}")
-                        
-                        if retry_count >= self.max_cancel_retry:
-                            # 최종 실패
-                            self.daily_stats['plan_order_cancel_failed'] += 1
-                            
-                            order_type = "클로즈 주문" if is_close_order else "예약 주문"
-                            
-                            await self.telegram.send_message(
-                                f"❌ {order_type} 취소 최종 실패\n"
-                                f"비트겟 ID: {bitget_order_id}\n"
-                                f"게이트 ID: {gate_order_id}\n"
-                                f"오류: {str(cancel_error)[:200]}\n"
-                                f"재시도: {retry_count}회"
-                            )
-                        else:
-                            wait_time = min(3.0 * retry_count, 15.0)
-                            await asyncio.sleep(wait_time)
-            
-            # 미러링 기록에서 제거
-            if bitget_order_id in self.mirrored_plan_orders:
-                del self.mirrored_plan_orders[bitget_order_id]
-                self.logger.info(f"미러링 기록에서 제거됨: {bitget_order_id}")
-            
-            # 🔥🔥🔥 강화된 해시 제거
-            if order_hashes:
-                for hash_key in order_hashes:
-                    if hash_key in self.gate_existing_order_hashes:
-                        self.gate_existing_order_hashes.remove(hash_key)
-                self.logger.info(f"주문 해시 {len(order_hashes)}개 제거됨")
-            
-            # 🔥🔥🔥 상세 정보에서도 제거
-            if gate_order_id and gate_order_id in self.gate_existing_orders_detailed:
-                del self.gate_existing_orders_detailed[gate_order_id]
-                self.logger.info(f"게이트 상세 정보에서 제거됨: {gate_order_id}")
-            
-        except Exception as e:
-            self.logger.error(f"예약 주문 취소 처리 중 예외 발생: {e}")
-            
-            # 오류 발생 시에도 미러링 기록에서 제거
-            if bitget_order_id in self.mirrored_plan_orders:
-                del self.mirrored_plan_orders[bitget_order_id]
-            
-            await self.telegram.send_message(
-                f"❌ 예약 주문 취소 처리 중 오류\n"
-                f"비트겟 ID: {bitget_order_id}\n"
-                f"오류: {str(e)[:200]}"
-            )
 
     async def _verify_order_cancellation(self, gate_order_id: str) -> bool:
         """주문 취소 확인 검증"""
@@ -1964,6 +2056,7 @@ class MirrorTradingSystem:
                             f"차이: {position_diff}개\n"
                             f"복제된 예약 주문: {len(self.mirrored_plan_orders)}개\n"
                             f"클로즈 주문 복제: {self.daily_stats['close_order_mirrors']}개\n"
+                            f"가격 중복 방지: {self.daily_stats['price_duplicate_prevention']}개\n"
                             f"연속 감지: {sync_retry_count}회{price_diff_info}{restart_info}"
                         )
                         
