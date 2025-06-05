@@ -167,7 +167,7 @@ class MirrorTradingUtils:
             return None
     
     async def generate_multiple_order_hashes(self, order_details: Dict) -> List[str]:
-        """🔥🔥🔥 다양한 방식으로 주문 해시 생성 - None 체크 강화"""
+        """🔥🔥🔥 다양한 방식으로 주문 해시 생성 - 가격 기반 중복 방지 강화"""
         try:
             # None 체크 및 기본값 설정
             contract = order_details.get('contract') or self.GATE_CONTRACT
@@ -194,28 +194,49 @@ class MirrorTradingUtils:
             
             hashes = []
             
-            # 1. 기본 해시 (기존 방식)
+            # 🔥 1. 가격 기반 해시 (중복 방지 핵심) - 수량 무관
+            try:
+                price_only_hash = f"{contract}_price_{trigger_price:.2f}"
+                hashes.append(price_only_hash)
+                
+                # 더 정밀한 가격 해시
+                precise_price_hash = f"{contract}_price_{trigger_price:.8f}"
+                hashes.append(precise_price_hash)
+                
+                # 반올림된 가격 해시들
+                rounded_price_1 = round(trigger_price, 1)
+                rounded_price_hash_1 = f"{contract}_price_{rounded_price_1:.1f}"
+                hashes.append(rounded_price_hash_1)
+                
+                rounded_price_0 = round(trigger_price, 0)
+                rounded_price_hash_0 = f"{contract}_price_{rounded_price_0:.0f}"
+                hashes.append(rounded_price_hash_0)
+                
+            except Exception as e:
+                self.logger.warning(f"가격 기반 해시 생성 실패: {e}")
+            
+            # 2. 기본 해시 (기존 방식)
             try:
                 basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
                 hashes.append(basic_hash)
             except Exception as e:
                 self.logger.warning(f"기본 해시 생성 실패: {e}")
             
-            # 2. 정확한 가격 해시
+            # 3. 정확한 가격 해시
             try:
                 exact_price_hash = f"{contract}_{trigger_price:.8f}_{abs_size}"
                 hashes.append(exact_price_hash)
             except Exception as e:
                 self.logger.warning(f"정확한 가격 해시 생성 실패: {e}")
             
-            # 3. 부호 포함 해시
+            # 4. 부호 포함 해시
             try:
                 signed_hash = f"{contract}_{trigger_price:.2f}_{size}"
                 hashes.append(signed_hash)
             except Exception as e:
                 self.logger.warning(f"부호 포함 해시 생성 실패: {e}")
             
-            # 4. 반올림된 가격 해시 (가격 차이 허용)
+            # 5. 반올림된 가격 해시 (가격 차이 허용)
             try:
                 rounded_price_1 = round(trigger_price, 1)
                 rounded_hash_1 = f"{contract}_{rounded_price_1:.1f}_{abs_size}"
@@ -227,15 +248,33 @@ class MirrorTradingUtils:
             except Exception as e:
                 self.logger.warning(f"반올림 해시 생성 실패: {e}")
             
-            # 5. TP/SL 포함 해시 (있는 경우)
+            # 6. TP/SL 포함 해시 (있는 경우)
             try:
                 if order_details.get('has_tp_sl'):
                     tp_price = order_details.get('tp_price', 0) or 0
                     sl_price = order_details.get('sl_price', 0) or 0
                     tp_sl_hash = f"{contract}_{trigger_price:.2f}_{abs_size}_tp{tp_price:.2f}_sl{sl_price:.2f}"
                     hashes.append(tp_sl_hash)
+                    
+                    # 🔥 TP/SL 있는 주문의 가격 기반 해시도 추가
+                    tp_sl_price_hash = f"{contract}_price_{trigger_price:.2f}_withTPSL"
+                    hashes.append(tp_sl_price_hash)
             except Exception as e:
                 self.logger.warning(f"TP/SL 해시 생성 실패: {e}")
+            
+            # 🔥 7. 가격 범위 해시 (유사한 가격 감지)
+            try:
+                # 100달러 단위로 반올림한 가격 해시
+                price_range_100 = round(trigger_price / 100) * 100
+                range_hash_100 = f"{contract}_range100_{price_range_100:.0f}"
+                hashes.append(range_hash_100)
+                
+                # 50달러 단위로 반올림한 가격 해시
+                price_range_50 = round(trigger_price / 50) * 50
+                range_hash_50 = f"{contract}_range50_{price_range_50:.0f}"
+                hashes.append(range_hash_50)
+            except Exception as e:
+                self.logger.warning(f"가격 범위 해시 생성 실패: {e}")
             
             # 중복 제거
             unique_hashes = list(set(hashes))
@@ -259,7 +298,8 @@ class MirrorTradingUtils:
                     trigger_price = float(trigger_price)
                     abs_size = abs(int(size))
                     basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
-                    return [basic_hash]
+                    price_hash = f"{contract}_price_{trigger_price:.2f}"
+                    return [basic_hash, price_hash]
             except Exception as fallback_error:
                 self.logger.error(f"폴백 해시 생성도 실패: {fallback_error}")
             
@@ -282,6 +322,21 @@ class MirrorTradingUtils:
         except (ValueError, TypeError) as e:
             self.logger.warning(f"해시 생성 시 변환 실패: {e}")
             return f"{contract or self.GATE_CONTRACT}_error_error"
+    
+    def generate_price_based_hash(self, trigger_price: float, contract: str = None) -> str:
+        """🔥 가격 기반 해시 생성 (수량 무관 중복 방지)"""
+        try:
+            contract = contract or self.GATE_CONTRACT
+            
+            if trigger_price is None or trigger_price <= 0:
+                return f"{contract}_price_invalid"
+            
+            trigger_price = float(trigger_price)
+            return f"{contract}_price_{trigger_price:.2f}"
+            
+        except (ValueError, TypeError) as e:
+            self.logger.warning(f"가격 기반 해시 생성 실패: {e}")
+            return f"{contract or self.GATE_CONTRACT}_price_error"
     
     async def adjust_price_for_gate(self, price: float, bitget_current_price: float = 0, 
                                    gate_current_price: float = 0, price_diff_percent: float = 0) -> float:
