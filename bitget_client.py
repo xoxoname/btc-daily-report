@@ -1263,4 +1263,193 @@ class BitgetClient:
             
             all_fills.extend(fills)
             
-            if
+            if len(fills) < 500:
+                break
+            
+            # 다음 페이지 ID
+            last_fill = fills[-1]
+            last_id = last_fill.get('tradeId', last_fill.get('id', last_fill.get('fillId')))
+            if not last_id:
+                break
+            
+            page += 1
+            await asyncio.sleep(0.1)
+        
+        return all_fills
+    
+    def _remove_duplicate_fills_enhanced(self, fills: List[Dict]) -> List[Dict]:
+        """🔥🔥🔥 강화된 중복 제거"""
+        seen_ids = set()
+        unique_fills = []
+        
+        for fill in fills:
+            # 다양한 ID 필드 확인
+            fill_id = None
+            for id_field in ['tradeId', 'id', 'fillId', 'orderId']:
+                if id_field in fill and fill[id_field]:
+                    fill_id = str(fill[id_field])
+                    break
+            
+            if fill_id and fill_id not in seen_ids:
+                seen_ids.add(fill_id)
+                unique_fills.append(fill)
+        
+        return unique_fills
+    
+    def _extract_fee_from_fill_enhanced(self, fill: Dict) -> float:
+        """🔥🔥🔥 강화된 수수료 추출"""
+        fee = 0.0
+        
+        # 다양한 수수료 필드 시도
+        for fee_field in ['fee', 'fees', 'feeDetail', 'commission', 'tradeFee']:
+            if fee_field in fill and fill[fee_field] is not None:
+                try:
+                    fee_value = fill[fee_field]
+                    if isinstance(fee_value, dict):
+                        # feeDetail 구조인 경우
+                        fee = abs(float(fee_value.get('totalFee', fee_value.get('fee', 0))))
+                    else:
+                        fee = abs(float(fee_value))
+                    
+                    if fee > 0:
+                        break
+                except:
+                    continue
+        
+        return fee
+    
+    async def _get_achieved_profits(self) -> Dict:
+        """🔥🔥🔥 achievedProfits 기반 수익 조회"""
+        try:
+            # 여러 엔드포인트 시도
+            endpoints = [
+                "/api/v2/mix/account/achieved-profits",
+                "/api/mix/v1/account/achievedProfits"
+            ]
+            
+            for endpoint in endpoints:
+                try:
+                    if 'v2' in endpoint:
+                        params = {
+                            'productType': 'USDT-FUTURES',
+                            'marginCoin': 'USDT'
+                        }
+                    else:
+                        params = {
+                            'symbol': f"{self.config.symbol}_UMCBL",
+                            'productType': 'umcbl'
+                        }
+                    
+                    response = await self._request('GET', endpoint, params=params)
+                    
+                    if response:
+                        # 응답 처리
+                        profits = []
+                        if isinstance(response, list):
+                            profits = response
+                        elif isinstance(response, dict):
+                            for field in ['list', 'data', 'profits']:
+                                if field in response and isinstance(response[field], list):
+                                    profits = response[field]
+                                    break
+                        
+                        if profits:
+                            total_profit = sum(float(p.get('achievedPnl', p.get('profit', 0))) for p in profits)
+                            return {
+                                'total_pnl': total_profit,
+                                'trade_count': len(profits),
+                                'source': 'achieved_profits',
+                                'confidence': 'medium'
+                            }
+                
+                except Exception as e:
+                    logger.debug(f"{endpoint} 실패: {e}")
+                    continue
+            
+            return {
+                'total_pnl': 0,
+                'trade_count': 0,
+                'source': 'achieved_profits_failed',
+                'confidence': 'low'
+            }
+            
+        except Exception as e:
+            logger.error(f"achievedProfits 조회 실패: {e}")
+            return {
+                'total_pnl': 0,
+                'trade_count': 0,
+                'source': 'achieved_profits_error',
+                'confidence': 'low'
+            }
+    
+    def _select_best_profit_data_corrected(self, bills_result: Dict, fills_result: Dict, 
+                                         achieved_result: Dict, days: int) -> Dict:
+        """🔥🔥🔥 최적의 손익 데이터 선택 - 수정된 방식"""
+        try:
+            # 신뢰도 점수 계산
+            def calculate_confidence_score(result):
+                confidence_map = {'high': 3, 'medium': 2, 'low': 1}
+                base_score = confidence_map.get(result.get('confidence', 'low'), 1)
+                
+                # 거래 건수가 있으면 점수 증가
+                if result.get('trade_count', 0) > 0:
+                    base_score += 1
+                
+                # 데이터 소스별 가중치
+                if 'bills' in result.get('source', ''):
+                    base_score += 2  # Bills가 가장 신뢰할만함
+                elif 'fills' in result.get('source', ''):
+                    base_score += 1
+                
+                return base_score
+            
+            # 각 결과의 점수 계산
+            bills_score = calculate_confidence_score(bills_result)
+            fills_score = calculate_confidence_score(fills_result)
+            achieved_score = calculate_confidence_score(achieved_result)
+            
+            logger.info(f"신뢰도 점수: Bills={bills_score}, Fills={fills_score}, Achieved={achieved_score}")
+            
+            # 가장 높은 점수의 결과 선택
+            if bills_score >= fills_score and bills_score >= achieved_score:
+                best_result = bills_result
+                logger.info("✅ Account Bills 결과 선택")
+            elif fills_score >= achieved_score:
+                best_result = fills_result
+                logger.info("✅ Trade Fills 결과 선택")
+            else:
+                best_result = achieved_result
+                logger.info("✅ Achieved Profits 결과 선택")
+            
+            # 기본값 보장
+            final_result = {
+                'total_pnl': best_result.get('total_pnl', 0),
+                'daily_pnl': best_result.get('daily_pnl', {}),
+                'days': days,
+                'average_daily': best_result.get('total_pnl', 0) / days if days > 0 else 0,
+                'trade_count': best_result.get('trade_count', 0),
+                'total_fees': best_result.get('total_fees', 0),
+                'source': best_result.get('source', 'unknown'),
+                'confidence': best_result.get('confidence', 'low')
+            }
+            
+            return final_result
+            
+        except Exception as e:
+            logger.error(f"최적 데이터 선택 실패: {e}")
+            return {
+                'total_pnl': 0,
+                'daily_pnl': {},
+                'days': days,
+                'average_daily': 0,
+                'trade_count': 0,
+                'total_fees': 0,
+                'source': 'selection_error',
+                'confidence': 'low'
+            }
+    
+    async def close(self):
+        """세션 종료"""
+        if self.session:
+            await self.session.close()
+            logger.info("Bitget 클라이언트 세션 종료")
