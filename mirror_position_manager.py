@@ -95,10 +95,10 @@ class MirrorPositionManager:
             'close_order_mirrors': 0,
             'close_order_skipped': 0,
             'duplicate_orders_prevented': 0,
-            'perfect_mirrors': 0,  # 완벽한 TP/SL 미러링 카운트
-            'partial_mirrors': 0,  # 부분 미러링 카운트
-            'tp_sl_success': 0,    # TP/SL 성공 카운트
-            'tp_sl_failed': 0,     # TP/SL 실패 카운트
+            'perfect_mirrors': 0,
+            'partial_mirrors': 0,
+            'tp_sl_success': 0,
+            'tp_sl_failed': 0,
             'errors': []
         }
         
@@ -373,12 +373,12 @@ class MirrorPositionManager:
                 gate_size = 1
             
             # 🔥 Gate 미러링 클라이언트로 완벽한 미러링 주문 생성
-            mirror_result = await self.gate_mirror.create_perfect_mirror_order(
+            mirror_result = await self.gate_mirror.create_perfect_tp_sl_order(
                 bitget_order=bitget_order,
-                gate_price=self.gate_current_price,
-                gate_margin=gate_margin,
                 gate_size=gate_size,
-                leverage=bitget_leverage
+                gate_margin=gate_margin,
+                leverage=bitget_leverage,
+                current_gate_price=self.gate_current_price
             )
             
             if not mirror_result['success']:
@@ -551,7 +551,6 @@ class MirrorPositionManager:
         try:
             current_time = datetime.now()
             
-            # 60초 이전 타임스탬프 제거
             expired_orders = []
             for order_id, timestamp in self.recently_processed_orders.items():
                 if (current_time - timestamp).total_seconds() > self.order_deduplication_window:
@@ -562,7 +561,6 @@ class MirrorPositionManager:
                 if order_id in self.order_processing_locks:
                     del self.order_processing_locks[order_id]
             
-            # 주문 미러링 타임스탬프도 정리
             expired_mirror_orders = []
             for order_id, timestamp in self.order_mirror_timestamps.items():
                 if (current_time - timestamp).total_seconds() > 600:
