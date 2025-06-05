@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """미러 트레이딩 유틸리티 클래스"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 시세차이 문제 해결"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -47,8 +47,14 @@ class MirrorTradingUtils:
         self.MAX_PRICE_DIFF_PERCENT = 1.0
         
         # 🔥🔥🔥 트리거 가격 검증 임계값 완전히 제거 - 거의 모든 가격 허용
-        self.TRIGGER_PRICE_MIN_DIFF_PERCENT = 0.0  # 0.0001%에서 0.0%로 변경하여 거의 모든 가격 허용
-        self.ALLOW_VERY_CLOSE_PRICES = True  # 🔥🔥🔥 시장가와 매우 가까운 가격도 허용
+        self.TRIGGER_PRICE_MIN_DIFF_PERCENT = 0.0  # 0.0%로 설정하여 거의 모든 가격 허용
+        self.ALLOW_VERY_CLOSE_PRICES = True  # 시장가와 매우 가까운 가격도 허용
+        
+        # 🔥🔥🔥 시세 차이 관리 강화
+        self.PRICE_SYNC_THRESHOLD = 15.0  # 15달러 임계값
+        self.PRICE_ADJUSTMENT_ENABLED = True  # 가격 조정 활성화
+        
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 시세차이 문제 해결")
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
         """🔥 비트겟 예약 주문에서 TP/SL 정보 추출"""
@@ -277,6 +283,14 @@ class MirrorTradingUtils:
                 price_range_50 = round(trigger_price / 50) * 50
                 range_hash_50 = f"{contract}_range50_{price_range_50:.0f}"
                 hashes.append(range_hash_50)
+                
+                # 🔥🔥🔥 시세 차이를 고려한 가격 범위 해시 (±20달러)
+                for offset in [-20, -10, 0, 10, 20]:
+                    adjusted_price = trigger_price + offset
+                    if adjusted_price > 0:
+                        offset_hash = f"{contract}_offset_{adjusted_price:.0f}"
+                        hashes.append(offset_hash)
+                        
             except Exception as e:
                 self.logger.warning(f"가격 범위 해시 생성 실패: {e}")
             
@@ -344,23 +358,38 @@ class MirrorTradingUtils:
     
     async def adjust_price_for_gate(self, price: float, bitget_current_price: float = 0, 
                                    gate_current_price: float = 0, price_diff_percent: float = 0) -> float:
-        """게이트 기준으로 가격 조정"""
+        """🔥🔥🔥 게이트 기준으로 가격 조정 - 시세차이 문제 해결"""
         try:
             if price is None or price <= 0:
                 return price or 0
             
-            if price_diff_percent <= 0.3:
-                return price
-            
-            if bitget_current_price > 0 and gate_current_price > 0:
-                price_ratio = gate_current_price / bitget_current_price
-                adjusted_price = price * price_ratio
+            # 🔥🔥🔥 시세 차이가 임계값을 초과하는 경우 조정
+            if (self.PRICE_ADJUSTMENT_ENABLED and 
+                bitget_current_price > 0 and gate_current_price > 0):
                 
-                # 조정 폭이 너무 크면 원본 사용
-                adjustment_percent = abs(adjusted_price - price) / price * 100
-                if adjustment_percent <= 2.0:
-                    return adjusted_price
+                price_diff_abs = abs(bitget_current_price - gate_current_price)
+                
+                # 시세 차이가 임계값을 초과하는 경우
+                if price_diff_abs > self.PRICE_SYNC_THRESHOLD:
+                    
+                    # 가격 비율 계산
+                    price_ratio = gate_current_price / bitget_current_price
+                    adjusted_price = price * price_ratio
+                    
+                    # 조정 폭 검증 (너무 큰 조정은 방지)
+                    adjustment_percent = abs(adjusted_price - price) / price * 100
+                    
+                    if adjustment_percent <= 5.0:  # 5% 이하 조정만 허용
+                        self.logger.info(f"🔧 시세 차이로 가격 조정: ${price:.2f} → ${adjusted_price:.2f} (차이: ${price_diff_abs:.2f})")
+                        return adjusted_price
+                    else:
+                        self.logger.warning(f"⚠️ 조정 폭이 너무 큼 ({adjustment_percent:.1f}%), 원본 가격 사용")
+                        return price
+                else:
+                    # 시세 차이가 임계값 이하인 경우 원본 사용
+                    return price
             
+            # 기본적으로 원본 가격 반환
             return price
             
         except Exception as e:
@@ -368,47 +397,47 @@ class MirrorTradingUtils:
             return price or 0
     
     async def validate_trigger_price(self, trigger_price: float, side: str, current_price: float = 0) -> Tuple[bool, str]:
-        """🔥🔥🔥 트리거 가격 유효성 검증 - 거의 모든 가격 허용하도록 완전 완화"""
+        """🔥🔥🔥 트리거 가격 유효성 검증 - 시세차이 고려하여 완전 완화"""
         try:
             if trigger_price is None or trigger_price <= 0:
                 return False, "트리거 가격이 None이거나 0 이하입니다"
             
             if current_price <= 0:
                 # 🔥🔥🔥 현재가 조회 실패해도 허용
-                self.logger.warning("현재 시장가를 조회할 수 없지만 트리거 가격 허용")
+                self.logger.info("현재 시장가를 조회할 수 없지만 트리거 가격 허용")
                 return True, "현재가 조회 실패하지만 허용"
             
             # 🔥🔥🔥 시장가와의 차이 계산하되 거의 모든 가격 허용
             price_diff_percent = abs(trigger_price - current_price) / current_price * 100
             
-            # 🔥🔥🔥 극단적으로 완화된 검증 - 거의 모든 가격 허용
+            # 🔥🔥🔥 시세 차이 문제를 고려하여 극도로 완화된 검증
             if self.ALLOW_VERY_CLOSE_PRICES:
                 # 시장가와 완전히 동일한 경우에만 경고하되 허용
                 if price_diff_percent == 0.0:
-                    self.logger.warning(f"트리거가와 현재가가 완전히 동일하지만 허용: {trigger_price}")
+                    self.logger.info(f"트리거가와 현재가가 완전히 동일하지만 허용: {trigger_price}")
                     return True, f"동일한 가격이지만 허용 (차이: {price_diff_percent:.8f}%)"
                 
-                # 🔥🔥🔥 매우 근접한 가격도 모두 허용
-                if price_diff_percent < 0.001:  # 0.001% 미만
+                # 🔥🔥🔥 매우 근접한 가격도 모두 허용 (시세 차이 고려)
+                if price_diff_percent < 0.0001:  # 0.0001% 미만
                     self.logger.info(f"매우 근접한 트리거가 허용: 차이 {price_diff_percent:.8f}%")
                     return True, f"매우 근접한 트리거가 허용 (차이: {price_diff_percent:.8f}%)"
                 
-                # 🔥🔥🔥 일반적인 가격 차이도 모두 허용
-                if price_diff_percent < 50:  # 50% 미만은 모두 허용
-                    return True, f"허용 가능한 트리거 가격 (차이: {price_diff_percent:.4f}%)"
+                # 🔥🔥🔥 일반적인 가격 차이도 모두 허용 (시세 차이 때문에 더욱 관대)
+                if price_diff_percent < 100:  # 100% 미만은 모두 허용 (시세 차이 고려)
+                    return True, f"시세차이 고려 허용 가능한 트리거 가격 (차이: {price_diff_percent:.4f}%)"
                 
-                # 극단적인 가격 차이만 차단 (50% 이상)
-                if price_diff_percent >= 50:
+                # 극단적인 가격 차이만 차단 (100% 이상)
+                if price_diff_percent >= 100:
                     self.logger.warning(f"극단적인 가격 차이: {price_diff_percent:.1f}%")
                     return False, f"트리거가와 현재가 차이가 너무 극단적 ({price_diff_percent:.1f}%)"
             
-            # 기본적으로 모든 가격 허용
-            return True, f"모든 트리거 가격 허용 (차이: {price_diff_percent:.4f}%)"
+            # 기본적으로 모든 가격 허용 (시세 차이 문제 해결)
+            return True, f"시세차이 고려 모든 트리거 가격 허용 (차이: {price_diff_percent:.4f}%)"
             
         except Exception as e:
             self.logger.error(f"트리거 가격 검증 실패하지만 허용: {e}")
-            # 🔥🔥🔥 검증 실패해도 허용
-            return True, f"검증 오류이지만 허용: {str(e)[:100]}"
+            # 🔥🔥🔥 검증 실패해도 허용 (시세 차이 문제 고려)
+            return True, f"검증 오류이지만 시세차이 고려하여 허용: {str(e)[:100]}"
     
     async def calculate_gate_order_size_fixed(self, side: str, base_size: int, is_close_order: bool = False) -> Tuple[int, bool]:
         """🔥🔥🔥 수정된 게이트 주문 수량 계산 - 클로즈/오픈 구분 명확화"""
@@ -484,16 +513,16 @@ class MirrorTradingUtils:
                 return "ge"
             
             if trigger_price > current_price:
-                return "ge"
+                return "ge"  # greater than or equal
             else:
-                return "le"
+                return "le"  # less than or equal
                 
         except Exception as e:
             self.logger.error(f"Gate.io 트리거 타입 결정 실패: {e}")
             return "ge"
     
     async def calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
-        """실제 달러 마진 비율 동적 계산"""
+        """🔥🔥🔥 실제 달러 마진 비율 동적 계산 - 시세차이 고려"""
         try:
             if size is None or trigger_price is None:
                 return {
@@ -501,44 +530,64 @@ class MirrorTradingUtils:
                     'error': 'size 또는 trigger_price가 None입니다.'
                 }
             
-            # 레버리지 정보 추출
+            # 레버리지 정보 추출 - 강화된 로직
             bitget_leverage = 10  # 기본값
             
+            # 1. 주문에서 레버리지 추출
             order_leverage = bitget_order.get('leverage')
             if order_leverage:
                 try:
                     bitget_leverage = int(float(order_leverage))
-                except:
-                    pass
+                    self.logger.info(f"주문에서 레버리지 추출: {bitget_leverage}x")
+                except Exception as lev_error:
+                    self.logger.warning(f"주문 레버리지 변환 실패: {lev_error}")
             
-            # 계정 정보에서 레버리지 추출
-            if not order_leverage:
+            # 2. 계정 정보에서 레버리지 추출 (폴백)
+            if not order_leverage or bitget_leverage == 10:
                 try:
                     bitget_account = await self.bitget.get_account_info()
-                    account_leverage = bitget_account.get('crossMarginLeverage')
-                    if account_leverage:
-                        bitget_leverage = int(float(account_leverage))
-                except Exception as e:
-                    self.logger.warning(f"계정 레버리지 조회 실패: {e}")
+                    
+                    # 여러 레버리지 필드 확인
+                    for lev_field in ['crossMarginLeverage', 'leverage', 'defaultLeverage']:
+                        account_leverage = bitget_account.get(lev_field)
+                        if account_leverage:
+                            try:
+                                extracted_lev = int(float(account_leverage))
+                                if extracted_lev > 1:  # 유효한 레버리지인 경우
+                                    bitget_leverage = extracted_lev
+                                    self.logger.info(f"계정에서 레버리지 추출: {lev_field} = {bitget_leverage}x")
+                                    break
+                            except:
+                                continue
+                                
+                except Exception as account_error:
+                    self.logger.warning(f"계정 레버리지 조회 실패: {account_error}")
             
-            # 비트겟 계정 정보 조회
+            # 3. 비트겟 계정 정보 조회
             bitget_account = await self.bitget.get_account_info()
             bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
             
-            # 비트겟에서 이 주문이 체결될 때 사용할 실제 마진 계산
+            if bitget_total_equity <= 0:
+                return {
+                    'success': False,
+                    'error': '비트겟 총 자산이 0이거나 조회 실패'
+                }
+            
+            # 4. 비트겟에서 이 주문이 체결될 때 사용할 실제 마진 계산
             bitget_notional_value = size * trigger_price
             bitget_required_margin = bitget_notional_value / bitget_leverage
             
-            # 비트겟 총 자산 대비 실제 마진 투입 비율 계산
-            if bitget_total_equity > 0:
-                margin_ratio = bitget_required_margin / bitget_total_equity
-            else:
+            # 5. 비트겟 총 자산 대비 실제 마진 투입 비율 계산
+            margin_ratio = bitget_required_margin / bitget_total_equity
+            
+            # 6. 마진 비율 유효성 검증
+            if margin_ratio <= 0 or margin_ratio > 1:
                 return {
                     'success': False,
-                    'error': '비트겟 총 자산이 0이거나 음수입니다.'
+                    'error': f'마진 비율이 유효하지 않음: {margin_ratio:.4f}'
                 }
             
-            return {
+            result = {
                 'success': True,
                 'margin_ratio': margin_ratio,
                 'leverage': bitget_leverage,
@@ -546,6 +595,10 @@ class MirrorTradingUtils:
                 'total_equity': bitget_total_equity,
                 'notional_value': bitget_notional_value
             }
+            
+            self.logger.info(f"💰 마진 비율 계산 성공: {margin_ratio*100:.3f}% (레버리지: {bitget_leverage}x)")
+            
+            return result
             
         except Exception as e:
             self.logger.error(f"실제 달러 마진 비율 동적 계산 실패: {e}")
@@ -573,3 +626,59 @@ class MirrorTradingUtils:
             mode='cross' if bitget_pos.get('marginMode') == 'crossed' else 'isolated',
             unrealized_pnl=float(bitget_pos.get('unrealizedPL', 0))
         )
+    
+    async def get_price_difference_info(self, bitget_price: float, gate_price: float) -> Dict:
+        """🔥🔥🔥 시세 차이 정보 제공"""
+        try:
+            if bitget_price <= 0 or gate_price <= 0:
+                return {
+                    'price_diff_abs': 0,
+                    'price_diff_percent': 0,
+                    'exceeds_threshold': False,
+                    'status': 'invalid_prices'
+                }
+            
+            price_diff_abs = abs(bitget_price - gate_price)
+            price_diff_percent = price_diff_abs / bitget_price * 100
+            exceeds_threshold = price_diff_abs > self.PRICE_SYNC_THRESHOLD
+            
+            status = 'normal'
+            if exceeds_threshold:
+                status = 'high_difference'
+            elif price_diff_abs > self.PRICE_SYNC_THRESHOLD * 0.5:
+                status = 'moderate_difference'
+            
+            return {
+                'price_diff_abs': price_diff_abs,
+                'price_diff_percent': price_diff_percent,
+                'exceeds_threshold': exceeds_threshold,
+                'threshold': self.PRICE_SYNC_THRESHOLD,
+                'status': status,
+                'bitget_price': bitget_price,
+                'gate_price': gate_price
+            }
+            
+        except Exception as e:
+            self.logger.error(f"시세 차이 정보 계산 실패: {e}")
+            return {
+                'price_diff_abs': 0,
+                'price_diff_percent': 0,
+                'exceeds_threshold': False,
+                'status': 'error'
+            }
+    
+    async def should_delay_processing(self, bitget_price: float, gate_price: float) -> Tuple[bool, str]:
+        """🔥🔥🔥 시세 차이로 인한 처리 지연 여부 판단"""
+        try:
+            price_info = await self.get_price_difference_info(bitget_price, gate_price)
+            
+            if price_info['exceeds_threshold']:
+                delay_reason = (f"시세 차이 임계값 초과: ${price_info['price_diff_abs']:.2f} "
+                              f"(임계값: ${self.PRICE_SYNC_THRESHOLD})")
+                return True, delay_reason
+            
+            return False, "정상 처리 가능"
+            
+        except Exception as e:
+            self.logger.error(f"처리 지연 판단 실패: {e}")
+            return False, "판단 오류, 정상 처리"
