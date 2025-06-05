@@ -19,16 +19,74 @@ class BitgetClient:
         self.session = None
         self._initialize_session()
         
+        # 🔥🔥🔥 API 연결 상태 추적
+        self.api_connection_healthy = True
+        self.consecutive_failures = 0
+        self.last_successful_call = datetime.now()
+        self.max_consecutive_failures = 10
+        
+        # 🔥🔥🔥 백업 엔드포인트들
+        self.ticker_endpoints = [
+            "/api/v2/mix/market/ticker",  # 기본 V2
+            "/api/mix/v1/market/ticker",  # V1 백업
+            "/api/v2/spot/market/tickers", # Spot 백업 (변환 필요)
+        ]
+        
+        # API 키 검증 상태
+        self.api_keys_validated = False
+        
     def _initialize_session(self):
         """세션 초기화"""
         if not self.session:
-            self.session = aiohttp.ClientSession()
+            # 🔥🔥🔥 연결 타임아웃 및 재시도 설정 강화
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            connector = aiohttp.TCPConnector(
+                limit=100,
+                limit_per_host=30,
+                ttl_dns_cache=300,
+                use_dns_cache=True
+            )
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector
+            )
             logger.info("Bitget 클라이언트 세션 초기화 완료")
         
     async def initialize(self):
         """클라이언트 초기화"""
         self._initialize_session()
+        
+        # 🔥🔥🔥 API 키 유효성 검증
+        await self._validate_api_keys()
+        
         logger.info("Bitget 클라이언트 초기화 완료")
+    
+    async def _validate_api_keys(self):
+        """🔥🔥🔥 API 키 유효성 검증"""
+        try:
+            logger.info("비트겟 API 키 유효성 검증 시작...")
+            
+            # 간단한 계정 정보 조회로 API 키 검증
+            endpoint = "/api/v2/mix/account/accounts"
+            params = {
+                'productType': 'USDT-FUTURES',
+                'marginCoin': 'USDT'
+            }
+            
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response is not None:
+                self.api_keys_validated = True
+                self.api_connection_healthy = True
+                self.consecutive_failures = 0
+                logger.info("✅ 비트겟 API 키 검증 성공")
+            else:
+                logger.error("❌ 비트겟 API 키 검증 실패: 응답 없음")
+                self.api_keys_validated = False
+                
+        except Exception as e:
+            logger.error(f"❌ 비트겟 API 키 검증 실패: {e}")
+            self.api_keys_validated = False
     
     def _generate_signature(self, timestamp: str, method: str, request_path: str, body: str = '') -> str:
         """API 서명 생성"""
@@ -56,8 +114,8 @@ class BitgetClient:
             'locale': 'en-US'
         }
     
-    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None) -> Dict:
-        """API 요청"""
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
+        """🔥🔥🔥 API 요청 - 강화된 오류 처리"""
         if not self.session:
             self._initialize_session()
             
@@ -73,45 +131,268 @@ class BitgetClient:
         body = json.dumps(data) if data else ''
         headers = self._get_headers(method, request_path, body)
         
-        try:
-            logger.debug(f"API 요청: {method} {url}")
-            async with self.session.request(method, url, headers=headers, data=body) as response:
-                response_text = await response.text()
-                logger.debug(f"API 응답 상태: {response.status}")
+        # 🔥🔥🔥 재시도 로직
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"비트겟 API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
                 
-                response_data = json.loads(response_text)
-                
-                if response.status != 200:
-                    logger.error(f"API 요청 실패: {response.status} - {response_data}")
-                    raise Exception(f"API 요청 실패: {response_data}")
-                
-                if response_data.get('code') != '00000':
-                    logger.error(f"API 응답 오류: {response_data}")
-                    raise Exception(f"API 응답 오류: {response_data}")
-                
-                return response_data.get('data', {})
-                
-        except Exception as e:
-            logger.error(f"API 요청 중 오류: {e}")
-            raise
+                async with self.session.request(method, url, headers=headers, data=body) as response:
+                    response_text = await response.text()
+                    
+                    # 🔥🔥🔥 상세한 응답 로깅
+                    logger.debug(f"비트겟 API 응답 상태: {response.status}")
+                    logger.debug(f"비트겟 API 응답 헤더: {dict(response.headers)}")
+                    logger.debug(f"비트겟 API 응답 내용: {response_text[:500]}...")
+                    
+                    # 빈 응답 체크
+                    if not response_text.strip():
+                        error_msg = f"빈 응답 받음 (상태: {response.status})"
+                        logger.warning(error_msg)
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2 ** attempt)  # 지수 백오프
+                            continue
+                        else:
+                            self._record_failure(error_msg)
+                            raise Exception(error_msg)
+                    
+                    # HTTP 상태 코드 체크
+                    if response.status != 200:
+                        error_msg = f"HTTP {response.status}: {response_text}"
+                        logger.error(f"비트겟 API HTTP 오류: {error_msg}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                        else:
+                            self._record_failure(error_msg)
+                            raise Exception(error_msg)
+                    
+                    # JSON 파싱
+                    try:
+                        response_data = json.loads(response_text)
+                    except json.JSONDecodeError as json_error:
+                        error_msg = f"JSON 파싱 실패: {json_error}, 응답: {response_text[:200]}"
+                        logger.error(error_msg)
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                        else:
+                            self._record_failure(error_msg)
+                            raise Exception(error_msg)
+                    
+                    # API 응답 코드 체크
+                    if response_data.get('code') != '00000':
+                        error_msg = f"API 응답 오류: {response_data}"
+                        logger.error(error_msg)
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                        else:
+                            self._record_failure(error_msg)
+                            raise Exception(error_msg)
+                    
+                    # 🔥🔥🔥 성공 기록
+                    self._record_success()
+                    return response_data.get('data', {})
+                    
+            except asyncio.TimeoutError:
+                error_msg = f"요청 타임아웃 (시도 {attempt + 1})"
+                logger.warning(error_msg)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                else:
+                    self._record_failure(error_msg)
+                    raise Exception(error_msg)
+                    
+            except aiohttp.ClientError as client_error:
+                error_msg = f"클라이언트 오류 (시도 {attempt + 1}): {client_error}"
+                logger.warning(error_msg)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                else:
+                    self._record_failure(error_msg)
+                    raise Exception(error_msg)
+                    
+            except Exception as e:
+                error_msg = f"예상치 못한 오류 (시도 {attempt + 1}): {e}"
+                logger.error(error_msg)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                else:
+                    self._record_failure(error_msg)
+                    raise
+        
+        # 모든 재시도 실패
+        final_error = f"모든 재시도 실패: {max_retries}회 시도"
+        self._record_failure(final_error)
+        raise Exception(final_error)
+    
+    def _record_success(self):
+        """🔥🔥🔥 성공 기록"""
+        self.api_connection_healthy = True
+        self.consecutive_failures = 0
+        self.last_successful_call = datetime.now()
+    
+    def _record_failure(self, error_msg: str):
+        """🔥🔥🔥 실패 기록"""
+        self.consecutive_failures += 1
+        
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            self.api_connection_healthy = False
+            logger.error(f"비트겟 API 연결 비정상 상태: 연속 {self.consecutive_failures}회 실패")
+        
+        logger.warning(f"비트겟 API 실패 기록: {error_msg} (연속 실패: {self.consecutive_failures}회)")
     
     async def get_ticker(self, symbol: str = None) -> Dict:
-        """현재가 정보 조회 (V2 API)"""
+        """🔥🔥🔥 현재가 정보 조회 - 다중 엔드포인트 지원"""
         symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/market/ticker"
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES'
-        }
         
+        # 🔥🔥🔥 여러 엔드포인트 순차 시도
+        for i, endpoint in enumerate(self.ticker_endpoints):
+            try:
+                logger.debug(f"티커 조회 시도 {i + 1}/{len(self.ticker_endpoints)}: {endpoint}")
+                
+                if endpoint == "/api/v2/mix/market/ticker":
+                    # V2 믹스 마켓 (기본)
+                    params = {
+                        'symbol': symbol,
+                        'productType': 'USDT-FUTURES'
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, list) and len(response) > 0:
+                        ticker_data = response[0]
+                    elif isinstance(response, dict):
+                        ticker_data = response
+                    else:
+                        logger.warning(f"V2 믹스: 예상치 못한 응답 형식: {type(response)}")
+                        continue
+                    
+                elif endpoint == "/api/mix/v1/market/ticker":
+                    # V1 믹스 마켓 (백업)
+                    v1_symbol = f"{symbol}_UMCBL"
+                    params = {
+                        'symbol': v1_symbol
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, dict):
+                        ticker_data = response
+                    else:
+                        logger.warning(f"V1 믹스: 예상치 못한 응답 형식: {type(response)}")
+                        continue
+                        
+                elif endpoint == "/api/v2/spot/market/tickers":
+                    # 스팟 마켓 (최후 백업)
+                    spot_symbol = symbol.replace('USDT', '-USDT')
+                    params = {
+                        'symbol': spot_symbol
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, list) and len(response) > 0:
+                        ticker_data = response[0]
+                    elif isinstance(response, dict):
+                        ticker_data = response
+                    else:
+                        logger.warning(f"V2 스팟: 예상치 못한 응답 형식: {type(response)}")
+                        continue
+                
+                # 🔥🔥🔥 응답 데이터 검증 및 정규화
+                if ticker_data and self._validate_ticker_data(ticker_data):
+                    normalized_ticker = self._normalize_ticker_data(ticker_data, endpoint)
+                    logger.info(f"✅ 티커 조회 성공 ({endpoint}): ${normalized_ticker.get('last', 'N/A')}")
+                    return normalized_ticker
+                else:
+                    logger.warning(f"티커 데이터 검증 실패: {endpoint}")
+                    continue
+                    
+            except Exception as e:
+                logger.warning(f"티커 엔드포인트 {endpoint} 실패: {e}")
+                continue
+        
+        # 🔥🔥🔥 모든 엔드포인트 실패
+        error_msg = f"모든 티커 엔드포인트 실패: {', '.join(self.ticker_endpoints)}"
+        logger.error(error_msg)
+        self._record_failure("모든 티커 엔드포인트 실패")
+        return {}
+    
+    def _validate_ticker_data(self, ticker_data: Dict) -> bool:
+        """🔥🔥🔥 티커 데이터 유효성 검증"""
         try:
-            response = await self._request('GET', endpoint, params=params)
-            if isinstance(response, list) and len(response) > 0:
-                return response[0]
-            return response
+            if not isinstance(ticker_data, dict):
+                return False
+            
+            # 필수 가격 필드 중 하나라도 있어야 함
+            price_fields = ['last', 'lastPr', 'close', 'price', 'mark_price', 'markPrice']
+            
+            for field in price_fields:
+                value = ticker_data.get(field)
+                if value is not None:
+                    try:
+                        price = float(value)
+                        if price > 0:
+                            return True
+                    except:
+                        continue
+            
+            logger.warning(f"유효한 가격 필드 없음: {list(ticker_data.keys())}")
+            return False
+            
         except Exception as e:
-            logger.error(f"현재가 조회 실패: {e}")
-            raise
+            logger.error(f"티커 데이터 검증 오류: {e}")
+            return False
+    
+    def _normalize_ticker_data(self, ticker_data: Dict, endpoint: str) -> Dict:
+        """🔥🔥🔥 티커 데이터 정규화"""
+        try:
+            normalized = {}
+            
+            # 가격 필드 정규화
+            price_mappings = [
+                ('last', ['last', 'lastPr', 'close', 'price']),
+                ('high', ['high', 'high24h', 'highPrice']),
+                ('low', ['low', 'low24h', 'lowPrice']),
+                ('volume', ['volume', 'vol', 'baseVolume', 'baseVol']),
+                ('changeUtc', ['changeUtc', 'change', 'priceChange', 'priceChangePercent'])
+            ]
+            
+            for target_field, source_fields in price_mappings:
+                for source_field in source_fields:
+                    value = ticker_data.get(source_field)
+                    if value is not None:
+                        try:
+                            if target_field == 'changeUtc':
+                                # 변화율을 소수로 변환 (예: 2.5% -> 0.025)
+                                change_val = float(value)
+                                if abs(change_val) > 1:  # 백분율 형태인 경우
+                                    change_val = change_val / 100
+                                normalized[target_field] = change_val
+                            else:
+                                normalized[target_field] = float(value)
+                            break
+                        except:
+                            continue
+            
+            # 기본값 설정
+            if 'last' not in normalized:
+                normalized['last'] = 0
+            if 'changeUtc' not in normalized:
+                normalized['changeUtc'] = 0
+            if 'volume' not in normalized:
+                normalized['volume'] = 0
+            
+            # 원본 데이터도 포함
+            normalized['_original'] = ticker_data
+            normalized['_endpoint'] = endpoint
+            
+            return normalized
+            
+        except Exception as e:
+            logger.error(f"티커 데이터 정규화 실패: {e}")
+            return ticker_data
     
     async def get_positions(self, symbol: str = None) -> List[Dict]:
         """포지션 조회 (V2 API)"""
@@ -1817,6 +2098,23 @@ class BitgetClient:
         except Exception as e:
             logger.error(f"K라인 조회 실패: {e}")
             raise
+    
+    async def get_api_connection_status(self) -> Dict:
+        """🔥🔥🔥 API 연결 상태 조회"""
+        return {
+            'healthy': self.api_connection_healthy,
+            'consecutive_failures': self.consecutive_failures,
+            'last_successful_call': self.last_successful_call.isoformat(),
+            'api_keys_validated': self.api_keys_validated,
+            'max_failures_threshold': self.max_consecutive_failures
+        }
+    
+    async def reset_connection_status(self):
+        """🔥🔥🔥 연결 상태 리셋"""
+        self.api_connection_healthy = True
+        self.consecutive_failures = 0
+        self.last_successful_call = datetime.now()
+        logger.info("비트겟 API 연결 상태 리셋 완료")
     
     async def close(self):
         """세션 종료"""
