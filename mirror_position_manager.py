@@ -22,6 +22,7 @@ class MirrorPositionManager:
         # 미러링 상태 관리
         self.mirrored_positions: Dict[str, PositionInfo] = {}
         self.startup_positions: Set[str] = set()
+        self.startup_gate_positions: Set[str] = set()  # 🔥🔥🔥 게이트 startup positions 추가
         self.failed_mirrors: List[MirrorResult] = []
         
         # 포지션 크기 추적
@@ -91,6 +92,7 @@ class MirrorPositionManager:
             'price_sync_delays': 0,        # 🔥🔥🔥 시세 차이로 인한 지연
             'position_wait_timeouts': 0,   # 🔥🔥🔥 포지션 체결 대기 타임아웃
             'successful_position_waits': 0, # 🔥🔥🔥 성공적인 포지션 체결 대기
+            'sync_status_corrected': 0,    # 🔥🔥🔥 동기화 상태 수정 카운터
             'errors': []
         }
         
@@ -116,7 +118,7 @@ class MirrorPositionManager:
             # 초기 포지션 및 예약 주문 기록
             await self._record_startup_positions()
             await self._record_startup_plan_orders()
-            await self._record_startup_gate_positions()
+            await self._record_startup_gate_positions()  # 🔥🔥🔥 게이트 startup positions 기록
             
             # 예약 주문 초기 스냅샷 생성
             await self._create_initial_plan_order_snapshot()
@@ -811,36 +813,68 @@ class MirrorPositionManager:
             self.logger.error(f"포지션 종료 처리 실패: {e}")
 
     async def check_sync_status(self) -> Dict:
-        """동기화 상태 확인"""
+        """🔥🔥🔥 동기화 상태 확인 - 개선된 로직"""
         try:
+            # 비트겟 포지션 조회
             bitget_positions = await self.bitget.get_positions(self.SYMBOL)
             bitget_active = [
                 pos for pos in bitget_positions 
                 if float(pos.get('total', 0)) > 0
             ]
             
+            # 게이트 포지션 조회
             gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
             gate_active = [
                 pos for pos in gate_positions 
                 if pos.get('size', 0) != 0
             ]
             
-            # 신규 미러링된 포지션만 카운팅
+            # 🔥🔥🔥 신규 포지션만 정확하게 카운팅
             new_bitget_positions = []
             for pos in bitget_active:
                 pos_id = self.utils.generate_position_id(pos)
                 if pos_id not in self.startup_positions:
                     new_bitget_positions.append(pos)
             
+            # 🔥🔥🔥 게이트도 startup positions를 고려하여 계산
+            new_gate_positions = []
+            for pos in gate_active:
+                # 게이트 포지션 ID 생성 (시세 차이 고려)
+                gate_pos_id = self._generate_gate_position_id(pos)
+                
+                # startup 시점에 없던 포지션만 카운팅
+                if gate_pos_id not in self.startup_gate_positions:
+                    # 🔥🔥🔥 시세 차이를 고려한 매칭 로직
+                    is_startup_match = await self._is_startup_position_match(pos)
+                    if not is_startup_match:
+                        new_gate_positions.append(pos)
+            
             new_bitget_count = len(new_bitget_positions)
-            new_gate_count = len(gate_active)  # 간단화
+            new_gate_count = len(new_gate_positions)
             position_diff = new_bitget_count - new_gate_count
+            
+            # 🔥🔥🔥 차이가 있을 때 상세 분석
+            if position_diff != 0:
+                self.daily_stats['sync_status_corrected'] += 1
+                self.logger.info(f"🔍 동기화 상태 분석:")
+                self.logger.info(f"   비트겟 전체 포지션: {len(bitget_active)}개")
+                self.logger.info(f"   비트겟 신규 포지션: {new_bitget_count}개")
+                self.logger.info(f"   게이트 전체 포지션: {len(gate_active)}개")
+                self.logger.info(f"   게이트 신규 포지션: {new_gate_count}개")
+                self.logger.info(f"   차이: {position_diff}개")
+                
+                # 시세 차이 정보 추가
+                price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
+                self.logger.info(f"   현재 시세 차이: ${price_diff_abs:.2f}")
             
             return {
                 'is_synced': position_diff == 0,
                 'bitget_new_count': new_bitget_count,
                 'gate_new_count': new_gate_count,
-                'position_diff': position_diff
+                'position_diff': position_diff,
+                'bitget_total_count': len(bitget_active),
+                'gate_total_count': len(gate_active),
+                'price_diff': abs(self.bitget_current_price - self.gate_current_price)
             }
             
         except Exception as e:
@@ -849,10 +883,68 @@ class MirrorPositionManager:
                 'is_synced': True,  # 오류 시 동기화됨으로 처리
                 'bitget_new_count': 0,
                 'gate_new_count': 0,
-                'position_diff': 0
+                'position_diff': 0,
+                'bitget_total_count': 0,
+                'gate_total_count': 0,
+                'price_diff': 0
             }
 
-    # === 기존 헬퍼 메서드들 (변경 없음) ===
+    def _generate_gate_position_id(self, gate_pos: Dict) -> str:
+        """🔥🔥🔥 게이트 포지션 ID 생성"""
+        try:
+            contract = gate_pos.get('contract', self.GATE_CONTRACT)
+            size = gate_pos.get('size', 0)
+            
+            # 포지션 방향 결정
+            if isinstance(size, (int, float)) and size != 0:
+                side = 'long' if size > 0 else 'short'
+            else:
+                side = 'unknown'
+            
+            # 평균 진입가 (없으면 현재 시세 사용)
+            entry_price = gate_pos.get('entry_price', self.gate_current_price or 0)
+            
+            return f"{contract}_{side}_{entry_price}"
+            
+        except Exception as e:
+            self.logger.error(f"게이트 포지션 ID 생성 실패: {e}")
+            return f"{self.GATE_CONTRACT}_unknown_unknown"
+
+    async def _is_startup_position_match(self, gate_pos: Dict) -> bool:
+        """🔥🔥🔥 게이트 포지션이 startup 시점의 포지션과 매칭되는지 확인 (시세 차이 고려)"""
+        try:
+            gate_size = gate_pos.get('size', 0)
+            gate_side = 'long' if gate_size > 0 else 'short'
+            gate_entry_price = float(gate_pos.get('entry_price', 0))
+            
+            # startup positions와 비교
+            for startup_pos_id in self.startup_positions:
+                # startup_pos_id 형식: "BTCUSDT_long_104500.0" 같은 형태
+                try:
+                    parts = startup_pos_id.split('_')
+                    if len(parts) >= 3:
+                        startup_side = parts[1]
+                        startup_price = float(parts[2])
+                        
+                        # 방향이 같고 가격 차이가 시세 차이 범위 내인지 확인
+                        if gate_side == startup_side:
+                            price_diff_abs = abs(gate_entry_price - startup_price)
+                            # 🔥🔥🔥 시세 차이를 고려한 관대한 매칭 (±50달러)
+                            if price_diff_abs <= 50:
+                                self.logger.info(f"🔍 startup 포지션 매칭됨: 게이트({gate_side}, ${gate_entry_price}) ↔ startup({startup_side}, ${startup_price})")
+                                return True
+                                
+                except Exception as parse_error:
+                    self.logger.debug(f"startup position ID 파싱 실패: {startup_pos_id} - {parse_error}")
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"startup 포지션 매칭 확인 실패: {e}")
+            return False
+
+    # === 기존 헬퍼 메서드들 ===
     
     async def _check_existing_gate_positions(self):
         """렌더 재구동 시 기존 게이트 포지션 확인"""
@@ -957,14 +1049,18 @@ class MirrorPositionManager:
             self.logger.error(f"기존 예약 주문 기록 실패: {e}")
 
     async def _record_startup_gate_positions(self):
-        """시작시 게이트 포지션 수 기록"""
+        """🔥🔥🔥 시작시 게이트 포지션 기록 - 개선된 로직"""
         try:
             gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
-            startup_gate_positions_count = sum(
-                1 for pos in gate_positions 
-                if pos.get('size', 0) != 0
-            )
-            self.logger.info(f"시작시 게이트 포지션 수 기록: {startup_gate_positions_count}개")
+            
+            for pos in gate_positions:
+                if pos.get('size', 0) != 0:
+                    gate_pos_id = self._generate_gate_position_id(pos)
+                    self.startup_gate_positions.add(gate_pos_id)
+                    
+                    self.logger.info(f"📝 게이트 startup 포지션 기록: {gate_pos_id}")
+            
+            self.logger.info(f"✅ 시작시 게이트 포지션 수 기록: {len(self.startup_gate_positions)}개")
             
         except Exception as e:
             self.logger.error(f"시작시 게이트 포지션 기록 실패: {e}")
