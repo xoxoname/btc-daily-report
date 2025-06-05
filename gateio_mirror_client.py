@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제"""
+    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제 + 클로즈 주문 방향 수정"""
     
     def __init__(self, config):
         self.config = config
@@ -308,7 +308,7 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """🔥 완벽한 TP/SL 미러링 주문 생성"""
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 클로즈 주문 방향 수정"""
         try:
             # 비트겟 주문 정보 추출
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
@@ -354,22 +354,45 @@ class GateioMirrorClient:
                     except:
                         continue
             
-            # 클로즈 주문 여부 판단
+            # 🔥🔥🔥 클로즈 주문 여부 및 방향 판단 수정
             reduce_only = bitget_order.get('reduceOnly', False)
             is_close_order = ('close' in side or reduce_only is True or reduce_only == 'true')
             
-            # Gate.io 사이즈 조정
+            # 🔥🔥🔥 클로즈 주문 방향 수정 로직
             if is_close_order:
                 # 클로즈 주문: reduce_only=True
                 final_size = gate_size
                 reduce_only_flag = True
+                
+                # 🔥🔥🔥 클로즈 주문 방향 매핑 수정
+                if 'close_long' in side or side == 'close long':
+                    # 롱 포지션 종료 → 매도 (음수)
+                    final_size = -abs(gate_size)
+                    logger.info(f"🔴 클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
+                    
+                elif 'close_short' in side or side == 'close short':
+                    # 숏 포지션 종료 → 매수 (양수)
+                    final_size = abs(gate_size)
+                    logger.info(f"🟢 클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
+                    
+                else:
+                    # 일반적인 매도/매수 기반 판단 (클로즈 주문)
+                    if 'sell' in side or 'short' in side:
+                        final_size = -abs(gate_size)
+                        logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
+                    else:
+                        final_size = abs(gate_size)
+                        logger.info(f"🟢 클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
+                
             else:
                 # 오픈 주문: 방향 고려
+                reduce_only_flag = False
                 if 'short' in side or 'sell' in side:
                     final_size = -abs(gate_size)
+                    logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {final_size})")
                 else:
                     final_size = abs(gate_size)
-                reduce_only_flag = False
+                    logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {final_size})")
             
             # Gate.io 트리거 타입 결정
             gate_trigger_type = "ge" if trigger_price > current_gate_price else "le"
@@ -379,7 +402,7 @@ class GateioMirrorClient:
             logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
             logger.info(f"   - 트리거가: ${trigger_price:.2f}")
             
-            # 🔥🔥🔥 f-string 포맷팅 오류 수정
+            # TP/SL 표시 수정
             tp_display = f"${tp_price:.2f}" if tp_price is not None else "없음"
             sl_display = f"${sl_price:.2f}" if sl_price is not None else "없음"
             
