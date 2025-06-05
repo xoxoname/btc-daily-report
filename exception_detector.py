@@ -67,27 +67,27 @@ class ExceptionDetector:
                 self.logger.debug("가격 데이터가 None 또는 빈 값")
                 return None
             
-            # 'last' 필드에서 현재가 추출
+            if isinstance(price_data, str):
+                self.logger.debug(f"문자열 가격 데이터 수신: {price_data}")
+                return None
+            
             current_price = None
-            if 'last' in price_data:
-                try:
-                    current_price = float(price_data['last'])
-                except (ValueError, TypeError):
-                    self.logger.warning(f"'last' 필드 변환 실패: {price_data.get('last')}")
             
-            # 'close' 필드 백업
-            if current_price is None and 'close' in price_data:
-                try:
-                    current_price = float(price_data['close'])
-                except (ValueError, TypeError):
-                    self.logger.warning(f"'close' 필드 변환 실패: {price_data.get('close')}")
+            # 🔥🔥 더 많은 필드에서 가격 추출 시도
+            price_fields = ['last', 'close', 'price', 'lastPrice', 'closePrice', 'mark', 'markPrice']
             
-            # 'price' 필드 백업
-            if current_price is None and 'price' in price_data:
-                try:
-                    current_price = float(price_data['price'])
-                except (ValueError, TypeError):
-                    self.logger.warning(f"'price' 필드 변환 실패: {price_data.get('price')}")
+            for field in price_fields:
+                if field in price_data:
+                    try:
+                        price_value = price_data[field]
+                        if price_value is not None and str(price_value).strip():
+                            current_price = float(price_value)
+                            if current_price > 0:
+                                self.logger.debug(f"가격 데이터 '{field}' 필드에서 추출: ${current_price:,.2f}")
+                                break
+                    except (ValueError, TypeError) as e:
+                        self.logger.debug(f"'{field}' 필드 변환 실패: {price_data.get(field)} - {e}")
+                        continue
             
             # 가격이 여전히 None이거나 0이면
             if current_price is None or current_price <= 0:
@@ -97,6 +97,10 @@ class ExceptionDetector:
                 if self.price_error_count <= 3:  # 처음 몇 번만 로그
                     self.logger.warning(f"유효하지 않은 가격 데이터: {current_price} (오류 {self.price_error_count}회)")
                     self.logger.debug(f"원본 데이터: {price_data}")
+                    
+                    # 🔥🔥 더 자세한 디버깅 정보
+                    available_fields = list(price_data.keys()) if isinstance(price_data, dict) else []
+                    self.logger.debug(f"사용 가능한 필드들: {available_fields}")
                 
                 # 마지막 유효한 가격이 있으면 사용
                 if self.last_valid_price and self.last_valid_price > self.price_validation_threshold:
@@ -131,6 +135,7 @@ class ExceptionDetector:
             
         except Exception as e:
             self.logger.error(f"가격 데이터 검증 중 오류: {e}")
+            self.logger.debug(f"오류 발생 데이터: {price_data}")
             return self.last_valid_price  # 오류 시 마지막 유효 가격 반환
     
     async def check_news_market_reaction(self, news_hash: str, news_time: datetime, 
@@ -220,25 +225,52 @@ class ExceptionDetector:
         """현재 시장 데이터 조회 - 가격 검증 포함"""
         try:
             if not self.bitget_client:
+                self.logger.warning("Bitget 클라이언트가 없어서 시장 데이터 조회 불가")
                 return None
             
             ticker = await self.bitget_client.get_ticker('BTCUSDT')
             if not ticker:
+                self.logger.warning("Ticker 데이터 조회 실패")
                 return None
+            
+            self.logger.debug(f"원본 ticker 데이터: {ticker}")
             
             # 가격 데이터 검증
             validated_price = self._validate_price_data(ticker)
             if validated_price is None:
+                self.logger.warning("가격 데이터 검증 실패")
                 return None
             
-            volume = float(ticker.get('baseVolume', 0))
-            change_24h = float(ticker.get('changeUtc', 0))
+            volume = 0.0
+            volume_fields = ['baseVolume', 'volume', 'vol', 'quoteVolume']
+            for field in volume_fields:
+                try:
+                    if field in ticker and ticker[field] is not None:
+                        volume = float(ticker[field])
+                        if volume > 0:
+                            break
+                except (ValueError, TypeError):
+                    continue
             
-            return {
+            change_24h = 0.0
+            change_fields = ['changeUtc', 'change', 'priceChangePercent', 'changePercent']
+            for field in change_fields:
+                try:
+                    if field in ticker and ticker[field] is not None:
+                        change_24h = float(ticker[field])
+                        break
+                except (ValueError, TypeError):
+                    continue
+            
+            market_data = {
                 'price': validated_price,
                 'volume': volume,
                 'change_24h': change_24h
             }
+            
+            self.logger.debug(f"시장 데이터 추출 완료: 가격=${validated_price:,.0f}, 거래량={volume:,.0f}, 변동={change_24h:.3f}")
+            
+            return market_data
             
         except Exception as e:
             self.logger.error(f"시장 데이터 조회 실패: {e}")
@@ -393,6 +425,7 @@ class ExceptionDetector:
             # 🔥🔥 가격 데이터 검증
             current_price = self._validate_price_data(ticker)
             if current_price is None:
+                self.logger.debug("단기 변동성 체크: 가격 데이터 검증 실패")
                 return None
             
             current_time = datetime.now()
@@ -466,9 +499,18 @@ class ExceptionDetector:
             # 🔥🔥 가격 데이터 검증
             current_price = self._validate_price_data(ticker)
             if current_price is None:
+                self.logger.debug("가격 변동성 체크: 가격 데이터 검증 실패")
                 return None
             
-            change_24h = float(ticker.get('changeUtc', 0))
+            change_24h = 0.0
+            change_fields = ['changeUtc', 'change', 'priceChangePercent', 'changePercent']
+            for field in change_fields:
+                try:
+                    if field in ticker and ticker[field] is not None:
+                        change_24h = float(ticker[field])
+                        break
+                except (ValueError, TypeError):
+                    continue
             
             # 24시간 변동률이 임계값 초과
             if abs(change_24h) >= self.PRICE_CHANGE_THRESHOLD:
@@ -507,7 +549,16 @@ class ExceptionDetector:
             if current_price is None:
                 return None
             
-            volume_24h = float(ticker.get('baseVolume', 0))
+            volume_24h = 0.0
+            volume_fields = ['baseVolume', 'volume', 'vol', 'quoteVolume']
+            for field in volume_fields:
+                try:
+                    if field in ticker and ticker[field] is not None:
+                        volume_24h = float(ticker[field])
+                        if volume_24h > 0:
+                            break
+                except (ValueError, TypeError):
+                    continue
             
             # 거래량이 특정 임계값 초과
             threshold_volume = 50000 * self.VOLUME_SPIKE_THRESHOLD
@@ -547,7 +598,11 @@ class ExceptionDetector:
                 else:
                     return None
             
-            funding_rate = float(funding_data.get('fundingRate', 0))
+            funding_rate = 0.0
+            try:
+                funding_rate = float(funding_data.get('fundingRate', 0))
+            except (ValueError, TypeError):
+                return None
             
             # 펀딩비가 임계값 초과
             if abs(funding_rate) >= self.FUNDING_RATE_THRESHOLD:
