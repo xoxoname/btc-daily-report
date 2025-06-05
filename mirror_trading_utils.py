@@ -45,6 +45,9 @@ class MirrorTradingUtils:
         self.GATE_CONTRACT = "BTC_USDT"
         self.MIN_MARGIN = 1.0
         self.MAX_PRICE_DIFF_PERCENT = 1.0
+        
+        # 🔥🔥🔥 트리거 가격 검증 임계값 대폭 완화
+        self.TRIGGER_PRICE_MIN_DIFF_PERCENT = 0.0001  # 0.01%에서 0.0001%로 변경
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
         """🔥 비트겟 예약 주문에서 TP/SL 정보 추출"""
@@ -364,7 +367,7 @@ class MirrorTradingUtils:
             return price or 0
     
     async def validate_trigger_price(self, trigger_price: float, side: str, current_price: float = 0) -> Tuple[bool, str]:
-        """트리거 가격 유효성 검증"""
+        """🔥🔥🔥 트리거 가격 유효성 검증 - 시장가 근처 예약 주문 허용하도록 완화"""
         try:
             if trigger_price is None or trigger_price <= 0:
                 return False, "트리거 가격이 None이거나 0 이하입니다"
@@ -372,16 +375,24 @@ class MirrorTradingUtils:
             if current_price <= 0:
                 return False, "현재 시장가를 조회할 수 없음"
             
-            # 트리거가와 현재가가 너무 근접하면 스킵
+            # 🔥🔥🔥 트리거가와 현재가가 너무 근접하면 스킵하는 조건 대폭 완화
             price_diff_percent = abs(trigger_price - current_price) / current_price * 100
-            if price_diff_percent < 0.01:
-                return False, f"트리거가와 현재가 차이가 너무 작음 ({price_diff_percent:.4f}%)"
             
-            # 극단적인 가격 차이 검증
-            if price_diff_percent > 100:
+            # 임계값을 0.01%에서 0.0001%로 대폭 완화
+            if price_diff_percent < self.TRIGGER_PRICE_MIN_DIFF_PERCENT:
+                # 🔥 매우 근접한 트리거 가격도 허용하되 경고만 출력
+                self.logger.warning(f"매우 근접한 트리거가 감지: {price_diff_percent:.4f}%, 하지만 허용")
+                return True, f"매우 근접한 트리거가이지만 허용 ({price_diff_percent:.4f}%)"
+            
+            # 극단적인 가격 차이 검증 (너무 먼 가격은 여전히 차단)
+            if price_diff_percent > 50:  # 50% 이상 차이나면 차단
                 return False, f"트리거가와 현재가 차이가 너무 큼 ({price_diff_percent:.1f}%)"
             
-            return True, "유효한 트리거 가격"
+            # 🔥🔥🔥 거래소 간 시세 차이 고려한 추가 검증
+            # 일반적으로 비트코인 선물의 거래소간 시세 차이는 0.1% 이내
+            # 하지만 때로는 더 클 수 있으므로 유연하게 처리
+            
+            return True, f"유효한 트리거 가격 (차이: {price_diff_percent:.4f}%)"
             
         except Exception as e:
             self.logger.error(f"트리거 가격 검증 실패: {e}")
