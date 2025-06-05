@@ -387,28 +387,71 @@ class MirrorTradingUtils:
             self.logger.error(f"트리거 가격 검증 실패: {e}")
             return False, f"검증 오류: {str(e)}"
     
-    async def calculate_gate_order_size(self, side: str, base_size: int) -> int:
-        """게이트 주문 수량 계산"""
+    async def calculate_gate_order_size_fixed(self, side: str, base_size: int, is_close_order: bool = False) -> Tuple[int, bool]:
+        """🔥🔥🔥 수정된 게이트 주문 수량 계산 - 클로즈/오픈 구분 명확화"""
         try:
-            if side in ['buy', 'open_long']:
-                return abs(base_size)
-            elif side in ['sell', 'open_short']:
-                return -abs(base_size)
-            elif side in ['close_long']:
-                return -abs(base_size)
-            elif side in ['close_short']:
-                return abs(base_size)
-            else:
-                if 'buy' in side.lower():
-                    return abs(base_size)
-                elif 'sell' in side.lower():
-                    return -abs(base_size)
+            side_lower = side.lower()
+            reduce_only = False
+            
+            self.logger.info(f"🔍 주문 타입 분석: side='{side}', is_close_order={is_close_order}")
+            
+            # 🔥 클로즈 주문 처리 (가장 중요!)
+            if is_close_order or 'close' in side_lower:
+                reduce_only = True
+                
+                if 'close_long' in side_lower:
+                    # 롱 포지션 종료 = 매도 (음수 사이즈)
+                    gate_size = -abs(base_size)
+                    self.logger.info(f"🔴 클로즈 롱: 기존 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
+                    
+                elif 'close_short' in side_lower:
+                    # 숏 포지션 종료 = 매수 (양수 사이즈)
+                    gate_size = abs(base_size)
+                    self.logger.info(f"🟢 클로즈 숏: 기존 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {gate_size})")
+                    
                 else:
-                    self.logger.warning(f"알 수 없는 주문 방향: {side}, 기본값 사용")
-                    return base_size
+                    # 일반적인 클로즈 주문 - side로 판단
+                    if 'sell' in side_lower or 'short' in side_lower:
+                        gate_size = -abs(base_size)
+                        self.logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
+                    else:
+                        gate_size = abs(base_size)
+                        self.logger.info(f"🟢 클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {gate_size})")
+                        
+            # 🔥 오픈 주문 처리
+            else:
+                reduce_only = False
+                
+                if 'open_long' in side_lower or ('buy' in side_lower and 'sell' not in side_lower):
+                    # 롱 포지션 오픈 = 매수 (양수 사이즈)
+                    gate_size = abs(base_size)
+                    self.logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {gate_size})")
+                    
+                elif 'open_short' in side_lower or 'sell' in side_lower:
+                    # 숏 포지션 오픈 = 매도 (음수 사이즈)
+                    gate_size = -abs(base_size)
+                    self.logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {gate_size})")
+                    
+                else:
+                    # 기본값 - 원래 사이즈 유지
+                    gate_size = base_size
+                    self.logger.warning(f"⚠️ 알 수 없는 주문 방향: {side}, 원본 사이즈 유지: {gate_size}")
+            
+            self.logger.info(f"✅ 최종 변환 결과: {side} → 게이트 사이즈={gate_size}, reduce_only={reduce_only}")
+            return gate_size, reduce_only
             
         except Exception as e:
             self.logger.error(f"게이트 주문 수량 계산 실패: {e}")
+            return base_size, False
+    
+    async def calculate_gate_order_size(self, side: str, base_size: int) -> int:
+        """🔥 기존 호환성을 위한 래퍼 메서드"""
+        try:
+            is_close_order = 'close' in side.lower()
+            gate_size, _ = await self.calculate_gate_order_size_fixed(side, base_size, is_close_order)
+            return gate_size
+        except Exception as e:
+            self.logger.error(f"게이트 주문 수량 계산 래퍼 실패: {e}")
             return base_size
     
     async def determine_gate_trigger_type(self, trigger_price: float, current_price: float = 0) -> str:
