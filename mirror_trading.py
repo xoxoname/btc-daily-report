@@ -22,7 +22,7 @@ class MirrorTradingSystem:
         # 유틸리티 클래스 초기화
         self.utils = MirrorTradingUtils(config, bitget_client, gate_client)
         
-        # 🔥🔥🔥 Gate.io 미러링 전용 클라이언트 import
+        # 🔥 Gate.io 미러링 전용 클라이언트 import
         try:
             from gateio_mirror_client import GateioMirrorClient
             self.gate_mirror = GateioMirrorClient(config)
@@ -31,7 +31,7 @@ class MirrorTradingSystem:
             logger.error(f"❌ Gate.io 미러링 클라이언트 import 실패: {e}")
             raise
         
-        # 🔥🔥🔥 포지션 관리자 초기화 (미러링 클라이언트 포함)
+        # 🔥 포지션 관리자 초기화 (미러링 클라이언트 포함)
         self.position_manager = MirrorPositionManager(
             config, bitget_client, gate_client, self.gate_mirror, telegram_bot, self.utils
         )
@@ -45,24 +45,24 @@ class MirrorTradingSystem:
         self.last_sync_check = datetime.min
         self.last_report_time = datetime.min
         
-        # 🔥🔥🔥 시세 차이 관리 (더욱 관대한 설정)
+        # 시세 차이 관리
         self.bitget_current_price: float = 0.0
         self.gate_current_price: float = 0.0
         self.price_diff_percent: float = 0.0
         self.last_price_update: datetime = datetime.min
-        self.price_sync_threshold: float = 100.0  # 50달러 → 100달러로 더욱 관대하게 조정
-        self.position_wait_timeout: int = 300    # 포지션 체결 대기 5분 유지
+        self.price_sync_threshold: float = 100.0
+        self.position_wait_timeout: int = 300
         
-        # 🔥🔥🔥 시세 조회 실패 관리 강화
+        # 시세 조회 실패 관리 강화
         self.last_valid_bitget_price: float = 0.0
         self.last_valid_gate_price: float = 0.0
         self.bitget_price_failures: int = 0
         self.gate_price_failures: int = 0
-        self.max_price_failures: int = 10  # 5회 → 10회로 더 관대하게
+        self.max_price_failures: int = 10
         
-        # 🔥🔥🔥 예약 주문 동기화 강화 설정
+        # 예약 주문 동기화 강화 설정
         self.order_sync_enabled: bool = True
-        self.order_sync_interval: int = 30  # 30초마다 동기화 체크
+        self.order_sync_interval: int = 30
         self.last_order_sync_time: datetime = datetime.min
         
         # 설정
@@ -81,12 +81,12 @@ class MirrorTradingSystem:
         self.daily_stats = self.position_manager.daily_stats
         
         self.monitoring = True
-        self.logger.info("🔥🔥🔥 미러 트레이딩 시스템 초기화 완료 - 완벽한 TP/SL 미러링 v3.0")
+        self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 완벽한 TP/SL 미러링 v4.0")
 
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🔥🔥🔥 미러 트레이딩 시스템 시작 - 완벽한 TP/SL 미러링 v3.0")
+            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 완벽한 TP/SL 미러링 v4.0")
             
             # Gate.io 미러링 클라이언트 초기화
             await self.gate_mirror.initialize()
@@ -94,7 +94,7 @@ class MirrorTradingSystem:
             # 현재 시세 업데이트
             await self._update_current_prices()
             
-            # 포지션 매니저 초기화 (개선된 임계값 전달)
+            # 포지션 매니저 초기화
             self.position_manager.price_sync_threshold = self.price_sync_threshold
             self.position_manager.position_wait_timeout = self.position_wait_timeout
             await self.position_manager.initialize()
@@ -109,7 +109,7 @@ class MirrorTradingSystem:
                 self.monitor_positions(),
                 self.monitor_sync_status(),
                 self.monitor_price_differences(),
-                self.monitor_order_synchronization(),  # 🔥🔥🔥 새로운 동기화 모니터링
+                self.monitor_order_synchronization(),
                 self.generate_daily_reports()
             ]
             
@@ -123,7 +123,7 @@ class MirrorTradingSystem:
             raise
 
     async def monitor_order_synchronization(self):
-        """🔥🔥🔥 예약 주문 동기화 모니터링 (신규)"""
+        """예약 주문 동기화 모니터링"""
         try:
             self.logger.info("🔄 예약 주문 동기화 모니터링 시작")
             
@@ -140,7 +140,7 @@ class MirrorTradingSystem:
                         await self._perform_comprehensive_order_sync()
                         self.last_order_sync_time = current_time
                     
-                    await asyncio.sleep(5)  # 5초마다 체크
+                    await asyncio.sleep(5)
                     
                 except Exception as e:
                     self.logger.error(f"예약 주문 동기화 모니터링 오류: {e}")
@@ -150,7 +150,7 @@ class MirrorTradingSystem:
             self.logger.error(f"예약 주문 동기화 모니터링 시스템 실패: {e}")
 
     async def _perform_comprehensive_order_sync(self):
-        """🔥🔥🔥 종합적인 예약 주문 동기화"""
+        """종합적인 예약 주문 동기화"""
         try:
             self.logger.debug("🔄 종합 예약 주문 동기화 시작")
             
@@ -193,14 +193,14 @@ class MirrorTradingSystem:
             self.logger.error(f"종합 예약 주문 동기화 실패: {e}")
 
     async def _analyze_comprehensive_sync(self, bitget_orders: List[Dict], gate_orders: List[Dict]) -> Dict:
-        """🔥🔥🔥 종합적인 동기화 분석"""
+        """종합적인 동기화 분석"""
         try:
             analysis = {
                 'requires_action': False,
-                'missing_mirrors': [],      # 비트겟에 있지만 게이트에 없는 주문
-                'orphaned_orders': [],      # 게이트에만 있는 주문
-                'price_mismatches': [],     # 가격이 맞지 않는 주문
-                'size_mismatches': [],      # 크기가 맞지 않는 주문
+                'missing_mirrors': [],
+                'orphaned_orders': [],
+                'price_mismatches': [],
+                'size_mismatches': [],
                 'total_issues': 0
             }
             
@@ -227,24 +227,14 @@ class MirrorTradingSystem:
                             break
                     
                     if not gate_order_found:
-                        # 게이트에서 주문이 없음 (누락)
                         analysis['missing_mirrors'].append({
                             'bitget_order_id': bitget_order_id,
                             'bitget_order': bitget_order,
                             'expected_gate_id': expected_gate_id,
                             'type': 'missing_mirror'
                         })
-                    else:
-                        # 주문이 있으면 가격/크기 비교
-                        price_mismatch = await self._check_price_mismatch(bitget_order, gate_order_found, mirror_info)
-                        size_mismatch = await self._check_size_mismatch(bitget_order, gate_order_found, mirror_info)
-                        
-                        if price_mismatch:
-                            analysis['price_mismatches'].append(price_mismatch)
-                        if size_mismatch:
-                            analysis['size_mismatches'].append(size_mismatch)
                 else:
-                    # 미러링 기록이 없는 비트겟 주문 (새로운 주문이거나 누락된 복제)
+                    # 미러링 기록이 없는 비트겟 주문
                     analysis['missing_mirrors'].append({
                         'bitget_order_id': bitget_order_id,
                         'bitget_order': bitget_order,
@@ -252,7 +242,7 @@ class MirrorTradingSystem:
                         'type': 'unmirrored'
                     })
             
-            # 게이트 고아 주문 찾기 (비트겟에 대응되지 않는 주문)
+            # 게이트 고아 주문 찾기
             for gate_order in gate_orders:
                 gate_order_id = gate_order.get('id', '')
                 if not gate_order_id:
@@ -262,7 +252,7 @@ class MirrorTradingSystem:
                 bitget_order_id = self.position_manager.gate_to_bitget_order_mapping.get(gate_order_id)
                 
                 if not bitget_order_id:
-                    # 매핑이 없는 경우, 기존 게이트 주문인지 확인
+                    # 기존 게이트 주문인지 확인
                     if gate_order_id not in self.position_manager.gate_existing_orders_detailed:
                         analysis['orphaned_orders'].append({
                             'gate_order_id': gate_order_id,
@@ -298,85 +288,22 @@ class MirrorTradingSystem:
                 self.logger.info(f"🔍 동기화 문제 발견: {analysis['total_issues']}건")
                 self.logger.info(f"   - 누락 미러링: {len(analysis['missing_mirrors'])}건")
                 self.logger.info(f"   - 고아 주문: {len(analysis['orphaned_orders'])}건")
-                self.logger.info(f"   - 가격 불일치: {len(analysis['price_mismatches'])}건")
-                self.logger.info(f"   - 크기 불일치: {len(analysis['size_mismatches'])}건")
             
             return analysis
             
         except Exception as e:
             self.logger.error(f"종합 동기화 분석 실패: {e}")
-            return {'requires_action': False, 'total_issues': 0, 'missing_mirrors': [], 'orphaned_orders': [], 'price_mismatches': [], 'size_mismatches': []}
-
-    async def _check_price_mismatch(self, bitget_order: Dict, gate_order: Dict, mirror_info: Dict) -> Optional[Dict]:
-        """🔥🔥🔥 가격 불일치 확인"""
-        try:
-            # 비트겟 트리거 가격
-            bitget_trigger = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if bitget_order.get(price_field):
-                    bitget_trigger = float(bitget_order.get(price_field))
-                    break
-            
-            # 게이트 트리거 가격
-            gate_trigger_info = gate_order.get('trigger', {})
-            gate_trigger = float(gate_trigger_info.get('price', 0))
-            
-            if bitget_trigger > 0 and gate_trigger > 0:
-                # 시세 차이를 고려한 허용 오차 (현재 시세 차이 + 추가 5%)
-                current_price_diff = abs(self.bitget_current_price - self.gate_current_price)
-                allowed_diff = current_price_diff + (bitget_trigger * 0.05)  # 5% 추가 허용
-                
-                actual_diff = abs(bitget_trigger - gate_trigger)
-                
-                if actual_diff > allowed_diff:
-                    return {
-                        'bitget_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', '')),
-                        'gate_order_id': gate_order.get('id', ''),
-                        'bitget_price': bitget_trigger,
-                        'gate_price': gate_trigger,
-                        'difference': actual_diff,
-                        'allowed_difference': allowed_diff,
-                        'issue': 'price_mismatch'
-                    }
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"가격 불일치 확인 실패: {e}")
-            return None
-
-    async def _check_size_mismatch(self, bitget_order: Dict, gate_order: Dict, mirror_info: Dict) -> Optional[Dict]:
-        """🔥🔥🔥 크기 불일치 확인"""
-        try:
-            # 저장된 미러 정보에서 예상 크기
-            expected_gate_size = mirror_info.get('size', 0)
-            
-            # 실제 게이트 주문 크기
-            gate_initial = gate_order.get('initial', {})
-            actual_gate_size = int(gate_initial.get('size', 0))
-            
-            if expected_gate_size != 0 and actual_gate_size != 0:
-                size_diff_percent = abs(expected_gate_size - actual_gate_size) / abs(expected_gate_size) * 100
-                
-                # 10% 이상 차이나면 문제로 간주
-                if size_diff_percent > 10:
-                    return {
-                        'bitget_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', '')),
-                        'gate_order_id': gate_order.get('id', ''),
-                        'expected_size': expected_gate_size,
-                        'actual_size': actual_gate_size,
-                        'difference_percent': size_diff_percent,
-                        'issue': 'size_mismatch'
-                    }
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"크기 불일치 확인 실패: {e}")
-            return None
+            return {
+                'requires_action': False, 
+                'total_issues': 0, 
+                'missing_mirrors': [], 
+                'orphaned_orders': [], 
+                'price_mismatches': [], 
+                'size_mismatches': []
+            }
 
     async def _fix_sync_issues(self, sync_analysis: Dict):
-        """🔥🔥🔥 동기화 문제 해결"""
+        """동기화 문제 해결"""
         try:
             fixed_count = 0
             
@@ -388,13 +315,12 @@ class MirrorTradingSystem:
                     
                     self.logger.info(f"🔄 누락된 미러링 복제: {bitget_order_id}")
                     
-                    # 이미 처리된 주문인지 확인
                     if bitget_order_id not in self.position_manager.processed_plan_orders:
                         result = await self.position_manager._process_perfect_mirror_order(bitget_order)
                         
                         if result in ["perfect_success", "partial_success"]:
                             fixed_count += 1
-                            self.daily_stats['sync_corrections'] += 1
+                            self.daily_stats['sync_corrections'] = self.daily_stats.get('sync_corrections', 0) + 1
                             self.logger.info(f"✅ 누락 미러링 완료: {bitget_order_id}")
                         
                         self.position_manager.processed_plan_orders.add(bitget_order_id)
@@ -411,7 +337,7 @@ class MirrorTradingSystem:
                     
                     await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
                     fixed_count += 1
-                    self.daily_stats['sync_deletions'] += 1
+                    self.daily_stats['sync_deletions'] = self.daily_stats.get('sync_deletions', 0) + 1
                     
                     # 매핑에서도 제거
                     if gate_order_id in self.position_manager.gate_to_bitget_order_mapping:
@@ -425,15 +351,13 @@ class MirrorTradingSystem:
                 except Exception as e:
                     self.logger.error(f"고아 주문 삭제 실패: {gate_order_id} - {e}")
             
-            # 동기화 결과 알림 (5개 이상 문제가 해결되었을 때만)
+            # 동기화 결과 알림
             if fixed_count >= 5:
                 await self.telegram.send_message(
                     f"🔄 예약 주문 대규모 동기화 완료\n"
                     f"해결된 문제: {fixed_count}건\n"
                     f"- 누락 미러링 복제: {len(sync_analysis['missing_mirrors'])}건\n"
-                    f"- 고아 주문 삭제: {len(sync_analysis['orphaned_orders'])}건\n"
-                    f"- 가격 불일치: {len(sync_analysis['price_mismatches'])}건\n"
-                    f"- 크기 불일치: {len(sync_analysis['size_mismatches'])}건\n\n"
+                    f"- 고아 주문 삭제: {len(sync_analysis['orphaned_orders'])}건\n\n"
                     f"📊 현재 시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}"
                 )
             elif fixed_count > 0:
@@ -461,10 +385,8 @@ class MirrorTradingSystem:
         
         while self.monitoring:
             try:
-                # 시세 차이 확인 후 처리
                 await self._update_current_prices()
                 
-                # 유효한 시세 차이인지 확인 (0 가격 제외)
                 valid_price_diff = self._get_valid_price_difference()
                 if valid_price_diff is None:
                     pass
@@ -519,7 +441,6 @@ class MirrorTradingSystem:
                     if float(pos.get('total', 0)) > 0
                 ]
                 
-                # 실제 포지션 처리
                 active_position_ids = set()
                 
                 for pos in bitget_active:
@@ -548,7 +469,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.CHECK_INTERVAL * 2)
 
     async def _update_current_prices(self):
-        """🔥🔥🔥 양쪽 거래소 현재 시세 업데이트 - 더욱 관대한 오류 처리"""
+        """양쪽 거래소 현재 시세 업데이트"""
         try:
             # 비트겟 현재가 조회
             try:
@@ -568,15 +489,12 @@ class MirrorTradingSystem:
                 self.bitget_price_failures += 1
                 self.logger.warning(f"비트겟 시세 조회 실패 ({self.bitget_price_failures}회): {bitget_error}")
                 
-                # 이전 유효 가격 사용 또는 게이트 가격으로 대체
                 if self.last_valid_bitget_price > 0:
                     self.bitget_current_price = self.last_valid_bitget_price
-                    self.logger.info(f"비트겟 이전 유효 가격 사용: ${self.bitget_current_price:.2f}")
                 elif self.gate_current_price > 0:
                     self.bitget_current_price = self.gate_current_price
-                    self.logger.info(f"게이트 가격으로 비트겟 가격 대체: ${self.bitget_current_price:.2f}")
             
-            # 게이트 현재가 조회 (미러링 클라이언트 사용)
+            # 게이트 현재가 조회
             try:
                 new_gate_price = await self.gate_mirror.get_current_price(self.GATE_CONTRACT)
                 if new_gate_price > 0:
@@ -590,28 +508,22 @@ class MirrorTradingSystem:
                 self.gate_price_failures += 1
                 self.logger.warning(f"게이트 시세 조회 실패 ({self.gate_price_failures}회): {gate_error}")
                 
-                # 이전 유효 가격 사용 또는 비트겟 가격으로 대체
                 if self.last_valid_gate_price > 0:
                     self.gate_current_price = self.last_valid_gate_price
-                    self.logger.info(f"게이트 이전 유효 가격 사용: ${self.gate_current_price:.2f}")
                 elif self.bitget_current_price > 0:
                     self.gate_current_price = self.bitget_current_price
-                    self.logger.info(f"비트겟 가격으로 게이트 가격 대체: ${self.gate_current_price:.2f}")
             
             # 시세 차이 계산
             if self.bitget_current_price > 0 and self.gate_current_price > 0:
                 price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
                 self.price_diff_percent = price_diff_abs / self.bitget_current_price * 100
                 
-                # 🔥🔥🔥 더욱 관대한 정상적인 시세 차이만 로깅 (2000달러 이하)
-                if price_diff_abs <= 2000:  # 1000달러 → 2000달러로 더 관대하게
+                if price_diff_abs <= 2000:
                     if price_diff_abs > self.price_sync_threshold:
-                        # 로그 레벨을 DEBUG로 유지하여 과도한 로그 방지
-                        self.logger.debug(f"시세 차이: 비트겟 ${self.bitget_current_price:.2f}, 게이트 ${self.gate_current_price:.2f}, 차이 ${price_diff_abs:.2f} (임계값: {self.price_sync_threshold}$)")
+                        self.logger.debug(f"시세 차이: 비트겟 ${self.bitget_current_price:.2f}, 게이트 ${self.gate_current_price:.2f}, 차이 ${price_diff_abs:.2f}")
                 else:
                     self.logger.warning(f"비정상적인 시세 차이 감지: ${price_diff_abs:.2f}, 이전 가격 유지")
                     return
-                    
             else:
                 self.price_diff_percent = 0.0
                 self.logger.warning(f"시세 조회 실패: 비트겟={self.bitget_current_price}, 게이트={self.gate_current_price}")
@@ -629,14 +541,13 @@ class MirrorTradingSystem:
             self.logger.error(f"시세 업데이트 실패: {e}")
 
     def _get_valid_price_difference(self) -> Optional[float]:
-        """유효한 시세 차이 반환 (0 가격 제외)"""
+        """유효한 시세 차이 반환"""
         try:
             if self.bitget_current_price <= 0 or self.gate_current_price <= 0:
                 return None
             
             price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
             
-            # 더욱 관대한 비정상적으로 큰 차이 임계값 (2000달러)
             if price_diff_abs > 2000:
                 return None
                 
@@ -647,7 +558,7 @@ class MirrorTradingSystem:
             return None
 
     async def monitor_price_differences(self):
-        """🔥🔥🔥 거래소 간 시세 차이 모니터링 - 더욱 관대한 설정"""
+        """거래소 간 시세 차이 모니터링"""
         consecutive_errors = 0
         last_warning_time = datetime.min
         last_normal_report_time = datetime.min
@@ -656,7 +567,6 @@ class MirrorTradingSystem:
             try:
                 await self._update_current_prices()
                 
-                # 유효한 시세 차이만 확인
                 valid_price_diff = self._get_valid_price_difference()
                 
                 if valid_price_diff is None:
@@ -667,12 +577,11 @@ class MirrorTradingSystem:
                 
                 now = datetime.now()
                 
-                # 🔥🔥🔥 경고 빈도 더욱 감소 - 임계값 100달러, 경고는 4시간마다만
                 if (valid_price_diff > self.price_sync_threshold and 
-                    (now - last_warning_time).total_seconds() > 14400):  # 2시간 → 4시간으로 더 감소
+                    (now - last_warning_time).total_seconds() > 14400):
                     
                     await self.telegram.send_message(
-                        f"📊 시세 차이 안내 (완벽한 TP/SL 미러링 v3.0)\n"
+                        f"📊 시세 차이 안내 (완벽한 TP/SL 미러링 v4.0)\n"
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f} (임계값: ${self.price_sync_threshold}$)\n"
@@ -682,20 +591,19 @@ class MirrorTradingSystem:
                     )
                     last_warning_time = now
                 
-                # 🔥🔥🔥 12시간마다 정상 상태 리포트 (더욱 감소)
                 elif ((now - last_normal_report_time).total_seconds() > 43200 and 
-                      self.price_diff_percent > 0.05):  # 8시간 → 12시간으로 더 감소
+                      self.price_diff_percent > 0.05):
                     
                     status_emoji = "✅" if valid_price_diff <= self.price_sync_threshold else "📊"
                     status_text = "정상" if valid_price_diff <= self.price_sync_threshold else "범위 초과"
                     
                     await self.telegram.send_message(
-                        f"📊 12시간 시세 현황 리포트 (완벽한 TP/SL 미러링 v3.0)\n"
+                        f"📊 12시간 시세 현황 리포트 (완벽한 TP/SL 미러링 v4.0)\n"
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)\n"
                         f"상태: {status_emoji} {status_text}\n"
-                        f"임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)\n"
+                        f"임계값: ${self.price_sync_threshold}$\n"
                         f"실패 횟수: 비트겟 {self.bitget_price_failures}회, 게이트 {self.gate_price_failures}회\n\n"
                         f"🔄 예약 주문 동기화: 30초마다 자동 실행\n"
                         f"🎯 완벽한 TP/SL 미러링: 하나의 주문으로 모든 설정 완료"
@@ -703,7 +611,7 @@ class MirrorTradingSystem:
                     last_normal_report_time = now
                 
                 consecutive_errors = 0
-                await asyncio.sleep(60)  # 60초마다 체크 유지
+                await asyncio.sleep(60)
                 
             except Exception as e:
                 consecutive_errors += 1
@@ -724,52 +632,30 @@ class MirrorTradingSystem:
             try:
                 await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
                 
-                # 포지션 매니저에서 동기화 상태 확인
                 sync_status = await self.position_manager.check_sync_status()
                 
                 if not sync_status['is_synced']:
                     sync_retry_count += 1
                     
-                    if sync_retry_count >= 3:  # 3회 연속 불일치
-                        # 실제 원인 분석
+                    if sync_retry_count >= 3:
                         valid_price_diff = self._get_valid_price_difference()
                         
-                        # 가능한 원인들 분석
                         possible_causes = []
                         
-                        # 1. 시세 차이 원인
                         if valid_price_diff and valid_price_diff > self.price_sync_threshold:
                             possible_causes.append(f"시세 차이 큼 (${valid_price_diff:.2f})")
                         
-                        # 2. 가격 조회 실패 원인
                         if self.bitget_price_failures > 0 or self.gate_price_failures > 0:
                             possible_causes.append(f"가격 조회 실패 (비트겟: {self.bitget_price_failures}회, 게이트: {self.gate_price_failures}회)")
                         
-                        # 3. 렌더 재구동 원인
                         if self.position_manager.render_restart_detected:
                             possible_causes.append("렌더 재구동 후 기존 포지션 존재")
                         
-                        # 4. 시스템 초기화 중
-                        startup_time = datetime.now() - self.position_manager.startup_time if hasattr(self.position_manager, 'startup_time') else timedelta(minutes=10)
-                        if startup_time.total_seconds() < 300:  # 5분 이내
-                            possible_causes.append("시스템 초기화 중 (정상)")
-                        
-                        # 5. 실제 포지션 차이
-                        actual_diff = abs(sync_status['bitget_total_count'] - sync_status['gate_total_count'])
-                        if actual_diff > 1:
-                            possible_causes.append(f"실제 포지션 개수 차이 (비트겟: {sync_status['bitget_total_count']}개, 게이트: {sync_status['gate_total_count']}개)")
-                        
-                        # 6. 시세 차이로 인한 포지션 ID 불일치
-                        if valid_price_diff and valid_price_diff > 10:  # 10달러 이상 차이
-                            possible_causes.append(f"시세 차이로 인한 포지션 매칭 오류 (±{valid_price_diff:.1f}$)")
-                        
-                        # 7. 원인 없음
                         if not possible_causes:
                             possible_causes.append("알 수 없는 원인 (대부분 정상적인 일시적 차이)")
                         
-                        # 메시지 톤 개선 - 덜 경고스럽게
                         await self.telegram.send_message(
-                            f"📊 포지션 동기화 상태 분석 (완벽한 TP/SL 미러링 v3.0)\n"
+                            f"📊 포지션 동기화 상태 분석 (완벽한 TP/SL 미러링 v4.0)\n"
                             f"비트겟 신규: {sync_status['bitget_new_count']}개\n"
                             f"게이트 신규: {sync_status['gate_new_count']}개\n"
                             f"차이: {sync_status['position_diff']}개\n"
@@ -779,15 +665,13 @@ class MirrorTradingSystem:
                             f"📈 상세 정보:\n"
                             f"• 비트겟 전체: {sync_status['bitget_total_count']}개\n"
                             f"• 게이트 전체: {sync_status['gate_total_count']}개\n"
-                            f"• 현재 시세 차이: ${sync_status.get('price_diff', 0):.2f} (임계값: ${self.price_sync_threshold}$)\n"
-                            f"• 동기화 수정: {self.daily_stats.get('sync_corrections', 0)}회\n"
-                            f"• 동기화 삭제: {self.daily_stats.get('sync_deletions', 0)}회\n\n"
+                            f"• 현재 시세 차이: ${sync_status.get('price_diff', 0):.2f}\n\n"
                             f"🔄 30초마다 예약 주문 자동 동기화 활성화\n"
                             f"🎯 완벽한 TP/SL 미러링으로 정확한 복제 보장\n"
                             f"💡 대부분 정상적인 상황이며 자동으로 해결됩니다."
                         )
                         
-                        sync_retry_count = 0  # 리셋
+                        sync_retry_count = 0
                 else:
                     sync_retry_count = 0
                 
@@ -815,7 +699,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(3600)
 
     async def _create_daily_report(self) -> str:
-        """🔥🔥🔥 일일 리포트 생성 - 완벽한 TP/SL 미러링 정보 포함"""
+        """일일 리포트 생성 - 완벽한 TP/SL 미러링 정보 포함"""
         try:
             bitget_account = await self.bitget.get_account_info()
             gate_account = await self.gate_mirror.get_account_balance()
@@ -839,7 +723,7 @@ class MirrorTradingSystem:
 - 비트겟: ${self.bitget_current_price:,.2f}
 - 게이트: ${self.gate_current_price:,.2f}
 - 차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)
-- 상태: {price_status} (임계값: ${self.price_sync_threshold}$ - 100달러로 더욱 관대하게)
+- 상태: {price_status} (임계값: ${self.price_sync_threshold}$)
 - 조회 실패: 비트겟 {self.bitget_price_failures}회, 게이트 {self.gate_price_failures}회"""
             else:
                 price_status_info = f"""📈 시세 차이 현황:
@@ -854,7 +738,7 @@ class MirrorTradingSystem:
             tp_sl_success = self.daily_stats.get('tp_sl_success', 0)
             tp_sl_failed = self.daily_stats.get('tp_sl_failed', 0)
             
-            report = f"""📊 미러 트레이딩 일일 리포트 (완벽한 TP/SL 미러링 v3.0)
+            report = f"""📊 미러 트레이딩 일일 리포트 (완벽한 TP/SL 미러링 v4.0)
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
@@ -900,7 +784,7 @@ class MirrorTradingSystem:
 - 전체 청산: {self.daily_stats['full_closes']}회
 - 총 거래량: ${self.daily_stats['total_volume']:,.2f}
 
-🔧 더욱 관대한 시세차이 대응 (임계값: {self.price_sync_threshold}$):
+🔧 시세차이 대응 (임계값: {self.price_sync_threshold}$):
 - 시세차이 지연: {self.daily_stats.get('price_sync_delays', 0)}회
 - 포지션 체결 대기: {self.daily_stats.get('successful_position_waits', 0)}회
 - 체결 대기 타임아웃: {self.daily_stats.get('position_wait_timeouts', 0)}회
@@ -913,7 +797,7 @@ class MirrorTradingSystem:
 - 실패 기록: {len(self.failed_mirrors)}건
 
 ━━━━━━━━━━━━━━━━━━━
-🎯 v3.0 완벽한 TP/SL 미러링 성과:
+🎯 v4.0 완벽한 TP/SL 미러링 성과:
 📈 비트겟 TP/SL → 게이트 통합 주문: 100% 완벽 복제
 📈 예약 주문 자동 동기화: 30초마다 실행
 📈 중복 복제 방지: 시간/가격/해시 기반 다중 검증
@@ -950,28 +834,14 @@ class MirrorTradingSystem:
             'close_order_mirrors': 0,
             'close_order_skipped': 0,
             'duplicate_orders_prevented': 0,
-            'render_restart_skips': 0,
-            'perfect_mirrors': 0,  # 완벽한 TP/SL 미러링 카운트
-            'partial_mirrors': 0,  # 부분 미러링 카운트
-            'tp_sl_success': 0,    # TP/SL 성공 카운트
-            'tp_sl_failed': 0,     # TP/SL 실패 카운트
+            'perfect_mirrors': 0,
+            'partial_mirrors': 0,
+            'tp_sl_success': 0,
+            'tp_sl_failed': 0,
             'unified_tp_sl_orders': 0,
-            'duplicate_advanced_prevention': 0,
-            'price_duplicate_prevention': 0,
-            'price_sync_delays': 0,
-            'position_wait_timeouts': 0,
-            'successful_position_waits': 0,
-            'sync_status_corrected': 0,
-            'close_order_position_check_failed': 0,
-            'close_order_position_wait_success': 0,
-            'close_order_delayed_for_position': 0,
-            'close_order_skipped_no_position': 0,
-            'duplicate_time_prevention': 0,
-            'successful_order_cancels': 0,
-            'failed_order_cancels': 0,
-            'sync_corrections': 0,      # 🔥🔥🔥 동기화 수정
-            'sync_deletions': 0,        # 🔥🔥🔥 동기화 삭제
-            'tp_sl_integrated_orders': 0,  # 🔥🔥🔥 통합 TP/SL 주문
+            'sync_corrections': 0,
+            'sync_deletions': 0,
+            'tp_sl_integrated_orders': 0,
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -984,7 +854,7 @@ class MirrorTradingSystem:
         self.position_manager.daily_stats = self.daily_stats
 
     async def _log_account_status(self):
-        """🔥🔥🔥 계정 상태 로깅 - 완벽한 TP/SL 미러링 정보 포함"""
+        """계정 상태 로깅 - 완벽한 TP/SL 미러링 정보 포함"""
         try:
             bitget_account = await self.bitget.get_account_info()
             bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
@@ -1001,15 +871,15 @@ class MirrorTradingSystem:
 • 비트겟: ${self.bitget_current_price:,.2f}
 • 게이트: ${self.gate_current_price:,.2f}
 • 차이: ${valid_price_diff:.2f} ({price_status})
-• 임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)"""
+• 임계값: ${self.price_sync_threshold}$ (100달러로 관대하게 조정)"""
             else:
                 price_info = f"""📈 시세 상태:
 • 시세 조회 중 문제 발생
 • 시스템이 자동으로 복구 중
-• 임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)"""
+• 임계값: ${self.price_sync_threshold}$ (100달러로 관대하게 조정)"""
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (v3.0 완벽한 TP/SL 미러링)\n\n"
+                f"🔄 미러 트레이딩 시스템 시작 (v4.0 완벽한 TP/SL 미러링)\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}\n\n"
@@ -1018,7 +888,7 @@ class MirrorTradingSystem:
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
                 f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
-                f"⚡ v3.0 핵심 개선 사항:\n"
+                f"⚡ v4.0 핵심 개선 사항:\n"
                 f"• 🎯 완벽한 TP/SL 미러링: 비트겟 설정이 게이트에서 100% 재현\n"
                 f"• 🔄 예약 주문 자동 동기화: 30초마다 실행\n"
                 f"• 🛡️ 중복 복제 방지: 다중 해시 검증 시스템\n"
@@ -1031,8 +901,8 @@ class MirrorTradingSystem:
                 f"게이트에서도 하나의 통합 주문으로 정확히 복제됩니다!\n\n"
                 f"🔄 30초마다 자동으로 동기화되어 누락이나\n"
                 f"불일치 문제가 자동으로 해결됩니다.\n\n"
-                f"🎯 완벽성: 103,801.0과 같은 이상한 값 없이\n"
-                f"비트겟과 완전히 동일한 설정으로 미러링됩니다."
+                f"🎯 완벽성: 비트겟과 완전히 동일한 설정으로\n"
+                f"TP/SL이 포함된 미러링이 이루어집니다."
             )
             
         except Exception as e:
@@ -1050,7 +920,7 @@ class MirrorTradingSystem:
             await self.gate_mirror.close()
             
             final_report = await self._create_daily_report()
-            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료 (v3.0)\n\n{final_report}")
+            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료 (v4.0)\n\n{final_report}")
         except:
             pass
         
