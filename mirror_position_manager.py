@@ -41,12 +41,16 @@ class MirrorPositionManager:
         self.last_plan_order_ids: Set[str] = set()
         self.plan_order_snapshot: Dict[str, Dict] = {}
         
-        # 🔥🔥🔥 시세 차이 관리 - 개선된 임계값
+        # 🔥🔥🔥 시세 차이 관리 - 임계값 대폭 상향 조정
         self.bitget_current_price: float = 0.0
         self.gate_current_price: float = 0.0
         self.price_diff_percent: float = 0.0
-        self.price_sync_threshold: float = 30.0  # 30달러로 상향 조정 (기존 15달러)
+        self.price_sync_threshold: float = 50.0  # 30달러 → 50달러로 상향 조정
         self.position_wait_timeout: int = 300    # 5분으로 연장 (기존 180초)
+        
+        # 🔥🔥🔥 클로즈 주문 전용 포지션 대기 설정 - 더 긴 대기 시간
+        self.close_order_position_wait_timeout: int = 120  # 클로즈 주문 포지션 대기 2분
+        self.close_order_max_retries: int = 5  # 클로즈 주문 재시도 횟수
         
         # 🔥 가격 기반 중복 방지 시스템
         self.mirrored_trigger_prices: Set[str] = set()
@@ -95,10 +99,12 @@ class MirrorPositionManager:
             'sync_status_corrected': 0,    # 🔥🔥🔥 동기화 상태 수정 카운터
             'close_order_position_check_failed': 0,  # 🔥🔥🔥 클로즈 주문 포지션 체크 실패
             'close_order_position_wait_success': 0,  # 🔥🔥🔥 클로즈 주문 포지션 대기 성공
+            'close_order_delayed_for_position': 0,   # 🔥🔥🔥 포지션 대기로 지연된 클로즈 주문
+            'close_order_skipped_no_position': 0,    # 🔥🔥🔥 포지션 없어서 스킵된 클로즈 주문
             'errors': []
         }
         
-        self.logger.info("🔥🔥🔥 미러 포지션 매니저 초기화 완료 - 시세차이 문제 해결 + 클로즈 주문 체크 강화")
+        self.logger.info("🔥🔥🔥 미러 포지션 매니저 초기화 완료 - 시세차이 임계값 50달러, 클로즈 주문 대기 로직 강화")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -109,7 +115,7 @@ class MirrorPositionManager:
     async def initialize(self):
         """🔥🔥🔥 포지션 매니저 초기화 - 시세차이 문제 해결"""
         try:
-            self.logger.info("🔥🔥🔥 포지션 매니저 초기화 시작")
+            self.logger.info("🔥🔥🔥 포지션 매니저 초기화 시작 (임계값 50달러)")
             
             # 🔥 렌더 재구동 시 기존 게이트 포지션 확인
             await self._check_existing_gate_positions()
@@ -128,24 +134,25 @@ class MirrorPositionManager:
             # 시작 시 기존 예약 주문 복제
             await self._mirror_startup_plan_orders()
             
-            self.logger.info("✅ 포지션 매니저 초기화 완료")
+            self.logger.info("✅ 포지션 매니저 초기화 완료 (시세차이 임계값: 50달러)")
             
         except Exception as e:
             self.logger.error(f"포지션 매니저 초기화 실패: {e}")
             raise
 
     async def monitor_plan_orders_cycle(self):
-        """🔥🔥🔥 예약 주문 모니터링 사이클 - 시세차이 고려"""
+        """🔥🔥🔥 예약 주문 모니터링 사이클 - 시세차이 임계값 50달러로 조정"""
         try:
             if not self.startup_plan_orders_processed:
                 await asyncio.sleep(0.1)
                 return
             
-            # 🔥🔥🔥 시세 차이 확인
+            # 🔥🔥🔥 시세 차이 확인 - 임계값 50달러로 조정
             price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
             if price_diff_abs > self.price_sync_threshold:
                 self.daily_stats['price_sync_delays'] += 1
-                self.logger.warning(f"시세 차이 큼 ({price_diff_abs:.2f}$), 예약 주문 처리 지연")
+                # 🔥🔥🔥 로그 레벨을 DEBUG로 변경하여 과도한 경고 방지
+                self.logger.debug(f"시세 차이 큼 ({price_diff_abs:.2f}$), 예약 주문 처리 지연 (임계값: {self.price_sync_threshold}$)")
                 return
             
             # 현재 비트겟 예약 주문 조회
@@ -266,6 +273,10 @@ class MirrorPositionManager:
                             await self._add_trigger_price(trigger_price)
                     elif result == "skipped" and is_close_order:
                         self.daily_stats['close_order_skipped'] += 1
+                    elif result == "delayed_for_position" and is_close_order:
+                        self.daily_stats['close_order_delayed_for_position'] += 1
+                    elif result == "no_position" and is_close_order:
+                        self.daily_stats['close_order_skipped_no_position'] += 1
                     
                     self.processed_plan_orders.add(order_id)
                     
@@ -274,7 +285,7 @@ class MirrorPositionManager:
                     self.processed_plan_orders.add(order_id)
                     
                     await self.telegram.send_message(
-                        f"❌ 예약 주문 복제 실패 (시세차이 고려)\n"
+                        f"❌ 예약 주문 복제 실패 (시세차이 임계값: {self.price_sync_threshold}$)\n"
                         f"비트겟 ID: {order_id}\n"
                         f"오류: {str(e)[:200]}"
                     )
@@ -282,7 +293,7 @@ class MirrorPositionManager:
             # 클로즈 주문 복제 성공 시 알림
             if new_close_orders_count > 0:
                 await self.telegram.send_message(
-                    f"✅ 클로즈 주문 복제 성공 (시세차이 고려)\n"
+                    f"✅ 클로즈 주문 복제 성공 (시세차이 임계값: {self.price_sync_threshold}$)\n"
                     f"클로즈 주문: {new_close_orders_count}개\n"
                     f"전체 신규 복제: {new_orders_count}개"
                 )
@@ -300,7 +311,7 @@ class MirrorPositionManager:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
 
     async def _process_new_plan_order_with_position_wait(self, bitget_order: Dict) -> str:
-        """🔥🔥🔥 새로운 예약 주문 복제 - 클로즈 주문 포지션 체크 강화"""
+        """🔥🔥🔥 새로운 예약 주문 복제 - 클로즈 주문 포지션 체크 강화 및 대기 로직 개선"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -312,17 +323,20 @@ class MirrorPositionManager:
             
             self.logger.info(f"🔍 새로운 주문 처리: {order_id}, is_close_order={is_close_order}")
             
-            # 🔥🔥🔥 클로즈 주문의 경우 포지션 존재 확인 강화
+            # 🔥🔥🔥 클로즈 주문의 경우 포지션 존재 확인 강화 - 더 긴 대기 시간
             if is_close_order:
-                position_check_result = await self._enhanced_position_check_for_close_order(order_id, side)
+                position_check_result = await self._enhanced_position_check_for_close_order_v2(order_id, side)
                 
                 if position_check_result == "no_position":
                     self.daily_stats['close_order_position_check_failed'] += 1
-                    self.logger.warning(f"클로즈 주문이지만 게이트에 포지션 없음: {order_id}")
-                    return "skipped"
+                    self.logger.warning(f"⏭️ 클로즈 주문이지만 게이트에 포지션 없음, 스킵: {order_id}")
+                    return "no_position"
                 elif position_check_result == "position_found_after_wait":
                     self.daily_stats['close_order_position_wait_success'] += 1
-                    self.logger.info(f"포지션 대기 후 발견, 클로즈 주문 진행: {order_id}")
+                    self.logger.info(f"✅ 포지션 대기 후 발견, 클로즈 주문 진행: {order_id}")
+                elif position_check_result == "delayed_for_position":
+                    self.logger.info(f"🕐 클로즈 주문 포지션 대기 중, 잠시 지연: {order_id}")
+                    return "delayed_for_position"
                 # position_check_result == "position_exists"면 바로 진행
             
             # 트리거 가격 추출
@@ -506,7 +520,7 @@ class MirrorPositionManager:
                 position_wait_info = f"\n🕐 포지션 체결 대기 활성화됨 ({self.position_wait_timeout}초)"
             
             await self.telegram.send_message(
-                f"✅ {order_type} 복제 성공 (시세차이 고려)\n"
+                f"✅ {order_type} 복제 성공 (시세차이 임계값: {self.price_sync_threshold}$)\n"
                 f"비트겟 ID: {order_id}\n"
                 f"게이트 ID: {gate_order.get('id')}\n"
                 f"방향: {side.upper()}\n"
@@ -530,10 +544,10 @@ class MirrorPositionManager:
             })
             return "failed"
 
-    async def _enhanced_position_check_for_close_order(self, order_id: str, side: str) -> str:
-        """🔥🔥🔥 클로즈 주문을 위한 강화된 포지션 체크"""
+    async def _enhanced_position_check_for_close_order_v2(self, order_id: str, side: str) -> str:
+        """🔥🔥🔥 클로즈 주문을 위한 강화된 포지션 체크 V2 - 더 긴 대기 시간과 재시도 로직"""
         try:
-            self.logger.info(f"🔍 클로즈 주문 포지션 체크 시작: {order_id}, side={side}")
+            self.logger.info(f"🔍 클로즈 주문 포지션 체크 V2 시작: {order_id}, side={side}")
             
             # 1차 포지션 체크
             gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
@@ -543,29 +557,62 @@ class MirrorPositionManager:
                 self.logger.info(f"✅ 1차 체크: 게이트 포지션 존재 확인")
                 return "position_exists"
             
-            # 2차: 최대 30초 대기 후 재확인 (클로즈 주문의 경우 포지션이 먼저 생성되어야 함)
-            self.logger.info(f"🕐 1차 체크 실패, 30초 대기 후 재확인: {order_id}")
-            max_wait_time = 30
-            check_interval = 5
+            # 🔥🔥🔥 2차: 더 긴 대기 시간과 더 많은 재시도 (최대 2분)
+            self.logger.info(f"🕐 1차 체크 실패, {self.close_order_position_wait_timeout}초 대기하며 재확인: {order_id}")
             
-            for attempt in range(max_wait_time // check_interval):
-                await asyncio.sleep(check_interval)
+            for attempt in range(self.close_order_max_retries):
+                wait_time = self.close_order_position_wait_timeout // self.close_order_max_retries
+                await asyncio.sleep(wait_time)
                 
                 try:
                     gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
                     has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
                     
                     if has_position:
-                        self.logger.info(f"✅ {(attempt + 1) * check_interval}초 후 포지션 발견: {order_id}")
+                        elapsed_time = (attempt + 1) * wait_time
+                        self.logger.info(f"✅ {elapsed_time}초 후 포지션 발견: {order_id}")
                         return "position_found_after_wait"
                     
-                    self.logger.debug(f"🔍 {(attempt + 1) * check_interval}초: 포지션 없음, 계속 대기")
+                    self.logger.debug(f"🔍 {(attempt + 1) * wait_time}초: 포지션 없음, 계속 대기 (시도 {attempt + 1}/{self.close_order_max_retries})")
                     
                 except Exception as check_error:
                     self.logger.warning(f"포지션 체크 중 오류 (시도 {attempt + 1}): {check_error}")
                     continue
             
-            # 3차: 최종 확인
+            # 🔥🔥🔥 3차: 비트겟 최근 체결 주문 확인 - 포지션이 체결 중일 수 있음
+            try:
+                self.logger.info(f"🔍 비트겟 최근 체결 주문 확인: {order_id}")
+                
+                # 최근 1분간 체결된 오픈 주문 확인
+                recent_filled_orders = await self.bitget.get_recent_filled_orders(self.SYMBOL, minutes=1)
+                
+                recent_open_orders = []
+                for order in recent_filled_orders:
+                    reduce_only = order.get('reduceOnly', 'false')
+                    if reduce_only == 'false' or reduce_only is False:
+                        recent_open_orders.append(order)
+                
+                if recent_open_orders:
+                    self.logger.info(f"🎯 최근 오픈 주문 {len(recent_open_orders)}건 감지, 포지션 체결 대기: {order_id}")
+                    
+                    # 추가 30초 대기
+                    await asyncio.sleep(30)
+                    
+                    # 최종 포지션 확인
+                    gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
+                    has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
+                    
+                    if has_position:
+                        self.logger.info(f"✅ 최근 체결 주문 확인 후 포지션 발견: {order_id}")
+                        return "position_found_after_wait"
+                    else:
+                        self.logger.warning(f"⏳ 최근 체결 주문 있으나 아직 포지션 체결 안됨, 지연 처리: {order_id}")
+                        return "delayed_for_position"
+                        
+            except Exception as recent_order_error:
+                self.logger.warning(f"최근 체결 주문 확인 실패: {recent_order_error}")
+            
+            # 4차: 최종 확인
             try:
                 gate_positions = await self.gate.get_positions(self.GATE_CONTRACT)
                 has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
@@ -592,7 +639,7 @@ class MirrorPositionManager:
                 return "no_position"
             
         except Exception as e:
-            self.logger.error(f"강화된 포지션 체크 실패: {e}")
+            self.logger.error(f"강화된 포지션 체크 V2 실패: {e}")
             return "no_position"
 
     async def _wait_and_confirm_position_execution(self, bitget_order_id: str, expected_size: int, gate_order_id: str):
@@ -723,10 +770,10 @@ class MirrorPositionManager:
                 self.logger.info(f"🔄 렌더 재구동: 동일 포지션 존재로 주문 체결 미러링 스킵 - {order_id}")
                 return
             
-            # 🔥🔥🔥 시세 차이 확인 및 대기
+            # 🔥🔥🔥 시세 차이 확인 및 대기 - 임계값 50달러 적용
             price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
             if price_diff_abs > self.price_sync_threshold:
-                self.logger.warning(f"시세 차이 큼 ({price_diff_abs:.2f}$), 주문 체결 미러링 지연: {order_id}")
+                self.logger.debug(f"시세 차이 큼 ({price_diff_abs:.2f}$), 주문 체결 미러링 지연: {order_id} (임계값: {self.price_sync_threshold}$)")
                 self.daily_stats['price_sync_delays'] += 1
                 
                 # 시세 차이가 클 때 최대 30초 대기
@@ -778,7 +825,7 @@ class MirrorPositionManager:
                     f"체결가: ${fill_price:,.2f}\n"
                     f"수량: {size}\n"
                     f"레버리지: {leverage}x\n"
-                    f"시세 차이: ${price_diff_abs:.2f}\n"
+                    f"시세 차이: ${price_diff_abs:.2f} (임계값: {self.price_sync_threshold}$)\n"
                     f"실제 마진 비율: {margin_ratio_result['margin_ratio']*100:.2f}%"
                 )
             else:
@@ -930,7 +977,7 @@ class MirrorPositionManager:
                 
                 # 시세 차이 정보 추가
                 price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
-                self.logger.info(f"   현재 시세 차이: ${price_diff_abs:.2f}")
+                self.logger.info(f"   현재 시세 차이: ${price_diff_abs:.2f} (임계값: {self.price_sync_threshold}$)")
             
             return {
                 'is_synced': position_diff == 0,
@@ -1260,7 +1307,7 @@ class MirrorPositionManager:
             self.startup_plan_orders_processed = True
             
             await self.telegram.send_message(
-                f"✅ 시작 시 기존 예약 주문 복제 완료\n"
+                f"✅ 시작 시 기존 예약 주문 복제 완료 (임계값: {self.price_sync_threshold}$)\n"
                 f"성공: {mirrored_count}개\n"
                 f"• 클로즈 주문: {close_order_count}개\n"
                 f"실패: {failed_count}개\n"
