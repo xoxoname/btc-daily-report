@@ -23,6 +23,11 @@ class GateClient:
         # Gate.io 거래 시작일 설정 (2025년 5월 29일)
         self.GATE_START_DATE = datetime(2025, 5, 29, 0, 0, 0, tzinfo=pytz.timezone('Asia/Seoul'))
         
+        # 🔥🔥🔥 Gate.io 가격 단위 및 최소 거리 설정 - 유연하게 조정
+        self.PRICE_PRECISION = 1  # 소수점 1자리까지 (BTC의 경우 보통 0.1 단위)
+        self.MIN_PRICE_DISTANCE_PERCENT = 0.001  # 0.1%에서 0.001%로 대폭 완화
+        self.PRICE_ADJUSTMENT_STEP = 0.5  # 0.5% 단위로 조정
+        
     def _initialize_session(self):
         """세션 초기화"""
         if not self.session:
@@ -33,6 +38,49 @@ class GateClient:
         """클라이언트 초기화"""
         self._initialize_session()
         logger.info("Gate.io 클라이언트 초기화 완료")
+    
+    def _round_price_to_gate_precision(self, price: float) -> float:
+        """🔥🔥🔥 Gate.io 가격 단위에 맞게 반올림"""
+        try:
+            if price <= 0:
+                return price
+            
+            # BTC의 경우 보통 소수점 1자리까지 허용 (예: 105140.5)
+            rounded_price = round(price, self.PRICE_PRECISION)
+            
+            logger.debug(f"가격 반올림: {price:.8f} → {rounded_price:.{self.PRICE_PRECISION}f}")
+            return rounded_price
+            
+        except Exception as e:
+            logger.error(f"가격 반올림 실패: {e}")
+            return round(price, 1)  # 기본값으로 소수점 1자리
+    
+    def _calculate_safe_trigger_distance(self, current_price: float, trigger_type: str) -> float:
+        """🔥🔥🔥 안전한 트리거 가격 거리 계산 - 매우 유연하게"""
+        try:
+            # 최소 거리를 현재가의 아주 작은 비율로 설정 (0.001% = 약 1달러)
+            min_distance = current_price * self.MIN_PRICE_DISTANCE_PERCENT
+            
+            # 최소 거리가 너무 작으면 1달러로 설정
+            if min_distance < 1.0:
+                min_distance = 1.0
+            
+            # 조정 단계 (0.5%)
+            adjustment_distance = current_price * (self.PRICE_ADJUSTMENT_STEP / 100)
+            
+            # 더 큰 값을 선택하되, 너무 크지 않게
+            safe_distance = max(min_distance, adjustment_distance)
+            
+            # 최대 거리 제한 (2%)
+            max_distance = current_price * 0.02
+            safe_distance = min(safe_distance, max_distance)
+            
+            logger.debug(f"안전 거리 계산: 현재가={current_price:.2f}, 타입={trigger_type}, 거리={safe_distance:.2f}")
+            return safe_distance
+            
+        except Exception as e:
+            logger.error(f"안전 거리 계산 실패: {e}")
+            return current_price * 0.005  # 기본값 0.5%
     
     def _generate_signature(self, method: str, url: str, query_string: str = "", payload: str = "") -> Dict[str, str]:
         """Gate.io API 서명 생성"""
@@ -107,48 +155,70 @@ class GateClient:
             return 0.0
     
     async def validate_trigger_price(self, trigger_price: float, trigger_type: str, contract: str = "BTC_USDT") -> Tuple[bool, str, float]:
-        """트리거 가격 유효성 검증 및 조정"""
+        """🔥🔥🔥 트리거 가격 유효성 검증 및 조정 - 매우 유연하게 개선"""
         try:
             current_price = await self.get_current_price(contract)
             if current_price == 0:
                 return False, "현재가 조회 실패", trigger_price
             
-            price_diff_percent = abs(trigger_price - current_price) / current_price * 100
+            # 🔥🔥🔥 Gate.io 가격 단위에 맞게 반올림
+            rounded_trigger_price = self._round_price_to_gate_precision(trigger_price)
             
-            # 가격이 너무 근접한 경우 (0.01% 이하)
-            if price_diff_percent < 0.01:
-                if trigger_type == "ge":
-                    adjusted_price = current_price * 1.0005  # 0.05% 위로 조정
-                elif trigger_type == "le":
-                    adjusted_price = current_price * 0.9995  # 0.05% 아래로 조정
-                else:
-                    adjusted_price = trigger_price
+            price_diff = abs(rounded_trigger_price - current_price)
+            price_diff_percent = (price_diff / current_price) * 100
+            
+            logger.info(f"🔍 트리거 가격 검증: 현재가=${current_price:.2f}, 트리거=${trigger_price:.8f} → ${rounded_trigger_price:.{self.PRICE_PRECISION}f}, 차이={price_diff_percent:.4f}%")
+            
+            # 🔥🔥🔥 매우 유연한 검증 - 거의 모든 가격 허용
+            if price_diff_percent < self.MIN_PRICE_DISTANCE_PERCENT * 100:
+                # 너무 가까운 경우에만 조정
+                safe_distance = self._calculate_safe_trigger_distance(current_price, trigger_type)
                 
-                logger.warning(f"트리거가 너무 근접, 조정: ${trigger_price:.2f} → ${adjusted_price:.2f}")
-                return True, "가격 조정됨", adjusted_price
-            
-            # Gate.io 규칙 검증
-            if trigger_type == "ge":  # greater than or equal
-                if trigger_price <= current_price:
-                    adjusted_price = current_price * 1.001
-                    logger.warning(f"GE 트리거가가 현재가보다 낮음, 조정: ${trigger_price:.2f} → ${adjusted_price:.2f}")
-                    return True, "GE 가격 조정됨", adjusted_price
+                if trigger_type == "ge":  # greater than or equal
+                    adjusted_price = current_price + safe_distance
+                elif trigger_type == "le":  # less than or equal  
+                    adjusted_price = current_price - safe_distance
                 else:
-                    return True, "유효한 GE 트리거가", trigger_price
+                    adjusted_price = rounded_trigger_price
+                
+                # 조정된 가격도 반올림
+                adjusted_price = self._round_price_to_gate_precision(adjusted_price)
+                
+                logger.info(f"🔧 트리거 가격 조정: ${rounded_trigger_price:.{self.PRICE_PRECISION}f} → ${adjusted_price:.{self.PRICE_PRECISION}f} (거리: {safe_distance:.2f})")
+                return True, f"가격 조정됨 (차이 {price_diff_percent:.4f}% → {abs(adjusted_price-current_price)/current_price*100:.4f}%)", adjusted_price
+            
+            # 🔥🔥🔥 Gate.io 트리거 타입별 검증 - 매우 관대하게
+            if trigger_type == "ge":  # greater than or equal
+                if rounded_trigger_price < current_price:
+                    # GE는 현재가보다 높아야 함
+                    safe_distance = self._calculate_safe_trigger_distance(current_price, trigger_type)
+                    adjusted_price = self._round_price_to_gate_precision(current_price + safe_distance)
+                    logger.info(f"🔧 GE 타입 조정: ${rounded_trigger_price:.{self.PRICE_PRECISION}f} → ${adjusted_price:.{self.PRICE_PRECISION}f}")
+                    return True, "GE 타입 가격 조정됨", adjusted_price
+                else:
+                    return True, f"유효한 GE 트리거가 (차이: {price_diff_percent:.4f}%)", rounded_trigger_price
             
             elif trigger_type == "le":  # less than or equal
-                if trigger_price >= current_price:
-                    adjusted_price = current_price * 0.999
-                    logger.warning(f"LE 트리거가가 현재가보다 높음, 조정: ${trigger_price:.2f} → ${adjusted_price:.2f}")
-                    return True, "LE 가격 조정됨", adjusted_price
+                if rounded_trigger_price > current_price:
+                    # LE는 현재가보다 낮아야 함
+                    safe_distance = self._calculate_safe_trigger_distance(current_price, trigger_type)
+                    adjusted_price = self._round_price_to_gate_precision(current_price - safe_distance)
+                    logger.info(f"🔧 LE 타입 조정: ${rounded_trigger_price:.{self.PRICE_PRECISION}f} → ${adjusted_price:.{self.PRICE_PRECISION}f}")
+                    return True, "LE 타입 가격 조정됨", adjusted_price
                 else:
-                    return True, "유효한 LE 트리거가", trigger_price
+                    return True, f"유효한 LE 트리거가 (차이: {price_diff_percent:.4f}%)", rounded_trigger_price
             
-            return True, "유효한 트리거가", trigger_price
+            # 기본 케이스
+            return True, f"유효한 트리거가 (차이: {price_diff_percent:.4f}%)", rounded_trigger_price
             
         except Exception as e:
             logger.error(f"트리거 가격 검증 실패: {e}")
-            return False, f"검증 오류: {str(e)}", trigger_price
+            # 실패 시에도 반올림된 가격 반환
+            try:
+                safe_price = self._round_price_to_gate_precision(trigger_price)
+                return True, f"검증 오류이지만 반올림 적용: {str(e)}", safe_price
+            except:
+                return False, f"검증 오류: {str(e)}", trigger_price
     
     async def get_account_balance(self) -> Dict:
         """계정 잔고 조회"""
@@ -250,9 +320,11 @@ class GateClient:
             }
             
             if price is not None:
-                data["price"] = str(price)
+                # 🔥🔥🔥 지정가도 Gate.io 가격 단위에 맞게 반올림
+                rounded_price = self._round_price_to_gate_precision(price)
+                data["price"] = str(rounded_price)
                 data["tif"] = tif
-                logger.info(f"지정가 주문 생성: {contract}, 수량: {size}, 가격: {price}, TIF: {tif}")
+                logger.info(f"지정가 주문 생성: {contract}, 수량: {size}, 가격: {rounded_price:.{self.PRICE_PRECISION}f}, TIF: {tif}")
             else:
                 logger.info(f"시장가 주문 생성: {contract}, 수량: {size}")
             
@@ -353,21 +425,28 @@ class GateClient:
                                          stop_profit_price: Optional[str] = None,
                                          stop_loss_price: Optional[str] = None,
                                          reduce_only: bool = False) -> Dict:
-        """🔥🔥🔥 가격 트리거 주문 생성 - reduce_only 플래그 추가 지원, 시장가 주문 initial.price 필수 설정"""
+        """🔥🔥🔥 가격 트리거 주문 생성 - reduce_only 플래그 추가 지원, 가격 반올림 강화"""
         try:
-            # 트리거 가격 유효성 검증 및 조정
+            # 🔥🔥🔥 트리거 가격 유효성 검증 및 조정 - 매우 유연하게
             trigger_price_float = float(trigger_price)
             is_valid, validation_msg, adjusted_price = await self.validate_trigger_price(
                 trigger_price_float, trigger_type, contract
             )
             
             if not is_valid:
-                raise Exception(f"트리거 가격 유효성 검증 실패: {validation_msg}")
+                # 🔥🔥🔥 검증 실패해도 강제로 반올림해서 시도
+                logger.warning(f"⚠️ 트리거 가격 검증 실패하지만 반올림 후 시도: {validation_msg}")
+                adjusted_price = self._round_price_to_gate_precision(trigger_price_float)
             
             # 조정된 가격 사용
             if adjusted_price != trigger_price_float:
                 trigger_price = str(adjusted_price)
-                logger.info(f"🔧 트리거 가격 조정됨: {trigger_price_float:.2f} → {adjusted_price:.2f}")
+                logger.info(f"🔧 트리거 가격 최종 조정: {trigger_price_float:.8f} → {adjusted_price:.{self.PRICE_PRECISION}f}")
+            else:
+                # 검증을 통과해도 반올림 적용
+                adjusted_price = self._round_price_to_gate_precision(trigger_price_float)
+                trigger_price = str(adjusted_price)
+                logger.info(f"🔧 트리거 가격 반올림 적용: {trigger_price_float:.8f} → {adjusted_price:.{self.PRICE_PRECISION}f}")
             
             endpoint = "/api/v4/futures/usdt/price_orders"
             
@@ -384,18 +463,19 @@ class GateClient:
             else:
                 logger.info(f"🟢 오픈 주문: reduce_only 미설정")
             
-            # 🔥🔥🔥 Gate.io API에서 시장가 트리거 주문도 initial.price가 필수임
+            # 🔥🔥🔥 Gate.io API에서 시장가 트리거 주문도 initial.price가 필수이며 반올림된 가격 사용
             if order_type == "limit":
                 if price:
-                    initial_data["price"] = str(price)
-                    logger.info(f"지정가 주문에 지정된 가격 사용: {price}")
+                    rounded_price = self._round_price_to_gate_precision(float(price))
+                    initial_data["price"] = str(rounded_price)
+                    logger.info(f"지정가 주문에 반올림된 가격 사용: {price} → {rounded_price:.{self.PRICE_PRECISION}f}")
                 else:
-                    initial_data["price"] = str(trigger_price)
-                    logger.info(f"지정가 주문에 트리거 가격을 price로 사용: {trigger_price}")
+                    initial_data["price"] = str(adjusted_price)
+                    logger.info(f"지정가 주문에 조정된 트리거 가격을 price로 사용: {adjusted_price:.{self.PRICE_PRECISION}f}")
             elif order_type == "market":
-                # 🔥🔥🔥 시장가 주문에도 initial.price 필수 설정
-                initial_data["price"] = str(trigger_price)
-                logger.info(f"시장가 트리거 주문에 trigger_price를 initial.price로 설정: {trigger_price}")
+                # 🔥🔥🔥 시장가 주문에도 initial.price 필수 설정 (반올림된 값)
+                initial_data["price"] = str(adjusted_price)
+                logger.info(f"시장가 트리거 주문에 반올림된 trigger_price를 initial.price로 설정: {adjusted_price:.{self.PRICE_PRECISION}f}")
             
             # 트리거 rule을 정수로 변환
             if trigger_type == "ge":
@@ -411,29 +491,31 @@ class GateClient:
                 "trigger": {
                     "strategy_type": 0,
                     "price_type": 0,
-                    "price": str(trigger_price),
+                    "price": str(adjusted_price),  # 🔥🔥🔥 반올림된 트리거 가격 사용
                     "rule": rule_value
                 }
             }
             
-            # 🔥 실제 TP/SL 설정 - Gate.io API 문서에 따른 방식
+            # 🔥 실제 TP/SL 설정 - Gate.io API 문서에 따른 방식 (반올림 적용)
             has_tp_sl = False
             if stop_profit_price and float(stop_profit_price) > 0:
-                data["stop_profit_price"] = str(stop_profit_price)
+                rounded_tp = self._round_price_to_gate_precision(float(stop_profit_price))
+                data["stop_profit_price"] = str(rounded_tp)
                 has_tp_sl = True
-                logger.info(f"🎯 실제 TP 설정: ${stop_profit_price}")
+                logger.info(f"🎯 실제 TP 설정 (반올림): {stop_profit_price} → ${rounded_tp:.{self.PRICE_PRECISION}f}")
             
             if stop_loss_price and float(stop_loss_price) > 0:
-                data["stop_loss_price"] = str(stop_loss_price)
+                rounded_sl = self._round_price_to_gate_precision(float(stop_loss_price))
+                data["stop_loss_price"] = str(rounded_sl)
                 has_tp_sl = True
-                logger.info(f"🛡️ 실제 SL 설정: ${stop_loss_price}")
+                logger.info(f"🛡️ 실제 SL 설정 (반올림): {stop_loss_price} → ${rounded_sl:.{self.PRICE_PRECISION}f}")
             
             # 🔥🔥🔥 주문 방향 및 타입 확인 로그 강화
             order_direction = "매수(롱)" if size > 0 else "매도(숏)"
             order_purpose = "클로즈" if reduce_only else "오픈"
             logger.info(f"🔍 Gate.io 트리거 주문: {order_purpose} {order_direction}, 수량={size}, reduce_only={reduce_only}")
             
-            logger.info(f"Gate.io 가격 트리거 주문 생성 (TP/SL 포함): {data}")
+            logger.info(f"Gate.io 가격 트리거 주문 생성 (TP/SL 포함, 반올림 적용): {data}")
             response = await self._request('POST', endpoint, data=data)
             logger.info(f"✅ Gate.io 가격 트리거 주문 생성 성공: {response}")
             
@@ -442,6 +524,8 @@ class GateClient:
             response['requested_tp'] = stop_profit_price
             response['requested_sl'] = stop_loss_price
             response['reduce_only'] = reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
+            response['price_rounded'] = True  # 🔥🔥🔥 가격 반올림 적용 표시
+            response['final_trigger_price'] = str(adjusted_price)
             
             # TP/SL 설정 결과 확인
             actual_tp = response.get('stop_profit_price', '')
@@ -463,6 +547,21 @@ class GateClient:
         except Exception as e:
             logger.error(f"❌ 가격 트리거 주문 생성 실패: {e}")
             logger.error(f"트리거 주문 파라미터: trigger_type={trigger_type}, trigger_price={trigger_price}, order_type={order_type}, size={size}, price={price}, tp={stop_profit_price}, sl={stop_loss_price}, reduce_only={reduce_only}")
+            
+            # 🔥🔥🔥 가격 단위 오류인 경우 더 강력한 반올림 시도
+            error_msg = str(e).lower()
+            if "price is not an integer multiple" in error_msg or "invalid_param_price" in error_msg:
+                logger.warning("🔧 가격 단위 오류 감지, 더 강력한 반올림 재시도")
+                try:
+                    # 소수점 없는 정수로 반올림 시도
+                    integer_price = round(float(trigger_price))
+                    logger.warning(f"🔧 정수 반올림 재시도: {trigger_price} → {integer_price}")
+                    
+                    # 재귀 호출하지 않고 간단한 재시도
+                    raise Exception(f"가격 단위 오류 (정수 반올림 권장: {integer_price}): {str(e)}")
+                except:
+                    pass
+            
             raise
     
     async def create_unified_order_with_tp_sl(self, trigger_type: str, trigger_price: str,
@@ -471,9 +570,9 @@ class GateClient:
                                            tp_price: Optional[str] = None,
                                            sl_price: Optional[str] = None,
                                            bitget_order_info: Optional[Dict] = None) -> Dict:
-        """🔥🔥🔥 통합된 TP/SL 포함 예약 주문 생성 - reduce_only 플래그 자동 판단"""
+        """🔥🔥🔥 통합된 TP/SL 포함 예약 주문 생성 - reduce_only 플래그 자동 판단, 가격 반올림 강화"""
         try:
-            logger.info(f"🎯 통합 TP/SL 포함 예약 주문 생성 시도 (reduce_only 자동 판단)")
+            logger.info(f"🎯 통합 TP/SL 포함 예약 주문 생성 시도 (가격 반올림 강화)")
             logger.info(f"   - 트리거가: {trigger_price}")
             logger.info(f"   - TP: {tp_price}")
             logger.info(f"   - SL: {sl_price}")
@@ -552,7 +651,9 @@ class GateClient:
                     'unified_order': True,
                     'bitget_style': True,
                     'tp_sl_status': 'success' if tp_sl_success else 'failed',
-                    'reduce_only': reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
+                    'reduce_only': reduce_only,  # 🔥🔥🔥 reduce_only 정보 추가
+                    'price_rounded': order_response.get('price_rounded', False),  # 🔥🔥🔥 가격 반올림 정보
+                    'final_trigger_price': order_response.get('final_trigger_price', trigger_price)
                 })
             else:
                 logger.info(f"📝 TP/SL 설정 없는 일반 예약 주문")
@@ -560,39 +661,81 @@ class GateClient:
                     'has_tp_sl': False,
                     'unified_order': True,
                     'bitget_style': False,
-                    'reduce_only': reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
+                    'reduce_only': reduce_only,  # 🔥🔥🔥 reduce_only 정보 추가
+                    'price_rounded': order_response.get('price_rounded', False),
+                    'final_trigger_price': order_response.get('final_trigger_price', trigger_price)
                 })
             
             return order_response
             
         except Exception as e:
             logger.error(f"❌ 통합 TP/SL 예약 주문 생성 실패: {e}")
-            # 폴백: 일반 예약 주문만 생성
-            logger.info("🔄 폴백: TP/SL 없는 일반 예약 주문 생성")
-            fallback_order = await self.create_price_triggered_order(
-                trigger_type=trigger_type,
-                trigger_price=trigger_price,
-                order_type=order_type,
-                contract=contract,
-                size=size,
-                price=price,
-                reduce_only=reduce_only  # 🔥🔥🔥 reduce_only 플래그 유지
-                # TP/SL 제외
-            )
-            fallback_order.update({
-                'has_tp_sl': False,
-                'unified_order': True,
-                'bitget_style': False,
-                'fallback': True,
-                'error': str(e),
-                'reduce_only': reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
-            })
-            return fallback_order
+            
+            # 🔥🔥🔥 가격 단위 오류인 경우 더 간단한 방식으로 폴백
+            error_msg = str(e).lower()
+            if "price is not an integer multiple" in error_msg or "invalid_param_price" in error_msg:
+                logger.warning("🔧 가격 단위 오류 - 더 간단한 가격으로 폴백 시도")
+                try:
+                    # 정수 가격으로 변환하여 재시도
+                    simple_trigger_price = str(round(float(trigger_price)))
+                    logger.warning(f"🔧 정수 가격으로 폴백: {trigger_price} → {simple_trigger_price}")
+                    
+                    fallback_order = await self.create_price_triggered_order(
+                        trigger_type=trigger_type,
+                        trigger_price=simple_trigger_price,  # 정수 가격
+                        order_type=order_type,
+                        contract=contract,
+                        size=size,
+                        price=price,
+                        reduce_only=reduce_only  # 🔥🔥🔥 reduce_only 플래그 유지
+                        # TP/SL 제외해서 단순화
+                    )
+                    fallback_order.update({
+                        'has_tp_sl': False,
+                        'unified_order': True,
+                        'bitget_style': False,
+                        'fallback': True,
+                        'fallback_reason': 'price_unit_error_integer_fallback',
+                        'original_trigger_price': trigger_price,
+                        'fallback_trigger_price': simple_trigger_price,
+                        'error': str(e),
+                        'reduce_only': reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
+                    })
+                    return fallback_order
+                except Exception as fallback_error:
+                    logger.error(f"정수 가격 폴백도 실패: {fallback_error}")
+            
+            # 일반 폴백: TP/SL 없는 일반 예약 주문만 생성
+            logger.info("🔄 일반 폴백: TP/SL 없는 일반 예약 주문 생성")
+            try:
+                fallback_order = await self.create_price_triggered_order(
+                    trigger_type=trigger_type,
+                    trigger_price=trigger_price,
+                    order_type=order_type,
+                    contract=contract,
+                    size=size,
+                    price=price,
+                    reduce_only=reduce_only  # 🔥🔥🔥 reduce_only 플래그 유지
+                    # TP/SL 제외
+                )
+                fallback_order.update({
+                    'has_tp_sl': False,
+                    'unified_order': True,
+                    'bitget_style': False,
+                    'fallback': True,
+                    'fallback_reason': 'general_error',
+                    'error': str(e),
+                    'reduce_only': reduce_only  # 🔥🔥🔥 reduce_only 정보 추가
+                })
+                return fallback_order
+            except Exception as final_error:
+                logger.error(f"최종 폴백도 실패: {final_error}")
+                raise e  # 원래 오류 다시 발생
     
     async def create_tp_sl_orders_for_planned_position(self, contract: str, planned_position_size: int,
                                                      tp_price: Optional[float] = None,
                                                      sl_price: Optional[float] = None) -> Dict:
-        """🔥 예약 주문에 대한 TP/SL 생성 - 수정된 로직"""
+        """🔥 예약 주문에 대한 TP/SL 생성 - 가격 반올림 적용"""
         try:
             result = {
                 'tp_order': None,
@@ -615,31 +758,34 @@ class GateClient:
             # TP 주문 생성
             if tp_price and tp_price > 0:
                 try:
+                    # 🔥🔥🔥 TP 가격도 반올림 적용
+                    rounded_tp_price = self._round_price_to_gate_precision(tp_price)
+                    
                     if future_position_direction == "long":
                         # 롱 포지션의 TP: 현재가보다 높은 가격에서 매도 (이익 실현)
-                        if tp_price <= current_price:
-                            logger.warning(f"롱 포지션 TP가 현재가보다 낮음: ${tp_price:.2f} <= ${current_price:.2f}")
-                            tp_price = current_price * 1.005
-                            logger.info(f"TP 가격 조정: ${tp_price:.2f}")
+                        if rounded_tp_price <= current_price:
+                            logger.warning(f"롱 포지션 TP가 현재가보다 낮음: ${rounded_tp_price:.{self.PRICE_PRECISION}f} <= ${current_price:.2f}")
+                            rounded_tp_price = self._round_price_to_gate_precision(current_price * 1.005)
+                            logger.info(f"TP 가격 조정: ${rounded_tp_price:.{self.PRICE_PRECISION}f}")
                         
                         tp_trigger_type = "ge"  # 가격이 TP 이상이 되면
                         tp_size = -abs(planned_position_size)  # 매도 (포지션 클로즈)
                         
                     else:  # short
                         # 숏 포지션의 TP: 현재가보다 낮은 가격에서 매수 (이익 실현)
-                        if tp_price >= current_price:
-                            logger.warning(f"숏 포지션 TP가 현재가보다 높음: ${tp_price:.2f} >= ${current_price:.2f}")
-                            tp_price = current_price * 0.995
-                            logger.info(f"TP 가격 조정: ${tp_price:.2f}")
+                        if rounded_tp_price >= current_price:
+                            logger.warning(f"숏 포지션 TP가 현재가보다 높음: ${rounded_tp_price:.{self.PRICE_PRECISION}f} >= ${current_price:.2f}")
+                            rounded_tp_price = self._round_price_to_gate_precision(current_price * 0.995)
+                            logger.info(f"TP 가격 조정: ${rounded_tp_price:.{self.PRICE_PRECISION}f}")
                         
                         tp_trigger_type = "le"  # 가격이 TP 이하가 되면
                         tp_size = abs(planned_position_size)   # 매수 (포지션 클로즈)
                     
-                    logger.info(f"🎯 TP 주문 생성: {future_position_direction} → {tp_trigger_type}, ${tp_price:.2f}, size={tp_size}")
+                    logger.info(f"🎯 TP 주문 생성 (반올림): {future_position_direction} → {tp_trigger_type}, ${rounded_tp_price:.{self.PRICE_PRECISION}f}, size={tp_size}")
                     
                     tp_order = await self.create_price_triggered_order(
                         trigger_type=tp_trigger_type,
-                        trigger_price=str(tp_price),
+                        trigger_price=str(rounded_tp_price),
                         order_type="market",
                         contract=contract,
                         size=tp_size,
@@ -659,31 +805,34 @@ class GateClient:
             # SL 주문 생성
             if sl_price and sl_price > 0:
                 try:
+                    # 🔥🔥🔥 SL 가격도 반올림 적용
+                    rounded_sl_price = self._round_price_to_gate_precision(sl_price)
+                    
                     if future_position_direction == "long":
                         # 롱 포지션의 SL: 현재가보다 낮은 가격에서 매도 (손실 제한)
-                        if sl_price >= current_price:
-                            logger.warning(f"롱 포지션 SL이 현재가보다 높음: ${sl_price:.2f} >= ${current_price:.2f}")
-                            sl_price = current_price * 0.995
-                            logger.info(f"SL 가격 조정: ${sl_price:.2f}")
+                        if rounded_sl_price >= current_price:
+                            logger.warning(f"롱 포지션 SL이 현재가보다 높음: ${rounded_sl_price:.{self.PRICE_PRECISION}f} >= ${current_price:.2f}")
+                            rounded_sl_price = self._round_price_to_gate_precision(current_price * 0.995)
+                            logger.info(f"SL 가격 조정: ${rounded_sl_price:.{self.PRICE_PRECISION}f}")
                         
                         sl_trigger_type = "le"  # 가격이 SL 이하가 되면
                         sl_size = -abs(planned_position_size)  # 매도 (포지션 클로즈)
                         
                     else:  # short
                         # 숏 포지션의 SL: 현재가보다 높은 가격에서 매수 (손실 제한)
-                        if sl_price <= current_price:
-                            logger.warning(f"숏 포지션 SL이 현재가보다 낮음: ${sl_price:.2f} <= ${current_price:.2f}")
-                            sl_price = current_price * 1.005
-                            logger.info(f"SL 가격 조정: ${sl_price:.2f}")
+                        if rounded_sl_price <= current_price:
+                            logger.warning(f"숏 포지션 SL이 현재가보다 낮음: ${rounded_sl_price:.{self.PRICE_PRECISION}f} <= ${current_price:.2f}")
+                            rounded_sl_price = self._round_price_to_gate_precision(current_price * 1.005)
+                            logger.info(f"SL 가격 조정: ${rounded_sl_price:.{self.PRICE_PRECISION}f}")
                         
                         sl_trigger_type = "ge"  # 가격이 SL 이상이 되면
                         sl_size = abs(planned_position_size)   # 매수 (포지션 클로즈)
                     
-                    logger.info(f"🛡️ SL 주문 생성: {future_position_direction} → {sl_trigger_type}, ${sl_price:.2f}, size={sl_size}")
+                    logger.info(f"🛡️ SL 주문 생성 (반올림): {future_position_direction} → {sl_trigger_type}, ${rounded_sl_price:.{self.PRICE_PRECISION}f}, size={sl_size}")
                     
                     sl_order = await self.create_price_triggered_order(
                         trigger_type=sl_trigger_type,
-                        trigger_price=str(sl_price),
+                        trigger_price=str(rounded_sl_price),
                         order_type="market",
                         contract=contract,
                         size=sl_size,
