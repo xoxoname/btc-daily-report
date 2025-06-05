@@ -539,6 +539,186 @@ class BitgetClient:
             logger.error(f"최근 체결 주문 조회 실패: {e}")
             return []
     
+    async def get_plan_orders(self, symbol: str = None, status: str = 'live') -> List[Dict]:
+        """🔥🔥🔥 예약 주문 조회 - 통합된 방식"""
+        symbol = symbol or self.config.symbol
+        
+        try:
+            # V2 API로 예약 주문 조회
+            endpoint = "/api/v2/mix/order/plan-orders-pending"
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES'
+            }
+            
+            if status:
+                params['status'] = status
+            
+            response = await self._request('GET', endpoint, params=params)
+            logger.debug(f"예약 주문 조회 응답: {response}")
+            
+            # 응답 형태에 따라 처리
+            if isinstance(response, dict):
+                if 'orderList' in response:
+                    return response['orderList']
+                elif 'data' in response and isinstance(response['data'], list):
+                    return response['data']
+                elif isinstance(response.get('data'), dict) and 'orderList' in response['data']:
+                    return response['data']['orderList']
+            elif isinstance(response, list):
+                return response
+            
+            logger.warning(f"예약 주문 응답 형식 예상치 못함: {type(response)}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"예약 주문 조회 실패: {e}")
+            return []
+    
+    async def get_tp_sl_orders(self, symbol: str = None, status: str = 'live') -> List[Dict]:
+        """🔥🔥🔥 TP/SL 주문 조회 - 통합된 방식"""
+        symbol = symbol or self.config.symbol
+        
+        try:
+            # V2 API로 TP/SL 주문 조회
+            endpoint = "/api/v2/mix/order/stop-orders-pending"
+            params = {
+                'symbol': symbol,
+                'productType': 'USDT-FUTURES'
+            }
+            
+            if status:
+                params['status'] = status
+            
+            response = await self._request('GET', endpoint, params=params)
+            logger.debug(f"TP/SL 주문 조회 응답: {response}")
+            
+            # 응답 형태에 따라 처리
+            if isinstance(response, dict):
+                if 'orderList' in response:
+                    return response['orderList']
+                elif 'data' in response and isinstance(response['data'], list):
+                    return response['data']
+                elif isinstance(response.get('data'), dict) and 'orderList' in response['data']:
+                    return response['data']['orderList']
+            elif isinstance(response, list):
+                return response
+            
+            logger.warning(f"TP/SL 주문 응답 형식 예상치 못함: {type(response)}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"TP/SL 주문 조회 실패: {e}")
+            return []
+    
+    async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
+        """🔥🔥🔥 예약 주문과 TP/SL 주문을 함께 조회 - 수정된 f-string"""
+        symbol = symbol or self.config.symbol
+        
+        try:
+            logger.info(f"🔍 전체 플랜 주문 조회 시작: {symbol}")
+            
+            # 예약 주문과 TP/SL 주문을 병렬로 조회
+            plan_orders_task = self.get_plan_orders(symbol, 'live')
+            tp_sl_orders_task = self.get_tp_sl_orders(symbol, 'live')
+            
+            plan_orders, tp_sl_orders = await asyncio.gather(
+                plan_orders_task, 
+                tp_sl_orders_task, 
+                return_exceptions=True
+            )
+            
+            # 예외 처리
+            if isinstance(plan_orders, Exception):
+                logger.error(f"예약 주문 조회 오류: {plan_orders}")
+                plan_orders = []
+            
+            if isinstance(tp_sl_orders, Exception):
+                logger.error(f"TP/SL 주문 조회 오류: {tp_sl_orders}")
+                tp_sl_orders = []
+            
+            # 결과 로깅 - 수정된 f-string
+            plan_count = len(plan_orders) if plan_orders else 0
+            tp_sl_count = len(tp_sl_orders) if tp_sl_orders else 0
+            total_count = plan_count + tp_sl_count
+            
+            logger.info(f"📊 전체 플랜 주문 조회 결과:")
+            logger.info(f"   - 예약 주문: {plan_count}개")
+            logger.info(f"   - TP/SL 주문: {tp_sl_count}개")
+            logger.info(f"   - 총합: {total_count}개")
+            
+            # 각 주문의 TP/SL 정보 분석
+            for i, order in enumerate(plan_orders[:3]):  # 최대 3개만 로깅
+                order_id = order.get('orderId', order.get('planOrderId', f'unknown_{i}'))
+                side = order.get('side', order.get('tradeSide', 'unknown'))
+                trigger_price = order.get('triggerPrice', order.get('price', 0))
+                
+                # TP/SL 가격 확인 - 수정된 f-string
+                tp_price = None
+                sl_price = None
+                
+                # TP 추출
+                for tp_field in ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice']:
+                    value = order.get(tp_field)
+                    if value and str(value) not in ['0', '0.0', '', 'null']:
+                        try:
+                            tp_price = float(value)
+                            if tp_price > 0:
+                                break
+                        except:
+                            continue
+                
+                # SL 추출
+                for sl_field in ['presetStopLossPrice', 'stopLossPrice', 'stopPrice']:
+                    value = order.get(sl_field)
+                    if value and str(value) not in ['0', '0.0', '', 'null']:
+                        try:
+                            sl_price = float(value)
+                            if sl_price > 0:
+                                break
+                        except:
+                            continue
+                
+                # 로깅 - 수정된 f-string (조건문을 밖으로 분리)
+                tp_display = f"${tp_price:.2f}" if tp_price else "없음"
+                sl_display = f"${sl_price:.2f}" if sl_price else "없음"
+                
+                logger.info(f"🎯 예약주문 {i+1}: ID={order_id}")
+                logger.info(f"   방향: {side}, 트리거: ${trigger_price}")
+                logger.info(f"   TP: {tp_display}")
+                logger.info(f"   SL: {sl_display}")
+            
+            # TP/SL 주문도 분석
+            for i, order in enumerate(tp_sl_orders[:3]):  # 최대 3개만 로깅
+                order_id = order.get('orderId', order.get('planOrderId', f'tpsl_{i}'))
+                side = order.get('side', order.get('tradeSide', 'unknown'))
+                trigger_price = order.get('triggerPrice', order.get('price', 0))
+                reduce_only = order.get('reduceOnly', False)
+                
+                logger.info(f"🛡️ TP/SL주문 {i+1}: ID={order_id}")
+                logger.info(f"   방향: {side}, 트리거: ${trigger_price}")
+                logger.info(f"   클로즈: {reduce_only}")
+            
+            return {
+                'plan_orders': plan_orders or [],
+                'tp_sl_orders': tp_sl_orders or [],
+                'total_count': total_count,
+                'plan_count': plan_count,
+                'tp_sl_count': tp_sl_count
+            }
+            
+        except Exception as e:
+            logger.error(f"전체 플랜 주문 조회 실패: {e}")
+            logger.error(f"상세 오류: {traceback.format_exc()}")
+            return {
+                'plan_orders': [],
+                'tp_sl_orders': [],
+                'total_count': 0,
+                'plan_count': 0,
+                'tp_sl_count': 0,
+                'error': str(e)
+            }
+    
     async def get_enhanced_profit_history(self, symbol: str = None, days: int = 7) -> Dict:
         """🔥🔥 개선된 정확한 손익 조회 - 다중 검증 방식"""
         try:
@@ -1083,569 +1263,4 @@ class BitgetClient:
             
             all_fills.extend(fills)
             
-            if len(fills) < 500:
-                break
-            
-            # 다음 페이지 ID (더 많은 필드 시도)
-            last_fill = fills[-1]
-            new_last_id = self._get_enhanced_fill_id_v2(last_fill)
-            
-            if not new_last_id or new_last_id == last_id:
-                break
-            
-            last_id = new_last_id
-            page += 1
-            
-            await asyncio.sleep(0.05)  # 더 짧은 대기
-        
-        return all_fills
-    
-    def _get_enhanced_fill_id_v2(self, fill: Dict) -> Optional[str]:
-        """🔥🔥🔥 향상된 거래 ID 추출 V2"""
-        for field in ['fillId', 'tradeId', 'id', 'orderId', 'clientOid', 'cTime', 'createTime']:
-            if field in fill and fill[field]:
-                return str(fill[field])
-        return None
-    
-    def _remove_duplicate_fills_enhanced(self, fills: List[Dict]) -> List[Dict]:
-        """🔥🔥🔥 향상된 중복 제거 V2"""
-        seen = set()
-        unique_fills = []
-        
-        for fill in fills:
-            # 더 정교한 중복 체크
-            fill_id = self._get_enhanced_fill_id_v2(fill)
-            
-            # 더 많은 필드로 복합 키 생성
-            time_key = str(fill.get('cTime', fill.get('createTime', '')))
-            size_key = str(fill.get('size', fill.get('amount', '')))
-            price_key = str(fill.get('price', fill.get('fillPrice', '')))
-            side_key = str(fill.get('side', ''))
-            
-            composite_key = f"{fill_id}_{time_key}_{size_key}_{price_key}_{side_key}"
-            
-            if composite_key not in seen:
-                seen.add(composite_key)
-                unique_fills.append(fill)
-            else:
-                logger.debug(f"중복 제거: {fill_id}")
-        
-        return unique_fills
-    
-    def _extract_fee_from_fill_enhanced(self, fill: Dict) -> float:
-        """🔥🔥🔥 거래에서 수수료 추출 - 강화된 버전"""
-        fee = 0.0
-        
-        # 더 많은 수수료 필드 확인
-        fee_fields = [
-            'fee', 'fees', 'totalFee', 'tradeFee', 'commission',
-            'feeAmount', 'feeCoin', 'feeRate'
-        ]
-        
-        # feeDetail 확인 (강화)
-        fee_detail = fill.get('feeDetail', [])
-        if isinstance(fee_detail, list):
-            for fee_info in fee_detail:
-                if isinstance(fee_info, dict):
-                    for fee_field in ['totalFee', 'fee', 'amount']:
-                        if fee_field in fee_info:
-                            fee += abs(float(fee_info.get(fee_field, 0)))
-        
-        # 다른 수수료 필드들 확인 (강화)
-        if fee == 0:
-            for fee_field in fee_fields:
-                if fee_field in fill and fill[fee_field] is not None:
-                    try:
-                        fee_value = float(fill[fee_field])
-                        if fee_value != 0:
-                            fee = abs(fee_value)
-                            break
-                    except:
-                        continue
-        
-        return fee
-    
-    async def _get_achieved_profits(self) -> Dict:
-        """포지션에서 achievedProfits 조회"""
-        try:
-            logger.info("🔥 achievedProfits 조회 시작")
-            
-            positions = await self.get_positions()
-            achieved_profits = 0
-            position_open_time = None
-            
-            for pos in positions:
-                achieved = float(pos.get('achievedProfits', 0))
-                if achieved != 0:
-                    achieved_profits = achieved
-                    ctime = pos.get('cTime')
-                    if ctime:
-                        kst = pytz.timezone('Asia/Seoul')
-                        position_open_time = datetime.fromtimestamp(int(ctime)/1000, tz=kst)
-                    break
-            
-            return {
-                'total_pnl': achieved_profits,
-                'position_open_time': position_open_time,
-                'source': 'achieved_profits',
-                'confidence': 'medium' if achieved_profits > 0 else 'low'
-            }
-            
-        except Exception as e:
-            logger.error(f"achievedProfits 조회 실패: {e}")
-            return {
-                'total_pnl': 0,
-                'position_open_time': None,
-                'source': 'achieved_error',
-                'confidence': 'low'
-            }
-    
-    def _select_best_profit_data_corrected(self, bills_result: Dict, fills_result: Dict, 
-                                         achieved_result: Dict, days: int) -> Dict:
-        """🔥🔥🔥 최적의 손익 데이터 선택 - 수정된 로직"""
-        
-        logger.info("🔥 손익 데이터 비교 및 선택 (수정된 로직)")
-        logger.info(f"   - Account Bills: ${bills_result['total_pnl']:.2f} (신뢰도: {bills_result['confidence']})")
-        logger.info(f"   - Trade Fills: ${fills_result['total_pnl']:.2f} (신뢰도: {fills_result['confidence']})")
-        logger.info(f"   - Achieved Profits: ${achieved_result['total_pnl']:.2f} (신뢰도: {achieved_result['confidence']})")
-        
-        # 🔥🔥🔥 데이터 유효성 확인
-        bills_has_data = (bills_result['confidence'] == 'high' and 
-                         (bills_result['total_pnl'] != 0 or bills_result['trade_count'] > 0))
-        
-        fills_has_data = (fills_result['confidence'] in ['high', 'medium'] and 
-                         (fills_result['total_pnl'] != 0 or fills_result['trade_count'] > 0))
-        
-        achieved_has_data = achieved_result['total_pnl'] != 0
-        
-        # 1순위: Trade Fills (강화된 버전이 성공하고 데이터가 있으면)
-        if fills_has_data and fills_result['confidence'] == 'high':
-            logger.info("✅ Trade Fills Enhanced 선택 (강화된 버전, 데이터 있음)")
-            fills_result['source'] = 'trade_fills_enhanced_primary'
-            return fills_result
-        
-        # 2순위: Account Bills (수정된 방식이 성공했으면)
-        if bills_has_data:
-            logger.info("✅ Account Bills 선택 (수정된 방식, 데이터 있음)")
-            bills_result['source'] = 'account_bills_corrected_primary'
-            return bills_result
-        
-        # 3순위: Trade Fills (중간 신뢰도라도 데이터가 있으면)
-        if fills_has_data:
-            logger.info("✅ Trade Fills 선택 (중간 신뢰도, 데이터 있음)")
-            fills_result['source'] = 'trade_fills_enhanced_secondary'
-            return fills_result
-        
-        # 4순위: Achieved Profits
-        if achieved_has_data:
-            logger.info("✅ Achieved Profits 선택 (다른 방법 실패)")
-            return {
-                'total_pnl': achieved_result['total_pnl'],
-                'daily_pnl': {},
-                'days': days,
-                'average_daily': achieved_result['total_pnl'] / days,
-                'trade_count': 0,
-                'total_fees': 0,
-                'source': 'achieved_profits_fallback',
-                'confidence': 'medium'
-            }
-        
-        # 5순위: 데이터가 없더라도 가장 신뢰할 만한 소스
-        if bills_result['trade_count'] > 0 or bills_result['total_pnl'] != 0:
-            logger.info("✅ Account Bills 선택 (최종 폴백)")
-            bills_result['source'] = 'account_bills_final_fallback'
-            return bills_result
-        
-        if fills_result['trade_count'] > 0 or fills_result['total_pnl'] != 0:
-            logger.info("✅ Trade Fills 선택 (최종 폴백)")
-            fills_result['source'] = 'trade_fills_final_fallback'
-            return fills_result
-        
-        # 최종: 모든 데이터가 0
-        logger.warning("⚠️ 모든 손익 데이터가 0 또는 없음 (Trade Fills 기본 반환)")
-        fills_result['source'] = 'no_data_available'
-        fills_result['confidence'] = 'none'
-        return fills_result
-    
-    async def get_profit_loss_history_v2(self, symbol: str = None, days: int = 7) -> Dict:
-        """손익 내역 조회 - Account Bills 사용"""
-        try:
-            symbol = symbol or self.config.symbol
-            
-            # KST 기준 현재 시간
-            kst = pytz.timezone('Asia/Seoul')
-            now = datetime.now(kst)
-            
-            # 조회 기간 설정
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            period_start = today_start - timedelta(days=days-1)
-            period_end = now
-            
-            # UTC로 변환
-            start_time_utc = period_start.astimezone(pytz.UTC)
-            end_time_utc = period_end.astimezone(pytz.UTC)
-            
-            start_time = int(start_time_utc.timestamp() * 1000)
-            end_time = int(end_time_utc.timestamp() * 1000)
-            
-            logger.info(f"=== {days}일 손익 조회 (Account Bills) ===")
-            logger.info(f"기간: {period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')} (KST)")
-            
-            # 모든 계정 내역 조회
-            all_bills = []
-            next_id = None
-            page = 0
-            
-            while page < 50:  # 최대 50페이지
-                bills = await self.get_account_bills(
-                    start_time=start_time,
-                    end_time=end_time,
-                    business_type='contract_settle',  # 실현 손익만
-                    limit=100,
-                    next_id=next_id
-                )
-                
-                if not bills:
-                    break
-                
-                all_bills.extend(bills)
-                logger.info(f"페이지 {page + 1}: {len(bills)}건 조회 (누적 {len(all_bills)}건)")
-                
-                if len(bills) < 100:
-                    break
-                
-                # 다음 페이지
-                last_bill = bills[-1]
-                next_id = last_bill.get('billId', last_bill.get('id'))
-                if not next_id:
-                    break
-                    
-                page += 1
-                await asyncio.sleep(0.1)
-            
-            # 날짜별 손익 계산
-            daily_pnl = {}
-            total_pnl = 0.0
-            total_fees = 0.0
-            trade_count = 0
-            
-            for bill in all_bills:
-                try:
-                    # 시간
-                    bill_time = int(bill.get('cTime', 0))
-                    if not bill_time:
-                        continue
-                    
-                    bill_date_kst = datetime.fromtimestamp(bill_time / 1000, tz=kst)
-                    bill_date_str = bill_date_kst.strftime('%Y-%m-%d')
-                    
-                    # 금액
-                    amount = float(bill.get('amount', 0))
-                    
-                    # 손익인 경우만 처리
-                    business_type = bill.get('businessType', '')
-                    if business_type == 'contract_settle' and amount != 0:
-                        if bill_date_str not in daily_pnl:
-                            daily_pnl[bill_date_str] = 0
-                        
-                        daily_pnl[bill_date_str] += amount
-                        total_pnl += amount
-                        trade_count += 1
-                        
-                        logger.debug(f"손익: {bill_date_str} - ${amount:.2f}")
-                    
-                except Exception as e:
-                    logger.warning(f"계정 내역 파싱 오류: {e}")
-                    continue
-            
-            # 수수료는 별도 조회 필요 (trade fills에서)
-            # 여기서는 손익만 계산
-            
-            logger.info(f"\n=== 일별 손익 내역 (Account Bills) ===")
-            for date, pnl in sorted(daily_pnl.items()):
-                logger.info(f"{date}: ${pnl:,.2f}")
-            
-            logger.info(f"\n=== {days}일 총 손익: ${total_pnl:,.2f} (거래 {trade_count}건) ===")
-            
-            return {
-                'total_pnl': total_pnl,
-                'daily_pnl': daily_pnl,
-                'days': days,
-                'average_daily': total_pnl / days if days > 0 else 0,
-                'trade_count': trade_count,
-                'total_fees': 0  # 수수료는 별도 계산 필요
-            }
-            
-        except Exception as e:
-            logger.error(f"손익 내역 조회 실패: {e}")
-            logger.error(f"상세 오류: {traceback.format_exc()}")
-            return {
-                'total_pnl': 0,
-                'daily_pnl': {},
-                'days': days,
-                'average_daily': 0,
-                'trade_count': 0,
-                'total_fees': 0,
-                'error': str(e)
-            }
-    
-    async def get_account_bills(self, start_time: int = None, end_time: int = None, 
-                               business_type: str = None, limit: int = 100,
-                               next_id: str = None) -> List[Dict]:
-        """🔥🔥🔥 계정 거래 내역 조회 - 수정된 방식"""
-        return await self.get_account_bills_v2_corrected(start_time, end_time, business_type, limit, next_id)
-    
-    async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """거래 체결 내역 조회 (V2 API)"""
-        symbol = symbol or self.config.symbol
-        
-        if start_time and end_time:
-            max_days = 7
-            time_diff = end_time - start_time
-            max_time_diff = max_days * 24 * 60 * 60 * 1000
-            
-            if time_diff > max_time_diff:
-                start_time = end_time - max_time_diff
-                logger.info(f"7일 제한으로 조정: {datetime.fromtimestamp(start_time/1000)} ~ {datetime.fromtimestamp(end_time/1000)}")
-        
-        return await self._get_fills_batch(symbol, start_time, end_time, min(limit, 500))
-    
-    async def _get_fills_batch(self, symbol: str, start_time: int = None, end_time: int = None, limit: int = 100, last_id: str = None) -> List[Dict]:
-        """거래 체결 내역 배치 조회"""
-        endpoints = ["/api/v2/mix/order/fill-history", "/api/v2/mix/order/fills"]
-        
-        for endpoint in endpoints:
-            params = {
-                'symbol': symbol,
-                'productType': 'USDT-FUTURES'
-            }
-            
-            if start_time:
-                params['startTime'] = str(start_time)
-            if end_time:
-                params['endTime'] = str(end_time)
-            if limit:
-                params['limit'] = str(limit)
-            if last_id:
-                params['lastEndId'] = str(last_id)
-            
-            try:
-                response = await self._request('GET', endpoint, params=params)
-                
-                fills = []
-                if isinstance(response, dict):
-                    if 'fillList' in response:
-                        fills = response['fillList']
-                    elif 'fills' in response:
-                        fills = response['fills']
-                    elif 'list' in response:
-                        fills = response['list']
-                    elif 'data' in response and isinstance(response['data'], list):
-                        fills = response['data']
-                elif isinstance(response, list):
-                    fills = response
-                
-                if fills:
-                    logger.info(f"{endpoint} 거래 내역 조회 성공: {len(fills)}건")
-                    return fills
-                    
-            except Exception as e:
-                logger.debug(f"{endpoint} 조회 실패: {e}")
-                continue
-        
-        return []
-    
-    async def get_profit_loss_history(self, symbol: str = None, days: int = 7) -> Dict:
-        """🔥🔥 개선된 손익 내역 조회 - 새로운 정확한 방식 사용"""
-        return await self.get_enhanced_profit_history(symbol, days)
-    
-    async def get_simple_weekly_profit(self, days: int = 7) -> Dict:
-        """🔥🔥 개선된 간단한 주간 손익 계산 - achievedProfits vs 정확한 거래내역 비교"""
-        try:
-            logger.info(f"=== 🔥 개선된 {days}일 손익 계산 시작 ===")
-            
-            # 현재 계정 정보
-            account = await self.get_account_info()
-            current_equity = float(account.get('accountEquity', 0))
-            
-            # 현재 포지션 정보에서 achievedProfits 확인
-            positions = await self.get_positions()
-            achieved_profits = 0
-            position_open_time = None
-            
-            for pos in positions:
-                achieved = float(pos.get('achievedProfits', 0))
-                if achieved != 0:
-                    achieved_profits = achieved
-                    ctime = pos.get('cTime')
-                    if ctime:
-                        kst = pytz.timezone('Asia/Seoul')
-                        position_open_time = datetime.fromtimestamp(int(ctime)/1000, tz=kst)
-                    logger.info(f"포지션 achievedProfits: ${achieved:.2f}")
-                    if position_open_time:
-                        logger.info(f"포지션 오픈 시간: {position_open_time.strftime('%Y-%m-%d %H:%M')} KST")
-            
-            # 🔥🔥 새로운 정확한 거래 내역 기반 계산 사용
-            actual_profit = await self.get_enhanced_profit_history(days=days)
-            actual_pnl = actual_profit.get('total_pnl', 0)
-            
-            logger.info(f"🔥 비교 결과:")
-            logger.info(f"   achievedProfits: ${achieved_profits:.2f}")
-            logger.info(f"   정확한 {days}일 거래내역: ${actual_pnl:.2f}")
-            logger.info(f"   데이터 소스: {actual_profit.get('source', 'unknown')}")
-            logger.info(f"   신뢰도: {actual_profit.get('confidence', 'unknown')}")
-            
-            # 🔥🔥 더 정교한 선택 로직
-            if actual_profit.get('confidence') == 'high' and actual_pnl != 0:
-                # Trade Fills Enhanced가 성공하면 우선 사용
-                logger.info("✅ Trade Fills Enhanced 기반 정확한 데이터 사용")
-                result = actual_profit.copy()
-                result['source'] = 'enhanced_trade_fills'
-                return result
-            
-            elif achieved_profits > 0 and position_open_time:
-                # achievedProfits가 있고 포지션 시간 정보가 있는 경우
-                kst = pytz.timezone('Asia/Seoul')
-                now = datetime.now(kst)
-                position_days = (now - position_open_time).days + 1
-                
-                # 포지션이 요청 기간 내에 열렸고, 두 값의 차이가 합리적인 범위면 achievedProfits 사용
-                if position_days <= days:
-                    if actual_pnl == 0 or abs(achieved_profits - actual_pnl) / max(abs(actual_pnl), 1) < 0.3:
-                        logger.info(f"✅ achievedProfits 사용 (포지션 기간: {position_days}일, 차이 합리적)")
-                        return {
-                            'total_pnl': achieved_profits,
-                            'days': days,
-                            'average_daily': achieved_profits / days,
-                            'source': 'achievedProfits',
-                            'confidence': 'medium',
-                            'position_days': position_days,
-                            'daily_pnl': {}
-                        }
-                    else:
-                        logger.info(f"⚠️ achievedProfits와 실제 거래내역 차이 큼: ${abs(achieved_profits - actual_pnl):.2f}")
-                        # 차이가 크면 실제 거래내역 사용
-                        result = actual_profit.copy()
-                        result['source'] = f"{result.get('source', 'unknown')}_vs_achieved"
-                        return result
-                else:
-                    logger.info(f"⚠️ 포지션이 너무 오래됨: {position_days}일 > {days}일")
-            
-            # 기본적으로 정확한 거래내역 사용
-            if actual_pnl != 0 or actual_profit.get('trade_count', 0) > 0:
-                logger.info("✅ 정확한 거래내역 사용 (기본)")
-                result = actual_profit.copy()
-                result['source'] = f"{result.get('source', 'unknown')}_primary"
-                return result
-            
-            # 마지막 폴백: achievedProfits만 있는 경우
-            if achieved_profits > 0:
-                logger.info("✅ achievedProfits만 사용 (폴백)")
-                return {
-                    'total_pnl': achieved_profits,
-                    'days': days,
-                    'average_daily': achieved_profits / days,
-                    'source': 'achievedProfits_only',
-                    'confidence': 'low',
-                    'daily_pnl': {}
-                }
-            
-            # 최종: 빈 결과
-            logger.warning("⚠️ 모든 손익 데이터가 0 또는 없음")
-            return {
-                'total_pnl': 0,
-                'days': days,
-                'average_daily': 0,
-                'source': 'no_data',
-                'confidence': 'none',
-                'daily_pnl': {}
-            }
-            
-        except Exception as e:
-            logger.error(f"개선된 주간 손익 계산 실패: {e}")
-            logger.error(f"상세 오류: {traceback.format_exc()}")
-            return {
-                'total_pnl': 0,
-                'days': days,
-                'average_daily': 0,
-                'source': 'error',
-                'confidence': 'none',
-                'error': str(e),
-                'daily_pnl': {}
-            }
-    
-    async def get_funding_rate(self, symbol: str = None) -> Dict:
-        """펀딩비 조회 (V2 API)"""
-        symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/market/current-fund-rate"
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES'
-        }
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            # 리스트인 경우 첫 번째 요소 반환
-            if isinstance(response, list) and len(response) > 0:
-                return response[0]
-            return response
-        except Exception as e:
-            logger.error(f"펀딩비 조회 실패: {e}")
-            raise
-    
-    async def get_open_interest(self, symbol: str = None) -> Dict:
-        """미결제약정 조회 (V2 API)"""
-        symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/market/open-interest"
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES'
-        }
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            return response
-        except Exception as e:
-            logger.error(f"미결제약정 조회 실패: {e}")
-            raise
-    
-    async def get_kline(self, symbol: str = None, granularity: str = '1H', limit: int = 100) -> List[Dict]:
-        """K라인 데이터 조회 (V2 API)"""
-        symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/market/candles"
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES',
-            'granularity': granularity,
-            'limit': str(limit)
-        }
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            return response if isinstance(response, list) else []
-        except Exception as e:
-            logger.error(f"K라인 조회 실패: {e}")
-            raise
-    
-    async def get_api_connection_status(self) -> Dict:
-        """🔥🔥🔥 API 연결 상태 조회"""
-        return {
-            'healthy': self.api_connection_healthy,
-            'consecutive_failures': self.consecutive_failures,
-            'last_successful_call': self.last_successful_call.isoformat(),
-            'api_keys_validated': self.api_keys_validated,
-            'max_failures_threshold': self.max_consecutive_failures
-        }
-    
-    async def reset_connection_status(self):
-        """🔥🔥🔥 연결 상태 리셋"""
-        self.api_connection_healthy = True
-        self.consecutive_failures = 0
-        self.last_successful_call = datetime.now()
-        logger.info("비트겟 API 연결 상태 리셋 완료")
-    
-    async def close(self):
-        """세션 종료"""
-        if self.session:
-            await self.session.close()
-            logger.info("Bitget 클라이언트 세션 종료")
+            if
