@@ -87,8 +87,8 @@ class MirrorTradingSystem:
         self.initialization_errors = 0
         self.max_initialization_retries = 3
         
-        # 설정 - 🔥🔥🔥 비트겟 선물 심볼 수정
-        self.SYMBOL = "BTCUSDT_UMCBL"  # Bitget USDT-M Futures 심볼
+        # 🔥🔥🔥 정확한 심볼 설정
+        self.SYMBOL = "BTCUSDT"  # Bitget 정확한 심볼
         self.GATE_CONTRACT = "BTC_USDT"
         self.CHECK_INTERVAL = 1
         self.ORDER_CHECK_INTERVAL = 0.5
@@ -102,12 +102,12 @@ class MirrorTradingSystem:
         # 성과 추적 (포지션 매니저와 공유)
         self.daily_stats = self.position_manager.daily_stats
         
-        self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 슬리피지 보호 0.05% 적용 + 텔레그램 알림")
+        self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 정확한 심볼 사용 + 슬리피지 보호 0.05%")
 
     async def start(self):
         """🔥🔥🔥 미러 트레이딩 시작 - 강화된 초기화 및 오류 처리"""
         try:
-            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 슬리피지 보호 0.05% + 텔레그램 알림")
+            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 정확한 심볼 사용 + 슬리피지 보호 0.05%")
             
             # 🔥🔥🔥 단계별 초기화 - 실패해도 계속 진행
             initialization_success = await self._perform_initialization()
@@ -123,6 +123,7 @@ class MirrorTradingSystem:
             await self.telegram.send_message(
                 f"🔥 미러 트레이딩 시스템 시작\n"
                 f"초기화 상태: {'✅ 성공' if initialization_success else '⚠️ 부분 실패'}\n"
+                f"🎯 정확한 심볼: {self.SYMBOL}\n"
                 f"🎯 예약 주문 모니터링: 활성화\n"
                 f"🛡️ 슬리피지 보호: 0.05% (약 $50)\n"
                 f"🔥 시세 차이와 무관하게 즉시 처리\n"
