@@ -27,10 +27,10 @@ class BitgetMirrorClient:
         self.last_successful_call = datetime.now()
         self.max_consecutive_failures = 10
         
-        # 🔥🔥🔥 정확한 Bitget 파라미터 설정
-        self.product_type = "UMCBL"  # USDT-M Futures
-        self.symbol = "BTCUSDT"      # 정확한 심볼
-        self.margin_coin = "USDT"    # 마진 코인
+        # 🔥🔥🔥 정확한 Bitget 파라미터 설정 - 수정됨
+        self.product_type = "umcbl"      # USDT-M Futures (소문자)
+        self.symbol = "BTCUSDT"          # 정확한 심볼
+        self.margin_coin = "USDT"        # 마진 코인
         
         # 🔥🔥🔥 정확한 v2 API 엔드포인트들
         self.ticker_endpoints = [
