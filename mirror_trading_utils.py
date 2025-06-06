@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 클로즈 주문 방향 수정"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 클로즈 주문 방향 수정 완료"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -57,7 +57,7 @@ class MirrorTradingUtils:
         # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값도 상향
         self.ABNORMAL_PRICE_DIFF_THRESHOLD = 2000.0  # 1000달러 → 2000달러로 상향
         
-        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 클로즈 주문 방향 수정 버전")
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 클로즈 주문 방향 수정 완료")
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
         """비트겟 예약 주문에서 TP/SL 정보 추출"""
@@ -447,52 +447,139 @@ class MirrorTradingUtils:
             self.logger.error(f"트리거 가격 검증 실패하지만 허용: {e}")
             return True, f"검증 오류이지만 관대한 설정으로 허용: {str(e)[:100]}"
     
+    async def determine_close_order_details(self, bitget_order: Dict) -> Dict:
+        """🔥🔥🔥 클로즈 주문 세부 사항 정확하게 판단"""
+        try:
+            side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
+            reduce_only = bitget_order.get('reduceOnly', False)
+            
+            # 클로즈 주문 여부 판단
+            is_close_order = (
+                'close' in side or 
+                reduce_only is True or 
+                reduce_only == 'true' or
+                str(reduce_only).lower() == 'true'
+            )
+            
+            self.logger.info(f"🔍 클로즈 주문 분석: side='{side}', reduce_only={reduce_only}, is_close_order={is_close_order}")
+            
+            order_direction = None
+            position_side = None
+            
+            if is_close_order:
+                # 클로즈 주문인 경우
+                if 'close_long' in side or side == 'close long':
+                    order_direction = 'sell'  # 롱 포지션을 종료하려면 매도
+                    position_side = 'long'
+                elif 'close_short' in side or side == 'close short':
+                    order_direction = 'buy'   # 숏 포지션을 종료하려면 매수
+                    position_side = 'short'
+                elif 'sell' in side:
+                    order_direction = 'sell'
+                    position_side = 'long'   # 매도로 클로즈하면 원래 롱 포지션
+                elif 'buy' in side:
+                    order_direction = 'buy'
+                    position_side = 'short'  # 매수로 클로즈하면 원래 숏 포지션
+                else:
+                    # 기본값 - side에서 추정
+                    if 'long' in side:
+                        order_direction = 'sell'
+                        position_side = 'long'
+                    elif 'short' in side:
+                        order_direction = 'buy'
+                        position_side = 'short'
+                    else:
+                        order_direction = 'sell'  # 기본값
+                        position_side = 'long'
+            else:
+                # 오픈 주문인 경우
+                if 'buy' in side or 'long' in side:
+                    order_direction = 'buy'
+                    position_side = 'long'
+                elif 'sell' in side or 'short' in side:
+                    order_direction = 'sell'
+                    position_side = 'short'
+                else:
+                    order_direction = 'buy'  # 기본값
+                    position_side = 'long'
+            
+            result = {
+                'is_close_order': is_close_order,
+                'order_direction': order_direction,  # buy 또는 sell
+                'position_side': position_side,      # long 또는 short
+                'original_side': side,
+                'reduce_only': reduce_only
+            }
+            
+            self.logger.info(f"✅ 클로즈 주문 분석 결과: {result}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"클로즈 주문 세부 사항 판단 실패: {e}")
+            return {
+                'is_close_order': False,
+                'order_direction': 'buy',
+                'position_side': 'long',
+                'original_side': side,
+                'reduce_only': False
+            }
+    
     async def calculate_gate_order_size_fixed(self, side: str, base_size: int, is_close_order: bool = False) -> Tuple[int, bool]:
-        """🔥🔥🔥 게이트 주문 수량 계산 - 클로즈 주문 방향 수정"""
+        """🔥🔥🔥 게이트 주문 수량 계산 - 클로즈 주문 방향 완전 수정"""
         try:
             side_lower = side.lower()
             reduce_only = False
             
             self.logger.info(f"🔍 주문 타입 분석: side='{side}', is_close_order={is_close_order}")
             
-            # 🔥🔥🔥 클로즈 주문 처리 - 수정된 로직
+            # 🔥🔥🔥 클로즈 주문 처리 - 완전히 수정된 로직
             if is_close_order or 'close' in side_lower:
                 reduce_only = True
                 
+                # 클로즈 주문: 포지션을 종료하는 방향으로 주문
                 if 'close_long' in side_lower or side_lower == 'close long':
-                    # 롱 포지션 종료 → 매도 (음수)
+                    # 롱 포지션 종료 → 매도 주문 (음수)
                     gate_size = -abs(base_size)
-                    self.logger.info(f"🔴 클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
+                    self.logger.info(f"🔴 클로즈 롱: 롱 포지션 종료 → 게이트 매도 주문 (음수: {gate_size})")
                     
                 elif 'close_short' in side_lower or side_lower == 'close short':
-                    # 숏 포지션 종료 → 매수 (양수)
+                    # 숏 포지션 종료 → 매수 주문 (양수)
                     gate_size = abs(base_size)
-                    self.logger.info(f"🟢 클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {gate_size})")
+                    self.logger.info(f"🟢 클로즈 숏: 숏 포지션 종료 → 게이트 매수 주문 (양수: {gate_size})")
+                    
+                elif 'sell' in side_lower and 'buy' not in side_lower:
+                    # 매도로 클로즈 → 롱 포지션을 종료하는 것
+                    gate_size = -abs(base_size)
+                    self.logger.info(f"🔴 클로즈 매도: 롱 포지션 종료 → 게이트 매도 주문 (음수: {gate_size})")
+                    
+                elif 'buy' in side_lower and 'sell' not in side_lower:
+                    # 매수로 클로즈 → 숏 포지션을 종료하는 것
+                    gate_size = abs(base_size)
+                    self.logger.info(f"🟢 클로즈 매수: 숏 포지션 종료 → 게이트 매수 주문 (양수: {gate_size})")
                     
                 else:
-                    # 일반적인 매도/매수 기반 판단 (클로즈 주문)
-                    if 'sell' in side_lower or 'short' in side_lower:
-                        gate_size = -abs(base_size)
-                        self.logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {gate_size})")
-                    else:
-                        gate_size = abs(base_size)
-                        self.logger.info(f"🟢 클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {gate_size})")
+                    # 기타 클로즈 주문 - 기본적으로 매도로 처리
+                    gate_size = -abs(base_size)
+                    self.logger.warning(f"⚠️ 알 수 없는 클로즈 주문 유형: {side}, 매도로 처리 (음수: {gate_size})")
                         
             # 오픈 주문 처리
             else:
                 reduce_only = False
                 
                 if 'open_long' in side_lower or ('buy' in side_lower and 'sell' not in side_lower):
+                    # 롱 포지션 생성 → 매수 주문 (양수)
                     gate_size = abs(base_size)
-                    self.logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {gate_size})")
+                    self.logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 주문 (양수: {gate_size})")
                     
                 elif 'open_short' in side_lower or 'sell' in side_lower:
+                    # 숏 포지션 생성 → 매도 주문 (음수)
                     gate_size = -abs(base_size)
-                    self.logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {gate_size})")
+                    self.logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 주문 (음수: {gate_size})")
                     
                 else:
+                    # 기타 오픈 주문 - 원본 사이즈 유지
                     gate_size = base_size
-                    self.logger.warning(f"⚠️ 알 수 없는 주문 방향: {side}, 원본 사이즈 유지: {gate_size}")
+                    self.logger.warning(f"⚠️ 알 수 없는 오픈 주문 유형: {side}, 원본 사이즈 유지: {gate_size}")
             
             self.logger.info(f"✅ 최종 변환 결과: {side} → 게이트 사이즈={gate_size}, reduce_only={reduce_only}")
             return gate_size, reduce_only
