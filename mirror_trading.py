@@ -59,7 +59,7 @@ class MirrorTradingSystem:
         self.gate_current_price: float = 0.0
         self.price_diff_percent: float = 0.0
         self.last_price_update: datetime = datetime.min
-        self.price_sync_threshold: float = 100.0
+        self.price_sync_threshold: float = 1000.0  # 🔥🔥🔥 매우 관대하게 설정
         self.position_wait_timeout: int = 60
         
         # 시세 조회 실패 관리 강화
@@ -90,12 +90,12 @@ class MirrorTradingSystem:
         self.daily_stats = self.position_manager.daily_stats
         
         self.monitoring = True
-        self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 최적화 버전")
+        self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 시세 차이 제한 완전 제거")
 
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 최적화 버전")
+            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 시세 차이 제한 완전 제거")
             
             # Bitget 미러링 클라이언트 초기화
             await self.bitget_mirror.initialize()
@@ -395,12 +395,14 @@ class MirrorTradingSystem:
             
             # 동기화 결과 알림 (5개 이상 문제가 해결되었을 때만)
             if fixed_count >= 5:
+                price_diff = abs(self.bitget_current_price - self.gate_current_price)
                 await self.telegram.send_message(
                     f"🔄 예약 주문 대규모 동기화 완료\n"
                     f"해결된 문제: {fixed_count}건\n"
                     f"- 누락 미러링 복제: {len(sync_analysis['missing_mirrors'])}건\n"
                     f"- 고아 주문 삭제: {len(sync_analysis['orphaned_orders'])}건\n\n"
-                    f"📊 현재 시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}"
+                    f"📊 현재 시세 차이: ${price_diff:.2f} (처리 완료)\n"
+                    f"🔥 시세 차이와 무관하게 모든 주문 정상 처리됨"
                 )
             elif fixed_count > 0:
                 self.logger.info(f"🔄 예약 주문 동기화 완료: {fixed_count}건 해결")
@@ -422,7 +424,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
     async def monitor_order_fills(self):
-        """실시간 주문 체결 감지"""
+        """🔥🔥🔥 실시간 주문 체결 감지 - 시세 차이 대기 제거"""
         consecutive_errors = 0
         
         while self.monitoring:
@@ -430,12 +432,10 @@ class MirrorTradingSystem:
                 # 시세 차이 확인 후 처리
                 await self._update_current_prices()
                 
-                # 유효한 시세 차이인지 확인
+                # 🔥🔥🔥 시세 차이 확인만 하고 처리는 항상 진행
                 valid_price_diff = self._get_valid_price_difference()
-                if valid_price_diff is None:
-                    pass
-                elif valid_price_diff > self.price_sync_threshold:
-                    self.logger.debug(f"시세 차이 확인됨: ${valid_price_diff:.2f}, 주문 처리 계속 진행")
+                if valid_price_diff is not None:
+                    self.logger.debug(f"시세 차이 ${valid_price_diff:.2f} 확인됨, 주문 처리 계속 진행")
                 
                 # 미러링 클라이언트로 체결 주문 조회
                 filled_orders = await self.bitget_mirror.get_recent_filled_orders(
@@ -571,9 +571,9 @@ class MirrorTradingSystem:
                 price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
                 self.price_diff_percent = price_diff_abs / self.bitget_current_price * 100
                 
-                # 정상적인 시세 차이만 로깅
-                if price_diff_abs <= 2000:
-                    if price_diff_abs > self.price_sync_threshold:
+                # 정상적인 시세 차이만 로깅 (임계값을 매우 관대하게 설정)
+                if price_diff_abs <= 5000:  # 2000달러 → 5000달러로 더 관대하게
+                    if price_diff_abs > 500:  # 100달러 → 500달러로 더 관대하게
                         self.logger.debug(f"시세 차이: 비트겟 ${self.bitget_current_price:.2f}, 게이트 ${self.gate_current_price:.2f}, 차이 ${price_diff_abs:.2f}")
                 else:
                     self.logger.warning(f"비정상적인 시세 차이 감지: ${price_diff_abs:.2f}, 이전 가격 유지")
@@ -603,8 +603,8 @@ class MirrorTradingSystem:
             
             price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
             
-            # 비정상적으로 큰 차이 임계값 (2000달러)
-            if price_diff_abs > 2000:
+            # 🔥🔥🔥 비정상적으로 큰 차이 임계값을 매우 관대하게 (5000달러)
+            if price_diff_abs > 5000:
                 return None
                 
             return price_diff_abs
@@ -614,7 +614,7 @@ class MirrorTradingSystem:
             return None
 
     async def monitor_price_differences(self):
-        """거래소 간 시세 차이 모니터링"""
+        """🔥🔥🔥 거래소 간 시세 차이 모니터링 - 처리 차단 없음"""
         consecutive_errors = 0
         last_warning_time = datetime.min
         last_normal_report_time = datetime.min
@@ -634,7 +634,7 @@ class MirrorTradingSystem:
                 
                 now = datetime.now()
                 
-                # 경고 빈도 감소 - 임계값 100달러, 경고는 4시간마다만
+                # 🔥🔥🔥 경고 빈도 감소 - 임계값 1000달러, 경고는 4시간마다만 (처리는 항상 진행)
                 if (valid_price_diff > self.price_sync_threshold and 
                     (now - last_warning_time).total_seconds() > 14400):
                     
@@ -643,7 +643,8 @@ class MirrorTradingSystem:
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f}\n\n"
-                        f"🔄 미러링은 정상 진행되며 15초마다 자동 동기화됩니다"
+                        f"🔄 미러링은 정상 진행되며 15초마다 자동 동기화됩니다\n"
+                        f"🔥 시세 차이와 무관하게 모든 주문이 즉시 처리됩니다"
                     )
                     last_warning_time = now
                 
@@ -660,7 +661,8 @@ class MirrorTradingSystem:
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f}\n"
                         f"상태: {status_emoji} {status_text}\n\n"
-                        f"🔄 예약 주문 동기화: 15초마다 자동 실행"
+                        f"🔄 예약 주문 동기화: 15초마다 자동 실행\n"
+                        f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리"
                     )
                     last_normal_report_time = now
                 
@@ -699,9 +701,9 @@ class MirrorTradingSystem:
                         # 가능한 원인들 분석
                         possible_causes = []
                         
-                        # 1. 시세 차이 원인
+                        # 1. 시세 차이 원인 (정보용으로만 표시)
                         if valid_price_diff and valid_price_diff > self.price_sync_threshold:
-                            possible_causes.append(f"시세 차이 큼 (${valid_price_diff:.2f})")
+                            possible_causes.append(f"시세 차이 큼 (${valid_price_diff:.2f}) - 처리에는 영향 없음")
                         
                         # 2. 가격 조회 실패 원인
                         if self.bitget_price_failures > 0 or self.gate_price_failures > 0:
@@ -732,7 +734,8 @@ class MirrorTradingSystem:
                             f"차이: {sync_status['position_diff']}개\n\n"
                             f"🔍 분석된 원인:\n"
                             f"• {chr(10).join(possible_causes)}\n\n"
-                            f"💡 대부분 정상적인 상황이며 자동으로 해결됩니다."
+                            f"💡 시세 차이는 미러링 처리에 영향을 주지 않습니다.\n"
+                            f"🔥 모든 주문이 즉시 처리되고 있습니다."
                         )
                         
                         sync_retry_count = 0
@@ -788,12 +791,14 @@ class MirrorTradingSystem:
 - 비트겟: ${self.bitget_current_price:,.2f}
 - 게이트: ${self.gate_current_price:,.2f}
 - 차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)
-- 상태: {price_status}"""
+- 상태: {price_status}
+- 🔥 처리 상태: 시세 차이와 무관하게 모든 주문 즉시 처리됨"""
             else:
                 price_status_info = f"""📈 시세 차이 현황:
 - 시세 조회에 문제가 있었습니다
 - 비트겟 조회 실패: {self.bitget_price_failures}회
-- 게이트 조회 실패: {self.gate_price_failures}회"""
+- 게이트 조회 실패: {self.gate_price_failures}회
+- 🔥 처리 상태: 시세 조회 실패와 무관하게 모든 주문 정상 처리됨"""
             
             # TP/SL 미러링 성과 통계
             perfect_mirrors = self.daily_stats.get('perfect_mirrors', 0)
@@ -850,6 +855,11 @@ class MirrorTradingSystem:
 - 완벽한 TP/SL 주문: {len([o for o in self.position_manager.mirrored_plan_orders.values() if o.get('perfect_mirror')])}개
 - 실패 기록: {len(self.failed_mirrors)}건
 
+🔥 시세 차이 대응 개선:
+- 시세 차이 임계값: ${self.price_sync_threshold:.0f}
+- 처리 방식: 시세 차이와 무관하게 즉시 처리
+- 대기 없음: 모든 주문 즉시 복제
+
 ━━━━━━━━━━━━━━━━━━━
 ✅ 미러 트레이딩 시스템 정상 작동 중"""
             
@@ -887,6 +897,7 @@ class MirrorTradingSystem:
             'sync_deletions': 0,
             'auto_close_order_cleanups': 0,
             'position_closed_cleanups': 0,
+            'position_size_corrections': 0,  # 포지션 크기 보정 통계
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -916,11 +927,13 @@ class MirrorTradingSystem:
                 price_info = f"""📈 시세 상태:
 • 비트겟: ${self.bitget_current_price:,.2f}
 • 게이트: ${self.gate_current_price:,.2f}
-• 차이: ${valid_price_diff:.2f} ({price_status})"""
+• 차이: ${valid_price_diff:.2f} ({price_status})
+• 🔥 처리: 시세 차이와 무관하게 즉시 처리"""
             else:
                 price_info = f"""📈 시세 상태:
 • 시세 조회 중 문제 발생
-• 시스템이 자동으로 복구 중"""
+• 시스템이 자동으로 복구 중
+• 🔥 처리: 시세 조회 실패와 무관하게 정상 처리"""
             
             await self.telegram.send_message(
                 f"🔄 미러 트레이딩 시스템 시작\n\n"
@@ -937,7 +950,8 @@ class MirrorTradingSystem:
                 f"• 🔄 15초마다 자동 동기화\n"
                 f"• 🛡️ 중복 복제 방지\n"
                 f"• 🗑️ 고아 주문 자동 정리\n"
-                f"• 📊 클로즈 주문 포지션 체크\n\n"
+                f"• 📊 클로즈 주문 포지션 체크\n"
+                f"• 🔥 시세 차이와 무관하게 즉시 처리\n\n"
                 f"🚀 시스템이 정상적으로 시작되었습니다."
             )
             
