@@ -14,7 +14,7 @@ import traceback
 logger = logging.getLogger(__name__)
 
 class BitgetMirrorClient:
-    """Bitget 미러링 전용 클라이언트 - 예약 주문 체결 내역 확인 기능 추가 + USDT-M Futures 지원 + 정확한 v2 API 엔드포인트 사용"""
+    """Bitget 미러링 전용 클라이언트 - 파라미터 검증 오류 수정 + 정확한 USDT-M Futures API 사용"""
     
     def __init__(self, config):
         self.config = config
@@ -27,7 +27,7 @@ class BitgetMirrorClient:
         self.last_successful_call = datetime.now()
         self.max_consecutive_failures = 10
         
-        # 🔥🔥🔥 정확한 v2 API 엔드포인트들 (v1 제거)
+        # 🔥🔥🔥 정확한 v2 API 엔드포인트들
         self.ticker_endpoints = [
             "/api/v2/mix/market/ticker",   # v2 API 메인
         ]
@@ -68,15 +68,14 @@ class BitgetMirrorClient:
         logger.info("Bitget 미러링 클라이언트 초기화 완료")
     
     async def _validate_api_keys(self):
-        """API 키 유효성 검증 - v2 API 사용"""
+        """API 키 유효성 검증 - 수정된 파라미터 사용"""
         try:
             logger.info("비트겟 미러링 API 키 유효성 검증 시작...")
             
-            # v2 API로 계정 정보 조회
+            # 🔥🔥🔥 수정된 v2 API - productType 올바른 값 사용
             endpoint = "/api/v2/mix/account/accounts"
             params = {
-                'productType': 'USDT-FUTURES',
-                'marginCoin': 'USDT'
+                'productType': 'UMCBL'  # USDT-FUTURES -> UMCBL로 수정
             }
             
             response = await self._request('GET', endpoint, params=params)
@@ -121,14 +120,16 @@ class BitgetMirrorClient:
         }
     
     async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
-        """API 요청 - 강화된 오류 처리 + 404 오류 빠른 스킵"""
+        """API 요청 - 강화된 오류 처리"""
         if not self.session:
             self._initialize_session()
             
         url = f"{self.config.bitget_base_url}{endpoint}"
         
         if params:
-            query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+            # 🔥🔥🔥 파라미터 정리 - None 값 제거
+            cleaned_params = {k: v for k, v in params.items() if v is not None and v != ''}
+            query_string = '&'.join([f"{k}={v}" for k, v in cleaned_params.items()])
             url += f"?{query_string}"
             request_path = f"{endpoint}?{query_string}"
         else:
@@ -140,6 +141,8 @@ class BitgetMirrorClient:
         for attempt in range(max_retries):
             try:
                 logger.debug(f"비트겟 미러링 API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
+                if params:
+                    logger.debug(f"파라미터: {params}")
                 
                 attempt_timeout = aiohttp.ClientTimeout(total=20 + (attempt * 10), connect=10 + (attempt * 5))
                 
@@ -148,7 +151,7 @@ class BitgetMirrorClient:
                 ) as response:
                     response_text = await response.text()
                     
-                    # 🔥🔥🔥 404 오류는 즉시 실패 처리 (재시도 없음)
+                    # 404 오류는 즉시 실패 처리 (재시도 없음)
                     if response.status == 404:
                         error_msg = f"HTTP 404: 엔드포인트가 존재하지 않음 - {endpoint}"
                         logger.warning(f"비트겟 API 404 오류 (재시도 안함): {error_msg}")
@@ -157,6 +160,14 @@ class BitgetMirrorClient:
                     if response.status != 200:
                         error_msg = f"HTTP {response.status}: {response_text}"
                         logger.error(f"비트겟 API 오류: {error_msg}")
+                        
+                        # 400 오류 (파라미터 검증 실패) 상세 로그
+                        if response.status == 400:
+                            logger.error(f"파라미터 검증 실패 상세:")
+                            logger.error(f"  - 엔드포인트: {endpoint}")
+                            logger.error(f"  - 파라미터: {params}")
+                            logger.error(f"  - 응답: {response_text}")
+                        
                         if attempt < max_retries - 1:
                             wait_time = (2 ** attempt) + (attempt * 0.5)
                             await asyncio.sleep(wait_time)
@@ -246,12 +257,11 @@ class BitgetMirrorClient:
                     raise
     
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회 - v2 API 사용"""
+        """계정 정보 조회 - 수정된 파라미터 사용"""
         try:
             endpoint = "/api/v2/mix/account/accounts"
             params = {
-                'productType': 'USDT-FUTURES',
-                'marginCoin': 'USDT'
+                'productType': 'UMCBL'  # 🔥🔥🔥 수정된 파라미터
             }
             response = await self._request('GET', endpoint, params=params)
             
@@ -267,12 +277,11 @@ class BitgetMirrorClient:
             raise
     
     async def get_positions(self, symbol: str = "BTCUSDT_UMCBL") -> List[Dict]:
-        """포지션 조회 - v2 API 사용"""
+        """포지션 조회 - 수정된 파라미터 사용"""
         try:
             endpoint = "/api/v2/mix/position/all-position"
             params = {
-                'productType': 'USDT-FUTURES',
-                'marginCoin': 'USDT'
+                'productType': 'UMCBL'  # 🔥🔥🔥 수정된 파라미터
             }
             response = await self._request('GET', endpoint, params=params)
             
@@ -290,12 +299,12 @@ class BitgetMirrorClient:
             return []
     
     async def get_ticker(self, symbol: str = "BTCUSDT_UMCBL") -> Dict:
-        """🔥🔥🔥 티커 정보 조회 - v2 API 사용"""
+        """🔥🔥🔥 티커 정보 조회 - 수정된 파라미터 사용"""
         try:
             endpoint = "/api/v2/mix/market/ticker"
             params = {
                 'symbol': symbol,
-                'productType': 'USDT-FUTURES'
+                'productType': 'UMCBL'  # 🔥🔥🔥 수정된 파라미터
             }
             
             logger.debug(f"비트겟 티커 조회: {endpoint}, 심볼: {symbol}")
@@ -341,20 +350,19 @@ class BitgetMirrorClient:
             return {}
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = "BTCUSDT_UMCBL") -> Dict:
-        """🔥🔥🔥 모든 예약 주문 (Plan Orders + TP/SL Orders) 조회 - 정확한 v2 API 사용"""
+        """🔥🔥🔥 모든 예약 주문 조회 - 수정된 파라미터 사용"""
         try:
             logger.info(f"🎯 비트겟 모든 예약 주문 조회 시작: {symbol}")
             
             plan_orders = []
             tp_sl_orders = []
             
-            # 🔥🔥🔥 정확한 v2 API 엔드포인트 사용
+            # 🔥🔥🔥 수정된 v2 API 파라미터
             try:
-                # v2 일반 예약 주문
                 endpoint = "/api/v2/mix/order/orders-plan-pending"
                 params = {
                     'symbol': symbol,
-                    'productType': 'USDT-FUTURES'
+                    'productType': 'UMCBL'  # 🔥🔥🔥 수정된 파라미터
                 }
                 
                 response = await self._request('GET', endpoint, params=params)
@@ -409,7 +417,7 @@ class BitgetMirrorClient:
             }
     
     async def get_recent_filled_orders(self, symbol: str = "BTCUSDT_UMCBL", minutes: int = 5) -> List[Dict]:
-        """🔥🔥🔥 최근 체결된 주문 조회 - 정확한 v2 API 사용"""
+        """🔥🔥🔥 최근 체결된 주문 조회 - 수정된 파라미터 사용"""
         try:
             # 시간 범위 계산 (UTC)
             end_time = datetime.now(timezone.utc)
@@ -417,11 +425,11 @@ class BitgetMirrorClient:
             
             filled_orders = []
             
-            # 정확한 v2 API 엔드포인트
+            # 수정된 v2 API 엔드포인트
             endpoint = "/api/v2/mix/order/fills-history"
             params = {
                 'symbol': symbol,
-                'productType': 'USDT-FUTURES',
+                'productType': 'UMCBL',  # 🔥🔥🔥 수정된 파라미터
                 'startTime': str(int(start_time.timestamp() * 1000)),
                 'endTime': str(int(end_time.timestamp() * 1000)),
                 'limit': '100'
@@ -455,7 +463,7 @@ class BitgetMirrorClient:
             return []
     
     async def get_recent_filled_plan_orders(self, symbol: str = "BTCUSDT_UMCBL", minutes: int = 5, order_id: str = None) -> List[Dict]:
-        """🔥🔥🔥 최근 체결된 예약 주문 조회 - 정확한 v2 API 사용"""
+        """🔥🔥🔥 최근 체결된 예약 주문 조회 - 수정된 파라미터 사용"""
         try:
             logger.info(f"🎯 최근 체결된 예약 주문 조회: {symbol}, {minutes}분간")
             
@@ -465,11 +473,11 @@ class BitgetMirrorClient:
             
             filled_plan_orders = []
             
-            # 정확한 v2 API 엔드포인트
+            # 수정된 v2 API 엔드포인트
             endpoint = "/api/v2/mix/order/orders-plan-history"
             params = {
                 'symbol': symbol,
-                'productType': 'USDT-FUTURES',
+                'productType': 'UMCBL',  # 🔥🔥🔥 수정된 파라미터
                 'startTime': str(int(start_time.timestamp() * 1000)),
                 'endTime': str(int(end_time.timestamp() * 1000)),
                 'limit': '100'
