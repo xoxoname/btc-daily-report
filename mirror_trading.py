@@ -35,7 +35,9 @@ class MirrorTradingSystem:
         try:
             from gateio_mirror_client import GateioMirrorClient
             self.gate_mirror = GateioMirrorClient(config)
-            logger.info("✅ Gate.io 미러링 전용 클라이언트 초기화")
+            # 🔥🔥🔥 텔레그램 봇 설정 (시장가 체결 알림용)
+            self.gate_mirror.set_telegram_bot(telegram_bot)
+            logger.info("✅ Gate.io 미러링 전용 클라이언트 초기화 + 텔레그램 알림 설정")
         except ImportError as e:
             logger.error(f"❌ Gate.io 미러링 클라이언트 import 실패: {e}")
             raise
@@ -74,9 +76,9 @@ class MirrorTradingSystem:
         self.order_sync_interval: int = 15
         self.last_order_sync_time: datetime = datetime.min
         
-        # 🔥🔥🔥 슬리피지 보호 설정
+        # 🔥🔥🔥 슬리피지 보호 설정 개선 - 0.05% (약 50달러)
         self.slippage_protection_enabled: bool = True
-        self.max_slippage_percent: float = 1.0  # 최대 슬리피지 1%
+        self.max_slippage_percent: float = 0.05  # 🔥🔥🔥 0.05% (약 50달러)로 변경
         self.price_check_interval: float = 0.5  # 가격 체크 간격 0.5초
         
         # 설정
@@ -95,12 +97,12 @@ class MirrorTradingSystem:
         self.daily_stats = self.position_manager.daily_stats
         
         self.monitoring = True
-        self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 시세 차이 처리 완전 제거 + 슬리피지 보호 강화")
+        self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 슬리피지 보호 0.05% 적용 + 텔레그램 알림")
 
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 시세 차이 제한 완전 제거 + 슬리피지 보호")
+            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 슬리피지 보호 0.05% + 텔레그램 알림")
             
             # Bitget 미러링 클라이언트 초기화
             await self.bitget_mirror.initialize()
@@ -408,7 +410,7 @@ class MirrorTradingSystem:
                     f"- 고아 주문 삭제: {len(sync_analysis['orphaned_orders'])}건\n\n"
                     f"📊 현재 시세 차이: ${price_diff:.2f}\n"
                     f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리\n"
-                    f"🛡️ 슬리피지 보호 시스템 적용"
+                    f"🛡️ 슬리피지 보호 0.05% (약 $50) 적용"
                 )
             elif fixed_count > 0:
                 self.logger.info(f"🔄 예약 주문 동기화 완료: {fixed_count}건 해결")
@@ -430,7 +432,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
     async def monitor_order_fills(self):
-        """🔥🔥🔥 실시간 주문 체결 감지 - 시세 차이 대기 완전 제거 + 슬리피지 보호"""
+        """🔥🔥🔥 실시간 주문 체결 감지 - 슬리피지 보호 0.05% 적용"""
         consecutive_errors = 0
         
         while self.monitoring:
@@ -441,7 +443,7 @@ class MirrorTradingSystem:
                 # 🔥🔥🔥 시세 차이 확인만 하고 처리는 항상 즉시 진행
                 valid_price_diff = self._get_valid_price_difference()
                 if valid_price_diff is not None:
-                    self.logger.debug(f"시세 차이 ${valid_price_diff:.2f} 확인됨, 슬리피지 보호 적용하여 즉시 처리")
+                    self.logger.debug(f"시세 차이 ${valid_price_diff:.2f} 확인됨, 슬리피지 보호 0.05% 적용하여 즉시 처리")
                 
                 # 미러링 클라이언트로 체결 주문 조회
                 filled_orders = await self.bitget_mirror.get_recent_filled_orders(
@@ -482,37 +484,37 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
 
     async def _process_filled_order_with_slippage_protection(self, order: Dict):
-        """🔥🔥🔥 슬리피지 보호가 적용된 체결 주문 처리"""
+        """🔥🔥🔥 슬리피지 보호 0.05%가 적용된 체결 주문 처리"""
         try:
             order_id = order.get('orderId', order.get('id', ''))
             side = order.get('side', '').lower()
             size = float(order.get('size', 0))
             fill_price = float(order.get('fillPrice', order.get('price', 0)))
             
-            # 🔥🔥🔥 슬리피지 체크
+            # 🔥🔥🔥 슬리피지 체크 0.05% (약 50달러)
             current_gate_price = await self.gate_mirror.get_current_price(self.GATE_CONTRACT)
             
             if current_gate_price > 0 and fill_price > 0:
                 price_diff_percent = abs(current_gate_price - fill_price) / fill_price * 100
                 
                 if price_diff_percent > self.max_slippage_percent:
-                    self.logger.warning(f"⚠️ 큰 가격 차이 감지: {price_diff_percent:.2f}% - 슬리피지 보호 적용")
+                    self.logger.warning(f"⚠️ 가격 차이 감지: {price_diff_percent:.3f}% - 슬리피지 보호 0.05% 적용")
                     
                     # 게이트 슬리피지 보호 활성화
                     self.gate_mirror.SLIPPAGE_CHECK_ENABLED = True
                     self.gate_mirror.MAX_SLIPPAGE_PERCENT = self.max_slippage_percent
                     
                     await self.telegram.send_message(
-                        f"🛡️ 슬리피지 보호 활성화\n"
+                        f"🛡️ 슬리피지 보호 0.05% 활성화\n"
                         f"비트겟 체결가: ${fill_price:,.2f}\n"
                         f"게이트 현재가: ${current_gate_price:,.2f}\n"
-                        f"가격 차이: {price_diff_percent:.2f}%\n"
-                        f"안전한 미러링을 위해 슬리피지 보호 적용"
+                        f"가격 차이: {price_diff_percent:.3f}%\n"
+                        f"💡 5초간 지정가 시도 후 시장가 전환으로 안전하게 처리"
                     )
                 else:
                     # 정상 범위내면 슬리피지 보호 기본값 사용
                     self.gate_mirror.SLIPPAGE_CHECK_ENABLED = True
-                    self.gate_mirror.MAX_SLIPPAGE_PERCENT = 1.0
+                    self.gate_mirror.MAX_SLIPPAGE_PERCENT = 0.05
             
             # 기존 체결 주문 처리 로직 호출
             await self.position_manager.process_filled_order(order)
@@ -624,7 +626,7 @@ class MirrorTradingSystem:
                     if price_diff_abs > 100:  # 100달러 이상일 때만 로깅
                         self.logger.debug(f"시세 차이 정보: 비트겟 ${self.bitget_current_price:.2f}, 게이트 ${self.gate_current_price:.2f}, 차이 ${price_diff_abs:.2f} (처리에 영향 없음)")
                 else:
-                    self.logger.info(f"큰 시세 차이 감지: ${price_diff_abs:.2f}, 슬리피지 보호 시스템으로 안전하게 처리")
+                    self.logger.info(f"큰 시세 차이 감지: ${price_diff_abs:.2f}, 슬리피지 보호 0.05%로 안전하게 처리")
                     
             else:
                 self.price_diff_percent = 0.0
@@ -693,7 +695,8 @@ class MirrorTradingSystem:
                         f"상태: {status_emoji} {status_text}\n\n"
                         f"🔄 예약 주문 동기화: 15초마다 자동 실행\n"
                         f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리\n"
-                        f"🛡️ 슬리피지 보호: 최대 {self.max_slippage_percent}% 제한"
+                        f"🛡️ 슬리피지 보호: 0.05% (약 $50) 제한\n"
+                        f"⏰ 지정가 주문: 5초 대기 후 시장가 전환"
                     )
                     last_normal_report_time = now
                 
@@ -734,7 +737,7 @@ class MirrorTradingSystem:
                         
                         # 1. 시세 차이 원인 (정보용으로만 표시)
                         if valid_price_diff and valid_price_diff > 1000:
-                            possible_causes.append(f"시세 차이 큼 (${valid_price_diff:.2f}) - 슬리피지 보호로 안전 처리")
+                            possible_causes.append(f"시세 차이 큼 (${valid_price_diff:.2f}) - 슬리피지 보호 0.05%로 안전 처리")
                         
                         # 2. 가격 조회 실패 원인
                         if self.bitget_price_failures > 0 or self.gate_price_failures > 0:
@@ -767,7 +770,7 @@ class MirrorTradingSystem:
                             f"• {chr(10).join(possible_causes)}\n\n"
                             f"💡 시세 차이는 미러링 처리에 영향을 주지 않습니다.\n"
                             f"🔥 모든 주문이 즉시 처리되고 있습니다.\n"
-                            f"🛡️ 슬리피지 보호 시스템이 활성화되어 있습니다."
+                            f"🛡️ 슬리피지 보호 0.05% 시스템이 활성화되어 있습니다."
                         )
                         
                         sync_retry_count = 0
@@ -823,14 +826,15 @@ class MirrorTradingSystem:
 - 게이트: ${self.gate_current_price:,.2f}
 - 차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)
 - 🔥 처리 상태: 시세 차이와 무관하게 모든 주문 즉시 처리
-- 🛡️ 슬리피지 보호: 최대 {self.max_slippage_percent}% 제한"""
+- 🛡️ 슬리피지 보호: 0.05% (약 $50) 제한
+- ⏰ 지정가 대기: 5초 후 시장가 전환"""
             else:
                 price_status_info = f"""📈 시세 차이 현황:
 - 시세 조회에 문제가 있었습니다
 - 비트겟 조회 실패: {self.bitget_price_failures}회
 - 게이트 조회 실패: {self.gate_price_failures}회
 - 🔥 처리 상태: 시세 조회 실패와 무관하게 모든 주문 정상 처리
-- 🛡️ 슬리피지 보호: 활성화됨"""
+- 🛡️ 슬리피지 보호: 0.05% 활성화됨"""
             
             # TP/SL 미러링 성과 통계
             perfect_mirrors = self.daily_stats.get('perfect_mirrors', 0)
@@ -887,10 +891,11 @@ class MirrorTradingSystem:
 - 완벽한 TP/SL 주문: {len([o for o in self.position_manager.mirrored_plan_orders.values() if o.get('perfect_mirror')])}개
 - 실패 기록: {len(self.failed_mirrors)}건
 
-🔥 시세 차이 대응 개선:
-- 처리 방식: 시세 차이와 무관하게 즉시 처리
-- 대기 없음: 모든 주문 즉시 복제
-- 🛡️ 슬리피지 보호: 최대 {self.max_slippage_percent}% 제한
+🔥 슬리피지 보호 개선:
+- 임계값: 0.05% (약 $50)
+- 지정가 대기: 5초
+- 시장가 전환: 자동
+- 텔레그램 알림: 즉시
 - 안전 장치: 지정가 주문 폴백 지원
 
 ━━━━━━━━━━━━━━━━━━━
@@ -961,13 +966,14 @@ class MirrorTradingSystem:
 • 게이트: ${self.gate_current_price:,.2f}
 • 차이: ${valid_price_diff:.2f}
 • 🔥 처리: 시세 차이와 무관하게 즉시 처리
-• 🛡️ 슬리피지 보호: 최대 {self.max_slippage_percent}% 제한"""
+• 🛡️ 슬리피지 보호: 0.05% (약 $50) 제한
+• ⏰ 지정가 대기: 5초 후 시장가 전환"""
             else:
                 price_info = f"""📈 시세 상태:
 • 시세 조회 중 문제 발생
 • 시스템이 자동으로 복구 중
 • 🔥 처리: 시세 조회 실패와 무관하게 정상 처리
-• 🛡️ 슬리피지 보호: 활성화됨"""
+• 🛡️ 슬리피지 보호: 0.05% 활성화됨"""
             
             await self.telegram.send_message(
                 f"🔄 미러 트레이딩 시스템 시작\n\n"
@@ -986,8 +992,9 @@ class MirrorTradingSystem:
                 f"• 🗑️ 고아 주문 자동 정리\n"
                 f"• 📊 클로즈 주문 포지션 체크\n"
                 f"• 🔥 시세 차이와 무관하게 즉시 처리\n"
-                f"• 🛡️ 슬리피지 보호 시스템 (최대 {self.max_slippage_percent}%)\n"
-                f"• 📈 안전한 지정가 주문 폴백\n\n"
+                f"• 🛡️ 슬리피지 보호 0.05% (약 $50)\n"
+                f"• ⏰ 지정가 주문 5초 대기 후 시장가 전환\n"
+                f"• 📱 시장가 체결 시 즉시 텔레그램 알림\n\n"
                 f"🚀 시스템이 정상적으로 시작되었습니다."
             )
             
