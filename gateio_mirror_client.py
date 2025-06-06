@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - 포지션 크기 기반 클로즈 주문 처리 강화 + 슬리피지 보호"""
+    """Gate.io 미러링 전용 클라이언트 - 포지션 크기 기반 클로즈 주문 처리 강화 + 슬리피지 보호 개선"""
     
     def __init__(self, config):
         self.config = config
@@ -26,26 +26,40 @@ class GateioMirrorClient:
         self.TP_SL_TIMEOUT = 10
         self.MAX_TP_SL_RETRIES = 3
         
-        # 🔥🔥🔥 슬리피지 보호 설정
-        self.MAX_SLIPPAGE_PERCENT = 1.0  # 최대 슬리피지 1%
+        # 🔥🔥🔥 슬리피지 보호 설정 개선 - 0.05% (약 50달러)
+        self.MAX_SLIPPAGE_PERCENT = 0.05  # 최대 슬리피지 0.05% (약 50달러)
         self.SLIPPAGE_CHECK_ENABLED = True
         self.FALLBACK_TO_LIMIT_ORDER = True
         
+        # 🔥🔥🔥 지정가 주문 대기 시간 설정
+        self.LIMIT_ORDER_WAIT_TIME = 5  # 지정가 주문 5초 대기
+        self.LIMIT_ORDER_RETRIES = 2  # 지정가 주문 2회 재시도
+        
+        # 텔레그램 봇 참조 (알림용)
+        self.telegram_bot = None
+        
+    def set_telegram_bot(self, telegram_bot):
+        """텔레그램 봇 설정"""
+        self.telegram_bot = telegram_bot
+        
     def _initialize_session(self):
-        """세션 초기화"""
+        """세션 초기화 - 타임아웃 증가"""
         if not self.session:
-            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            # 🔥🔥🔥 타임아웃 설정 개선
+            timeout = aiohttp.ClientTimeout(total=60, connect=20)  # 타임아웃 증가
             connector = aiohttp.TCPConnector(
                 limit=100,
                 limit_per_host=30,
                 ttl_dns_cache=300,
-                use_dns_cache=True
+                use_dns_cache=True,
+                keepalive_timeout=60,  # 연결 유지 시간 증가
+                enable_cleanup_closed=True
             )
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector
             )
-            logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료")
+            logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료 (개선된 타임아웃)")
     
     async def initialize(self):
         """클라이언트 초기화"""
@@ -72,12 +86,12 @@ class GateioMirrorClient:
             'Content-Type': 'application/json'
         }
     
-    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
-        """API 요청"""
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 5) -> Dict:
+        """API 요청 - 강화된 재시도 로직"""
         if not self.session:
             self._initialize_session()
         
-        url = f"{self.base_url}{endpoint}"  # 🔥🔥🔥 f-string 구문 오류 수정
+        url = f"{self.base_url}{endpoint}"
         query_string = ""
         payload = ""
         
@@ -94,14 +108,20 @@ class GateioMirrorClient:
                 
                 logger.debug(f"Gate.io API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
                 
-                async with self.session.request(method, url, headers=headers, data=payload) as response:
+                # 🔥🔥🔥 각 시도마다 타임아웃 점진적 증가
+                attempt_timeout = aiohttp.ClientTimeout(total=30 + (attempt * 10), connect=10 + (attempt * 5))
+                
+                async with self.session.request(
+                    method, url, headers=headers, data=payload, timeout=attempt_timeout
+                ) as response:
                     response_text = await response.text()
                     
                     if response.status != 200:
                         error_msg = f"HTTP {response.status}: {response_text}"
                         logger.error(f"Gate.io API 오류: {error_msg}")
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(2 ** attempt)
+                            wait_time = (2 ** attempt) + (attempt * 0.5)  # 지수 백오프 + 추가 지연
+                            await asyncio.sleep(wait_time)
                             continue
                         else:
                             raise Exception(error_msg)
@@ -114,7 +134,9 @@ class GateioMirrorClient:
                             raise Exception("빈 응답")
                     
                     try:
-                        return json.loads(response_text)
+                        result = json.loads(response_text)
+                        logger.debug(f"Gate.io API 응답 성공: {method} {endpoint}")
+                        return result
                     except json.JSONDecodeError as e:
                         if attempt < max_retries - 1:
                             await asyncio.sleep(2 ** attempt)
@@ -123,13 +145,23 @@ class GateioMirrorClient:
                             raise Exception(f"JSON 파싱 실패: {e}")
                             
             except asyncio.TimeoutError:
+                logger.warning(f"Gate.io API 타임아웃 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(3 + (attempt * 2))  # 타임아웃 시 더 긴 대기
+                    continue
+                else:
+                    raise Exception(f"요청 타임아웃 (최대 {max_retries}회 시도)")
+                    
+            except aiohttp.ClientError as e:
+                logger.warning(f"Gate.io API 클라이언트 오류 (시도 {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
                 else:
-                    raise Exception("요청 타임아웃")
+                    raise Exception(f"클라이언트 오류: {e}")
                     
             except Exception as e:
+                logger.error(f"Gate.io API 예상치 못한 오류 (시도 {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
@@ -137,23 +169,32 @@ class GateioMirrorClient:
                     raise
     
     async def get_current_price(self, contract: str = "BTC_USDT") -> float:
-        """현재 시장가 조회"""
+        """현재 시장가 조회 - 강화된 재시도"""
         try:
             ticker = await self.get_ticker(contract)
             if ticker:
                 current_price = float(ticker.get('last', ticker.get('mark_price', 0)))
+                if current_price > 0:
+                    return current_price
+                    
+            # 가격이 0이거나 None인 경우 재시도
+            await asyncio.sleep(1)
+            ticker_retry = await self.get_ticker(contract)
+            if ticker_retry:
+                current_price = float(ticker_retry.get('last', ticker_retry.get('mark_price', 0)))
                 return current_price
+                
             return 0.0
         except Exception as e:
             logger.error(f"현재가 조회 실패: {e}")
             return 0.0
     
     async def get_ticker(self, contract: str = "BTC_USDT") -> Dict:
-        """티커 정보 조회"""
+        """티커 정보 조회 - 강화된 오류 처리"""
         try:
             endpoint = f"/api/v4/futures/usdt/tickers"
             params = {'contract': contract}
-            response = await self._request('GET', endpoint, params=params)
+            response = await self._request('GET', endpoint, params=params, max_retries=3)
             
             if isinstance(response, list) and len(response) > 0:
                 ticker_data = response[0]
@@ -287,7 +328,7 @@ class GateioMirrorClient:
         return False
     
     async def _check_slippage_protection(self, current_price: float, expected_price: float, side: str) -> Tuple[bool, str]:
-        """🔥🔥🔥 슬리피지 보호 체크"""
+        """🔥🔥🔥 슬리피지 보호 체크 - 0.05% 임계값"""
         try:
             if not self.SLIPPAGE_CHECK_ENABLED:
                 return True, "슬리피지 체크 비활성화"
@@ -304,29 +345,90 @@ class GateioMirrorClient:
                 slippage_percent = ((current_price - expected_price) / current_price) * 100
             
             if slippage_percent > self.MAX_SLIPPAGE_PERCENT:
-                return False, f"슬리피지 위험 ({slippage_percent:.2f}% > {self.MAX_SLIPPAGE_PERCENT}%)"
+                slippage_amount = current_price * (slippage_percent / 100)
+                return False, f"슬리피지 위험 ({slippage_percent:.3f}%, 약 ${slippage_amount:.2f}) > 임계값 {self.MAX_SLIPPAGE_PERCENT}%"
             
-            return True, f"슬리피지 안전 ({slippage_percent:.2f}%)"
+            slippage_amount = current_price * (slippage_percent / 100)
+            return True, f"슬리피지 안전 ({slippage_percent:.3f}%, 약 ${slippage_amount:.2f})"
             
         except Exception as e:
             logger.error(f"슬리피지 보호 체크 실패: {e}")
             return True, "슬리피지 체크 오류, 진행"
     
+    async def _place_limit_order_with_wait(self, contract: str, size: int, limit_price: float,
+                                          reduce_only: bool = False) -> Tuple[Dict, bool]:
+        """🔥🔥🔥 지정가 주문 대기 후 체결 확인"""
+        try:
+            logger.info(f"지정가 주문 생성: {size} @ ${limit_price:.2f} (대기시간: {self.LIMIT_ORDER_WAIT_TIME}초)")
+            
+            # 지정가 주문 생성
+            order_result = await self.place_order(
+                contract=contract,
+                size=size,
+                price=limit_price,
+                reduce_only=reduce_only,
+                tif="gtc",
+                use_slippage_protection=False  # 이미 지정가로 보호됨
+            )
+            
+            order_id = order_result.get('id')
+            if not order_id:
+                return order_result, False
+            
+            # 지정가 주문 대기
+            await asyncio.sleep(self.LIMIT_ORDER_WAIT_TIME)
+            
+            # 주문 상태 확인
+            order_status = await self._check_order_status(order_id)
+            
+            if order_status.get('status') == 'filled':
+                logger.info(f"✅ 지정가 주문 체결 성공: {order_id}")
+                return order_result, True
+            else:
+                logger.info(f"⏰ 지정가 주문 미체결, 취소 후 시장가 전환: {order_id}")
+                try:
+                    await self._cancel_order(order_id)
+                except:
+                    pass  # 취소 실패해도 계속 진행
+                return order_result, False
+                
+        except Exception as e:
+            logger.error(f"지정가 주문 대기 처리 실패: {e}")
+            return {}, False
+    
+    async def _check_order_status(self, order_id: str) -> Dict:
+        """주문 상태 확인"""
+        try:
+            endpoint = f"/api/v4/futures/usdt/orders/{order_id}"
+            return await self._request('GET', endpoint)
+        except Exception as e:
+            logger.error(f"주문 상태 확인 실패: {order_id} - {e}")
+            return {}
+    
+    async def _cancel_order(self, order_id: str) -> Dict:
+        """주문 취소"""
+        try:
+            endpoint = f"/api/v4/futures/usdt/orders/{order_id}"
+            return await self._request('DELETE', endpoint)
+        except Exception as e:
+            logger.error(f"주문 취소 실패: {order_id} - {e}")
+            return {}
+    
     async def _place_order_with_slippage_protection(self, contract: str, size: int, 
                                                    reduce_only: bool = False, 
-                                                   max_retries: int = 3) -> Dict:
-        """🔥🔥🔥 슬리피지 보호가 적용된 주문 생성"""
+                                                   max_retries: int = 2) -> Dict:
+        """🔥🔥🔥 슬리피지 보호가 적용된 주문 생성 - 지정가 대기 후 시장가 전환"""
         try:
-            # 현재가 조회
-            current_price = await self.get_current_price(contract)
-            if current_price <= 0:
-                logger.warning("현재가 조회 실패, 일반 시장가 주문으로 진행")
-                return await self.place_order(contract, size, None, reduce_only)
-            
             side = 'buy' if size > 0 else 'sell'
             
             for attempt in range(max_retries):
                 try:
+                    # 현재가 조회
+                    current_price = await self.get_current_price(contract)
+                    if current_price <= 0:
+                        logger.warning("현재가 조회 실패, 일반 시장가 주문으로 진행")
+                        return await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
+                    
                     logger.info(f"슬리피지 보호 주문 시도 {attempt + 1}/{max_retries}: {side} {abs(size)} @ ${current_price:.2f}")
                     
                     # 시장가로 체결될 예상 가격 (스프레드 고려)
@@ -337,10 +439,18 @@ class GateioMirrorClient:
                         
                         if side == 'buy':
                             expected_price = ask_price  # 매수는 ask에 체결
+                            # 지정가는 현재가보다 약간 유리하게 설정
+                            limit_price = current_price * (1 + (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
                         else:
                             expected_price = bid_price  # 매도는 bid에 체결
+                            # 지정가는 현재가보다 약간 유리하게 설정
+                            limit_price = current_price * (1 - (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
                     else:
                         expected_price = current_price
+                        if side == 'buy':
+                            limit_price = current_price * (1 + (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
+                        else:
+                            limit_price = current_price * (1 - (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
                     
                     # 슬리피지 보호 체크
                     is_safe, protection_msg = await self._check_slippage_protection(
@@ -351,27 +461,47 @@ class GateioMirrorClient:
                     
                     if is_safe:
                         # 안전한 경우 시장가 주문
-                        result = await self.place_order(contract, size, None, reduce_only)
-                        logger.info(f"✅ 슬리피지 보호된 시장가 주문 성공: {side} {abs(size)}")
+                        result = await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
+                        logger.info(f"✅ 슬리피지 안전 범위내 시장가 주문 성공: {side} {abs(size)}")
                         return result
                     else:
-                        # 위험한 경우 지정가 주문으로 전환
+                        # 위험한 경우 지정가 주문 시도 후 시장가 전환
                         if self.FALLBACK_TO_LIMIT_ORDER:
-                            logger.warning(f"슬리피지 위험으로 지정가 주문으로 전환: {protection_msg}")
+                            logger.warning(f"슬리피지 위험으로 지정가 주문 시도: {protection_msg}")
                             
-                            # 조금 더 유리한 가격으로 지정가 주문
-                            if side == 'buy':
-                                limit_price = current_price * (1 + (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
+                            # 지정가 주문 시도
+                            limit_result, filled = await self._place_limit_order_with_wait(
+                                contract, size, limit_price, reduce_only
+                            )
+                            
+                            if filled:
+                                logger.info(f"✅ 지정가 주문 체결 성공: {side} {abs(size)} @ ${limit_price:.2f}")
+                                return limit_result
                             else:
-                                limit_price = current_price * (1 - (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
-                            
-                            result = await self.place_order(contract, size, limit_price, reduce_only, "gtc")
-                            logger.info(f"✅ 슬리피지 보호 지정가 주문 성공: {side} {abs(size)} @ ${limit_price:.2f}")
-                            return result
+                                # 지정가 실패 시 시장가로 전환하고 알림
+                                logger.warning(f"지정가 주문 실패, 시장가로 전환: {side} {abs(size)}")
+                                
+                                # 시장가 주문
+                                market_result = await self.place_order(
+                                    contract, size, None, reduce_only, use_slippage_protection=False
+                                )
+                                
+                                # 🔥🔥🔥 시장가 체결 텔레그램 알림
+                                await self._send_market_order_alert(
+                                    side, abs(size), current_price, protection_msg, contract
+                                )
+                                
+                                logger.info(f"✅ 지정가 실패 후 시장가 주문 성공: {side} {abs(size)}")
+                                return market_result
                         else:
                             # 지정가 전환 비활성화된 경우 그냥 시장가 진행
                             logger.warning(f"슬리피지 위험 감지되었지만 시장가로 진행: {protection_msg}")
-                            result = await self.place_order(contract, size, None, reduce_only)
+                            result = await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
+                            
+                            # 시장가 체결 알림
+                            await self._send_market_order_alert(
+                                side, abs(size), current_price, protection_msg, contract
+                            )
                             return result
                     
                 except Exception as e:
@@ -379,23 +509,61 @@ class GateioMirrorClient:
                     if attempt < max_retries - 1:
                         await asyncio.sleep(1.0)
                         # 현재가 갱신
-                        current_price = await self.get_current_price(contract)
                         continue
                     else:
                         raise
             
             # 모든 재시도 실패 시 기본 시장가 주문
             logger.warning("모든 슬리피지 보호 시도 실패, 기본 시장가 주문으로 진행")
-            return await self.place_order(contract, size, None, reduce_only)
+            result = await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
+            
+            # 재시도 실패 알림
+            if self.telegram_bot:
+                await self.telegram_bot.send_message(
+                    f"⚠️ 슬리피지 보호 재시도 실패\n"
+                    f"방향: {'매수' if size > 0 else '매도'}\n"
+                    f"수량: {abs(size)}\n"
+                    f"최종적으로 시장가 주문으로 체결됨"
+                )
+            
+            return result
             
         except Exception as e:
             logger.error(f"슬리피지 보호 주문 실패: {e}")
             # 실패 시 기본 시장가 주문으로 폴백
-            return await self.place_order(contract, size, None, reduce_only)
+            return await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
+    
+    async def _send_market_order_alert(self, side: str, size: int, current_price: float, 
+                                      protection_msg: str, contract: str):
+        """🔥🔥🔥 시장가 주문 체결 텔레그램 알림"""
+        try:
+            if self.telegram_bot:
+                side_text = '매수' if side == 'buy' else '매도'
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                alert_msg = f"""🛡️ 슬리피지 보호 시장가 체결 알림
+
+⏰ 시간: {current_time}
+📊 종목: {contract}
+🔄 방향: {side_text}
+📦 수량: {size}
+💰 현재가: ${current_price:,.2f}
+
+🚨 사유: {protection_msg}
+
+💡 지정가 주문이 {self.LIMIT_ORDER_WAIT_TIME}초 대기 후 미체결되어 
+   안전한 시장가 주문으로 전환되었습니다.
+   
+📈 이는 정상적인 슬리피지 보호 작동입니다."""
+                
+                await self.telegram_bot.send_message(alert_msg)
+                logger.info(f"시장가 체결 알림 전송 완료: {side_text} {size}")
+        except Exception as e:
+            logger.error(f"시장가 체결 알림 전송 실패: {e}")
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 포지션 크기 기반 클로즈 주문 처리 강화"""
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 클로즈 주문 처리 강화"""
         try:
             # 비트겟 주문 정보 추출
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
@@ -441,15 +609,21 @@ class GateioMirrorClient:
                     except:
                         continue
             
-            # 🔥🔥🔥 클로즈 주문 여부 및 방향 판단 수정
+            # 🔥🔥🔥 클로즈 주문 여부 및 방향 판단 강화
             reduce_only = bitget_order.get('reduceOnly', False)
-            is_close_order = ('close' in side or reduce_only is True or reduce_only == 'true')
+            is_close_order = (
+                'close' in side or 
+                reduce_only is True or 
+                reduce_only == 'true' or
+                str(reduce_only).lower() == 'true'
+            )
             
             # 🔥🔥🔥 클로즈 주문인 경우 현재 포지션 크기 기반 처리
             if is_close_order:
                 final_size, reduce_only_flag = await self._calculate_close_order_size_based_on_position(
                     bitget_order, gate_size, side
                 )
+                logger.info(f"🔄 클로즈 주문 처리: 원본크기={gate_size} → 조정크기={final_size}")
             else:
                 # 오픈 주문: 방향 고려
                 reduce_only_flag = False
@@ -544,7 +718,7 @@ class GateioMirrorClient:
     async def _calculate_close_order_size_based_on_position(self, bitget_order: Dict, 
                                                            original_gate_size: int, 
                                                            side: str) -> Tuple[int, bool]:
-        """🔥🔥🔥 현재 포지션 크기 기반 클로즈 주문 크기 계산"""
+        """🔥🔥🔥 현재 포지션 크기 기반 클로즈 주문 크기 계산 - 강화"""
         try:
             # 현재 게이트 포지션 조회
             gate_positions = await self.get_positions("BTC_USDT")
@@ -552,7 +726,7 @@ class GateioMirrorClient:
             if not gate_positions:
                 logger.warning(f"⚠️ 게이트에 포지션이 없어 원본 크기 사용: {original_gate_size}")
                 # 포지션이 없으면 원본 크기로 클로즈 주문 생성 (reduce_only=True)
-                if 'short' in side.lower() or 'sell' in side.lower():
+                if 'short' in side.lower() or 'sell' in side.lower() or 'close_long' in side.lower():
                     return -abs(original_gate_size), True
                 else:
                     return abs(original_gate_size), True
@@ -562,7 +736,7 @@ class GateioMirrorClient:
             
             if current_gate_size == 0:
                 logger.warning(f"⚠️ 게이트 포지션 크기가 0이어서 원본 크기 사용: {original_gate_size}")
-                if 'short' in side.lower() or 'sell' in side.lower():
+                if 'short' in side.lower() or 'sell' in side.lower() or 'close_long' in side.lower():
                     return -abs(original_gate_size), True
                 else:
                     return abs(original_gate_size), True
@@ -573,19 +747,12 @@ class GateioMirrorClient:
             
             logger.info(f"🔍 현재 게이트 포지션: {current_gate_size} ({current_position_side})")
             
-            # 🔥🔥🔥 비트겟 클로즈 주문에서 부분 청산 비율 계산
+            # 🔥🔥🔥 비트겟 클로즈 주문의 실제 클로즈 비율 계산
             try:
-                # 비트겟에서 해당 포지션 조회
-                from mirror_trading_utils import MirrorTradingUtils
-                utils = MirrorTradingUtils(self.config, None, None)
-                
-                # 임시로 bitget 클라이언트 설정 (실제 구현에서는 의존성 주입 필요)
-                # 여기서는 단순화하여 1:1 비율로 가정
                 bitget_size = float(bitget_order.get('size', 0))
                 close_ratio = 1.0  # 기본값은 전체 청산
                 
-                # 비트겟 주문 크기와 현재 게이트 포지션 크기 비교
-                if bitget_size > 0 and current_position_abs_size > 0:
+                if bitget_size > 0:
                     # 비트겟 크기를 게이트 계약 수로 변환하여 비교
                     bitget_size_in_contracts = int(bitget_size * 10000)  # BTC를 계약 수로 변환
                     
@@ -611,7 +778,7 @@ class GateioMirrorClient:
             if actual_close_size > current_position_abs_size:
                 actual_close_size = current_position_abs_size
             
-            # 🔥🔥🔥 클로즈 주문 방향 결정 (포지션과 반대 방향)
+            # 🔥🔥🔥 클로즈 주문 방향 결정 (포지션과 반대 방향) - 강화된 로직
             if current_position_side == 'long':
                 # 롱 포지션 클로즈 → 매도 (음수)
                 final_size = -actual_close_size
@@ -620,6 +787,13 @@ class GateioMirrorClient:
                 # 숏 포지션 클로즈 → 매수 (양수)
                 final_size = actual_close_size
                 logger.info(f"🟢 숏 포지션 클로즈: {actual_close_size} → 매수 주문 (양수: {final_size})")
+            
+            # 🔥🔥🔥 비트겟 side와 현재 포지션 방향 검증
+            bitget_side = side.lower()
+            if 'close_long' in bitget_side and current_position_side != 'long':
+                logger.warning(f"⚠️ 비트겟은 close_long인데 현재 포지션은 {current_position_side}")
+            elif 'close_short' in bitget_side and current_position_side != 'short':
+                logger.warning(f"⚠️ 비트겟은 close_short인데 현재 포지션은 {current_position_side}")
             
             logger.info(f"✅ 포지션 기반 클로즈 주문 크기 계산 완료:")
             logger.info(f"   - 현재 포지션: {current_gate_size}")
@@ -631,7 +805,7 @@ class GateioMirrorClient:
         except Exception as e:
             logger.error(f"포지션 기반 클로즈 주문 크기 계산 실패: {e}")
             # 실패 시 원본 크기 사용
-            if 'short' in side.lower() or 'sell' in side.lower():
+            if 'short' in side.lower() or 'sell' in side.lower() or 'close_long' in side.lower():
                 return -abs(original_gate_size), True
             else:
                 return abs(original_gate_size), True
@@ -756,7 +930,7 @@ class GateioMirrorClient:
     async def place_order(self, contract: str, size: int, price: Optional[float] = None,
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0,
                          use_slippage_protection: bool = True) -> Dict:
-        """🔥🔥🔥 시장가/지정가 주문 생성 - 슬리피지 보호 옵션 추가"""
+        """🔥🔥🔥 시장가/지정가 주문 생성 - 강화된 슬리피지 보호"""
         try:
             # 🔥🔥🔥 시장가 주문이고 슬리피지 보호가 활성화된 경우
             if price is None and use_slippage_protection and self.SLIPPAGE_CHECK_ENABLED:
