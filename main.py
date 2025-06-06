@@ -23,7 +23,7 @@ from report_generators import ReportGeneratorManager
 
 # 미러 트레이딩 관련 임포트 - 수정된 부분
 try:
-    from gateio_mirror_client import GateioMirrorClient as GateClient
+    from gateio_client import GateioMirrorClient as GateClient
     from mirror_trading import MirrorTradingSystem
     MIRROR_TRADING_AVAILABLE = True
     print("✅ 미러 트레이딩 모듈 import 성공")
@@ -193,6 +193,21 @@ class BitcoinPredictionSystem:
                     self.mirror_mode = False
             else:
                 self.logger.info("📊 분석 전용 모드로 실행")
+                
+                # 분석 전용 모드에서도 Gate.io 클라이언트 생성 (수익 조회용)
+                gate_api_key = os.getenv('GATE_API_KEY', '')
+                gate_api_secret = os.getenv('GATE_API_SECRET', '')
+                
+                if gate_api_key and gate_api_secret:
+                    try:
+                        self.logger.info("🔄 분석용 Gate.io 클라이언트 생성 중...")
+                        self.gate_client = GateClient(self.config)
+                        self.logger.info("✅ 분석용 Gate.io 클라이언트 생성 완료")
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ 분석용 Gate.io 클라이언트 생성 실패: {e}")
+                        self.gate_client = None
+                else:
+                    self.logger.info("Gate.io API 키가 없어 분석용 클라이언트도 생성하지 않음")
                     
         except Exception as e:
             self.logger.error(f"클라이언트 초기화 실패: {e}")
@@ -218,8 +233,8 @@ class BitcoinPredictionSystem:
             )
             self.report_manager.set_bitget_client(self.bitget_client)
             
-            # Gate.io 클라이언트 설정 (미러 모드일 때만)
-            if self.mirror_mode and self.gate_client:
+            # Gate.io 클라이언트 설정 (미러 모드이거나 분석용 클라이언트가 있는 경우)
+            if self.gate_client:
                 self.report_manager.set_gateio_client(self.gate_client)
                 self.logger.info("✅ ReportManager에 Gate.io 클라이언트 설정 완료")
             
@@ -669,20 +684,23 @@ class BitcoinPredictionSystem:
                 if not gate_api_key or not gate_api_secret:
                     reasons.append("Gate.io API 키가 설정되지 않음")
                 
-                await update.message.reply_text(
-                    f"📊 현재 분석 전용 모드로 실행 중입니다.\n\n"
-                    f"🔍 비활성화 이유:\n" + 
-                    "\n".join(f"• {reason}" for reason in reasons) +
-                    f"\n\n📋 활성화 방법:\n"
-                    f"1. MIRROR_TRADING_MODE=true 환경변수 설정 ✓\n"
-                    f"2. GATE_API_KEY 환경변수 설정 {'✓' if gate_api_key else '❌'}\n"
-                    f"3. GATE_API_SECRET 환경변수 설정 {'✓' if gate_api_secret else '❌'}\n"
-                    f"4. 시스템 재시작\n\n"
-                    f"🔧 현재 환경변수 상태:\n"
-                    f"• MIRROR_TRADING_MODE: {os.getenv('MIRROR_TRADING_MODE', 'not_set')}\n"
-                    f"• 미러 트레이딩 모듈: {'사용 가능' if MIRROR_TRADING_AVAILABLE else '사용 불가'}",
-                    parse_mode='HTML'
-                )
+                status_text = f"📊 현재 분석 전용 모드로 실행 중입니다.\n\n"
+                status_text += f"🔍 비활성화 이유:\n" + "\n".join(f"• {reason}" for reason in reasons)
+                status_text += f"\n\n📋 활성화 방법:\n"
+                status_text += f"1. MIRROR_TRADING_MODE=true 환경변수 설정 ✓\n"
+                status_text += f"2. GATE_API_KEY 환경변수 설정 {'✓' if gate_api_key else '❌'}\n"
+                status_text += f"3. GATE_API_SECRET 환경변수 설정 {'✓' if gate_api_secret else '❌'}\n"
+                status_text += f"4. 시스템 재시작\n\n"
+                status_text += f"🔧 현재 환경변수 상태:\n"
+                status_text += f"• MIRROR_TRADING_MODE: {os.getenv('MIRROR_TRADING_MODE', 'not_set')}\n"
+                status_text += f"• 미러 트레이딩 모듈: {'사용 가능' if MIRROR_TRADING_AVAILABLE else '사용 불가'}"
+                
+                # Gate.io 분석용 클라이언트 상태 추가
+                if self.gate_client:
+                    status_text += f"\n\n✅ Gate.io 분석용 클라이언트는 정상 작동 중"
+                    status_text += f"\n💰 수익 조회 기능 사용 가능"
+                
+                await update.message.reply_text(status_text, parse_mode='HTML')
                 return
             
             await update.message.reply_text("🔄 미러 트레이딩 상태를 조회중입니다...", parse_mode='HTML')
@@ -1050,8 +1068,8 @@ class BitcoinPredictionSystem:
                 health_status['services']['bitget'] = 'ERROR'
                 health_status['errors'].append(f"Bitget: {str(e)[:50]}")
             
-            # Gate.io 연결 체크 (미러 모드일 때만)
-            if self.mirror_mode and self.gate_client:
+            # Gate.io 연결 체크 (미러 모드이거나 분석용 클라이언트가 있는 경우)
+            if self.gate_client:
                 try:
                     balance = await self.gate_client.get_account_balance()
                     health_status['services']['gate'] = 'OK'
@@ -1326,7 +1344,13 @@ class BitcoinPredictionSystem:
 - 가동 시간: {hours}시간 {minutes}분
 - 오늘 명령 처리: {sum(self.command_stats.values())}건
 - 오늘 예외 감지: <b>{total_exceptions}건</b>
-- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
+- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}"""
+            
+            # Gate.io 클라이언트 상태 추가
+            if self.gate_client and not self.mirror_mode:
+                welcome_message += "\n- Gate.io 수익 조회: 활성화"
+            
+            welcome_message += """
 
 📈 정확한 비트코인 분석을 제공합니다.
 
@@ -1356,8 +1380,8 @@ class BitcoinPredictionSystem:
             self.logger.info("Bitget 클라이언트 초기화 중...")
             await self.bitget_client.initialize()
             
-            # Gate.io 클라이언트 초기화 (미러 모드일 때만)
-            if self.mirror_mode and self.gate_client:
+            # Gate.io 클라이언트 초기화 (있는 경우)
+            if self.gate_client:
                 self.logger.info("Gate.io 클라이언트 초기화 중...")
                 await self.gate_client.initialize()
             
@@ -1416,6 +1440,13 @@ class BitcoinPredictionSystem:
 - 실시간 가격 조정
 - 시세 차이와 무관하게 즉시 처리
 """
+            elif self.gate_client:
+                startup_msg += """
+<b>💰 Gate.io 수익 조회 활성화:</b>
+- 2025년 5월부터 누적 수익 집계
+- 개선된 실현손익 조회
+- 정확한 PnL 계산
+"""
             
             if self.ml_mode:
                 startup_msg += f"""
@@ -1444,6 +1475,11 @@ class BitcoinPredictionSystem:
 - 완전한 달러 비율 복제
 - 예약 주문 실시간 복제
 - 슬리피지 보호 시장가 주문"""
+            elif self.gate_client:
+                startup_msg += """
+- Gate.io 개선된 수익 조회
+- 2025년 5월부터 누적 집계
+- 실시간 PnL 추적"""
 
             startup_msg += """
 
