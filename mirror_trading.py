@@ -81,6 +81,12 @@ class MirrorTradingSystem:
         self.max_slippage_percent: float = 0.05  # 🔥🔥🔥 0.05% (약 50달러)로 변경
         self.price_check_interval: float = 0.5  # 가격 체크 간격 0.5초
         
+        # 🔥🔥🔥 모니터링 상태 관리
+        self.monitoring = True
+        self.system_initialized = False
+        self.initialization_errors = 0
+        self.max_initialization_retries = 3
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -96,30 +102,32 @@ class MirrorTradingSystem:
         # 성과 추적 (포지션 매니저와 공유)
         self.daily_stats = self.position_manager.daily_stats
         
-        self.monitoring = True
         self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 슬리피지 보호 0.05% 적용 + 텔레그램 알림")
 
     async def start(self):
-        """미러 트레이딩 시작"""
+        """🔥🔥🔥 미러 트레이딩 시작 - 강화된 초기화 및 오류 처리"""
         try:
             self.logger.info("🔥 미러 트레이딩 시스템 시작 - 슬리피지 보호 0.05% + 텔레그램 알림")
             
-            # Bitget 미러링 클라이언트 초기화
-            await self.bitget_mirror.initialize()
+            # 🔥🔥🔥 단계별 초기화 - 실패해도 계속 진행
+            initialization_success = await self._perform_initialization()
             
-            # Gate.io 미러링 클라이언트 초기화
-            await self.gate_mirror.initialize()
+            if initialization_success:
+                self.logger.info("✅ 미러 트레이딩 시스템 초기화 완료")
+                self.system_initialized = True
+            else:
+                self.logger.warning("⚠️ 미러 트레이딩 시스템 초기화 일부 실패하지만 계속 진행")
+                self.system_initialized = False
             
-            # 현재 시세 업데이트
-            await self._update_current_prices()
-            
-            # 포지션 매니저 초기화
-            self.position_manager.price_sync_threshold = self.price_sync_threshold
-            self.position_manager.position_wait_timeout = self.position_wait_timeout
-            await self.position_manager.initialize()
-            
-            # 초기 계정 상태 출력
-            await self._log_account_status()
+            # 🔥🔥🔥 초기화 성공 여부와 관계없이 모니터링 시작
+            await self.telegram.send_message(
+                f"🔥 미러 트레이딩 시스템 시작\n"
+                f"초기화 상태: {'✅ 성공' if initialization_success else '⚠️ 부분 실패'}\n"
+                f"🎯 예약 주문 모니터링: 활성화\n"
+                f"🛡️ 슬리피지 보호: 0.05% (약 $50)\n"
+                f"🔥 시세 차이와 무관하게 즉시 처리\n"
+                f"📱 텔레그램 알림: 활성화"
+            )
             
             # 모니터링 태스크 시작
             tasks = [
@@ -137,9 +145,117 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"미러 트레이딩 시작 실패: {e}")
             await self.telegram.send_message(
-                f"❌ 미러 트레이딩 시작 실패\n오류: {str(e)[:200]}"
+                f"❌ 미러 트레이딩 시작 실패\n오류: {str(e)[:200]}\n"
+                f"🔄 5분 후 자동 재시작 시도"
             )
-            raise
+            
+            # 5분 후 재시작 시도
+            await asyncio.sleep(300)
+            await self.start()
+
+    async def _perform_initialization(self) -> bool:
+        """🔥🔥🔥 단계별 초기화 수행"""
+        try:
+            self.logger.info("🎯 미러 트레이딩 시스템 초기화 시작")
+            
+            # 1. Bitget 미러링 클라이언트 초기화
+            try:
+                await self.bitget_mirror.initialize()
+                self.logger.info("✅ Bitget 미러링 클라이언트 초기화 성공")
+            except Exception as e:
+                self.logger.error(f"❌ Bitget 미러링 클라이언트 초기화 실패: {e}")
+                return False
+            
+            # 2. Gate.io 미러링 클라이언트 초기화
+            try:
+                await self.gate_mirror.initialize()
+                self.logger.info("✅ Gate.io 미러링 클라이언트 초기화 성공")
+            except Exception as e:
+                self.logger.error(f"❌ Gate.io 미러링 클라이언트 초기화 실패: {e}")
+                return False
+            
+            # 3. 현재 시세 업데이트
+            try:
+                await self._update_current_prices()
+                self.logger.info("✅ 현재 시세 업데이트 성공")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 현재 시세 업데이트 실패: {e}")
+                # 시세 업데이트 실패는 치명적이지 않음
+            
+            # 4. 포지션 매니저 초기화
+            try:
+                self.position_manager.price_sync_threshold = self.price_sync_threshold
+                self.position_manager.position_wait_timeout = self.position_wait_timeout
+                await self.position_manager.initialize()
+                self.logger.info("✅ 포지션 매니저 초기화 성공")
+            except Exception as e:
+                self.logger.error(f"❌ 포지션 매니저 초기화 실패: {e}")
+                # 포지션 매니저 초기화 실패해도 기본 모니터링은 시작
+                self.position_manager.monitoring_enabled = True
+                self.position_manager.startup_plan_orders_processed = True
+            
+            # 5. 초기 계정 상태 출력
+            try:
+                await self._log_account_status()
+                self.logger.info("✅ 계정 상태 출력 성공")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 계정 상태 출력 실패: {e}")
+                # 계정 상태 출력 실패는 치명적이지 않음
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"전체 초기화 실패: {e}")
+            return False
+
+    async def monitor_plan_orders(self):
+        """🔥🔥🔥 예약 주문 모니터링 - 포지션 매니저로 위임 + 강화된 안정성"""
+        self.logger.info("🎯 예약 주문 모니터링 시작")
+        
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        
+        while self.monitoring:
+            try:
+                # 🔥🔥🔥 포지션 매니저 모니터링 활성화 체크
+                if not hasattr(self.position_manager, 'monitoring_enabled'):
+                    self.position_manager.monitoring_enabled = True
+                    self.logger.info("포지션 매니저 모니터링 강제 활성화")
+                
+                if not self.position_manager.monitoring_enabled:
+                    self.logger.debug("포지션 매니저 모니터링 비활성화 상태, 5초 대기")
+                    await asyncio.sleep(5)
+                    continue
+                
+                # 포지션 매니저의 모니터링 사이클 실행
+                await self.position_manager.monitor_plan_orders_cycle()
+                
+                consecutive_errors = 0
+                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                self.logger.error(f"예약 주문 모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    await self.telegram.send_message(
+                        f"❌ 예약 주문 모니터링 연속 실패\n"
+                        f"연속 오류: {consecutive_errors}회\n"
+                        f"마지막 오류: {str(e)[:200]}\n"
+                        f"🔄 5분 후 자동 재시작"
+                    )
+                    
+                    # 5분 대기 후 재시작
+                    await asyncio.sleep(300)
+                    consecutive_errors = 0
+                    
+                    # 포지션 매니저 재활성화
+                    self.position_manager.monitoring_enabled = True
+                    self.position_manager.monitoring_error_count = 0
+                    
+                    self.logger.info("🔄 예약 주문 모니터링 자동 재시작")
+                
+                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * (consecutive_errors + 1))
 
     async def monitor_order_synchronization(self):
         """예약 주문 동기화 모니터링"""
@@ -417,19 +533,6 @@ class MirrorTradingSystem:
             
         except Exception as e:
             self.logger.error(f"동기화 문제 해결 실패: {e}")
-
-    async def monitor_plan_orders(self):
-        """예약 주문 모니터링 - 포지션 매니저로 위임"""
-        self.logger.info("🎯 예약 주문 모니터링 시작")
-        
-        while self.monitoring:
-            try:
-                await self.position_manager.monitor_plan_orders_cycle()
-                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL)
-                
-            except Exception as e:
-                self.logger.error(f"예약 주문 모니터링 중 오류: {e}")
-                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
     async def monitor_order_fills(self):
         """🔥🔥🔥 실시간 주문 체결 감지 - 슬리피지 보호 0.05% 적용"""
@@ -898,6 +1001,11 @@ class MirrorTradingSystem:
 - 텔레그램 알림: 즉시
 - 안전 장치: 지정가 주문 폴백 지원
 
+🎯 예약 주문 체결/취소 구분:
+- 체결 처리: {self.daily_stats.get('plan_order_executions', 0)}회
+- 잘못된 취소 방지: {self.daily_stats.get('false_cancellation_prevented', 0)}회
+- 모니터링 사이클: {self.daily_stats.get('monitoring_cycles', 0)}회
+
 ━━━━━━━━━━━━━━━━━━━
 ✅ 미러 트레이딩 시스템 정상 작동 중"""
             
@@ -935,7 +1043,11 @@ class MirrorTradingSystem:
             'sync_deletions': 0,
             'auto_close_order_cleanups': 0,
             'position_closed_cleanups': 0,
-            'position_size_corrections': 0,  # 포지션 크기 보정 통계
+            'position_size_corrections': 0,
+            'plan_order_executions': 0,
+            'false_cancellation_prevented': 0,
+            'monitoring_cycles': 0,
+            'monitoring_errors': 0,
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -962,14 +1074,6 @@ class MirrorTradingSystem:
             
             if valid_price_diff is not None:
                 price_info = f"""📈 시세 상태:
-• 비트겟: ${self.bitget_current_price:,.2f}
-• 게이트: ${self.gate_current_price:,.2f}
-• 차이: ${valid_price_diff:.2f}
-• 🔥 처리: 시세 차이와 무관하게 즉시 처리
-• 🛡️ 슬리피지 보호: 0.05% (약 $50) 제한
-• ⏰ 지정가 대기: 5초 후 시장가 전환"""
-            else:
-                price_info = f"""📈 시세 상태:
 • 시세 조회 중 문제 발생
 • 시스템이 자동으로 복구 중
 • 🔥 처리: 시세 조회 실패와 무관하게 정상 처리
@@ -994,7 +1098,8 @@ class MirrorTradingSystem:
                 f"• 🔥 시세 차이와 무관하게 즉시 처리\n"
                 f"• 🛡️ 슬리피지 보호 0.05% (약 $50)\n"
                 f"• ⏰ 지정가 주문 5초 대기 후 시장가 전환\n"
-                f"• 📱 시장가 체결 시 즉시 텔레그램 알림\n\n"
+                f"• 📱 시장가 체결 시 즉시 텔레그램 알림\n"
+                f"• 🎯 예약 주문 체결/취소 구분 시스템\n\n"
                 f"🚀 시스템이 정상적으로 시작되었습니다."
             )
             
@@ -1020,4 +1125,12 @@ class MirrorTradingSystem:
         except:
             pass
         
-        self.logger.info("미러 트레이딩 시스템 중지")
+        self.logger.info("미러 트레이딩 시스템 중지")태:
+• 비트겟: ${self.bitget_current_price:,.2f}
+• 게이트: ${self.gate_current_price:,.2f}
+• 차이: ${valid_price_diff:.2f}
+• 🔥 처리: 시세 차이와 무관하게 즉시 처리
+• 🛡️ 슬리피지 보호: 0.05% (약 $50) 제한
+• ⏰ 지정가 대기: 5초 후 시장가 전환"""
+            else:
+                price_info = f"""📈 시세 상
