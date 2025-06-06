@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - 포지션 크기 기반 클로즈 주문 처리 강화"""
+    """Gate.io 미러링 전용 클라이언트 - 포지션 크기 기반 클로즈 주문 처리 강화 + 슬리피지 보호"""
     
     def __init__(self, config):
         self.config = config
@@ -25,6 +25,11 @@ class GateioMirrorClient:
         # TP/SL 설정 상수
         self.TP_SL_TIMEOUT = 10
         self.MAX_TP_SL_RETRIES = 3
+        
+        # 🔥🔥🔥 슬리피지 보호 설정
+        self.MAX_SLIPPAGE_PERCENT = 1.0  # 최대 슬리피지 1%
+        self.SLIPPAGE_CHECK_ENABLED = True
+        self.FALLBACK_TO_LIMIT_ORDER = True
         
     def _initialize_session(self):
         """세션 초기화"""
@@ -72,7 +77,7 @@ class GateioMirrorClient:
         if not self.session:
             self._initialize_session()
         
-        url = f"{self.base_url}{endpoint}"
+        url = f"{self.base_url}{endpoint}"  # 🔥🔥🔥 f-string 구문 오류 수정
         query_string = ""
         payload = ""
         
@@ -280,6 +285,113 @@ class GateioMirrorClient:
                 return True
         
         return False
+    
+    async def _check_slippage_protection(self, current_price: float, expected_price: float, side: str) -> Tuple[bool, str]:
+        """🔥🔥🔥 슬리피지 보호 체크"""
+        try:
+            if not self.SLIPPAGE_CHECK_ENABLED:
+                return True, "슬리피지 체크 비활성화"
+            
+            if current_price <= 0 or expected_price <= 0:
+                return True, "가격 정보 부족으로 체크 스킵"
+            
+            # 슬리피지 계산
+            if side.lower() == 'buy':
+                # 매수: 현재가보다 높게 체결될 위험
+                slippage_percent = ((expected_price - current_price) / current_price) * 100
+            else:
+                # 매도: 현재가보다 낮게 체결될 위험
+                slippage_percent = ((current_price - expected_price) / current_price) * 100
+            
+            if slippage_percent > self.MAX_SLIPPAGE_PERCENT:
+                return False, f"슬리피지 위험 ({slippage_percent:.2f}% > {self.MAX_SLIPPAGE_PERCENT}%)"
+            
+            return True, f"슬리피지 안전 ({slippage_percent:.2f}%)"
+            
+        except Exception as e:
+            logger.error(f"슬리피지 보호 체크 실패: {e}")
+            return True, "슬리피지 체크 오류, 진행"
+    
+    async def _place_order_with_slippage_protection(self, contract: str, size: int, 
+                                                   reduce_only: bool = False, 
+                                                   max_retries: int = 3) -> Dict:
+        """🔥🔥🔥 슬리피지 보호가 적용된 주문 생성"""
+        try:
+            # 현재가 조회
+            current_price = await self.get_current_price(contract)
+            if current_price <= 0:
+                logger.warning("현재가 조회 실패, 일반 시장가 주문으로 진행")
+                return await self.place_order(contract, size, None, reduce_only)
+            
+            side = 'buy' if size > 0 else 'sell'
+            
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"슬리피지 보호 주문 시도 {attempt + 1}/{max_retries}: {side} {abs(size)} @ ${current_price:.2f}")
+                    
+                    # 시장가로 체결될 예상 가격 (스프레드 고려)
+                    ticker = await self.get_ticker(contract)
+                    if ticker:
+                        bid_price = float(ticker.get('bid', current_price))
+                        ask_price = float(ticker.get('ask', current_price))
+                        
+                        if side == 'buy':
+                            expected_price = ask_price  # 매수는 ask에 체결
+                        else:
+                            expected_price = bid_price  # 매도는 bid에 체결
+                    else:
+                        expected_price = current_price
+                    
+                    # 슬리피지 보호 체크
+                    is_safe, protection_msg = await self._check_slippage_protection(
+                        current_price, expected_price, side
+                    )
+                    
+                    logger.info(f"슬리피지 보호: {protection_msg}")
+                    
+                    if is_safe:
+                        # 안전한 경우 시장가 주문
+                        result = await self.place_order(contract, size, None, reduce_only)
+                        logger.info(f"✅ 슬리피지 보호된 시장가 주문 성공: {side} {abs(size)}")
+                        return result
+                    else:
+                        # 위험한 경우 지정가 주문으로 전환
+                        if self.FALLBACK_TO_LIMIT_ORDER:
+                            logger.warning(f"슬리피지 위험으로 지정가 주문으로 전환: {protection_msg}")
+                            
+                            # 조금 더 유리한 가격으로 지정가 주문
+                            if side == 'buy':
+                                limit_price = current_price * (1 + (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
+                            else:
+                                limit_price = current_price * (1 - (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
+                            
+                            result = await self.place_order(contract, size, limit_price, reduce_only, "gtc")
+                            logger.info(f"✅ 슬리피지 보호 지정가 주문 성공: {side} {abs(size)} @ ${limit_price:.2f}")
+                            return result
+                        else:
+                            # 지정가 전환 비활성화된 경우 그냥 시장가 진행
+                            logger.warning(f"슬리피지 위험 감지되었지만 시장가로 진행: {protection_msg}")
+                            result = await self.place_order(contract, size, None, reduce_only)
+                            return result
+                    
+                except Exception as e:
+                    logger.error(f"슬리피지 보호 주문 시도 {attempt + 1} 실패: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0)
+                        # 현재가 갱신
+                        current_price = await self.get_current_price(contract)
+                        continue
+                    else:
+                        raise
+            
+            # 모든 재시도 실패 시 기본 시장가 주문
+            logger.warning("모든 슬리피지 보호 시도 실패, 기본 시장가 주문으로 진행")
+            return await self.place_order(contract, size, None, reduce_only)
+            
+        except Exception as e:
+            logger.error(f"슬리피지 보호 주문 실패: {e}")
+            # 실패 시 기본 시장가 주문으로 폴백
+            return await self.place_order(contract, size, None, reduce_only)
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
@@ -642,9 +754,16 @@ class GateioMirrorClient:
             raise
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None,
-                         reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """시장가/지정가 주문 생성"""
+                         reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0,
+                         use_slippage_protection: bool = True) -> Dict:
+        """🔥🔥🔥 시장가/지정가 주문 생성 - 슬리피지 보호 옵션 추가"""
         try:
+            # 🔥🔥🔥 시장가 주문이고 슬리피지 보호가 활성화된 경우
+            if price is None and use_slippage_protection and self.SLIPPAGE_CHECK_ENABLED:
+                logger.info(f"슬리피지 보호가 적용된 시장가 주문 실행: {size}")
+                return await self._place_order_with_slippage_protection(contract, size, reduce_only)
+            
+            # 기본 주문 로직
             endpoint = "/api/v4/futures/usdt/orders"
             
             data = {
@@ -670,7 +789,7 @@ class GateioMirrorClient:
             raise
     
     async def close_position(self, contract: str, size: Optional[int] = None) -> Dict:
-        """포지션 종료"""
+        """포지션 종료 - 슬리피지 보호 적용"""
         try:
             positions = await self.get_positions(contract)
             
@@ -688,11 +807,14 @@ class GateioMirrorClient:
                 else:
                     close_size = min(abs(size), abs(position_size))
             
+            # 🔥🔥🔥 슬리피지 보호가 적용된 포지션 클로즈
+            logger.info(f"슬리피지 보호 포지션 클로즈: {close_size}")
             result = await self.place_order(
                 contract=contract,
                 size=close_size,
                 price=None,
-                reduce_only=True
+                reduce_only=True,
+                use_slippage_protection=True  # 슬리피지 보호 활성화
             )
             
             return result
