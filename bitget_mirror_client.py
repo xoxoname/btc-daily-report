@@ -30,6 +30,7 @@ class BitgetMirrorClient:
         # 🔥🔥🔥 정확한 Bitget 파라미터 설정 (수정)
         self.product_type = "usdt-futures"  # 소문자로 변경
         self.symbol = "BTCUSDT"             # 기본 심볼
+        self.symbol_v1 = "BTCUSDT_UMCBL"    # 🔥🔥🔥 v1 API용 심볼 형식
         self.margin_coin = "USDT"           # 마진 코인
         
         # 🔥🔥🔥 대체 파라미터들 (API 버전별 다름)
@@ -97,7 +98,7 @@ class BitgetMirrorClient:
                     'marginCoin': self.margin_coin
                 }),
                 ("/api/mix/v1/account/accounts", {
-                    'symbol': self.symbol,
+                    'symbol': self.symbol_v1,  # 🔥🔥🔥 v1 API는 _UMCBL 형식 사용
                     'marginCoin': self.margin_coin
                 }),
                 ("/api/v2/mix/account/accounts", {
@@ -156,6 +157,22 @@ class BitgetMirrorClient:
             'Content-Type': 'application/json',
             'locale': 'en-US'
         }
+    
+    def _get_v1_symbol(self, symbol: str = None) -> str:
+        """🔥🔥🔥 v1 API용 심볼 변환"""
+        if symbol is None:
+            symbol = self.symbol
+        
+        # 이미 _UMCBL이 있으면 그대로 반환
+        if "_UMCBL" in symbol:
+            return symbol
+        
+        # BTCUSDT -> BTCUSDT_UMCBL
+        return f"{symbol}_UMCBL"
+    
+    def _is_v1_endpoint(self, endpoint: str) -> bool:
+        """🔥🔥🔥 v1 API 엔드포인트인지 확인"""
+        return "/v1/" in endpoint or endpoint.startswith("/api/mix/v1/")
     
     async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
         """API 요청 - 강화된 오류 처리 + 파라미터 검증 로깅"""
@@ -384,9 +401,9 @@ class BitgetMirrorClient:
                 ("/api/v2/mix/market/ticker", {'symbol': symbol, 'productType': 'UMCBL'}),
                 ("/api/v2/mix/market/ticker", {'symbol': symbol, 'productType': 'mix'}),
                 
-                # v1 API 대체들
-                ("/api/mix/v1/market/ticker", {'symbol': symbol}),
-                ("/api/mix/v1/market/ticker", {'symbol': symbol, 'productType': 'umcbl'}),
+                # v1 API 대체들 - 🔥🔥🔥 _UMCBL 형식 사용
+                ("/api/mix/v1/market/ticker", {'symbol': self._get_v1_symbol(symbol)}),
+                ("/api/mix/v1/market/ticker", {'symbol': self._get_v1_symbol(symbol), 'productType': 'umcbl'}),
                 
                 # 공통 market 엔드포인트들
                 ("/api/v2/market/ticker", {'symbol': symbol}),
@@ -454,6 +471,9 @@ class BitgetMirrorClient:
             plan_orders = []
             tp_sl_orders = []
             
+            # 🔥🔥🔥 v1 API용 심볼 변환
+            symbol_v1 = self._get_v1_symbol(symbol)
+            
             # 🔥🔥🔥 여러 엔드포인트와 파라미터 조합 시도
             endpoint_param_combinations = [
                 # v2 API 시도들
@@ -463,13 +483,13 @@ class BitgetMirrorClient:
                 ("/api/v2/mix/order/orders-plan-pending", {'symbol': symbol, 'productType': 'UMCBL'}),
                 ("/api/v2/mix/order/orders-plan-pending", {'symbol': symbol, 'productType': 'mix'}),
                 
-                # v1 API 대체들
-                ("/api/mix/v1/plan/currentPlan", {'symbol': symbol}),
-                ("/api/mix/v1/plan/currentPlan", {'symbol': symbol, 'productType': 'umcbl'}),
+                # v1 API 대체들 - 🔥🔥🔥 _UMCBL 형식 사용
+                ("/api/mix/v1/plan/currentPlan", {'symbol': symbol_v1}),
+                ("/api/mix/v1/plan/currentPlan", {'symbol': symbol_v1, 'productType': 'umcbl'}),
                 
                 # 추가 가능한 엔드포인트들
                 ("/api/v2/mix/order/plan-pending", {'symbol': symbol}),
-                ("/api/v1/mix/order/current-plan", {'symbol': symbol}),
+                ("/api/v1/mix/order/current-plan", {'symbol': symbol_v1}),
             ]
             
             for endpoint, params in endpoint_param_combinations:
@@ -552,6 +572,9 @@ class BitgetMirrorClient:
             
             filled_orders = []
             
+            # 🔥🔥🔥 v1 API용 심볼 변환
+            symbol_v1 = self._get_v1_symbol(symbol)
+            
             # 🔥🔥🔥 여러 엔드포인트와 파라미터 조합 시도
             endpoint_param_combinations = [
                 # v2 API 시도들
@@ -576,9 +599,9 @@ class BitgetMirrorClient:
                     'limit': '100'
                 }),
                 
-                # v1 API 대체들
+                # v1 API 대체들 - 🔥🔥🔥 _UMCBL 형식 사용
                 ("/api/mix/v1/order/fills", {
-                    'symbol': symbol,
+                    'symbol': symbol_v1,
                     'startTime': str(int(start_time.timestamp() * 1000)),
                     'endTime': str(int(end_time.timestamp() * 1000)),
                     'limit': '100'
@@ -637,6 +660,9 @@ class BitgetMirrorClient:
             
             filled_plan_orders = []
             
+            # 🔥🔥🔥 v1 API용 심볼 변환
+            symbol_v1 = self._get_v1_symbol(symbol)
+            
             # 🔥🔥🔥 여러 엔드포인트와 파라미터 조합 시도
             base_params = {
                 'symbol': symbol,
@@ -645,8 +671,16 @@ class BitgetMirrorClient:
                 'limit': '100'
             }
             
+            base_params_v1 = {
+                'symbol': symbol_v1,  # 🔥🔥🔥 v1 API는 _UMCBL 형식 사용
+                'startTime': str(int(start_time.timestamp() * 1000)),
+                'endTime': str(int(end_time.timestamp() * 1000)),
+                'limit': '100'
+            }
+            
             if order_id:
                 base_params['planOrderId'] = order_id
+                base_params_v1['planOrderId'] = order_id
             
             endpoint_param_combinations = [
                 # v2 API 시도들
@@ -655,9 +689,9 @@ class BitgetMirrorClient:
                 ("/api/v2/mix/order/orders-plan-history", {**base_params, 'productType': 'umcbl'}),
                 ("/api/v2/mix/order/orders-plan-history", {**base_params, 'productType': 'UMCBL'}),
                 
-                # v1 API 대체들
-                ("/api/mix/v1/plan/historyPlan", base_params),
-                ("/api/mix/v1/plan/historyPlan", {**base_params, 'productType': 'umcbl'}),
+                # v1 API 대체들 - 🔥🔥🔥 _UMCBL 형식 사용
+                ("/api/mix/v1/plan/historyPlan", base_params_v1),
+                ("/api/mix/v1/plan/historyPlan", {**base_params_v1, 'productType': 'umcbl'}),
             ]
             
             for endpoint, params in endpoint_param_combinations:
