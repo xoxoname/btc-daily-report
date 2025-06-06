@@ -79,6 +79,9 @@ class MirrorPositionManager:
         self.last_position_check: datetime = datetime.min
         self.position_check_interval: int = 30
         
+        # 시작 시간 추적
+        self.startup_time: datetime = datetime.now()
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -108,6 +111,8 @@ class MirrorPositionManager:
             'tp_sl_failed': 0,
             'auto_close_order_cleanups': 0,
             'position_closed_cleanups': 0,
+            'sync_corrections': 0,
+            'sync_deletions': 0,
             'errors': []
         }
         
@@ -1163,4 +1168,296 @@ class MirrorPositionManager:
                             for hash_key in hashes:
                                 self.gate_existing_order_hashes.add(hash_key)
                             
-                            order_id = gate_order.get('id', f
+                            order_id = gate_order.get('id', f'existing_{i}')
+                            self.gate_existing_orders_detailed[order_id] = {
+                                'gate_order': gate_order,
+                                'order_details': order_details,
+                                'hashes': hashes,
+                                'recorded_at': datetime.now().isoformat()
+                            }
+                            
+                            self.logger.info(f"게이트 기존 예약 주문 기록: {order_id} - 트리거가 ${trigger_price:.2f}")
+                        
+                except Exception as detail_error:
+                    self.logger.warning(f"게이트 기존 주문 상세 추출 실패: {detail_error}")
+                    continue
+            
+            self.logger.info(f"게이트 기존 예약 주문 {len(gate_orders)}개 기록 완료")
+            
+        except Exception as e:
+            self.logger.error(f"게이트 기존 예약 주문 기록 실패: {e}")
+
+    async def _record_startup_positions(self):
+        """시작 시 비트겟 포지션 기록"""
+        try:
+            bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+            
+            for pos in bitget_positions:
+                if float(pos.get('total', 0)) > 0:
+                    pos_id = self.utils.generate_position_id(pos)
+                    self.startup_positions.add(pos_id)
+                    self.logger.info(f"시작 시 비트겟 포지션 기록: {pos_id}")
+            
+            self.logger.info(f"시작 시 비트겟 포지션 {len(self.startup_positions)}개 기록")
+            
+        except Exception as e:
+            self.logger.error(f"시작 시 포지션 기록 실패: {e}")
+
+    async def _record_startup_plan_orders(self):
+        """시작 시 비트겟 예약 주문 기록"""
+        try:
+            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            current_plan_orders = plan_data.get('plan_orders', [])
+            current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
+            
+            all_startup_orders = []
+            all_startup_orders.extend(current_plan_orders)
+            
+            # TP/SL 주문 중에서 클로즈 주문만 추가
+            for tp_sl_order in current_tp_sl_orders:
+                close_details = await self.utils.determine_close_order_details(tp_sl_order)
+                if close_details['is_close_order']:
+                    all_startup_orders.append(tp_sl_order)
+            
+            for order in all_startup_orders:
+                order_id = order.get('orderId', order.get('planOrderId', ''))
+                if order_id:
+                    self.startup_plan_orders.add(order_id)
+                    self.logger.info(f"시작 시 비트겟 예약 주문 기록: {order_id}")
+            
+            self.last_plan_order_ids = set(self.startup_plan_orders)
+            
+            self.logger.info(f"시작 시 비트겟 예약 주문 {len(self.startup_plan_orders)}개 기록")
+            
+        except Exception as e:
+            self.logger.error(f"시작 시 예약 주문 기록 실패: {e}")
+
+    async def _record_startup_gate_positions(self):
+        """시작 시 게이트 포지션 기록"""
+        try:
+            gate_positions = await self.gate_mirror.get_positions("BTC_USDT")
+            
+            for pos in gate_positions:
+                if pos.get('size', 0) != 0:
+                    gate_pos_id = self._generate_gate_position_id(pos)
+                    self.startup_gate_positions.add(gate_pos_id)
+                    self.logger.info(f"시작 시 게이트 포지션 기록: {gate_pos_id}")
+            
+            self.logger.info(f"시작 시 게이트 포지션 {len(self.startup_gate_positions)}개 기록")
+            
+        except Exception as e:
+            self.logger.error(f"시작 시 게이트 포지션 기록 실패: {e}")
+
+    async def _create_initial_plan_order_snapshot(self):
+        """초기 예약 주문 스냅샷 생성"""
+        try:
+            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            current_plan_orders = plan_data.get('plan_orders', [])
+            current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
+            
+            all_orders = []
+            all_orders.extend(current_plan_orders)
+            
+            for tp_sl_order in current_tp_sl_orders:
+                close_details = await self.utils.determine_close_order_details(tp_sl_order)
+                if close_details['is_close_order']:
+                    all_orders.append(tp_sl_order)
+            
+            for order in all_orders:
+                order_id = order.get('orderId', order.get('planOrderId', ''))
+                if order_id:
+                    self.plan_order_snapshot[order_id] = {
+                        'order_data': order.copy(),
+                        'timestamp': datetime.now().isoformat(),
+                        'status': 'startup'
+                    }
+            
+            self.logger.info(f"초기 예약 주문 스냅샷 생성: {len(self.plan_order_snapshot)}개")
+            
+        except Exception as e:
+            self.logger.error(f"초기 예약 주문 스냅샷 생성 실패: {e}")
+
+    async def _mirror_startup_plan_orders(self):
+        """시작 시 기존 예약 주문 복제"""
+        try:
+            if not self.startup_plan_orders:
+                self.startup_plan_orders_processed = True
+                self.logger.info("시작 시 복제할 예약 주문이 없음")
+                return
+            
+            self.logger.info(f"시작 시 {len(self.startup_plan_orders)}개 예약 주문 복제 시작")
+            
+            mirrored_count = 0
+            skipped_count = 0
+            failed_count = 0
+            
+            for order_id in list(self.startup_plan_orders):
+                try:
+                    if order_id in self.plan_order_snapshot:
+                        order_data = self.plan_order_snapshot[order_id]['order_data']
+                        
+                        # 중복 체크
+                        is_duplicate = await self._is_duplicate_order_enhanced(order_data)
+                        if is_duplicate:
+                            self.logger.info(f"중복으로 인한 시작 시 주문 스킵: {order_id}")
+                            skipped_count += 1
+                            continue
+                        
+                        # 완벽한 미러링 시도
+                        result = await self._process_perfect_mirror_order(order_data)
+                        
+                        if result in ["perfect_success", "partial_success"]:
+                            mirrored_count += 1
+                            self.daily_stats['startup_plan_mirrors'] += 1
+                            self.logger.info(f"시작 시 예약 주문 복제 성공: {order_id}")
+                        else:
+                            failed_count += 1
+                            self.logger.warning(f"시작 시 예약 주문 복제 실패: {order_id}")
+                    
+                except Exception as e:
+                    failed_count += 1
+                    self.logger.error(f"시작 시 예약 주문 복제 오류: {order_id} - {e}")
+                    
+                # 처리된 주문으로 표시
+                self.processed_plan_orders.add(order_id)
+            
+            # 시작 시 복제 완료 알림
+            if mirrored_count > 0:
+                await self.telegram.send_message(
+                    f"🔄 시작 시 예약 주문 복제 완료\n"
+                    f"성공: {mirrored_count}개\n"
+                    f"스킵: {skipped_count}개\n"
+                    f"실패: {failed_count}개\n"
+                    f"총 {len(self.startup_plan_orders)}개 중 {mirrored_count}개 복제"
+                )
+            
+            self.startup_plan_orders_processed = True
+            self.logger.info(f"시작 시 예약 주문 복제 완료: 성공 {mirrored_count}개, 스킵 {skipped_count}개, 실패 {failed_count}개")
+            
+        except Exception as e:
+            self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
+            self.startup_plan_orders_processed = True
+
+    # === 추가 헬퍼 메서드들 ===
+
+    async def _should_skip_position_due_to_existing(self, bitget_pos: Dict) -> bool:
+        """기존 게이트 포지션으로 인한 스킵 여부 판단"""
+        try:
+            if not self.render_restart_detected:
+                return False
+            
+            holdSide = bitget_pos.get('holdSide', '').lower()
+            
+            if holdSide == 'long' and self.existing_gate_positions['has_long']:
+                self.logger.info("🔄 렌더 재구동: 기존 게이트 롱 포지션 존재로 스킵")
+                return True
+            elif holdSide == 'short' and self.existing_gate_positions['has_short']:
+                self.logger.info("🔄 렌더 재구동: 기존 게이트 숏 포지션 존재로 스킵")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"기존 포지션 스킵 판단 실패: {e}")
+            return False
+
+    async def _is_startup_position_match(self, gate_pos: Dict) -> bool:
+        """게이트 포지션이 시작 시 존재했던 것인지 확인"""
+        try:
+            if not self.render_restart_detected:
+                return False
+            
+            size = int(gate_pos.get('size', 0))
+            if size == 0:
+                return False
+            
+            current_side = 'long' if size > 0 else 'short'
+            
+            if current_side == 'long' and self.existing_gate_positions['has_long']:
+                return abs(size - self.existing_gate_positions['long_size']) < 10
+            elif current_side == 'short' and self.existing_gate_positions['has_short']:
+                return abs(abs(size) - self.existing_gate_positions['short_size']) < 10
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"시작 시 포지션 매칭 확인 실패: {e}")
+            return False
+
+    async def _mirror_new_position(self, bitget_pos: Dict) -> MirrorResult:
+        """새로운 포지션 미러링"""
+        try:
+            # 포지션 정보 추출
+            side = bitget_pos.get('holdSide', '').lower()
+            size = float(bitget_pos.get('total', 0))
+            entry_price = float(bitget_pos.get('openPriceAvg', 0))
+            leverage = int(float(bitget_pos.get('leverage', 10)))
+            
+            # 게이트 주문 크기 계산
+            gate_size = int(size * 10000)  # BTC를 계약 수로 변환
+            
+            if side == 'short':
+                gate_size = -gate_size
+            
+            # 레버리지 설정
+            await self.gate_mirror.set_leverage("BTC_USDT", leverage)
+            
+            # 포지션 생성 (시장가 주문)
+            result = await self.gate_mirror.place_order(
+                contract="BTC_USDT",
+                size=gate_size,
+                price=None
+            )
+            
+            return MirrorResult(
+                success=True,
+                action="position_mirror",
+                bitget_data=bitget_pos,
+                gate_data=result
+            )
+            
+        except Exception as e:
+            return MirrorResult(
+                success=False,
+                action="position_mirror",
+                bitget_data=bitget_pos,
+                error=str(e)
+            )
+
+    async def _handle_partial_close(self, pos_id: str, bitget_pos: Dict, reduction_ratio: float):
+        """부분 청산 처리"""
+        try:
+            gate_positions = await self.gate_mirror.get_positions("BTC_USDT")
+            
+            if gate_positions:
+                gate_pos = gate_positions[0]
+                current_gate_size = int(gate_pos.get('size', 0))
+                close_size = int(abs(current_gate_size) * reduction_ratio)
+                
+                if current_gate_size > 0:
+                    close_size = -close_size
+                else:
+                    close_size = abs(close_size)
+                
+                await self.gate_mirror.place_order(
+                    contract="BTC_USDT",
+                    size=close_size,
+                    reduce_only=True
+                )
+                
+                await self.telegram.send_message(
+                    f"📊 부분 청산 완료\n"
+                    f"포지션 ID: {pos_id}\n"
+                    f"청산 비율: {reduction_ratio*100:.1f}%"
+                )
+            
+        except Exception as e:
+            self.logger.error(f"부분 청산 처리 실패: {e}")
+
+    async def stop(self):
+        """포지션 매니저 중지"""
+        try:
+            self.logger.info("포지션 매니저 중지 중...")
+            # 필요한 정리 작업 수행
+        except Exception as e:
+            self.logger.error(f"포지션 매니저 중지 실패: {e}")
