@@ -102,8 +102,8 @@ class MirrorPositionManager:
         self.monitoring_error_count: int = 0
         self.max_monitoring_errors: int = 10
         
-        # 설정
-        self.SYMBOL = "BTCUSDT"
+        # 설정 - 🔥🔥🔥 비트겟 선물 심볼 수정
+        self.SYMBOL = "BTCUSDT_UMCBL"  # Bitget USDT-M Futures 심볼
         self.GATE_CONTRACT = "BTC_USDT"
         self.MIN_POSITION_SIZE = 0.00001
         self.MIN_MARGIN = 1.0
@@ -1246,6 +1246,7 @@ class MirrorPositionManager:
                         else:
                             result = await self._process_perfect_mirror_order(order_data)
                         
+                        # 결과 처리
                         if result in ["perfect_success", "partial_success"]:
                             mirrored_count += 1
                             self.daily_stats['startup_plan_mirrors'] += 1
