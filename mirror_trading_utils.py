@@ -100,7 +100,7 @@ class MirrorTradingUtils:
             return None, None
     
     async def extract_gate_order_details(self, gate_order: Dict) -> Optional[Dict]:
-        """게이트 주문에서 상세 정보 추출"""
+        """게이트 주문에서 상세 정보 추출 - 더 관대한 처리"""
         try:
             # 기본 정보 추출 - None 체크 강화
             order_id = gate_order.get('id', '') or ''
@@ -111,28 +111,29 @@ class MirrorTradingUtils:
             trigger_price_raw = trigger_info.get('price')
             
             if trigger_price_raw is None or trigger_price_raw == '':
-                self.logger.warning(f"트리거 가격이 None 또는 빈 값: {gate_order}")
+                self.logger.debug(f"트리거 가격이 None 또는 빈 값: {gate_order}")
                 return None
             
             try:
                 trigger_price = float(trigger_price_raw)
             except (ValueError, TypeError):
-                self.logger.warning(f"트리거 가격 변환 실패: {trigger_price_raw}")
+                self.logger.debug(f"트리거 가격 변환 실패: {trigger_price_raw}")
                 return None
             
-            # 초기 주문 정보 추출 - None 체크
+            # 초기 주문 정보 추출 - None 체크 및 더 관대한 처리
             initial_info = gate_order.get('initial', {}) or {}
             size_raw = initial_info.get('size')
             
-            if size_raw is None:
-                self.logger.warning(f"사이즈가 None: {gate_order}")
-                return None
-            
-            try:
-                size = int(size_raw)
-            except (ValueError, TypeError):
-                self.logger.warning(f"사이즈 변환 실패: {size_raw}")
-                return None
+            # 🔥🔥🔥 수정: size가 없거나 0이어도 기본값 사용
+            size = 1  # 기본값
+            if size_raw is not None:
+                try:
+                    size = int(size_raw)
+                except (ValueError, TypeError):
+                    self.logger.debug(f"사이즈 변환 실패, 기본값 사용: {size_raw}")
+                    size = 1
+            else:
+                self.logger.debug(f"사이즈가 None, 기본값 사용: {gate_order}")
             
             # TP/SL 정보 추출 - None 체크 강화
             tp_price = None
@@ -158,8 +159,8 @@ class MirrorTradingUtils:
                     except (ValueError, TypeError):
                         continue
             
-            if trigger_price <= 0 or size == 0:
-                self.logger.warning(f"유효하지 않은 트리거가({trigger_price}) 또는 사이즈({size})")
+            if trigger_price <= 0:
+                self.logger.debug(f"유효하지 않은 트리거가: {trigger_price}")
                 return None
             
             return {
@@ -179,35 +180,35 @@ class MirrorTradingUtils:
             return None
     
     async def generate_multiple_order_hashes(self, order_details: Dict) -> List[str]:
-        """🔥🔥🔥 다양한 방식으로 주문 해시 생성 - 더 관대한 가격 범위"""
+        """🔥🔥🔥 다양한 방식으로 주문 해시 생성 - 더 관대한 가격 범위 및 size 0 처리"""
         try:
             # None 체크 및 기본값 설정
             contract = order_details.get('contract') or self.GATE_CONTRACT
             trigger_price = order_details.get('trigger_price')
             size = order_details.get('size', 0)
-            abs_size = order_details.get('abs_size', abs(size))
+            abs_size = order_details.get('abs_size', abs(size) if size else 0)
             
-            if trigger_price is None or size is None:
-                self.logger.warning(f"필수 값이 None - trigger_price: {trigger_price}, size: {size}")
+            if trigger_price is None:
+                self.logger.debug(f"필수 값이 None - trigger_price: {trigger_price}")
                 return []
             
             try:
                 trigger_price = float(trigger_price)
-                size = int(size)
-                abs_size = abs(size)
+                size = int(size) if size is not None else 0
+                abs_size = abs(size) if size != 0 else 0
             except (ValueError, TypeError) as e:
-                self.logger.warning(f"값 변환 실패 - trigger_price: {trigger_price}, size: {size}, error: {e}")
+                self.logger.debug(f"값 변환 실패 - trigger_price: {trigger_price}, size: {size}, error: {e}")
                 return []
             
-            if trigger_price <= 0 or abs_size == 0:
-                self.logger.warning(f"유효하지 않은 값 - trigger_price: {trigger_price}, abs_size: {abs_size}")
+            if trigger_price <= 0:
+                self.logger.debug(f"유효하지 않은 트리거 가격 - trigger_price: {trigger_price}")
                 return []
             
             hashes = []
             
             # 🔥🔥🔥 가격 기반 해시 (중복 방지 핵심) - 더 관대한 범위
             try:
-                # 기본 가격 해시들
+                # 기본 가격 해시들 (size와 무관하게 항상 생성)
                 price_only_hash = f"{contract}_price_{trigger_price:.2f}"
                 hashes.append(price_only_hash)
                 
@@ -224,53 +225,55 @@ class MirrorTradingUtils:
                 hashes.append(rounded_price_hash_0)
                 
             except Exception as e:
-                self.logger.warning(f"가격 기반 해시 생성 실패: {e}")
+                self.logger.debug(f"가격 기반 해시 생성 실패: {e}")
             
-            # 기본 해시
-            try:
-                basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
-                hashes.append(basic_hash)
-            except Exception as e:
-                self.logger.warning(f"기본 해시 생성 실패: {e}")
-            
-            # 정확한 가격 해시
-            try:
-                exact_price_hash = f"{contract}_{trigger_price:.8f}_{abs_size}"
-                hashes.append(exact_price_hash)
-            except Exception as e:
-                self.logger.warning(f"정확한 가격 해시 생성 실패: {e}")
-            
-            # 부호 포함 해시
-            try:
-                signed_hash = f"{contract}_{trigger_price:.2f}_{size}"
-                hashes.append(signed_hash)
-            except Exception as e:
-                self.logger.warning(f"부호 포함 해시 생성 실패: {e}")
-            
-            # 반올림된 가격 해시
-            try:
-                rounded_price_1 = round(trigger_price, 1)
-                rounded_hash_1 = f"{contract}_{rounded_price_1:.1f}_{abs_size}"
-                hashes.append(rounded_hash_1)
-                
-                rounded_price_0 = round(trigger_price, 0)
-                rounded_hash_0 = f"{contract}_{rounded_price_0:.0f}_{abs_size}"
-                hashes.append(rounded_hash_0)
-            except Exception as e:
-                self.logger.warning(f"반올림 해시 생성 실패: {e}")
+            # 🔥🔥🔥 size가 0이 아닌 경우에만 size 포함 해시 생성
+            if abs_size > 0:
+                try:
+                    # 기본 해시
+                    basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
+                    hashes.append(basic_hash)
+                    
+                    # 정확한 가격 해시
+                    exact_price_hash = f"{contract}_{trigger_price:.8f}_{abs_size}"
+                    hashes.append(exact_price_hash)
+                    
+                    # 부호 포함 해시
+                    signed_hash = f"{contract}_{trigger_price:.2f}_{size}"
+                    hashes.append(signed_hash)
+                    
+                    # 반올림된 가격 해시
+                    rounded_price_1 = round(trigger_price, 1)
+                    rounded_hash_1 = f"{contract}_{rounded_price_1:.1f}_{abs_size}"
+                    hashes.append(rounded_hash_1)
+                    
+                    rounded_price_0 = round(trigger_price, 0)
+                    rounded_hash_0 = f"{contract}_{rounded_price_0:.0f}_{abs_size}"
+                    hashes.append(rounded_hash_0)
+                    
+                except Exception as e:
+                    self.logger.debug(f"size 포함 해시 생성 실패: {e}")
+            else:
+                # size가 0인 경우 로그 레벨을 debug로 변경
+                self.logger.debug(f"size가 0이므로 가격 기반 해시만 생성 - trigger_price: {trigger_price}")
             
             # TP/SL 포함 해시
             try:
                 if order_details.get('has_tp_sl'):
                     tp_price = order_details.get('tp_price', 0) or 0
                     sl_price = order_details.get('sl_price', 0) or 0
-                    tp_sl_hash = f"{contract}_{trigger_price:.2f}_{abs_size}_tp{tp_price:.2f}_sl{sl_price:.2f}"
-                    hashes.append(tp_sl_hash)
                     
+                    # TP/SL 가격 기반 해시 (size 무관)
                     tp_sl_price_hash = f"{contract}_price_{trigger_price:.2f}_withTPSL"
                     hashes.append(tp_sl_price_hash)
+                    
+                    # size가 있을 때만 TP/SL + size 해시 생성
+                    if abs_size > 0:
+                        tp_sl_hash = f"{contract}_{trigger_price:.2f}_{abs_size}_tp{tp_price:.2f}_sl{sl_price:.2f}"
+                        hashes.append(tp_sl_hash)
+                        
             except Exception as e:
-                self.logger.warning(f"TP/SL 해시 생성 실패: {e}")
+                self.logger.debug(f"TP/SL 해시 생성 실패: {e}")
             
             # 🔥🔥🔥 더 관대한 가격 범위 해시 (±100달러)
             try:
@@ -292,7 +295,7 @@ class MirrorTradingUtils:
                         hashes.append(offset_hash)
                         
             except Exception as e:
-                self.logger.warning(f"가격 범위 해시 생성 실패: {e}")
+                self.logger.debug(f"가격 범위 해시 생성 실패: {e}")
             
             # 중복 제거
             unique_hashes = list(set(hashes))
@@ -300,7 +303,7 @@ class MirrorTradingUtils:
             if unique_hashes:
                 self.logger.debug(f"주문 해시 {len(unique_hashes)}개 생성: 트리거=${trigger_price:.2f}, 크기={size}")
             else:
-                self.logger.warning(f"해시 생성 실패 - 빈 리스트 반환")
+                self.logger.debug(f"해시 생성 실패 - 빈 리스트 반환")
             
             return unique_hashes
             
@@ -311,10 +314,10 @@ class MirrorTradingUtils:
                 size = order_details.get('size', 0)
                 contract = order_details.get('contract', self.GATE_CONTRACT)
                 
-                if trigger_price is not None and size is not None:
+                if trigger_price is not None:
                     trigger_price = float(trigger_price)
-                    abs_size = abs(int(size))
-                    basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
+                    # size가 0이어도 가격 기반 해시는 생성
+                    basic_hash = f"{contract}_{trigger_price:.2f}_fallback"
                     price_hash = f"{contract}_price_{trigger_price:.2f}"
                     return [basic_hash, price_hash]
             except Exception as fallback_error:
@@ -327,16 +330,20 @@ class MirrorTradingUtils:
         try:
             contract = contract or self.GATE_CONTRACT
             
-            if trigger_price is None or size is None:
+            if trigger_price is None or trigger_price <= 0:
                 return f"{contract}_unknown_unknown"
             
             trigger_price = float(trigger_price)
-            size = int(size)
+            size = int(size) if size is not None else 0
             
-            return f"{contract}_{trigger_price:.2f}_{abs(size)}"
+            # size가 0이어도 가격 기반 해시 생성
+            if size == 0:
+                return f"{contract}_price_{trigger_price:.2f}"
+            else:
+                return f"{contract}_{trigger_price:.2f}_{abs(size)}"
             
         except (ValueError, TypeError) as e:
-            self.logger.warning(f"해시 생성 시 변환 실패: {e}")
+            self.logger.debug(f"해시 생성 시 변환 실패: {e}")
             return f"{contract or self.GATE_CONTRACT}_error_error"
     
     def generate_price_based_hash(self, trigger_price: float, contract: str = None) -> str:
@@ -351,7 +358,7 @@ class MirrorTradingUtils:
             return f"{contract}_price_{trigger_price:.2f}"
             
         except (ValueError, TypeError) as e:
-            self.logger.warning(f"가격 기반 해시 생성 실패: {e}")
+            self.logger.debug(f"가격 기반 해시 생성 실패: {e}")
             return f"{contract or self.GATE_CONTRACT}_price_error"
     
     async def adjust_price_for_gate(self, price: float, bitget_current_price: float = 0, 
