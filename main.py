@@ -23,7 +23,7 @@ from report_generators import ReportGeneratorManager
 
 # 미러 트레이딩 관련 임포트 - 수정된 부분
 try:
-    from gateio_client import GateioMirrorClient as GateClient
+    from gateio_mirror_client import GateioMirrorClient as GateClient
     from mirror_trading import MirrorTradingSystem
     MIRROR_TRADING_AVAILABLE = True
     print("✅ 미러 트레이딩 모듈 import 성공")
@@ -1303,6 +1303,7 @@ class BitcoinPredictionSystem:
 - 총 자산 대비 동일 비율
 - 예약 주문도 동일 비율 복제
 - 실시간 가격 조정
+- 시세 차이와 무관하게 즉시 처리
 """
             
             if self.ml_mode:
@@ -1413,6 +1414,7 @@ class BitcoinPredictionSystem:
 - 총 자산 대비 동일 비율 적용
 - 예약 주문도 동일 비율 복제
 - 실시간 가격 조정
+- 시세 차이와 무관하게 즉시 처리
 """
             
             if self.ml_mode:
@@ -1440,7 +1442,8 @@ class BitcoinPredictionSystem:
             if self.mirror_mode:
                 startup_msg += """
 - 완전한 달러 비율 복제
-- 예약 주문 실시간 복제"""
+- 예약 주문 실시간 복제
+- 슬리피지 보호 시장가 주문"""
 
             startup_msg += """
 
