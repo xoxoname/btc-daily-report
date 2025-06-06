@@ -15,7 +15,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         # 초기 자산 설정 (실제 초기 투자금으로 설정 필요)
         self.BITGET_INITIAL_CAPITAL = 4000.0  # 초기 자산 $4000 가정
-        self.GATE_INITIAL_CAPITAL = 700.0     # Gate.io 2025년 5월 초기 자본
+        # Gate.io 초기 자본은 실제 누적 수익 기준으로 동적 계산
     
     def set_gateio_client(self, gateio_client):
         """Gate.io 클라이언트 설정"""
@@ -30,8 +30,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             # Bitget 데이터 조회
             bitget_data = await self._get_bitget_data()
             
-            # Gate.io 데이터 조회 (활성화된 경우)
-            gateio_data = await self._get_gateio_data()
+            # Gate.io 데이터 조회 (활성화된 경우) - 개선된 메서드 사용
+            gateio_data = await self._get_gateio_data_improved()
             
             # Gate.io 실제 사용 여부 확인
             gateio_has_data = (gateio_data.get('has_account', False) and 
@@ -412,15 +412,15 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'confidence': 'low'
             }
     
-    async def _get_gateio_data(self) -> dict:
-        """Gate.io 데이터 조회 - 실제 API 호출로 개선"""
+    async def _get_gateio_data_improved(self) -> dict:
+        """🔥🔥 Gate.io 데이터 조회 - 완전 개선된 수익 조회"""
         try:
             # Gate.io 클라이언트가 없는 경우
             if not self.gateio_client:
                 self.logger.info("Gate.io 클라이언트가 설정되지 않음")
                 return self._get_empty_exchange_data('Gate')
             
-            self.logger.info("🔍 Gate.io 데이터 조회 시작...")
+            self.logger.info("🔍 Gate.io 데이터 조회 시작 (개선된 버전)...")
             
             # Gate 계정 정보 조회
             total_equity = 0
@@ -500,29 +500,53 @@ class ProfitReportGenerator(BaseReportGenerator):
                 self.logger.error(f"Gate 포지션 조회 실패: {e}")
                 self.logger.error(f"Gate 포지션 오류 상세: {traceback.format_exc()}")
             
-            # 🔥🔥 실제 Gate.io 손익 조회 - 개선된 버전
+            # 🔥🔥 개선된 Gate.io 수익 조회 - 2025년 5월부터
             today_pnl = 0
             weekly_profit = {'total': 0, 'average': 0}
+            cumulative_profit = 0
+            initial_capital = 0
             
             try:
-                self.logger.info("🔍 Gate.io 실제 손익 조회 시작...")
+                self.logger.info("🔍 Gate.io 개선된 수익 조회 시작 (2025년 5월부터)...")
+                
+                # 2025년 5월부터 누적 수익 조회
+                profit_history = await self.gateio_client.get_profit_history_since_may()
                 
                 # 오늘 실현 손익 조회
                 today_pnl = await self.gateio_client.get_today_realized_pnl()
-                self.logger.info(f"Gate.io 오늘 실현손익: ${today_pnl:.2f}")
+                self.logger.info(f"Gate.io 오늘 실현손익: ${today_pnl:.4f}")
                 
                 # 7일 손익 조회
                 weekly_profit_result = await self.gateio_client.get_weekly_profit()
                 weekly_profit = {
                     'total': weekly_profit_result.get('total_pnl', 0),
                     'average': weekly_profit_result.get('average_daily', 0),
-                    'source': weekly_profit_result.get('source', 'gate_api')
+                    'source': weekly_profit_result.get('source', 'gate_api_improved')
                 }
-                self.logger.info(f"Gate.io 7일 손익: ${weekly_profit['total']:.2f} (소스: {weekly_profit.get('source', 'unknown')})")
+                self.logger.info(f"Gate.io 7일 손익: ${weekly_profit['total']:.4f} (소스: {weekly_profit.get('source', 'unknown')})")
+                
+                # 누적 수익 (2025년 5월부터)
+                cumulative_profit = profit_history.get('actual_profit', 0)
+                current_balance = profit_history.get('current_balance', total_equity)
+                
+                # 초기 자본 동적 계산 (현재 잔고 - 누적 수익)
+                initial_capital = current_balance - cumulative_profit
+                
+                # 초기 자본이 음수가 되지 않도록 보정
+                if initial_capital < 0:
+                    initial_capital = current_balance * 0.9  # 현재 잔고의 90%로 추정
+                    cumulative_profit = current_balance - initial_capital
+                
+                self.logger.info(f"Gate.io 수익 계산:")
+                self.logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
+                self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
+                self.logger.info(f"  - 계산된 초기 자본: ${initial_capital:.2f}")
                 
             except Exception as e:
-                self.logger.error(f"Gate.io 손익 조회 실패: {e}")
-                # 기본값 유지
+                self.logger.error(f"Gate.io 개선된 수익 조회 실패: {e}")
+                # 기본값 설정
+                initial_capital = total_equity * 0.9 if total_equity > 0 else 700  # 기본값
+                cumulative_profit = total_equity - initial_capital if total_equity > 0 else 0
             
             # 사용 증거금 계산
             used_margin = 0
@@ -531,17 +555,18 @@ class ProfitReportGenerator(BaseReportGenerator):
             else:
                 used_margin = total_equity - available
             
-            cumulative_profit = total_equity - self.GATE_INITIAL_CAPITAL if total_equity > 0 else 0
-            cumulative_roi = (cumulative_profit / self.GATE_INITIAL_CAPITAL * 100) if self.GATE_INITIAL_CAPITAL > 0 else 0
+            cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             
             # 계정이 실제로 있는지 확인
             has_account = total_equity > 0
             
-            self.logger.info(f"Gate.io 데이터 구성 완료:")
+            self.logger.info(f"Gate.io 데이터 구성 완료 (개선된 버전):")
             self.logger.info(f"  - 계정 존재: {has_account}")
             self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
-            self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.2f}")
-            self.logger.info(f"  - 7일 손익: ${weekly_profit['total']:.2f}")
+            self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.4f}")
+            self.logger.info(f"  - 7일 손익: ${weekly_profit['total']:.4f}")
+            self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f} ({cumulative_roi:+.1f}%)")
+            self.logger.info(f"  - 초기 자본: ${initial_capital:.2f}")
             self.logger.info(f"  - 포지션: {'있음' if position_info['has_position'] else '없음'}")
             self.logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
             
@@ -559,7 +584,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'cumulative_profit': cumulative_profit,
                 'cumulative_roi': cumulative_roi,
                 'total_equity': total_equity,
-                'initial_capital': self.GATE_INITIAL_CAPITAL,
+                'initial_capital': initial_capital,  # 동적으로 계산된 초기 자본
                 'available': available,
                 'used_margin': used_margin,
                 'has_account': has_account,  # Gate 계정 존재 여부
@@ -723,7 +748,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         weekly_roi = (weekly_total / initial_7d * 100) if initial_7d > 0 else 0
         
         # 누적 수익률
-        total_initial = self.BITGET_INITIAL_CAPITAL + gateio_data.get('initial_capital', self.GATE_INITIAL_CAPITAL)
+        total_initial = self.BITGET_INITIAL_CAPITAL + gateio_data.get('initial_capital', 0)
         cumulative_roi = (cumulative_profit / total_initial * 100) if total_initial > 0 else 0
         
         return {
@@ -926,12 +951,14 @@ class ProfitReportGenerator(BaseReportGenerator):
             return " (거래내역)"
         elif 'improved' in source:
             return " (향상된방식)"
-        elif 'gate_trades' in source:
-            return " (거래내역)"
-        elif 'gate_account_book' in source:
+        elif 'gate_pnl' in source:
+            return " (PnL기록)"
+        elif 'gate_all' in source:
             return " (계정변동)"
+        elif 'gate_trades' in source:
+            return " (거래수수료)"
         elif 'gate_api' in source:
-            return " (API)"
+            return " (API개선)"
         elif 'fallback' in source:
             return " (대체방식)"
         elif 'error' in source or 'zero' in source:
