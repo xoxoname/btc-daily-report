@@ -9,7 +9,7 @@ from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 logger = logging.getLogger(__name__)
 
 class MirrorPositionManager:
-    """포지션 및 주문 관리 클래스 - 포지션별 투입 크기 추적 강화"""
+    """포지션 및 주문 관리 클래스 - 시세 차이 제한 완전 제거"""
     
     def __init__(self, config, bitget_client, gate_client, gate_mirror_client, telegram_bot, utils):
         self.config = config
@@ -59,7 +59,7 @@ class MirrorPositionManager:
         self.bitget_current_price: float = 0.0
         self.gate_current_price: float = 0.0
         self.price_diff_percent: float = 0.0
-        self.price_sync_threshold: float = 100.0
+        self.price_sync_threshold: float = 1000.0  # 🔥🔥🔥 매우 관대하게 설정
         self.position_wait_timeout: int = 60
         
         # 가격 기반 중복 방지 시스템
@@ -120,7 +120,7 @@ class MirrorPositionManager:
             'errors': []
         }
         
-        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - 포지션 크기 추적 강화 버전")
+        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - 시세 차이 제한 완전 제거")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -199,17 +199,14 @@ class MirrorPositionManager:
             self.logger.error(f"기존 게이트 포지션 크기 기록 실패: {e}")
 
     async def monitor_plan_orders_cycle(self):
-        """예약 주문 모니터링 사이클 - 최적화"""
+        """🔥🔥🔥 예약 주문 모니터링 사이클 - 시세 차이 지연 제거"""
         try:
             if not self.startup_plan_orders_processed:
                 await asyncio.sleep(0.1)
                 return
             
-            # 시세 차이 확인
-            price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
-            if price_diff_abs > self.price_sync_threshold * 2:
-                self.logger.debug(f"극도로 큰 시세 차이 ({price_diff_abs:.2f}$), 예약 주문 처리 지연")
-                return
+            # 🔥🔥🔥 시세 차이 체크 제거 - 모든 상황에서 즉시 처리
+            self.logger.debug("예약 주문 모니터링 - 시세 차이와 무관하게 즉시 처리")
             
             # 만료된 타임스탬프 정리
             await self._cleanup_expired_timestamps()
@@ -357,7 +354,8 @@ class MirrorPositionManager:
                     f"✅ 완벽한 TP/SL 미러링 성공\n"
                     f"완벽 복제: {perfect_mirrors}개\n"
                     f"클로즈 주문: {new_close_orders_count}개\n"
-                    f"전체 신규: {new_orders_count}개"
+                    f"전체 신규: {new_orders_count}개\n"
+                    f"🔥 시세 차이와 무관하게 즉시 처리됨"
                 )
             
             # 현재 상태를 다음 비교를 위해 저장
@@ -499,6 +497,9 @@ class MirrorPositionManager:
                 if mirror_result.get('actual_sl_price'):
                     tp_sl_info += f"\n✅ SL: ${mirror_result['actual_sl_price']}"
             
+            # 🔥🔥🔥 시세 차이 정보도 포함하되 처리에는 영향 없음을 명시
+            price_diff = abs(self.bitget_current_price - self.gate_current_price)
+            
             await self.telegram.send_message(
                 f"✅ 포지션 매칭 클로즈 주문 {perfect_status} 미러링 성공\n"
                 f"비트겟 ID: {order_id}\n"
@@ -507,7 +508,7 @@ class MirrorPositionManager:
                 f"🔄 포지션 기반 크기 조정:\n"
                 f"현재 게이트 포지션: {current_gate_size} ({actual_position_side})\n"
                 f"클로즈 주문 크기: {actual_gate_size}\n"
-                f"시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}{tp_sl_info}"
+                f"시세 차이: ${price_diff:.2f} (처리 완료){tp_sl_info}"
             )
             
             return "perfect_success" if mirror_result.get('perfect_mirror') else "partial_success"
@@ -789,13 +790,16 @@ class MirrorPositionManager:
                 if mirror_result.get('sl_price'):
                     tp_sl_info += f"\n❌ SL 요청: ${mirror_result['sl_price']:.2f}"
             
+            # 🔥🔥🔥 시세 차이 정보도 포함하되 처리에는 영향 없음을 명시
+            price_diff = abs(self.bitget_current_price - self.gate_current_price)
+            
             await self.telegram.send_message(
                 f"✅ {order_type} {perfect_status} 미러링 성공\n"
                 f"비트겟 ID: {order_id}\n"
                 f"게이트 ID: {gate_order_id}\n"
                 f"트리거가: ${trigger_price:,.2f}\n"
                 f"게이트 수량: {gate_size}{close_info}\n"
-                f"시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}\n\n"
+                f"시세 차이: ${price_diff:.2f} (처리 완료)\n\n"
                 f"💰 마진 비율 복제:\n"
                 f"마진 비율: {margin_ratio*100:.2f}%\n"
                 f"게이트 투입 마진: ${gate_margin:,.2f}\n"
@@ -980,14 +984,14 @@ class MirrorPositionManager:
                     trigger_price = float(bitget_order.get(price_field))
                     break
             
-            # 2. 가격 기반 중복 확인
+            # 2. 가격 기반 중복 확인 - 더 관대한 범위로 수정
             if trigger_price > 0:
                 price_key = f"BTC_USDT_{trigger_price:.2f}"
                 if price_key in self.mirrored_trigger_prices:
                     return True
                 
-                # 더 관대한 가격 범위 확인 (±1달러)
-                for offset in [-1, -0.5, 0.5, 1]:
+                # 🔥🔥🔥 더 관대한 가격 범위 확인 (±5달러)
+                for offset in [-5, -2, -1, -0.5, 0.5, 1, 2, 5]:
                     adjusted_price = trigger_price + offset
                     adjusted_key = f"BTC_USDT_{adjusted_price:.2f}"
                     if adjusted_key in self.mirrored_trigger_prices:
@@ -1102,10 +1106,10 @@ class MirrorPositionManager:
             self.logger.error(f"강화된 클로즈 주문 유효성 확인 실패: {e}")
             return "proceed"
 
-    # === 기존 헬퍼 메서드들 (최적화) ===
+    # === 기존 헬퍼 메서드들 (시세 차이 지연 제거) ===
 
     async def process_filled_order(self, order: Dict):
-        """체결된 주문으로부터 미러링 실행"""
+        """🔥🔥🔥 체결된 주문으로부터 미러링 실행 - 시세 차이 대기 제거"""
         try:
             order_id = order.get('orderId', order.get('id', ''))
             side = order.get('side', '').lower()
@@ -1131,20 +1135,9 @@ class MirrorPositionManager:
                 self.logger.info(f"🔄 렌더 재구동: 동일 포지션 존재로 주문 체결 미러링 스킵 - {order_id}")
                 return
             
-            # 시세 차이 확인 및 대기
+            # 🔥🔥🔥 시세 차이 확인 및 대기 로직 완전 제거 - 즉시 처리
             price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
-            if price_diff_abs > self.price_sync_threshold:
-                self.logger.debug(f"시세 차이 큼 ({price_diff_abs:.2f}$), 주문 체결 미러링 지연: {order_id}")
-                
-                # 30초만 대기
-                for i in range(6):
-                    await asyncio.sleep(5)
-                    price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
-                    if price_diff_abs <= self.price_sync_threshold:
-                        self.logger.info(f"시세 차이 해소됨, 미러링 진행: {order_id}")
-                        break
-                else:
-                    self.logger.warning(f"시세 차이 지속하지만 미러링 진행: {order_id}")
+            self.logger.info(f"주문 체결 미러링 즉시 처리: {order_id}, 시세 차이: ${price_diff_abs:.2f}")
             
             margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
                 size, fill_price, order
@@ -1201,7 +1194,7 @@ class MirrorPositionManager:
                     f"체결가: ${fill_price:,.2f}\n"
                     f"수량: {size}\n"
                     f"레버리지: {leverage}x\n"
-                    f"시세 차이: ${price_diff_abs:.2f}\n"
+                    f"시세 차이: ${price_diff_abs:.2f} (즉시 처리됨)\n"
                     f"실제 마진 비율: {margin_ratio_result['margin_ratio']*100:.2f}%\n"
                     f"🔰 게이트 포지션 기록: {gate_size}"
                 )
@@ -1620,7 +1613,8 @@ class MirrorPositionManager:
                     f"스킵: {skipped_count}개\n"
                     f"실패: {failed_count}개\n"
                     f"총 {len(self.startup_plan_orders)}개 중 {mirrored_count}개 복제\n"
-                    f"🔰 포지션 크기 매칭 기능 적용됨"
+                    f"🔰 포지션 크기 매칭 기능 적용됨\n"
+                    f"🔥 시세 차이와 무관하게 즉시 처리됨"
                 )
             
             self.startup_plan_orders_processed = True
