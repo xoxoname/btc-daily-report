@@ -14,7 +14,7 @@ import traceback
 logger = logging.getLogger(__name__)
 
 class BitgetMirrorClient:
-    """Bitget 미러링 전용 클라이언트 - 클로징 주문 감지 강화 + API 개선"""
+    """Bitget 미러링 전용 클라이언트 - 클로징 주문 감지 강화 + API 개선 + 정확한 레버리지 추출"""
     
     def __init__(self, config):
         self.config = config
@@ -407,7 +407,7 @@ class BitgetMirrorClient:
             return ticker_data
     
     async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """포지션 조회 (V2 API)"""
+        """🔥🔥🔥 포지션 조회 (V2 API) - 정확한 레버리지 및 포지션 정보"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/position/all-position"
         params = {
@@ -427,19 +427,85 @@ class BitgetMirrorClient:
             for pos in positions:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
+                    # 🔥🔥🔥 레버리지 정보 강화된 추출
+                    leverage_raw = pos.get('leverage', '10')
+                    try:
+                        leverage = int(float(leverage_raw))
+                        pos['leverage'] = str(leverage)  # 정수로 정규화
+                        logger.info(f"포지션 레버리지 정규화: {leverage_raw} → {leverage}x")
+                    except:
+                        pos['leverage'] = '10'  # 기본값
+                        logger.warning(f"레버리지 변환 실패, 기본값 사용: {leverage_raw}")
+                    
+                    # 🔥🔥🔥 포지션 크기 정보 상세 로깅
+                    hold_side = pos.get('holdSide', 'unknown')
+                    margin_size = float(pos.get('marginSize', 0))
+                    entry_price = float(pos.get('openPriceAvg', 0))
+                    unrealized_pnl = float(pos.get('unrealizedPL', 0))
+                    
+                    logger.info(f"🔍 활성 포지션 상세:")
+                    logger.info(f"  - 심볼: {pos.get('symbol')}")
+                    logger.info(f"  - 방향: {hold_side}")
+                    logger.info(f"  - 크기: {total_size} BTC")
+                    logger.info(f"  - 진입가: ${entry_price:,.2f}")
+                    logger.info(f"  - 레버리지: {leverage}x")
+                    logger.info(f"  - 마진: ${margin_size:,.2f}")
+                    logger.info(f"  - 미실현 손익: ${unrealized_pnl:,.2f}")
+                    
                     active_positions.append(pos)
+                    
                     # 청산가 필드 로깅
                     logger.info(f"미러링 포지션 청산가 필드 확인:")
                     logger.info(f"  - liquidationPrice: {pos.get('liquidationPrice')}")
                     logger.info(f"  - markPrice: {pos.get('markPrice')}")
             
+            logger.info(f"✅ 총 {len(active_positions)}개 활성 포지션 발견")
             return active_positions
         except Exception as e:
             logger.error(f"미러링 포지션 조회 실패: {e}")
             raise
     
+    async def get_position_leverage(self, symbol: str = None) -> int:
+        """🔥🔥🔥 포지션의 정확한 레버리지 정보 조회"""
+        try:
+            positions = await self.get_positions(symbol)
+            
+            for pos in positions:
+                if float(pos.get('total', 0)) > 0:
+                    leverage_raw = pos.get('leverage', '10')
+                    try:
+                        leverage = int(float(leverage_raw))
+                        logger.info(f"📊 포지션 레버리지 조회 성공: {leverage}x")
+                        return leverage
+                    except:
+                        logger.warning(f"포지션 레버리지 변환 실패: {leverage_raw}")
+                        return 10
+            
+            # 포지션이 없는 경우 계정 기본 레버리지 조회
+            logger.info("포지션이 없어 계정 기본 레버리지 조회")
+            account_info = await self.get_account_info()
+            
+            # 계정에서 레버리지 추출
+            for field in ['crossMarginLeverage', 'leverage', 'defaultLeverage']:
+                leverage_value = account_info.get(field)
+                if leverage_value:
+                    try:
+                        leverage = int(float(leverage_value))
+                        if leverage > 1:
+                            logger.info(f"📊 계정 기본 레버리지: {field} = {leverage}x")
+                            return leverage
+                    except:
+                        continue
+            
+            logger.warning("레버리지 정보를 찾을 수 없어 기본값 10x 사용")
+            return 10
+            
+        except Exception as e:
+            logger.error(f"레버리지 조회 실패: {e}")
+            return 10
+    
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회 (V2 API)"""
+        """🔥🔥🔥 계정 정보 조회 (V2 API) - 레버리지 정보 포함"""
         endpoint = "/api/v2/mix/account/accounts"
         params = {
             'productType': 'USDT-FUTURES',
@@ -449,15 +515,26 @@ class BitgetMirrorClient:
         try:
             response = await self._request('GET', endpoint, params=params)
             logger.info(f"미러링 계정 정보 원본 응답: {response}")
+            
             if isinstance(response, list) and len(response) > 0:
-                return response[0]
-            return response
+                account_info = response[0]
+            else:
+                account_info = response
+            
+            # 🔥🔥🔥 레버리지 관련 필드 상세 로깅
+            logger.info(f"📊 계정 레버리지 관련 필드:")
+            for field in ['crossMarginLeverage', 'leverage', 'defaultLeverage', 'maxLeverage']:
+                value = account_info.get(field)
+                if value:
+                    logger.info(f"  - {field}: {value}")
+            
+            return account_info
         except Exception as e:
             logger.error(f"미러링 계정 정보 조회 실패: {e}")
             raise
     
     async def get_recent_filled_orders(self, symbol: str = None, minutes: int = 5) -> List[Dict]:
-        """최근 체결된 주문 조회 (미러링용)"""
+        """최근 체결된 주문 조회 (미러링용) - 레버리지 정보 포함"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -483,8 +560,16 @@ class BitgetMirrorClient:
             for order in filled_orders:
                 reduce_only = order.get('reduceOnly', 'false')
                 if reduce_only == 'false' or reduce_only is False:
+                    # 🔥🔥🔥 주문에 레버리지 정보 추가 (포지션에서 조회)
+                    try:
+                        current_leverage = await self.get_position_leverage(symbol)
+                        order['leverage'] = str(current_leverage)
+                        logger.info(f"체결 주문에 레버리지 정보 추가: {current_leverage}x")
+                    except:
+                        order['leverage'] = '10'  # 기본값
+                    
                     new_position_orders.append(order)
-                    logger.info(f"미러링 신규 진입 주문 감지: {order.get('orderId')} - {order.get('side')} {order.get('size')}")
+                    logger.info(f"미러링 신규 진입 주문 감지: {order.get('orderId')} - {order.get('side')} {order.get('size')} (레버리지: {order.get('leverage')}x)")
             
             return new_position_orders
             
@@ -571,7 +656,7 @@ class BitgetMirrorClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크
+                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크 + 레버리지 정보
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -581,12 +666,13 @@ class BitgetMirrorClient:
                             side = order.get('side', order.get('tradeSide', 'unknown'))
                             trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
                             size = order.get('size', order.get('volume', 'unknown'))
+                            leverage = order.get('leverage', 'unknown')
                             
                             # 🔥🔥🔥 TP/SL 정보 상세 로깅
                             tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
                             sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
                             
-                            logger.info(f"  📝 미러링 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}")
+                            logger.info(f"  📝 미러링 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}, 레버리지={leverage}x")
                             
                             if tp_price:
                                 logger.info(f"      🎯 TP 설정 발견: {tp_price}")
@@ -626,6 +712,16 @@ class BitgetMirrorClient:
                 
                 if order_id and order_id not in seen:
                     seen.add(order_id)
+                    
+                    # 🔥🔥🔥 주문에 레버리지 정보 추가 (없는 경우)
+                    if not order.get('leverage'):
+                        try:
+                            current_leverage = await self.get_position_leverage()
+                            order['leverage'] = str(current_leverage)
+                            logger.info(f"예약 주문에 레버리지 정보 추가: {order_id} → {current_leverage}x")
+                        except:
+                            order['leverage'] = '10'  # 기본값
+                    
                     unique_orders.append(order)
                     logger.debug(f"📝 미러링 V2 고유 예약 주문 추가: {order_id}")
             
@@ -809,12 +905,13 @@ class BitgetMirrorClient:
                 trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
                 size = order.get('size', order.get('volume', 'unknown'))
                 order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
+                leverage = order.get('leverage', 'unknown')
                 
                 # 🔥🔥🔥 TP/SL 정보도 로깅
                 tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
                 sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
                 
-                logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}, 타입: {order_type}")
+                logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}, 타입: {order_type}, 레버리지: {leverage}x")
                 if tp_price:
                     logger.info(f"     🎯 TP: {tp_price}")
                 if sl_price:
@@ -846,7 +943,7 @@ class BitgetMirrorClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 클로징 주문 분류 강화"""
+        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 클로징 주문 분류 강화 + 레버리지 정보"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -859,6 +956,9 @@ class BitgetMirrorClient:
             tp_sl_orders = []
             plan_orders = []
             
+            # 🔥🔥🔥 현재 레버리지 정보 조회 (주문에 레버리지가 없는 경우 사용)
+            current_leverage = await self.get_position_leverage(symbol)
+            
             for order in all_orders:
                 if order is None:
                     continue
@@ -869,6 +969,11 @@ class BitgetMirrorClient:
                 side = order.get('side', order.get('tradeSide', '')).lower()
                 reduce_only = order.get('reduceOnly', False)
                 order_type = order.get('orderType', order.get('planType', '')).lower()
+                
+                # 🔥🔥🔥 주문에 레버리지 정보 추가 (없는 경우)
+                if not order.get('leverage'):
+                    order['leverage'] = str(current_leverage)
+                    logger.info(f"주문에 레버리지 정보 추가: {order.get('orderId', order.get('planOrderId'))} → {current_leverage}x")
                 
                 # TP/SL 분류 조건들 강화
                 if (order.get('planType') == 'profit_loss' or 
@@ -904,10 +1009,10 @@ class BitgetMirrorClient:
                 
                 if is_tp_sl:
                     tp_sl_orders.append(order)
-                    logger.info(f"📊 미러링 TP/SL 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
+                    logger.info(f"📊 미러링 TP/SL 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))} (레버리지: {order.get('leverage')}x)")
                 else:
                     plan_orders.append(order)
-                    logger.info(f"📈 미러링 일반 예약 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
+                    logger.info(f"📈 미러링 일반 예약 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))} (레버리지: {order.get('leverage')}x)")
             
             # 통합 결과
             result = {
@@ -925,12 +1030,13 @@ class BitgetMirrorClient:
                     order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
                     side = order.get('side', order.get('tradeSide', 'unknown'))
                     price = order.get('price', order.get('triggerPrice', 'unknown'))
+                    leverage = order.get('leverage', 'unknown')
                     
                     # 🔥🔥🔥 강화된 TP/SL 추출
                     tp_price = self._extract_tp_price(order)
                     sl_price = self._extract_sl_price(order)
                     
-                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 가격: {price}")
+                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 가격: {price}, 레버리지: {leverage}x")
                     if tp_price:
                         tp_price_str = f"{tp_price:.2f}" if tp_price else "0"
                         logger.info(f"     🎯 TP 설정: {tp_price_str}")
@@ -944,7 +1050,8 @@ class BitgetMirrorClient:
                     order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
                     side = order.get('side', order.get('tradeSide', 'unknown'))
                     trigger_price = order.get('triggerPrice', 'unknown')
-                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 트리거가: {trigger_price}")
+                    leverage = order.get('leverage', 'unknown')
+                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 트리거가: {trigger_price}, 레버리지: {leverage}x")
             
             return result
             
