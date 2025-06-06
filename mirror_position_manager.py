@@ -102,8 +102,8 @@ class MirrorPositionManager:
         self.monitoring_error_count: int = 0
         self.max_monitoring_errors: int = 10
         
-        # 설정 - 🔥🔥🔥 비트겟 선물 심볼 수정
-        self.SYMBOL = "BTCUSDT_UMCBL"  # Bitget USDT-M Futures 심볼
+        # 🔥🔥🔥 정확한 심볼 설정 - 수정됨
+        self.SYMBOL = "BTCUSDT"  # Bitget 정확한 심볼 (UMCBL 제거)
         self.GATE_CONTRACT = "BTC_USDT"
         self.MIN_POSITION_SIZE = 0.00001
         self.MIN_MARGIN = 1.0
