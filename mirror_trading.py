@@ -31,9 +31,9 @@ class MirrorTradingSystem:
         # 유틸리티 클래스 초기화 (미러링 클라이언트 사용)
         self.utils = MirrorTradingUtils(config, self.bitget_mirror, gate_client)
         
-        # 🔥🔥🔥 Gate.io 미러링 전용 클라이언트 import
+        # 🔥🔥🔥 Gate.io 미러링 전용 클라이언트 import - 수정된 부분
         try:
-            from gateio_mirror_client import GateioMirrorClient
+            from gateio_client import GateioMirrorClient
             self.gate_mirror = GateioMirrorClient(config)
             logger.info("✅ Gate.io 미러링 전용 클라이언트 초기화")
         except ImportError as e:
