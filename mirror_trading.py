@@ -1074,32 +1074,40 @@ class MirrorTradingSystem:
             
             if valid_price_diff is not None:
                 price_info = f"""📈 시세 상태:
-• 시세 조회 중 문제 발생
-• 시스템이 자동으로 복구 중
-• 🔥 처리: 시세 조회 실패와 무관하게 정상 처리
-• 🛡️ 슬리피지 보호: 0.05% 활성화됨"""
+- 비트겟: ${self.bitget_current_price:,.2f}
+- 게이트: ${self.gate_current_price:,.2f}
+- 차이: ${valid_price_diff:.2f}
+- 🔥 처리: 시세 차이와 무관하게 즉시 처리
+- 🛡️ 슬리피지 보호: 0.05% (약 $50) 제한
+- ⏰ 지정가 대기: 5초 후 시장가 전환"""
+            else:
+                price_info = f"""📈 시세 상태:
+- 시세 조회 중 문제 발생
+- 시스템이 자동으로 복구 중
+- 🔥 처리: 시세 조회 실패와 무관하게 정상 처리
+- 🛡️ 슬리피지 보호: 0.05% 활성화됨"""
             
             await self.telegram.send_message(
                 f"🔄 미러 트레이딩 시스템 시작\n\n"
                 f"💰 계정 잔고:\n"
-                f"• 비트겟: ${bitget_equity:,.2f}\n"
-                f"• 게이트: ${gate_equity:,.2f}\n\n"
+                f"- 비트겟: ${bitget_equity:,.2f}\n"
+                f"- 게이트: ${gate_equity:,.2f}\n\n"
                 f"{price_info}\n\n"
                 f"📊 현재 상태:\n"
-                f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
-                f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
-                f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
+                f"- 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
+                f"- 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
+                f"- 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
                 f"⚡ 핵심 기능:\n"
-                f"• 🎯 완벽한 TP/SL 미러링\n"
-                f"• 🔄 15초마다 자동 동기화\n"
-                f"• 🛡️ 중복 복제 방지\n"
-                f"• 🗑️ 고아 주문 자동 정리\n"
-                f"• 📊 클로즈 주문 포지션 체크\n"
-                f"• 🔥 시세 차이와 무관하게 즉시 처리\n"
-                f"• 🛡️ 슬리피지 보호 0.05% (약 $50)\n"
-                f"• ⏰ 지정가 주문 5초 대기 후 시장가 전환\n"
-                f"• 📱 시장가 체결 시 즉시 텔레그램 알림\n"
-                f"• 🎯 예약 주문 체결/취소 구분 시스템\n\n"
+                f"- 🎯 완벽한 TP/SL 미러링\n"
+                f"- 🔄 15초마다 자동 동기화\n"
+                f"- 🛡️ 중복 복제 방지\n"
+                f"- 🗑️ 고아 주문 자동 정리\n"
+                f"- 📊 클로즈 주문 포지션 체크\n"
+                f"- 🔥 시세 차이와 무관하게 즉시 처리\n"
+                f"- 🛡️ 슬리피지 보호 0.05% (약 $50)\n"
+                f"- ⏰ 지정가 주문 5초 대기 후 시장가 전환\n"
+                f"- 📱 시장가 체결 시 즉시 텔레그램 알림\n"
+                f"- 🎯 예약 주문 체결/취소 구분 시스템\n\n"
                 f"🚀 시스템이 정상적으로 시작되었습니다."
             )
             
@@ -1125,12 +1133,4 @@ class MirrorTradingSystem:
         except:
             pass
         
-        self.logger.info("미러 트레이딩 시스템 중지")태:
-• 비트겟: ${self.bitget_current_price:,.2f}
-• 게이트: ${self.gate_current_price:,.2f}
-• 차이: ${valid_price_diff:.2f}
-• 🔥 처리: 시세 차이와 무관하게 즉시 처리
-• 🛡️ 슬리피지 보호: 0.05% (약 $50) 제한
-• ⏰ 지정가 대기: 5초 후 시장가 전환"""
-            else:
-                price_info = f"""📈 시세 상
+        self.logger.info("미러 트레이딩 시스템 중지")
