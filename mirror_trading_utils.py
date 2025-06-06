@@ -40,8 +40,8 @@ class MirrorTradingUtils:
         self.gate = gate_client
         self.logger = logging.getLogger('mirror_trading_utils')
         
-        # 상수 설정
-        self.SYMBOL = "BTCUSDT"
+        # 상수 설정 - 🔥🔥🔥 비트겟 선물 심볼 수정
+        self.SYMBOL = "BTCUSDT_UMCBL"  # Bitget USDT-M Futures 심볼
         self.GATE_CONTRACT = "BTC_USDT"
         self.MIN_MARGIN = 1.0
         self.MAX_PRICE_DIFF_PERCENT = 50.0  # 🔥🔥🔥 매우 관대하게 설정 (50%)
