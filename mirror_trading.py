@@ -87,8 +87,8 @@ class MirrorTradingSystem:
         self.initialization_errors = 0
         self.max_initialization_retries = 3
         
-        # 설정
-        self.SYMBOL = "BTCUSDT"
+        # 설정 - 🔥🔥🔥 비트겟 선물 심볼 수정
+        self.SYMBOL = "BTCUSDT_UMCBL"  # Bitget USDT-M Futures 심볼
         self.GATE_CONTRACT = "BTC_USDT"
         self.CHECK_INTERVAL = 1
         self.ORDER_CHECK_INTERVAL = 0.5
