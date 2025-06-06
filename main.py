@@ -21,14 +21,16 @@ from data_collector import RealTimeDataCollector
 from trading_indicators import AdvancedTradingIndicators
 from report_generators import ReportGeneratorManager
 
-# 미러 트레이딩 관련 임포트
+# 미러 트레이딩 관련 임포트 - 수정된 부분
 try:
-    from gateio_client import GateClient
+    from gateio_client import GateioMirrorClient as GateClient
     from mirror_trading import MirrorTradingSystem
     MIRROR_TRADING_AVAILABLE = True
-except ImportError:
+    print("✅ 미러 트레이딩 모듈 import 성공")
+except ImportError as e:
     MIRROR_TRADING_AVAILABLE = False
-    print("⚠️ 미러 트레이딩 모듈을 찾을 수 없습니다. 분석 전용 모드로 실행됩니다.")
+    print(f"⚠️ 미러 트레이딩 모듈을 찾을 수 없습니다: {e}")
+    print("분석 전용 모드로 실행됩니다.")
 
 # ML 예측기 임포트
 try:
@@ -72,9 +74,16 @@ class BitcoinPredictionSystem:
             self.logger.error(f"설정 로드 실패: {e}")
             raise
         
-        # 미러 트레이딩 모드 확인
-        self.mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'true').lower() == 'true'
+        # 미러 트레이딩 모드 확인 - 개선된 버전
+        self.mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'false').lower() == 'true'
+        self.logger.info(f"환경변수 MIRROR_TRADING_MODE: {os.getenv('MIRROR_TRADING_MODE', 'not_set')}")
         self.logger.info(f"미러 트레이딩 모드: {'활성화' if self.mirror_mode else '비활성화'}")
+        self.logger.info(f"미러 트레이딩 모듈 가용성: {'사용 가능' if MIRROR_TRADING_AVAILABLE else '사용 불가'}")
+        
+        # Gate.io API 키 확인
+        gate_api_key = os.getenv('GATE_API_KEY', '')
+        gate_api_secret = os.getenv('GATE_API_SECRET', '')
+        self.logger.info(f"Gate.io API 키 설정 상태: {'설정됨' if gate_api_key and gate_api_secret else '미설정'}")
         
         # ML 예측기 모드 확인
         self.ml_mode = ML_PREDICTOR_AVAILABLE
@@ -131,7 +140,7 @@ class BitcoinPredictionSystem:
         self.logger.info(f"시스템 초기화 완료 (미러: {'활성' if self.mirror_mode else '비활성'}, ML: {'활성' if self.ml_mode else '비활성'})")
     
     def _initialize_clients(self):
-        """클라이언트 초기화"""
+        """클라이언트 초기화 - 개선된 버전"""
         try:
             # Bitget 클라이언트
             self.bitget_client = BitgetClient(self.config)
@@ -141,13 +150,35 @@ class BitcoinPredictionSystem:
             self.telegram_bot = TelegramBot(self.config)
             self.logger.info("✅ Telegram 봇 초기화 완료")
             
-            # Gate.io 클라이언트 (미러 모드일 때만)
+            # Gate.io 클라이언트 (미러 모드일 때만) - 개선된 로직
             self.gate_client = None
             self.mirror_trading = None
             
-            if self.mirror_mode and MIRROR_TRADING_AVAILABLE:
+            # 미러 트레이딩 활성화 조건 체크
+            if self.mirror_mode:
+                self.logger.info("🔄 미러 트레이딩 모드가 활성화됨, Gate.io 클라이언트 초기화 시작...")
+                
+                if not MIRROR_TRADING_AVAILABLE:
+                    self.logger.error("❌ 미러 트레이딩 모듈을 찾을 수 없음")
+                    self.mirror_mode = False
+                    return
+                
+                # Gate.io API 키 확인
+                gate_api_key = os.getenv('GATE_API_KEY', '')
+                gate_api_secret = os.getenv('GATE_API_SECRET', '')
+                
+                if not gate_api_key or not gate_api_secret:
+                    self.logger.error("❌ Gate.io API 키가 설정되지 않음")
+                    self.logger.error("GATE_API_KEY와 GATE_API_SECRET 환경변수를 설정해주세요")
+                    self.mirror_mode = False
+                    return
+                
                 try:
+                    self.logger.info("🔄 Gate.io 클라이언트 생성 중...")
                     self.gate_client = GateClient(self.config)
+                    self.logger.info("✅ Gate.io 클라이언트 생성 완료")
+                    
+                    self.logger.info("🔄 미러 트레이딩 시스템 생성 중...")
                     self.mirror_trading = MirrorTradingSystem(
                         self.config,
                         self.bitget_client,
@@ -155,9 +186,13 @@ class BitcoinPredictionSystem:
                         self.telegram_bot
                     )
                     self.logger.info("✅ Gate.io 클라이언트 및 미러 트레이딩 초기화 완료")
+                    
                 except Exception as e:
-                    self.logger.warning(f"미러 트레이딩 초기화 실패: {e}")
+                    self.logger.error(f"❌ 미러 트레이딩 초기화 실패: {e}")
+                    self.logger.error(f"상세 오류: {traceback.format_exc()}")
                     self.mirror_mode = False
+            else:
+                self.logger.info("📊 분석 전용 모드로 실행")
                     
         except Exception as e:
             self.logger.error(f"클라이언트 초기화 실패: {e}")
@@ -615,18 +650,37 @@ class BitcoinPredictionSystem:
         return f"{response}\n\n다음과 같이 질문해보세요:\n• '오늘 수익은?'\n• '지금 매수해도 돼?'\n• '시장 상황 어때?'\n• '다음 리포트 언제?'\n• '시스템 통계 보여줘'\n\n또는 /help 명령어로 전체 기능을 확인하세요."
     
     async def handle_mirror_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """미러 트레이딩 상태 확인"""
+        """미러 트레이딩 상태 확인 - 개선된 버전"""
         try:
             self.command_stats['mirror'] += 1
             
             if not self.mirror_mode or not self.mirror_trading:
+                # 상세한 비활성화 이유 제공
+                reasons = []
+                
+                if not self.mirror_mode:
+                    reasons.append("MIRROR_TRADING_MODE 환경변수가 'true'로 설정되지 않음")
+                
+                if not MIRROR_TRADING_AVAILABLE:
+                    reasons.append("미러 트레이딩 모듈을 찾을 수 없음")
+                
+                gate_api_key = os.getenv('GATE_API_KEY', '')
+                gate_api_secret = os.getenv('GATE_API_SECRET', '')
+                if not gate_api_key or not gate_api_secret:
+                    reasons.append("Gate.io API 키가 설정되지 않음")
+                
                 await update.message.reply_text(
-                    "📊 현재 분석 전용 모드로 실행 중입니다.\n"
-                    "미러 트레이딩이 비활성화되어 있습니다.\n\n"
-                    "활성화 방법:\n"
-                    "1. .env 파일에 MIRROR_TRADING_MODE=true 추가\n"
-                    "2. Gate.io API 키 설정\n"
-                    "3. 시스템 재시작",
+                    f"📊 현재 분석 전용 모드로 실행 중입니다.\n\n"
+                    f"🔍 비활성화 이유:\n" + 
+                    "\n".join(f"• {reason}" for reason in reasons) +
+                    f"\n\n📋 활성화 방법:\n"
+                    f"1. MIRROR_TRADING_MODE=true 환경변수 설정 ✓\n"
+                    f"2. GATE_API_KEY 환경변수 설정 {'✓' if gate_api_key else '❌'}\n"
+                    f"3. GATE_API_SECRET 환경변수 설정 {'✓' if gate_api_secret else '❌'}\n"
+                    f"4. 시스템 재시작\n\n"
+                    f"🔧 현재 환경변수 상태:\n"
+                    f"• MIRROR_TRADING_MODE: {os.getenv('MIRROR_TRADING_MODE', 'not_set')}\n"
+                    f"• 미러 트레이딩 모듈: {'사용 가능' if MIRROR_TRADING_AVAILABLE else '사용 불가'}",
                     parse_mode='HTML'
                 )
                 return
