@@ -54,13 +54,13 @@ class MirrorTradingSystem:
         self.last_sync_check = datetime.min
         self.last_report_time = datetime.min
         
-        # 🔥🔥🔥 시세 차이 관리 (더욱 관대한 설정)
+        # 🔥🔥🔥 시세 차이 관리 - 더욱 관대한 설정으로 처리 속도 향상
         self.bitget_current_price: float = 0.0
         self.gate_current_price: float = 0.0
         self.price_diff_percent: float = 0.0
         self.last_price_update: datetime = datetime.min
         self.price_sync_threshold: float = 100.0  # 50달러 → 100달러로 더욱 관대하게 조정
-        self.position_wait_timeout: int = 300    # 포지션 체결 대기 5분 유지
+        self.position_wait_timeout: int = 60     # 🔥🔥🔥 300초 → 60초로 대폭 단축 (처리 속도 개선)
         
         # 🔥🔥🔥 시세 조회 실패 관리 강화
         self.last_valid_bitget_price: float = 0.0
@@ -71,15 +71,15 @@ class MirrorTradingSystem:
         
         # 🔥🔥🔥 예약 주문 동기화 강화 설정
         self.order_sync_enabled: bool = True
-        self.order_sync_interval: int = 30  # 30초마다 동기화 체크
+        self.order_sync_interval: int = 15  # 🔥🔥🔥 30초 → 15초로 단축 (처리 속도 개선)
         self.last_order_sync_time: datetime = datetime.min
         
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
-        self.CHECK_INTERVAL = 2
-        self.ORDER_CHECK_INTERVAL = 1
-        self.PLAN_ORDER_CHECK_INTERVAL = 0.5
+        self.CHECK_INTERVAL = 1               # 🔥🔥🔥 2초 → 1초로 단축
+        self.ORDER_CHECK_INTERVAL = 0.5      # 🔥🔥🔥 1초 → 0.5초로 단축
+        self.PLAN_ORDER_CHECK_INTERVAL = 0.2 # 🔥🔥🔥 0.5초 → 0.2초로 단축
         self.SYNC_CHECK_INTERVAL = 30
         self.MAX_RETRIES = 3
         self.MIN_POSITION_SIZE = 0.00001
@@ -90,12 +90,12 @@ class MirrorTradingSystem:
         self.daily_stats = self.position_manager.daily_stats
         
         self.monitoring = True
-        self.logger.info("🔥🔥🔥 미러 트레이딩 시스템 초기화 완료 - 완벽한 TP/SL 미러링 v3.0")
+        self.logger.info("🔥🔥🔥 미러 트레이딩 시스템 초기화 완료 - 완벽한 TP/SL 미러링 v3.1 (처리 속도 최적화)")
 
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🔥🔥🔥 미러 트레이딩 시스템 시작 - 완벽한 TP/SL 미러링 v3.0")
+            self.logger.info("🔥🔥🔥 미러 트레이딩 시스템 시작 - 완벽한 TP/SL 미러링 v3.1 (처리 속도 최적화)")
             
             # Bitget 미러링 클라이언트 초기화
             await self.bitget_mirror.initialize()
@@ -135,9 +135,9 @@ class MirrorTradingSystem:
             raise
 
     async def monitor_order_synchronization(self):
-        """🔥🔥🔥 예약 주문 동기화 모니터링 (신규)"""
+        """🔥🔥🔥 예약 주문 동기화 모니터링 (신규) - 처리 속도 개선"""
         try:
-            self.logger.info("🔄 예약 주문 동기화 모니터링 시작")
+            self.logger.info("🔄 예약 주문 동기화 모니터링 시작 (처리 속도 최적화)")
             
             while self.monitoring:
                 try:
@@ -147,12 +147,12 @@ class MirrorTradingSystem:
                     
                     current_time = datetime.now()
                     
-                    # 정기 동기화 체크 (30초마다)
+                    # 🔥🔥🔥 더 빠른 정기 동기화 체크 (15초마다)
                     if (current_time - self.last_order_sync_time).total_seconds() >= self.order_sync_interval:
                         await self._perform_comprehensive_order_sync()
                         self.last_order_sync_time = current_time
                     
-                    await asyncio.sleep(5)  # 5초마다 체크
+                    await asyncio.sleep(3)  # 🔥🔥🔥 5초 → 3초로 단축
                     
                 except Exception as e:
                     self.logger.error(f"예약 주문 동기화 모니터링 오류: {e}")
@@ -162,9 +162,9 @@ class MirrorTradingSystem:
             self.logger.error(f"예약 주문 동기화 모니터링 시스템 실패: {e}")
 
     async def _perform_comprehensive_order_sync(self):
-        """🔥🔥🔥 종합적인 예약 주문 동기화"""
+        """🔥🔥🔥 종합적인 예약 주문 동기화 - 처리 속도 개선"""
         try:
-            self.logger.debug("🔄 종합 예약 주문 동기화 시작")
+            self.logger.debug("🔄 종합 예약 주문 동기화 시작 (속도 최적화)")
             
             # 1. 비트겟 예약 주문 조회 (미러링 클라이언트 사용)
             plan_data = await self.bitget_mirror.get_all_plan_orders_with_tp_sl(self.SYMBOL)
@@ -388,12 +388,13 @@ class MirrorTradingSystem:
             return None
 
     async def _fix_sync_issues(self, sync_analysis: Dict):
-        """🔥🔥🔥 동기화 문제 해결"""
+        """🔥🔥🔥 동기화 문제 해결 - 처리 속도 개선"""
         try:
             fixed_count = 0
             
-            # 1. 누락된 미러링 처리
-            for missing in sync_analysis['missing_mirrors']:
+            # 1. 누락된 미러링 처리 (병렬 처리로 속도 개선)
+            missing_tasks = []
+            for missing in sync_analysis['missing_mirrors'][:5]:  # 최대 5개씩 병렬 처리
                 try:
                     bitget_order = missing['bitget_order']
                     bitget_order_id = missing['bitget_order_id']
@@ -402,40 +403,76 @@ class MirrorTradingSystem:
                     
                     # 이미 처리된 주문인지 확인
                     if bitget_order_id not in self.position_manager.processed_plan_orders:
-                        result = await self.position_manager._process_perfect_mirror_order(bitget_order)
-                        
-                        if result in ["perfect_success", "partial_success"]:
-                            fixed_count += 1
-                            self.daily_stats['sync_corrections'] += 1
-                            self.logger.info(f"✅ 누락 미러링 완료: {bitget_order_id}")
+                        task = self.position_manager._process_perfect_mirror_order(bitget_order)
+                        missing_tasks.append((bitget_order_id, task))
                         
                         self.position_manager.processed_plan_orders.add(bitget_order_id)
                     
                 except Exception as e:
-                    self.logger.error(f"누락 미러링 처리 실패: {missing['bitget_order_id']} - {e}")
+                    self.logger.error(f"누락 미러링 태스크 생성 실패: {missing['bitget_order_id']} - {e}")
             
-            # 2. 고아 주문 삭제
-            for orphaned in sync_analysis['orphaned_orders']:
+            # 병렬 실행
+            if missing_tasks:
+                results = await asyncio.gather(*[task for _, task in missing_tasks], return_exceptions=True)
+                
+                for i, (order_id, _) in enumerate(missing_tasks):
+                    try:
+                        result = results[i]
+                        if isinstance(result, Exception):
+                            self.logger.error(f"누락 미러링 실행 실패: {order_id} - {result}")
+                        elif result in ["perfect_success", "partial_success"]:
+                            fixed_count += 1
+                            self.daily_stats['sync_corrections'] += 1
+                            self.logger.info(f"✅ 누락 미러링 완료: {order_id}")
+                    except Exception as e:
+                        self.logger.error(f"누락 미러링 결과 처리 실패: {order_id} - {e}")
+            
+            # 2. 고아 주문 삭제 (병렬 처리)
+            orphan_tasks = []
+            for orphaned in sync_analysis['orphaned_orders'][:10]:  # 최대 10개씩 병렬 처리
                 try:
                     gate_order_id = orphaned['gate_order_id']
-                    
                     self.logger.info(f"🗑️ 고아 주문 삭제: {gate_order_id}")
                     
-                    await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                    fixed_count += 1
-                    self.daily_stats['sync_deletions'] += 1
-                    
-                    # 매핑에서도 제거
-                    if gate_order_id in self.position_manager.gate_to_bitget_order_mapping:
-                        bitget_id = self.position_manager.gate_to_bitget_order_mapping[gate_order_id]
-                        del self.position_manager.gate_to_bitget_order_mapping[gate_order_id]
-                        if bitget_id in self.position_manager.bitget_to_gate_order_mapping:
-                            del self.position_manager.bitget_to_gate_order_mapping[bitget_id]
-                    
-                    self.logger.info(f"✅ 고아 주문 삭제 완료: {gate_order_id}")
+                    task = self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                    orphan_tasks.append((gate_order_id, task))
                     
                 except Exception as e:
-                    self.logger.error(f"고아 주문 삭제 실패: {gate_order_id} - {e}")
+                    self.logger.error(f"고아 주문 삭제 태스크 생성 실패: {orphaned['gate_order_id']} - {e}")
+            
+            # 병렬 실행
+            if orphan_tasks:
+                results = await asyncio.gather(*[task for _, task in orphan_tasks], return_exceptions=True)
+                
+                for i, (order_id, _) in enumerate(orphan_tasks):
+                    try:
+                        result = results[i]
+                        if isinstance(result, Exception):
+                            error_msg = str(result).lower()
+                            if any(keyword in error_msg for keyword in [
+                                "not found", "order not exist", "invalid order",
+                                "order does not exist", "auto_order_not_found"
+                            ]):
+                                # 이미 취소되었거나 체결된 주문
+                                fixed_count += 1
+                                self.logger.info(f"고아 주문이 이미 처리됨: {order_id}")
+                            else:
+                                self.logger.error(f"고아 주문 삭제 실패: {order_id} - {result}")
+                        else:
+                            fixed_count += 1
+                            self.daily_stats['sync_deletions'] += 1
+                            
+                        # 매핑에서도 제거
+                        if order_id in self.position_manager.gate_to_bitget_order_mapping:
+                            bitget_id = self.position_manager.gate_to_bitget_order_mapping[order_id]
+                            del self.position_manager.gate_to_bitget_order_mapping[order_id]
+                            if bitget_id in self.position_manager.bitget_to_gate_order_mapping:
+                                del self.position_manager.bitget_to_gate_order_mapping[bitget_id]
+                        
+                        self.logger.info(f"✅ 고아 주문 삭제 완료: {order_id}")
+                        
+                    except Exception as e:
+                        self.logger.error(f"고아 주문 삭제 결과 처리 실패: {order_id} - {e}")
             
             # 동기화 결과 알림 (5개 이상 문제가 해결되었을 때만)
             if fixed_count >= 5:
@@ -468,7 +505,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
     async def monitor_order_fills(self):
-        """실시간 주문 체결 감지"""
+        """실시간 주문 체결 감지 - 처리 속도 개선"""
         consecutive_errors = 0
         
         while self.monitoring:
@@ -686,12 +723,12 @@ class MirrorTradingSystem:
                     (now - last_warning_time).total_seconds() > 14400):  # 2시간 → 4시간으로 더 감소
                     
                     await self.telegram.send_message(
-                        f"📊 시세 차이 안내 (완벽한 TP/SL 미러링 v3.0)\n"
+                        f"📊 시세 차이 안내 (완벽한 TP/SL 미러링 v3.1)\n"
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f} (임계값: ${self.price_sync_threshold}$)\n"
                         f"백분율: {self.price_diff_percent:.3f}%\n\n"
-                        f"🔄 미러링은 정상 진행되며 30초마다 자동 동기화됩니다\n"
+                        f"🔄 미러링은 정상 진행되며 15초마다 자동 동기화됩니다\n"
                         f"🎯 비트겟 TP/SL이 게이트에서 완벽히 복제됩니다"
                     )
                     last_warning_time = now
@@ -704,14 +741,14 @@ class MirrorTradingSystem:
                     status_text = "정상" if valid_price_diff <= self.price_sync_threshold else "범위 초과"
                     
                     await self.telegram.send_message(
-                        f"📊 12시간 시세 현황 리포트 (완벽한 TP/SL 미러링 v3.0)\n"
+                        f"📊 12시간 시세 현황 리포트 (완벽한 TP/SL 미러링 v3.1)\n"
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)\n"
                         f"상태: {status_emoji} {status_text}\n"
                         f"임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)\n"
                         f"실패 횟수: 비트겟 {self.bitget_price_failures}회, 게이트 {self.gate_price_failures}회\n\n"
-                        f"🔄 예약 주문 동기화: 30초마다 자동 실행\n"
+                        f"🔄 예약 주문 동기화: 15초마다 자동 실행 (처리 속도 개선)\n"
                         f"🎯 완벽한 TP/SL 미러링: 하나의 주문으로 모든 설정 완료"
                     )
                     last_normal_report_time = now
@@ -783,7 +820,7 @@ class MirrorTradingSystem:
                         
                         # 메시지 톤 개선 - 덜 경고스럽게
                         await self.telegram.send_message(
-                            f"📊 포지션 동기화 상태 분석 (완벽한 TP/SL 미러링 v3.0)\n"
+                            f"📊 포지션 동기화 상태 분석 (완벽한 TP/SL 미러링 v3.1)\n"
                             f"비트겟 신규: {sync_status['bitget_new_count']}개\n"
                             f"게이트 신규: {sync_status['gate_new_count']}개\n"
                             f"차이: {sync_status['position_diff']}개\n"
@@ -796,7 +833,7 @@ class MirrorTradingSystem:
                             f"• 현재 시세 차이: ${sync_status.get('price_diff', 0):.2f} (임계값: ${self.price_sync_threshold}$)\n"
                             f"• 동기화 수정: {self.daily_stats.get('sync_corrections', 0)}회\n"
                             f"• 동기화 삭제: {self.daily_stats.get('sync_deletions', 0)}회\n\n"
-                            f"🔄 30초마다 예약 주문 자동 동기화 활성화\n"
+                            f"🔄 15초마다 예약 주문 자동 동기화 활성화 (처리 속도 개선)\n"
                             f"🎯 완벽한 TP/SL 미러링으로 정확한 복제 보장\n"
                             f"💡 대부분 정상적인 상황이며 자동으로 해결됩니다."
                         )
@@ -869,7 +906,7 @@ class MirrorTradingSystem:
             tp_sl_success = self.daily_stats.get('tp_sl_success', 0)
             tp_sl_failed = self.daily_stats.get('tp_sl_failed', 0)
             
-            report = f"""📊 미러 트레이딩 일일 리포트 (완벽한 TP/SL 미러링 v3.0)
+            report = f"""📊 미러 트레이딩 일일 리포트 (완벽한 TP/SL 미러링 v3.1 - 처리 속도 최적화)
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
@@ -879,7 +916,7 @@ class MirrorTradingSystem:
 
 {price_status_info}
 
-⚡ 실시간 포지션 미러링:
+⚡ 실시간 포지션 미러링 (속도 최적화):
 - 주문 체결 기반: {self.daily_stats['order_mirrors']}회
 - 포지션 기반: {self.daily_stats['position_mirrors']}회
 - 총 시도: {self.daily_stats['total_mirrored']}회
@@ -894,7 +931,7 @@ class MirrorTradingSystem:
 - TP/SL 실패: {tp_sl_failed}회 ❌
 - 완벽 성공률: {(perfect_mirrors / max(perfect_mirrors + partial_mirrors, 1) * 100):.1f}%
 
-🔄 예약 주문 미러링 (통합 TP/SL):
+🔄 예약 주문 미러링 (통합 TP/SL - 처리 속도 개선):
 - 시작 시 복제: {self.daily_stats['startup_plan_mirrors']}회
 - 신규 미러링: {self.daily_stats['plan_order_mirrors']}회
 - 통합 TP/SL 주문: {self.daily_stats.get('tp_sl_integrated_orders', 0)}회
@@ -904,10 +941,10 @@ class MirrorTradingSystem:
 - 클로즈 주문: {self.daily_stats['close_order_mirrors']}회
 - 중복 방지: {self.daily_stats['duplicate_orders_prevented']}회
 
-📈 동기화 강화 성과:
+📈 동기화 강화 성과 (처리 속도 개선):
 - 자동 동기화 수정: {self.daily_stats.get('sync_corrections', 0)}회
 - 고아 주문 삭제: {self.daily_stats.get('sync_deletions', 0)}회
-- 동기화 체크 횟수: {int(24 * 3600 / 30)}회 (30초마다)
+- 동기화 체크 횟수: {int(24 * 3600 / 15)}회 (15초마다 - 속도 2배 향상)
 - 통합 TP/SL 처리: {self.daily_stats.get('unified_tp_sl_orders', 0)}회
 
 📉 포지션 관리:
@@ -918,7 +955,7 @@ class MirrorTradingSystem:
 🔧 더욱 관대한 시세차이 대응 (임계값: {self.price_sync_threshold}$):
 - 시세차이 지연: {self.daily_stats.get('price_sync_delays', 0)}회
 - 포지션 체결 대기: {self.daily_stats.get('successful_position_waits', 0)}회
-- 체결 대기 타임아웃: {self.daily_stats.get('position_wait_timeouts', 0)}회
+- 체결 대기 타임아웃: {self.daily_stats.get('position_wait_timeouts', 0)}회 (60초로 단축)
 - 동기화 상태 수정: {self.daily_stats.get('sync_status_corrected', 0)}회
 
 🔄 현재 미러링 상태:
@@ -928,13 +965,15 @@ class MirrorTradingSystem:
 - 실패 기록: {len(self.failed_mirrors)}건
 
 ━━━━━━━━━━━━━━━━━━━
-🎯 v3.0 완벽한 TP/SL 미러링 성과:
+🎯 v3.1 완벽한 TP/SL 미러링 성과 (처리 속도 최적화):
 📈 비트겟 TP/SL → 게이트 통합 주문: 100% 완벽 복제
-📈 예약 주문 자동 동기화: 30초마다 실행
+📈 예약 주문 자동 동기화: 15초마다 실행 (속도 2배 향상)
 📈 중복 복제 방지: 시간/가격/해시 기반 다중 검증
 📈 고아 주문 자동 삭제: 비트겟에 없는 게이트 주문 정리
 📈 클로즈 주문 포지션 체크: 포지션 없으면 자동 스킵
 📈 시세차이 관대한 처리: 100달러 임계값
+📈 체결 대기 타임아웃: 300초 → 60초로 대폭 단축
+📈 처리 간격 최적화: 2초 → 1초, 0.5초 → 0.2초
 📈 완벽성: 비트겟 설정이 게이트에서 그대로 재현됨"""
             
             if self.daily_stats.get('errors'):
@@ -1025,7 +1064,7 @@ class MirrorTradingSystem:
 • 임계값: ${self.price_sync_threshold}$ (100달러로 더욱 관대하게 조정)"""
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (v3.0 완벽한 TP/SL 미러링)\n\n"
+                f"🔄 미러 트레이딩 시스템 시작 (v3.1 완벽한 TP/SL 미러링 - 처리 속도 최적화)\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}\n\n"
@@ -1034,19 +1073,21 @@ class MirrorTradingSystem:
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
                 f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
-                f"⚡ v3.0 핵심 개선 사항:\n"
+                f"⚡ v3.1 핵심 개선 사항 (처리 속도 최적화):\n"
                 f"• 🎯 완벽한 TP/SL 미러링: 비트겟 설정이 게이트에서 100% 재현\n"
-                f"• 🔄 예약 주문 자동 동기화: 30초마다 실행\n"
+                f"• 🔄 예약 주문 자동 동기화: 15초마다 실행 (속도 2배 향상)\n"
                 f"• 🛡️ 중복 복제 방지: 다중 해시 검증 시스템\n"
                 f"• 🗑️ 고아 주문 자동 정리: 매칭되지 않는 주문 삭제\n"
                 f"• 📊 클로즈 주문 포지션 체크: 포지션 없으면 스킵\n"
                 f"• 💱 시세차이 관대한 처리: 100달러 임계값\n"
-                f"• ⏰ 지연 복제 문제 해결: 실시간 감지 및 즉시 처리\n"
+                f"• ⏰ 체결 대기 타임아웃: 300초 → 60초로 대폭 단축\n"
+                f"• 🚀 처리 간격 최적화: 모든 체크 간격 단축\n"
                 f"• 🔗 통합 주문 생성: TP/SL이 하나의 주문으로 복제됨\n\n"
                 f"💡 이제 비트겟의 TP가 설정된 예약 주문이\n"
                 f"게이트에서도 하나의 통합 주문으로 정확히 복제됩니다!\n\n"
-                f"🔄 30초마다 자동으로 동기화되어 누락이나\n"
+                f"🔄 15초마다 자동으로 동기화되어 누락이나\n"
                 f"불일치 문제가 자동으로 해결됩니다.\n\n"
+                f"🚀 처리 속도가 크게 향상되어 더 빠른 미러링이 가능합니다.\n\n"
                 f"🎯 완벽성: 이상한 값 없이\n"
                 f"비트겟과 완전히 동일한 설정으로 미러링됩니다."
             )
@@ -1069,7 +1110,7 @@ class MirrorTradingSystem:
             await self.gate_mirror.close()
             
             final_report = await self._create_daily_report()
-            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료 (v3.0)\n\n{final_report}")
+            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료 (v3.1)\n\n{final_report}")
         except:
             pass
         
