@@ -14,68 +14,53 @@ import traceback
 logger = logging.getLogger(__name__)
 
 class BitgetMirrorClient:
-    """Bitget 미러링 전용 클라이언트 - 클로징 주문 감지 강화 + API 개선 + 정확한 레버리지 추출"""
+    """Bitget 미러링 전용 클라이언트 - 예약 주문 체결 내역 확인 기능 추가"""
     
     def __init__(self, config):
         self.config = config
         self.session = None
         self._initialize_session()
         
-        # 🔥🔥🔥 API 연결 상태 추적
+        # API 연결 상태 추적
         self.api_connection_healthy = True
         self.consecutive_failures = 0
         self.last_successful_call = datetime.now()
         self.max_consecutive_failures = 10
         
-        # 🔥🔥🔥 백업 엔드포인트들 - 타임아웃 개선
+        # 백업 엔드포인트들
         self.ticker_endpoints = [
-            "/api/v2/mix/market/ticker",  # 기본 V2
-            "/api/mix/v1/market/ticker",  # V1 백업
-            "/api/v2/spot/market/tickers", # Spot 백업 (변환 필요)
+            "/api/v2/mix/market/ticker",
+            "/api/mix/v1/market/ticker",
+            "/api/v2/spot/market/tickers",
         ]
         
         # API 키 검증 상태
         self.api_keys_validated = False
         
     def _initialize_session(self):
-        """세션 초기화 - 타임아웃 개선"""
+        """세션 초기화"""
         if not self.session:
-            # 🔥🔥🔥 연결 타임아웃 및 재시도 설정 강화
-            timeout = aiohttp.ClientTimeout(total=60, connect=30)  # 타임아웃 증가
+            timeout = aiohttp.ClientTimeout(total=60, connect=30)
             connector = aiohttp.TCPConnector(
-                limit=100,
-                limit_per_host=30,
-                ttl_dns_cache=300,
-                use_dns_cache=True,
-                keepalive_timeout=60,  # 연결 유지 시간 증가
-                enable_cleanup_closed=True
+                limit=100, limit_per_host=30, ttl_dns_cache=300,
+                use_dns_cache=True, keepalive_timeout=60, enable_cleanup_closed=True
             )
-            self.session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=connector
-            )
-            logger.info("Bitget 미러링 클라이언트 세션 초기화 완료 (개선된 타임아웃)")
+            self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+            logger.info("Bitget 미러링 클라이언트 세션 초기화 완료")
         
     async def initialize(self):
         """클라이언트 초기화"""
         self._initialize_session()
-        
-        # 🔥🔥🔥 API 키 유효성 검증
         await self._validate_api_keys()
-        
         logger.info("Bitget 미러링 클라이언트 초기화 완료")
     
     async def _validate_api_keys(self):
-        """🔥🔥🔥 API 키 유효성 검증"""
+        """API 키 유효성 검증"""
         try:
             logger.info("비트겟 미러링 API 키 유효성 검증 시작...")
             
-            # 간단한 계정 정보 조회로 API 키 검증
             endpoint = "/api/v2/mix/account/accounts"
-            params = {
-                'productType': 'USDT-FUTURES',
-                'marginCoin': 'USDT'
-            }
+            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
             
             response = await self._request('GET', endpoint, params=params)
             
@@ -119,7 +104,7 @@ class BitgetMirrorClient:
         }
     
     async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 5) -> Dict:
-        """🔥🔥🔥 API 요청 - 강화된 오류 처리 + 타임아웃 개선"""
+        """API 요청 - 강화된 오류 처리"""
         if not self.session:
             self._initialize_session()
             
@@ -135,1013 +120,1076 @@ class BitgetMirrorClient:
         body = json.dumps(data) if data else ''
         headers = self._get_headers(method, request_path, body)
         
-        # 🔥🔥🔥 재시도 로직 - 타임아웃 개선
         for attempt in range(max_retries):
             try:
                 logger.debug(f"비트겟 미러링 API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
                 
+                attempt_timeout
+                import asyncio
+import aiohttp
+import hmac
+import hashlib
+import time
+import json
+import logging
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+import pytz
+
+logger = logging.getLogger(__name__)
+
+class GateioMirrorClient:
+    """Gate.io 미러링 전용 클라이언트 - 포지션 크기 기반 클로즈 주문 처리 강화 + 슬리피지 보호 개선 + 정확한 포지션 매칭"""
+    
+    def __init__(self, config):
+        self.config = config
+        self.api_key = config.GATE_API_KEY
+        self.api_secret = config.GATE_API_SECRET
+        self.base_url = "https://api.gateio.ws"
+        self.session = None
+        self._initialize_session()
+        
+        # TP/SL 설정 상수
+        self.TP_SL_TIMEOUT = 10
+        self.MAX_TP_SL_RETRIES = 3
+        
+        # 🔥🔥🔥 슬리피지 보호 설정 개선 - 0.05% (약 50달러)
+        self.MAX_SLIPPAGE_PERCENT = 0.05  # 최대 슬리피지 0.05% (약 50달러)
+        self.SLIPPAGE_CHECK_ENABLED = True
+        self.FALLBACK_TO_LIMIT_ORDER = True
+        
+        # 🔥🔥🔥 지정가 주문 대기 시간 설정
+        self.LIMIT_ORDER_WAIT_TIME = 5  # 지정가 주문 5초 대기
+        self.LIMIT_ORDER_RETRIES = 2  # 지정가 주문 2회 재시도
+        
+        # 텔레그램 봇 참조 (알림용)
+        self.telegram_bot = None
+        
+    def set_telegram_bot(self, telegram_bot):
+        """텔레그램 봇 설정"""
+        self.telegram_bot = telegram_bot
+        
+    def _initialize_session(self):
+        """세션 초기화 - 타임아웃 증가"""
+        if not self.session:
+            # 🔥🔥🔥 타임아웃 설정 개선
+            timeout = aiohttp.ClientTimeout(total=60, connect=20)  # 타임아웃 증가
+            connector = aiohttp.TCPConnector(
+                limit=100,
+                limit_per_host=30,
+                ttl_dns_cache=300,
+                use_dns_cache=True,
+                keepalive_timeout=60,  # 연결 유지 시간 증가
+                enable_cleanup_closed=True
+            )
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector
+            )
+            logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료 (개선된 타임아웃)")
+    
+    async def initialize(self):
+        """클라이언트 초기화"""
+        self._initialize_session()
+        logger.info("Gate.io 미러링 클라이언트 초기화 완료")
+    
+    def _generate_signature(self, method: str, url: str, query_string: str = "", payload: str = "") -> Dict[str, str]:
+        """Gate.io API 서명 생성"""
+        timestamp = str(int(time.time()))
+        
+        hashed_payload = hashlib.sha512(payload.encode('utf-8')).hexdigest()
+        s = f"{method}\n{url}\n{query_string}\n{hashed_payload}\n{timestamp}"
+        
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            s.encode('utf-8'),
+            hashlib.sha512
+        ).hexdigest()
+        
+        return {
+            'KEY': self.api_key,
+            'Timestamp': timestamp,
+            'SIGN': signature,
+            'Content-Type': 'application/json'
+        }
+    
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 5) -> Dict:
+        """API 요청 - 강화된 재시도 로직"""
+        if not self.session:
+            self._initialize_session()
+        
+        url = f"{self.base_url}{endpoint}"
+        query_string = ""
+        payload = ""
+        
+        if params:
+            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+            url += f"?{query_string}"
+        
+        if data:
+            payload = json.dumps(data)
+        
+        for attempt in range(max_retries):
+            try:
+                headers = self._generate_signature(method, endpoint, query_string, payload)
+                
+                logger.debug(f"Gate.io API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
+                
                 # 🔥🔥🔥 각 시도마다 타임아웃 점진적 증가
-                attempt_timeout = aiohttp.ClientTimeout(
-                    total=30 + (attempt * 15),  # 30초에서 시작해서 점진적 증가
-                    connect=10 + (attempt * 5)
-                )
+                attempt_timeout = aiohttp.ClientTimeout(total=30 + (attempt * 10), connect=10 + (attempt * 5))
                 
                 async with self.session.request(
-                    method, url, headers=headers, data=body, timeout=attempt_timeout
+                    method, url, headers=headers, data=payload, timeout=attempt_timeout
                 ) as response:
                     response_text = await response.text()
                     
-                    # 🔥🔥🔥 상세한 응답 로깅
-                    logger.debug(f"비트겟 미러링 API 응답 상태: {response.status}")
-                    logger.debug(f"비트겟 미러링 API 응답 헤더: {dict(response.headers)}")
-                    logger.debug(f"비트겟 미러링 API 응답 내용: {response_text[:500]}...")
-                    
-                    # 빈 응답 체크
-                    if not response_text.strip():
-                        error_msg = f"빈 응답 받음 (상태: {response.status})"
-                        logger.warning(error_msg)
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(3 + (attempt * 2))  # 더 긴 대기
-                            continue
-                        else:
-                            self._record_failure(error_msg)
-                            raise Exception(error_msg)
-                    
-                    # HTTP 상태 코드 체크
                     if response.status != 200:
                         error_msg = f"HTTP {response.status}: {response_text}"
-                        logger.error(f"비트겟 미러링 API HTTP 오류: {error_msg}")
+                        logger.error(f"Gate.io API 오류: {error_msg}")
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(3 + (attempt * 2))
+                            wait_time = (2 ** attempt) + (attempt * 0.5)  # 지수 백오프 + 추가 지연
+                            await asyncio.sleep(wait_time)
                             continue
                         else:
-                            self._record_failure(error_msg)
                             raise Exception(error_msg)
                     
-                    # JSON 파싱
+                    if not response_text.strip():
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                        else:
+                            raise Exception("빈 응답")
+                    
                     try:
-                        response_data = json.loads(response_text)
-                    except json.JSONDecodeError as json_error:
-                        error_msg = f"JSON 파싱 실패: {json_error}, 응답: {response_text[:200]}"
-                        logger.error(error_msg)
+                        result = json.loads(response_text)
+                        logger.debug(f"Gate.io API 응답 성공: {method} {endpoint}")
+                        return result
+                    except json.JSONDecodeError as e:
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(3 + (attempt * 2))
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
-                            self._record_failure(error_msg)
-                            raise Exception(error_msg)
-                    
-                    # API 응답 코드 체크
-                    if response_data.get('code') != '00000':
-                        error_msg = f"API 응답 오류: {response_data}"
-                        logger.error(error_msg)
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(3 + (attempt * 2))
-                            continue
-                        else:
-                            self._record_failure(error_msg)
-                            raise Exception(error_msg)
-                    
-                    # 🔥🔥🔥 성공 기록
-                    self._record_success()
-                    return response_data.get('data', {})
-                    
+                            raise Exception(f"JSON 파싱 실패: {e}")
+                            
             except asyncio.TimeoutError:
-                error_msg = f"요청 타임아웃 (시도 {attempt + 1})"
-                logger.warning(error_msg)
+                logger.warning(f"Gate.io API 타임아웃 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(5 + (attempt * 3))  # 타임아웃 시 더 긴 대기
+                    await asyncio.sleep(3 + (attempt * 2))  # 타임아웃 시 더 긴 대기
                     continue
                 else:
-                    self._record_failure(error_msg)
-                    raise Exception(error_msg)
+                    raise Exception(f"요청 타임아웃 (최대 {max_retries}회 시도)")
                     
-            except aiohttp.ClientError as client_error:
-                error_msg = f"클라이언트 오류 (시도 {attempt + 1}): {client_error}"
-                logger.warning(error_msg)
+            except aiohttp.ClientError as e:
+                logger.warning(f"Gate.io API 클라이언트 오류 (시도 {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(3 + (attempt * 2))
+                    await asyncio.sleep(2 ** attempt)
                     continue
                 else:
-                    self._record_failure(error_msg)
-                    raise Exception(error_msg)
+                    raise Exception(f"클라이언트 오류: {e}")
                     
             except Exception as e:
-                error_msg = f"예상치 못한 오류 (시도 {attempt + 1}): {e}"
-                logger.error(error_msg)
+                logger.error(f"Gate.io API 예상치 못한 오류 (시도 {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(3 + (attempt * 2))
+                    await asyncio.sleep(2 ** attempt)
                     continue
                 else:
-                    self._record_failure(error_msg)
                     raise
-        
-        # 모든 재시도 실패
-        final_error = f"모든 재시도 실패: {max_retries}회 시도"
-        self._record_failure(final_error)
-        raise Exception(final_error)
     
-    def _record_success(self):
-        """🔥🔥🔥 성공 기록"""
-        self.api_connection_healthy = True
-        self.consecutive_failures = 0
-        self.last_successful_call = datetime.now()
-    
-    def _record_failure(self, error_msg: str):
-        """🔥🔥🔥 실패 기록"""
-        self.consecutive_failures += 1
-        
-        if self.consecutive_failures >= self.max_consecutive_failures:
-            self.api_connection_healthy = False
-            logger.error(f"비트겟 미러링 API 연결 비정상 상태: 연속 {self.consecutive_failures}회 실패")
-        
-        logger.warning(f"비트겟 미러링 API 실패 기록: {error_msg} (연속 실패: {self.consecutive_failures}회)")
-    
-    async def get_ticker(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 현재가 정보 조회 - 다중 엔드포인트 지원 + 타임아웃 개선"""
-        symbol = symbol or self.config.symbol
-        
-        # 🔥🔥🔥 여러 엔드포인트 순차 시도
-        for i, endpoint in enumerate(self.ticker_endpoints):
-            try:
-                logger.debug(f"미러링 티커 조회 시도 {i + 1}/{len(self.ticker_endpoints)}: {endpoint}")
+    async def get_current_price(self, contract: str = "BTC_USDT") -> float:
+        """현재 시장가 조회 - 강화된 재시도"""
+        try:
+            ticker = await self.get_ticker(contract)
+            if ticker:
+                current_price = float(ticker.get('last', ticker.get('mark_price', 0)))
+                if current_price > 0:
+                    return current_price
+                    
+            # 가격이 0이거나 None인 경우 재시도
+            await asyncio.sleep(1)
+            ticker_retry = await self.get_ticker(contract)
+            if ticker_retry:
+                current_price = float(ticker_retry.get('last', ticker_retry.get('mark_price', 0)))
+                return current_price
                 
-                if endpoint == "/api/v2/mix/market/ticker":
-                    # V2 믹스 마켓 (기본)
-                    params = {
-                        'symbol': symbol,
-                        'productType': 'USDT-FUTURES'
-                    }
-                    response = await self._request('GET', endpoint, params=params, max_retries=3)
-                    
-                    if isinstance(response, list) and len(response) > 0:
-                        ticker_data = response[0]
-                    elif isinstance(response, dict):
-                        ticker_data = response
-                    else:
-                        logger.warning(f"미러링 V2 믹스: 예상치 못한 응답 형식: {type(response)}")
-                        continue
-                    
-                elif endpoint == "/api/mix/v1/market/ticker":
-                    # V1 믹스 마켓 (백업)
-                    v1_symbol = f"{symbol}_UMCBL"
-                    params = {
-                        'symbol': v1_symbol
-                    }
-                    response = await self._request('GET', endpoint, params=params, max_retries=3)
-                    
-                    if isinstance(response, dict):
-                        ticker_data = response
-                    else:
-                        logger.warning(f"미러링 V1 믹스: 예상치 못한 응답 형식: {type(response)}")
-                        continue
-                        
-                elif endpoint == "/api/v2/spot/market/tickers":
-                    # 스팟 마켓 (최후 백업)
-                    spot_symbol = symbol.replace('USDT', '-USDT')
-                    params = {
-                        'symbol': spot_symbol
-                    }
-                    response = await self._request('GET', endpoint, params=params, max_retries=3)
-                    
-                    if isinstance(response, list) and len(response) > 0:
-                        ticker_data = response[0]
-                    elif isinstance(response, dict):
-                        ticker_data = response
-                    else:
-                        logger.warning(f"미러링 V2 스팟: 예상치 못한 응답 형식: {type(response)}")
-                        continue
-                
-                # 🔥🔥🔥 응답 데이터 검증 및 정규화
-                if ticker_data and self._validate_ticker_data(ticker_data):
-                    normalized_ticker = self._normalize_ticker_data(ticker_data, endpoint)
-                    logger.info(f"✅ 미러링 티커 조회 성공 ({endpoint}): ${normalized_ticker.get('last', 'N/A')}")
-                    return normalized_ticker
-                else:
-                    logger.warning(f"미러링 티커 데이터 검증 실패: {endpoint}")
-                    continue
-                    
-            except Exception as e:
-                logger.warning(f"미러링 티커 엔드포인트 {endpoint} 실패: {e}")
-                continue
-        
-        # 🔥🔥🔥 모든 엔드포인트 실패
-        error_msg = f"미러링 모든 티커 엔드포인트 실패: {', '.join(self.ticker_endpoints)}"
-        logger.error(error_msg)
-        self._record_failure("모든 티커 엔드포인트 실패")
-        return {}
-    
-    def _validate_ticker_data(self, ticker_data: Dict) -> bool:
-        """🔥🔥🔥 티커 데이터 유효성 검증"""
-        try:
-            if not isinstance(ticker_data, dict):
-                return False
-            
-            # 필수 가격 필드 중 하나라도 있어야 함
-            price_fields = ['last', 'lastPr', 'close', 'price', 'mark_price', 'markPrice']
-            
-            for field in price_fields:
-                value = ticker_data.get(field)
-                if value is not None:
-                    try:
-                        price = float(value)
-                        if price > 0:
-                            return True
-                    except:
-                        continue
-            
-            logger.warning(f"미러링 유효한 가격 필드 없음: {list(ticker_data.keys())}")
-            return False
-            
+            return 0.0
         except Exception as e:
-            logger.error(f"미러링 티커 데이터 검증 오류: {e}")
-            return False
+            logger.error(f"현재가 조회 실패: {e}")
+            return 0.0
     
-    def _normalize_ticker_data(self, ticker_data: Dict, endpoint: str) -> Dict:
-        """🔥🔥🔥 티커 데이터 정규화"""
+    async def get_ticker(self, contract: str = "BTC_USDT") -> Dict:
+        """티커 정보 조회 - 강화된 오류 처리"""
         try:
-            normalized = {}
-            
-            # 가격 필드 정규화
-            price_mappings = [
-                ('last', ['last', 'lastPr', 'close', 'price']),
-                ('high', ['high', 'high24h', 'highPrice']),
-                ('low', ['low', 'low24h', 'lowPrice']),
-                ('volume', ['volume', 'vol', 'baseVolume', 'baseVol']),
-                ('changeUtc', ['changeUtc', 'change', 'priceChange', 'priceChangePercent'])
-            ]
-            
-            for target_field, source_fields in price_mappings:
-                for source_field in source_fields:
-                    value = ticker_data.get(source_field)
-                    if value is not None:
-                        try:
-                            if target_field == 'changeUtc':
-                                # 변화율을 소수로 변환 (예: 2.5% -> 0.025)
-                                change_val = float(value)
-                                if abs(change_val) > 1:  # 백분율 형태인 경우
-                                    change_val = change_val / 100
-                                normalized[target_field] = change_val
-                            else:
-                                normalized[target_field] = float(value)
-                            break
-                        except:
-                            continue
-            
-            # 기본값 설정
-            if 'last' not in normalized:
-                normalized['last'] = 0
-            if 'changeUtc' not in normalized:
-                normalized['changeUtc'] = 0
-            if 'volume' not in normalized:
-                normalized['volume'] = 0
-            
-            # 원본 데이터도 포함
-            normalized['_original'] = ticker_data
-            normalized['_endpoint'] = endpoint
-            
-            return normalized
-            
-        except Exception as e:
-            logger.error(f"미러링 티커 데이터 정규화 실패: {e}")
-            return ticker_data
-    
-    async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """🔥🔥🔥 포지션 조회 (V2 API) - 정확한 레버리지 및 포지션 정보"""
-        symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/position/all-position"
-        params = {
-            'productType': 'USDT-FUTURES',
-            'marginCoin': 'USDT'
-        }
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            logger.info(f"미러링 포지션 정보 원본 응답: {response}")
-            positions = response if isinstance(response, list) else []
-            
-            if symbol and positions:
-                positions = [pos for pos in positions if pos.get('symbol') == symbol]
-            
-            active_positions = []
-            for pos in positions:
-                total_size = float(pos.get('total', 0))
-                if total_size > 0:
-                    # 🔥🔥🔥 레버리지 정보 강화된 추출
-                    leverage_raw = pos.get('leverage', '10')
-                    try:
-                        leverage = int(float(leverage_raw))
-                        pos['leverage'] = str(leverage)  # 정수로 정규화
-                        logger.info(f"포지션 레버리지 정규화: {leverage_raw} → {leverage}x")
-                    except:
-                        pos['leverage'] = '10'  # 기본값
-                        logger.warning(f"레버리지 변환 실패, 기본값 사용: {leverage_raw}")
-                    
-                    # 🔥🔥🔥 포지션 크기 정보 상세 로깅
-                    hold_side = pos.get('holdSide', 'unknown')
-                    margin_size = float(pos.get('marginSize', 0))
-                    entry_price = float(pos.get('openPriceAvg', 0))
-                    unrealized_pnl = float(pos.get('unrealizedPL', 0))
-                    
-                    logger.info(f"🔍 활성 포지션 상세:")
-                    logger.info(f"  - 심볼: {pos.get('symbol')}")
-                    logger.info(f"  - 방향: {hold_side}")
-                    logger.info(f"  - 크기: {total_size} BTC")
-                    logger.info(f"  - 진입가: ${entry_price:,.2f}")
-                    logger.info(f"  - 레버리지: {leverage}x")
-                    logger.info(f"  - 마진: ${margin_size:,.2f}")
-                    logger.info(f"  - 미실현 손익: ${unrealized_pnl:,.2f}")
-                    
-                    active_positions.append(pos)
-                    
-                    # 청산가 필드 로깅
-                    logger.info(f"미러링 포지션 청산가 필드 확인:")
-                    logger.info(f"  - liquidationPrice: {pos.get('liquidationPrice')}")
-                    logger.info(f"  - markPrice: {pos.get('markPrice')}")
-            
-            logger.info(f"✅ 총 {len(active_positions)}개 활성 포지션 발견")
-            return active_positions
-        except Exception as e:
-            logger.error(f"미러링 포지션 조회 실패: {e}")
-            raise
-    
-    async def get_position_leverage(self, symbol: str = None) -> int:
-        """🔥🔥🔥 포지션의 정확한 레버리지 정보 조회"""
-        try:
-            positions = await self.get_positions(symbol)
-            
-            for pos in positions:
-                if float(pos.get('total', 0)) > 0:
-                    leverage_raw = pos.get('leverage', '10')
-                    try:
-                        leverage = int(float(leverage_raw))
-                        logger.info(f"📊 포지션 레버리지 조회 성공: {leverage}x")
-                        return leverage
-                    except:
-                        logger.warning(f"포지션 레버리지 변환 실패: {leverage_raw}")
-                        return 10
-            
-            # 포지션이 없는 경우 계정 기본 레버리지 조회
-            logger.info("포지션이 없어 계정 기본 레버리지 조회")
-            account_info = await self.get_account_info()
-            
-            # 계정에서 레버리지 추출
-            for field in ['crossMarginLeverage', 'leverage', 'defaultLeverage']:
-                leverage_value = account_info.get(field)
-                if leverage_value:
-                    try:
-                        leverage = int(float(leverage_value))
-                        if leverage > 1:
-                            logger.info(f"📊 계정 기본 레버리지: {field} = {leverage}x")
-                            return leverage
-                    except:
-                        continue
-            
-            logger.warning("레버리지 정보를 찾을 수 없어 기본값 10x 사용")
-            return 10
-            
-        except Exception as e:
-            logger.error(f"레버리지 조회 실패: {e}")
-            return 10
-    
-    async def get_account_info(self) -> Dict:
-        """🔥🔥🔥 계정 정보 조회 (V2 API) - 레버리지 정보 포함"""
-        endpoint = "/api/v2/mix/account/accounts"
-        params = {
-            'productType': 'USDT-FUTURES',
-            'marginCoin': 'USDT'
-        }
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            logger.info(f"미러링 계정 정보 원본 응답: {response}")
+            endpoint = f"/api/v4/futures/usdt/tickers"
+            params = {'contract': contract}
+            response = await self._request('GET', endpoint, params=params, max_retries=3)
             
             if isinstance(response, list) and len(response) > 0:
-                account_info = response[0]
+                ticker_data = response[0]
+                if 'last' not in ticker_data and 'mark_price' in ticker_data:
+                    ticker_data['last'] = ticker_data['mark_price']
+                return ticker_data
+            elif isinstance(response, dict):
+                if 'last' not in response and 'mark_price' in response:
+                    response['last'] = response['mark_price']
+                return response
             else:
-                account_info = response
+                return {}
             
-            # 🔥🔥🔥 레버리지 관련 필드 상세 로깅
-            logger.info(f"📊 계정 레버리지 관련 필드:")
-            for field in ['crossMarginLeverage', 'leverage', 'defaultLeverage', 'maxLeverage']:
-                value = account_info.get(field)
-                if value:
-                    logger.info(f"  - {field}: {value}")
-            
-            return account_info
         except Exception as e:
-            logger.error(f"미러링 계정 정보 조회 실패: {e}")
+            logger.error(f"Gate.io 티커 조회 실패: {e}")
+            return {}
+    
+    async def get_account_balance(self) -> Dict:
+        """계정 잔고 조회"""
+        try:
+            endpoint = "/api/v4/futures/usdt/accounts"
+            response = await self._request('GET', endpoint)
+            return response
+        except Exception as e:
+            logger.error(f"계정 잔고 조회 실패: {e}")
             raise
     
-    async def get_recent_filled_orders(self, symbol: str = None, minutes: int = 5) -> List[Dict]:
-        """최근 체결된 주문 조회 (미러링용) - 레버리지 정보 포함"""
+    async def get_positions(self, contract: str = "BTC_USDT") -> List[Dict]:
+        """🔥🔥🔥 포지션 조회 - 정확한 포지션 정보 반환"""
         try:
-            symbol = symbol or self.config.symbol
+            endpoint = f"/api/v4/futures/usdt/positions/{contract}"
+            response = await self._request('GET', endpoint)
             
-            # 현재 시간에서 N분 전까지
-            now = datetime.now()
-            start_time = now - timedelta(minutes=minutes)
-            start_timestamp = int(start_time.timestamp() * 1000)
-            end_timestamp = int(now.timestamp() * 1000)
+            if isinstance(response, dict):
+                size = response.get('size', 0)
+                if size != 0:
+                    logger.info(f"🔍 게이트 포지션 발견: 계약={contract}, 크기={size}")
+                    logger.info(f"  - 진입가: {response.get('entry_price', 'N/A')}")
+                    logger.info(f"  - 미실현 손익: {response.get('unrealised_pnl', 'N/A')}")
+                    logger.info(f"  - 레버리지: {response.get('leverage', 'N/A')}")
+                    return [response]
+                else:
+                    logger.debug(f"게이트 포지션 없음: {contract}")
+                    return []
             
-            # 최근 체결된 주문 조회
-            filled_orders = await self.get_order_history(
-                symbol=symbol,
-                status='filled',
-                start_time=start_timestamp,
-                end_time=end_timestamp,
-                limit=50
+            return response if isinstance(response, list) else []
+            
+        except Exception as e:
+            logger.error(f"포지션 조회 실패: {e}")
+            return []
+    
+    async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
+                          retry_count: int = 5) -> Dict:
+        """🔥 레버리지 설정 - Gate.io API 수정된 방식 (오류 수정)"""
+        for attempt in range(retry_count):
+            try:
+                endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
+                
+                # 🔥🔥🔥 Gate.io API v4 정확한 형식
+                # API 문서에 따르면 쿼리 파라미터로 전송해야 함
+                params = {
+                    "leverage": str(leverage)
+                }
+                
+                if cross_leverage_limit > 0:
+                    params["cross_leverage_limit"] = str(cross_leverage_limit)
+                
+                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
+                logger.debug(f"레버리지 설정 파라미터: {params}")
+                
+                # POST 요청이지만 파라미터로 전송
+                response = await self._request('POST', endpoint, params=params)
+                
+                await asyncio.sleep(1.0)
+                
+                # 설정 검증
+                verify_success = await self._verify_leverage_setting(contract, leverage, max_attempts=3)
+                if verify_success:
+                    logger.info(f"✅ Gate.io 레버리지 설정 완료: {contract} - {leverage}x")
+                    return response
+                else:
+                    if attempt < retry_count - 1:
+                        await asyncio.sleep(2.0)
+                        continue
+                    else:
+                        logger.warning(f"레버리지 설정 검증 실패하지만 계속 진행: {contract} - {leverage}x")
+                        return response
+                
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Gate.io 레버리지 설정 시도 {attempt + 1} 실패: {error_msg}")
+                
+                if attempt < retry_count - 1:
+                    await asyncio.sleep(2.0)
+                    continue
+                else:
+                    # 🔥🔥🔥 레버리지 설정 실패해도 계속 진행 (경고만 출력)
+                    logger.warning(f"레버리지 설정 최종 실패하지만 계속 진행: {contract} - {leverage}x")
+                    return {"warning": "leverage_setting_failed", "requested_leverage": leverage}
+        
+        # 모든 시도 실패해도 경고만 출력하고 계속 진행
+        logger.warning(f"레버리지 설정 모든 재시도 실패, 기본 레버리지로 계속 진행: {contract} - {leverage}x")
+        return {"warning": "all_leverage_attempts_failed", "requested_leverage": leverage}
+    
+    async def _verify_leverage_setting(self, contract: str, expected_leverage: int, max_attempts: int = 3) -> bool:
+        """레버리지 설정 확인"""
+        for attempt in range(max_attempts):
+            try:
+                await asyncio.sleep(0.5 * (attempt + 1))
+                
+                positions = await self.get_positions(contract)
+                if positions:
+                    position = positions[0]
+                    current_leverage = position.get('leverage')
+                    
+                    if current_leverage:
+                        try:
+                            current_lev_int = int(float(current_leverage))
+                            if current_lev_int == expected_leverage:
+                                return True
+                            else:
+                                if attempt < max_attempts - 1:
+                                    continue
+                                return False
+                        except (ValueError, TypeError):
+                            if attempt < max_attempts - 1:
+                                continue
+                            return False
+                    else:
+                        if attempt < max_attempts - 1:
+                            continue
+                        return False
+                else:
+                    return True
+                
+            except Exception:
+                if attempt < max_attempts - 1:
+                    continue
+                return True
+        
+        return False
+    
+    async def _check_slippage_protection(self, current_price: float, expected_price: float, side: str) -> Tuple[bool, str]:
+        """🔥🔥🔥 슬리피지 보호 체크 - 0.05% 임계값"""
+        try:
+            if not self.SLIPPAGE_CHECK_ENABLED:
+                return True, "슬리피지 체크 비활성화"
+            
+            if current_price <= 0 or expected_price <= 0:
+                return True, "가격 정보 부족으로 체크 스킵"
+            
+            # 슬리피지 계산
+            if side.lower() == 'buy':
+                # 매수: 현재가보다 높게 체결될 위험
+                slippage_percent = ((expected_price - current_price) / current_price) * 100
+            else:
+                # 매도: 현재가보다 낮게 체결될 위험
+                slippage_percent = ((current_price - expected_price) / current_price) * 100
+            
+            if slippage_percent > self.MAX_SLIPPAGE_PERCENT:
+                slippage_amount = current_price * (slippage_percent / 100)
+                return False, f"슬리피지 위험 ({slippage_percent:.3f}%, 약 ${slippage_amount:.2f}) > 임계값 {self.MAX_SLIPPAGE_PERCENT}%"
+            
+            slippage_amount = current_price * (slippage_percent / 100)
+            return True, f"슬리피지 안전 ({slippage_percent:.3f}%, 약 ${slippage_amount:.2f})"
+            
+        except Exception as e:
+            logger.error(f"슬리피지 보호 체크 실패: {e}")
+            return True, "슬리피지 체크 오류, 진행"
+    
+    async def _place_limit_order_with_wait(self, contract: str, size: int, limit_price: float,
+                                          reduce_only: bool = False) -> Tuple[Dict, bool]:
+        """🔥🔥🔥 지정가 주문 대기 후 체결 확인"""
+        try:
+            logger.info(f"지정가 주문 생성: {size} @ ${limit_price:.2f} (대기시간: {self.LIMIT_ORDER_WAIT_TIME}초)")
+            
+            # 지정가 주문 생성
+            order_result = await self.place_order(
+                contract=contract,
+                size=size,
+                price=limit_price,
+                reduce_only=reduce_only,
+                tif="gtc",
+                use_slippage_protection=False  # 이미 지정가로 보호됨
             )
             
-            logger.info(f"미러링 최근 {minutes}분간 체결된 주문: {len(filled_orders)}건")
+            order_id = order_result.get('id')
+            if not order_id:
+                return order_result, False
             
-            # 신규 진입 주문만 필터링 (reduce_only가 아닌 것)
-            new_position_orders = []
-            for order in filled_orders:
-                reduce_only = order.get('reduceOnly', 'false')
-                if reduce_only == 'false' or reduce_only is False:
-                    # 🔥🔥🔥 주문에 레버리지 정보 추가 (포지션에서 조회)
-                    try:
-                        current_leverage = await self.get_position_leverage(symbol)
-                        order['leverage'] = str(current_leverage)
-                        logger.info(f"체결 주문에 레버리지 정보 추가: {current_leverage}x")
-                    except:
-                        order['leverage'] = '10'  # 기본값
-                    
-                    new_position_orders.append(order)
-                    logger.info(f"미러링 신규 진입 주문 감지: {order.get('orderId')} - {order.get('side')} {order.get('size')} (레버리지: {order.get('leverage')}x)")
+            # 지정가 주문 대기
+            await asyncio.sleep(self.LIMIT_ORDER_WAIT_TIME)
             
-            return new_position_orders
+            # 주문 상태 확인
+            order_status = await self._check_order_status(order_id)
             
-        except Exception as e:
-            logger.error(f"미러링 최근 체결 주문 조회 실패: {e}")
-            return []
-    
-    async def get_order_history(self, symbol: str = None, status: str = 'filled', 
-                              start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """주문 내역 조회 (V2 API)"""
-        symbol = symbol or self.config.symbol
-        endpoint = "/api/v2/mix/order/orders-history"
-        params = {
-            'symbol': symbol,
-            'productType': 'USDT-FUTURES',
-            'pageSize': str(limit)
-        }
-        
-        if status:
-            params['status'] = status
-        if start_time:
-            params['startTime'] = str(start_time)
-        if end_time:
-            params['endTime'] = str(end_time)
-        
-        try:
-            response = await self._request('GET', endpoint, params=params)
-            
-            # 응답이 dict이고 orderList가 있는 경우
-            if isinstance(response, dict) and 'orderList' in response:
-                return response['orderList']
-            # 응답이 리스트인 경우
-            elif isinstance(response, list):
-                return response
-            
-            return []
-            
-        except Exception as e:
-            logger.error(f"미러링 주문 내역 조회 실패: {e}")
-            return []
-    
-    async def get_plan_orders_v2_working(self, symbol: str = None) -> List[Dict]:
-        """🔥 V2 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
-        try:
-            symbol = symbol or self.config.symbol
-            
-            logger.info(f"🔍 미러링 V2 API 예약 주문 조회 시작: {symbol}")
-            
-            all_found_orders = []
-            
-            # 🔥 실제 작동하는 V2 엔드포인트만 사용
-            working_endpoints = [
-                "/api/v2/mix/order/orders-pending",          # ✅ 작동 확인됨
-            ]
-            
-            for endpoint in working_endpoints:
+            if order_status.get('status') == 'filled':
+                logger.info(f"✅ 지정가 주문 체결 성공: {order_id}")
+                return order_result, True
+            else:
+                logger.info(f"⏰ 지정가 주문 미체결, 취소 후 시장가 전환: {order_id}")
                 try:
-                    params = {
-                        'symbol': symbol,
-                        'productType': 'USDT-FUTURES'
-                    }
-                    
-                    logger.info(f"🔍 미러링 예약 주문 조회: {endpoint}")
-                    response = await self._request('GET', endpoint, params=params)
-                    
-                    if response is None:
-                        logger.debug(f"미러링 {endpoint}: 응답이 None")
-                        continue
-                    
-                    # 응답에서 주문 목록 추출
-                    orders = []
-                    if isinstance(response, dict):
-                        # entrustedList가 작동하는 필드명
-                        if 'entrustedList' in response:
-                            orders_raw = response['entrustedList']
-                            if isinstance(orders_raw, list):
-                                orders = orders_raw
-                                logger.info(f"✅ 미러링 {endpoint}: entrustedList에서 {len(orders)}개 주문 발견")
-                    elif isinstance(response, list):
-                        orders = response
-                        logger.info(f"✅ 미러링 {endpoint}: 직접 리스트에서 {len(orders)}개 주문 발견")
-                    
-                    if orders:
-                        all_found_orders.extend(orders)
-                        logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
-                        
-                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크 + 레버리지 정보
-                        for i, order in enumerate(orders):
-                            if order is None:
-                                continue
-                            
-                            order_id = order.get('orderId', order.get('planOrderId', order.get('id', 'unknown')))
-                            order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
-                            side = order.get('side', order.get('tradeSide', 'unknown'))
-                            trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
-                            size = order.get('size', order.get('volume', 'unknown'))
-                            leverage = order.get('leverage', 'unknown')
-                            
-                            # 🔥🔥🔥 TP/SL 정보 상세 로깅
-                            tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
-                            sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
-                            
-                            logger.info(f"  📝 미러링 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}, 레버리지={leverage}x")
-                            
-                            if tp_price:
-                                logger.info(f"      🎯 TP 설정 발견: {tp_price}")
-                            if sl_price:
-                                logger.info(f"      🛡️ SL 설정 발견: {sl_price}")
-                            
-                            # 🔥🔥🔥 모든 필드 확인하여 TP/SL 관련 필드 찾기
-                            tp_sl_fields = {}
-                            for field_name, field_value in order.items():
-                                if any(keyword in field_name.lower() for keyword in ['stop', 'profit', 'loss', 'tp', 'sl']):
-                                    if field_value and str(field_value) not in ['0', '0.0', '', 'null']:
-                                        tp_sl_fields[field_name] = field_value
-                            
-                            if tp_sl_fields:
-                                logger.info(f"      🔍 TP/SL 관련 필드들: {tp_sl_fields}")
-                        
-                        # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
-                        break
-                    else:
-                        logger.debug(f"미러링 {endpoint}: 주문이 없음")
-                        
-                except Exception as e:
-                    logger.debug(f"미러링 {endpoint} 조회 실패: {e}")
-                    continue
-            
-            # 중복 제거
-            seen = set()
-            unique_orders = []
-            for order in all_found_orders:
-                if order is None:
-                    continue
-                    
-                order_id = (order.get('orderId') or 
-                           order.get('planOrderId') or 
-                           order.get('id') or
-                           str(order.get('cTime', '')))
+                    await self._cancel_order(order_id)
+                except:
+                    pass  # 취소 실패해도 계속 진행
+                return order_result, False
                 
-                if order_id and order_id not in seen:
-                    seen.add(order_id)
-                    
-                    # 🔥🔥🔥 주문에 레버리지 정보 추가 (없는 경우)
-                    if not order.get('leverage'):
-                        try:
-                            current_leverage = await self.get_position_leverage()
-                            order['leverage'] = str(current_leverage)
-                            logger.info(f"예약 주문에 레버리지 정보 추가: {order_id} → {current_leverage}x")
-                        except:
-                            order['leverage'] = '10'  # 기본값
-                    
-                    unique_orders.append(order)
-                    logger.debug(f"📝 미러링 V2 고유 예약 주문 추가: {order_id}")
-            
-            logger.info(f"🔥 미러링 V2 API에서 최종 발견된 고유한 예약 주문: {len(unique_orders)}건")
-            return unique_orders
-            
         except Exception as e:
-            logger.error(f"미러링 V2 예약 주문 조회 실패: {e}")
-            return []
+            logger.error(f"지정가 주문 대기 처리 실패: {e}")
+            return {}, False
     
-    async def get_plan_orders_v1_working(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """🔥 V1 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
+    async def _check_order_status(self, order_id: str) -> Dict:
+        """주문 상태 확인"""
         try:
-            # V1 API는 다른 심볼 형식을 사용
-            symbol = symbol or self.config.symbol
-            v1_symbol = f"{symbol}_UMCBL"
+            endpoint = f"/api/v4/futures/usdt/orders/{order_id}"
+            return await self._request('GET', endpoint)
+        except Exception as e:
+            logger.error(f"주문 상태 확인 실패: {order_id} - {e}")
+            return {}
+    
+    async def _cancel_order(self, order_id: str) -> Dict:
+        """주문 취소"""
+        try:
+            endpoint = f"/api/v4/futures/usdt/orders/{order_id}"
+            return await self._request('DELETE', endpoint)
+        except Exception as e:
+            logger.error(f"주문 취소 실패: {order_id} - {e}")
+            return {}
+    
+    async def _place_order_with_slippage_protection(self, contract: str, size: int, 
+                                                   reduce_only: bool = False, 
+                                                   max_retries: int = 2) -> Dict:
+        """🔥🔥🔥 슬리피지 보호가 적용된 주문 생성 - 지정가 대기 후 시장가 전환"""
+        try:
+            side = 'buy' if size > 0 else 'sell'
             
-            logger.info(f"🔍 미러링 V1 API 예약 주문 조회 시작: {v1_symbol}")
-            
-            all_found_orders = []
-            
-            # 🔥 실제 작동하는 V1 엔드포인트만 사용
-            working_endpoints = [
-                "/api/mix/v1/plan/currentPlan",              # ✅ 작동 확인됨 (비어있을 뿐)
-            ]
-            
-            for endpoint in working_endpoints:
+            for attempt in range(max_retries):
                 try:
-                    params = {
-                        'symbol': v1_symbol,
-                        'productType': 'umcbl'
-                    }
+                    # 현재가 조회
+                    current_price = await self.get_current_price(contract)
+                    if current_price <= 0:
+                        logger.warning("현재가 조회 실패, 일반 시장가 주문으로 진행")
+                        return await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
                     
-                    # plan_type이 지정된 경우 추가
-                    if plan_type:
-                        if plan_type == 'profit_loss':
-                            params['isPlan'] = 'profit_loss'
+                    logger.info(f"슬리피지 보호 주문 시도 {attempt + 1}/{max_retries}: {side} {abs(size)} @ ${current_price:.2f}")
+                    
+                    # 시장가로 체결될 예상 가격 (스프레드 고려)
+                    ticker = await self.get_ticker(contract)
+                    if ticker:
+                        bid_price = float(ticker.get('bid', current_price))
+                        ask_price = float(ticker.get('ask', current_price))
+                        
+                        if side == 'buy':
+                            expected_price = ask_price  # 매수는 ask에 체결
+                            # 지정가는 현재가보다 약간 유리하게 설정
+                            limit_price = current_price * (1 + (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
                         else:
-                            params['planType'] = plan_type
-                    
-                    logger.info(f"🔍 미러링 V1 예약 주문 조회: {endpoint}")
-                    response = await self._request('GET', endpoint, params=params)
-                    
-                    if response is None:
-                        logger.debug(f"미러링 {endpoint}: 응답이 None")
-                        continue
-                    
-                    # 응답에서 주문 목록 추출
-                    orders = []
-                    if isinstance(response, dict):
-                        # V1 API 응답 구조
-                        for field_name in ['list', 'data']:
-                            if field_name in response:
-                                orders_raw = response[field_name]
-                                if isinstance(orders_raw, list):
-                                    orders = orders_raw
-                                    logger.info(f"✅ 미러링 {endpoint}: {field_name}에서 {len(orders)}개 주문 발견")
-                                    break
-                    elif isinstance(response, list):
-                        orders = response
-                        logger.info(f"✅ 미러링 {endpoint}: 직접 리스트에서 {len(orders)}개 주문 발견")
-                    
-                    if orders:
-                        all_found_orders.extend(orders)
-                        logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
-                        
-                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크
-                        for i, order in enumerate(orders):
-                            if order is None:
-                                continue
-                            
-                            order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
-                            order_type = order.get('orderType', order.get('planType', 'unknown'))
-                            side = order.get('side', order.get('tradeSide', 'unknown'))
-                            trigger_price = order.get('triggerPrice', order.get('executePrice', 'unknown'))
-                            size = order.get('size', order.get('volume', 'unknown'))
-                            
-                            # 🔥🔥🔥 TP/SL 정보 상세 로깅
-                            tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
-                            sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
-                            
-                            logger.info(f"  📝 미러링 V1 주문 {i+1}: ID={order_id}, 타입={order_type}, 방향={side}, 크기={size}, 트리거가={trigger_price}")
-                            
-                            if tp_price:
-                                logger.info(f"      🎯 V1 TP 설정 발견: {tp_price}")
-                            if sl_price:
-                                logger.info(f"      🛡️ V1 SL 설정 발견: {sl_price}")
-                        
-                        # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
-                        break
+                            expected_price = bid_price  # 매도는 bid에 체결
+                            # 지정가는 현재가보다 약간 유리하게 설정
+                            limit_price = current_price * (1 - (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
                     else:
-                        logger.debug(f"미러링 {endpoint}: 주문이 없음")
-                        
+                        expected_price = current_price
+                        if side == 'buy':
+                            limit_price = current_price * (1 + (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
+                        else:
+                            limit_price = current_price * (1 - (self.MAX_SLIPPAGE_PERCENT * 0.5) / 100)
+                    
+                    # 슬리피지 보호 체크
+                    is_safe, protection_msg = await self._check_slippage_protection(
+                        current_price, expected_price, side
+                    )
+                    
+                    logger.info(f"슬리피지 보호: {protection_msg}")
+                    
+                    if is_safe:
+                        # 안전한 경우 시장가 주문
+                        result = await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
+                        logger.info(f"✅ 슬리피지 안전 범위내 시장가 주문 성공: {side} {abs(size)}")
+                        return result
+                    else:
+                        # 위험한 경우 지정가 주문 시도 후 시장가 전환
+                        if self.FALLBACK_TO_LIMIT_ORDER:
+                            logger.warning(f"슬리피지 위험으로 지정가 주문 시도: {protection_msg}")
+                            
+                            # 지정가 주문 시도
+                            limit_result, filled = await self._place_limit_order_with_wait(
+                                contract, size, limit_price, reduce_only
+                            )
+                            
+                            if filled:
+                                logger.info(f"✅ 지정가 주문 체결 성공: {side} {abs(size)} @ ${limit_price:.2f}")
+                                return limit_result
+                            else:
+                                # 지정가 실패 시 시장가로 전환하고 알림
+                                logger.warning(f"지정가 주문 실패, 시장가로 전환: {side} {abs(size)}")
+                                
+                                # 시장가 주문
+                                market_result = await self.place_order(
+                                    contract, size, None, reduce_only, use_slippage_protection=False
+                                )
+                                
+                                # 🔥🔥🔥 시장가 체결 텔레그램 알림
+                                await self._send_market_order_alert(
+                                    side, abs(size), current_price, protection_msg, contract
+                                )
+                                
+                                logger.info(f"✅ 지정가 실패 후 시장가 주문 성공: {side} {abs(size)}")
+                                return market_result
+                        else:
+                            # 지정가 전환 비활성화된 경우 그냥 시장가 진행
+                            logger.warning(f"슬리피지 위험 감지되었지만 시장가로 진행: {protection_msg}")
+                            result = await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
+                            
+                            # 시장가 체결 알림
+                            await self._send_market_order_alert(
+                                side, abs(size), current_price, protection_msg, contract
+                            )
+                            return result
+                    
                 except Exception as e:
-                    logger.debug(f"미러링 {endpoint} 조회 실패: {e}")
-                    continue
+                    logger.error(f"슬리피지 보호 주문 시도 {attempt + 1} 실패: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0)
+                        # 현재가 갱신
+                        continue
+                    else:
+                        raise
             
-            # 중복 제거
-            seen = set()
-            unique_orders = []
-            for order in all_found_orders:
-                if order is None:
-                    continue
-                    
-                order_id = (order.get('orderId') or 
-                           order.get('planOrderId') or 
-                           order.get('id') or
-                           str(order.get('cTime', '')))
-                
-                if order_id and order_id not in seen:
-                    seen.add(order_id)
-                    unique_orders.append(order)
-                    logger.debug(f"📝 미러링 V1 고유 예약 주문 추가: {order_id}")
+            # 모든 재시도 실패 시 기본 시장가 주문
+            logger.warning("모든 슬리피지 보호 시도 실패, 기본 시장가 주문으로 진행")
+            result = await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
             
-            logger.info(f"🔥 미러링 V1 API에서 최종 발견된 고유한 예약 주문: {len(unique_orders)}건")
-            return unique_orders
-            
-        except Exception as e:
-            logger.error(f"미러링 V1 예약 주문 조회 실패: {e}")
-            return []
-    
-    async def get_all_trigger_orders(self, symbol: str = None) -> List[Dict]:
-        """🔥 모든 트리거 주문 조회 - 작동하는 엔드포인트만 사용"""
-        all_orders = []
-        symbol = symbol or self.config.symbol
-        
-        logger.info(f"🔍 미러링 모든 트리거 주문 조회 시작: {symbol}")
-        
-        # 🔥 1. V2 API 조회 (우선)
-        try:
-            v2_orders = await self.get_plan_orders_v2_working(symbol)
-            if v2_orders:
-                all_orders.extend(v2_orders)
-                logger.info(f"✅ 미러링 V2에서 {len(v2_orders)}개 예약 주문 발견")
-        except Exception as e:
-            logger.warning(f"미러링 V2 예약 주문 조회 실패: {e}")
-        
-        # 🔥 2. V1 일반 예약 주문
-        try:
-            v1_orders = await self.get_plan_orders_v1_working(symbol)
-            if v1_orders:
-                all_orders.extend(v1_orders)
-                logger.info(f"✅ 미러링 V1 일반에서 {len(v1_orders)}개 예약 주문 발견")
-        except Exception as e:
-            logger.warning(f"미러링 V1 일반 예약 주문 조회 실패: {e}")
-        
-        # 🔥 3. V1 TP/SL 주문
-        try:
-            v1_tp_sl = await self.get_plan_orders_v1_working(symbol, 'profit_loss')
-            if v1_tp_sl:
-                all_orders.extend(v1_tp_sl)
-                logger.info(f"✅ 미러링 V1 TP/SL에서 {len(v1_tp_sl)}개 주문 발견")
-        except Exception as e:
-            logger.warning(f"미러링 V1 TP/SL 주문 조회 실패: {e}")
-        
-        # 중복 제거
-        seen = set()
-        unique_orders = []
-        for order in all_orders:
-            if order is None:
-                continue
-                
-            order_id = (order.get('orderId') or 
-                       order.get('planOrderId') or 
-                       order.get('id') or
-                       str(order.get('cTime', '')))
-            
-            if order_id and order_id not in seen:
-                seen.add(order_id)
-                unique_orders.append(order)
-                logger.debug(f"📝 미러링 최종 고유 예약 주문 추가: {order_id}")
-        
-        logger.info(f"🔥 미러링 최종 발견된 고유한 트리거 주문: {len(unique_orders)}건")
-        
-        # 🔥🔥🔥 수정: 예약 주문이 없을 때 경고 로그 제거
-        if unique_orders:
-            logger.info("📋 미러링 발견된 예약 주문 목록:")
-            for i, order in enumerate(unique_orders, 1):
-                order_id = order.get('orderId', order.get('planOrderId', order.get('id', 'unknown')))
-                side = order.get('side', order.get('tradeSide', 'unknown'))
-                trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
-                size = order.get('size', order.get('volume', 'unknown'))
-                order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
-                leverage = order.get('leverage', 'unknown')
-                
-                # 🔥🔥🔥 TP/SL 정보도 로깅
-                tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
-                sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
-                
-                logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 수량: {size}, 트리거가: {trigger_price}, 타입: {order_type}, 레버리지: {leverage}x")
-                if tp_price:
-                    logger.info(f"     🎯 TP: {tp_price}")
-                if sl_price:
-                    logger.info(f"     🛡️ SL: {sl_price}")
-        else:
-            # 🔥🔥🔥 수정: WARNING → DEBUG로 변경하여 빨간 로그 제거
-            logger.debug("📝 미러링 현재 예약 주문이 없습니다.")
-        
-        return unique_orders
-    
-    async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """플랜 주문(예약 주문) 조회 - 모든 방법 시도"""
-        try:
-            # 모든 트리거 주문 조회
-            all_orders = await self.get_all_trigger_orders(symbol)
-            
-            # plan_type이 지정되면 필터링
-            if plan_type == 'profit_loss':
-                filtered = [o for o in all_orders if o and (o.get('planType') == 'profit_loss' or o.get('isPlan') == 'profit_loss')]
-                return filtered
-            elif plan_type:
-                filtered = [o for o in all_orders if o and o.get('planType') == plan_type]
-                return filtered
-            
-            return all_orders
-            
-        except Exception as e:
-            logger.error(f"미러링 플랜 주문 조회 실패, 빈 리스트 반환: {e}")
-            return []
-    
-    async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 클로징 주문 분류 강화 + 레버리지 정보"""
-        try:
-            symbol = symbol or self.config.symbol
-            
-            logger.info(f"🔍 미러링 모든 예약 주문 및 TP/SL 조회 시작: {symbol}")
-            
-            # 모든 트리거 주문 조회 (개선된 방식)
-            all_orders = await self.get_all_trigger_orders(symbol)
-            
-            # TP/SL과 일반 예약주문 분류 - 클로징 주문 감지 강화
-            tp_sl_orders = []
-            plan_orders = []
-            
-            # 🔥🔥🔥 현재 레버리지 정보 조회 (주문에 레버리지가 없는 경우 사용)
-            current_leverage = await self.get_position_leverage(symbol)
-            
-            for order in all_orders:
-                if order is None:
-                    continue
-                    
-                is_tp_sl = False
-                
-                # 🔥🔥🔥 클로징 주문 분류 조건들 강화
-                side = order.get('side', order.get('tradeSide', '')).lower()
-                reduce_only = order.get('reduceOnly', False)
-                order_type = order.get('orderType', order.get('planType', '')).lower()
-                
-                # 🔥🔥🔥 주문에 레버리지 정보 추가 (없는 경우)
-                if not order.get('leverage'):
-                    order['leverage'] = str(current_leverage)
-                    logger.info(f"주문에 레버리지 정보 추가: {order.get('orderId', order.get('planOrderId'))} → {current_leverage}x")
-                
-                # TP/SL 분류 조건들 강화
-                if (order.get('planType') == 'profit_loss' or 
-                    order.get('isPlan') == 'profit_loss' or
-                    'close' in side or
-                    'tp/' in side or  # TP/SL 키워드 추가
-                    'sl/' in side or
-                    'profit' in side or
-                    'loss' in side or
-                    'close_long' in side or
-                    'close_short' in side or
-                    reduce_only == True or
-                    reduce_only == 'true' or
-                    str(reduce_only).lower() == 'true' or
-                    'profit' in order_type or
-                    'loss' in order_type or
-                    'close' in order_type):
-                    is_tp_sl = True
-                
-                # 🔥🔥🔥 TP/SL 가격이 설정된 경우 처리 개선
-                tp_price = self._extract_tp_price(order)
-                sl_price = self._extract_sl_price(order)
-                
-                # TP/SL이 설정된 일반 주문은 plan_orders에 분류하되 TP/SL 정보 보존
-                if tp_price or sl_price:
-                    logger.info(f"🎯 미러링 TP/SL 설정이 있는 예약 주문 발견: {order.get('orderId', order.get('planOrderId'))}")
-                    if tp_price:
-                        tp_price_str = f"{tp_price:.2f}" if tp_price else "0"
-                        logger.info(f"   TP: {tp_price_str}")
-                    if sl_price:
-                        sl_price_str = f"{sl_price:.2f}" if sl_price else "0"
-                        logger.info(f"   SL: {sl_price_str}")
-                
-                if is_tp_sl:
-                    tp_sl_orders.append(order)
-                    logger.info(f"📊 미러링 TP/SL 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))} (레버리지: {order.get('leverage')}x)")
-                else:
-                    plan_orders.append(order)
-                    logger.info(f"📈 미러링 일반 예약 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))} (레버리지: {order.get('leverage')}x)")
-            
-            # 통합 결과
-            result = {
-                'plan_orders': plan_orders,
-                'tp_sl_orders': tp_sl_orders,
-                'total_count': len(all_orders)
-            }
-            
-            logger.info(f"🔥 미러링 전체 예약 주문 분류 완료: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
-            
-            # 각 카테고리별 상세 로깅
-            if plan_orders:
-                logger.info("📈 미러링 일반 예약 주문 목록:")
-                for i, order in enumerate(plan_orders, 1):
-                    order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
-                    side = order.get('side', order.get('tradeSide', 'unknown'))
-                    price = order.get('price', order.get('triggerPrice', 'unknown'))
-                    leverage = order.get('leverage', 'unknown')
-                    
-                    # 🔥🔥🔥 강화된 TP/SL 추출
-                    tp_price = self._extract_tp_price(order)
-                    sl_price = self._extract_sl_price(order)
-                    
-                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 가격: {price}, 레버리지: {leverage}x")
-                    if tp_price:
-                        tp_price_str = f"{tp_price:.2f}" if tp_price else "0"
-                        logger.info(f"     🎯 TP 설정: {tp_price_str}")
-                    if sl_price:
-                        sl_price_str = f"{sl_price:.2f}" if sl_price else "0"
-                        logger.info(f"     🛡️ SL 설정: {sl_price_str}")
-            
-            if tp_sl_orders:
-                logger.info("📊 미러링 TP/SL 주문 목록:")
-                for i, order in enumerate(tp_sl_orders, 1):
-                    order_id = order.get('orderId', order.get('planOrderId', 'unknown'))
-                    side = order.get('side', order.get('tradeSide', 'unknown'))
-                    trigger_price = order.get('triggerPrice', 'unknown')
-                    leverage = order.get('leverage', 'unknown')
-                    logger.info(f"  {i}. ID: {order_id}, 방향: {side}, 트리거가: {trigger_price}, 레버리지: {leverage}x")
+            # 재시도 실패 알림
+            if self.telegram_bot:
+                await self.telegram_bot.send_message(
+                    f"⚠️ 슬리피지 보호 재시도 실패\n"
+                    f"방향: {'매수' if size > 0 else '매도'}\n"
+                    f"수량: {abs(size)}\n"
+                    f"최종적으로 시장가 주문으로 체결됨"
+                )
             
             return result
             
         except Exception as e:
-            logger.error(f"미러링 전체 플랜 주문 조회 실패: {e}")
-            return {
-                'plan_orders': [],
-                'tp_sl_orders': [],
-                'total_count': 0,
-                'error': str(e)
-            }
+            logger.error(f"슬리피지 보호 주문 실패: {e}")
+            # 실패 시 기본 시장가 주문으로 폴백
+            return await self.place_order(contract, size, None, reduce_only, use_slippage_protection=False)
     
-    def _extract_tp_price(self, order: Dict) -> Optional[float]:
-        """🔥🔥🔥 TP 가격 추출 - 모든 가능한 필드 확인"""
+    async def _send_market_order_alert(self, side: str, size: int, current_price: float, 
+                                      protection_msg: str, contract: str):
+        """🔥🔥🔥 시장가 주문 체결 텔레그램 알림"""
         try:
-            # 가능한 TP 필드명들
-            tp_fields = [
-                'presetStopSurplusPrice',  # 주요 필드
-                'stopSurplusPrice',
-                'takeProfitPrice',
-                'tpPrice',
-                'stopProfit',
-                'profitPrice'
-            ]
+            if self.telegram_bot:
+                side_text = '매수' if side == 'buy' else '매도'
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                alert_msg = f"""🛡️ 슬리피지 보호 시장가 체결 알림
+
+⏰ 시간: {current_time}
+📊 종목: {contract}
+🔄 방향: {side_text}
+📦 수량: {size}
+💰 현재가: ${current_price:,.2f}
+
+🚨 사유: {protection_msg}
+
+💡 지정가 주문이 {self.LIMIT_ORDER_WAIT_TIME}초 대기 후 미체결되어 
+   안전한 시장가 주문으로 전환되었습니다.
+   
+📈 이는 정상적인 슬리피지 보호 작동입니다."""
+                
+                await self.telegram_bot.send_message(alert_msg)
+                logger.info(f"시장가 체결 알림 전송 완료: {side_text} {size}")
+        except Exception as e:
+            logger.error(f"시장가 체결 알림 전송 실패: {e}")
+    
+    async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
+                                       leverage: int, current_gate_price: float) -> Dict:
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 클로즈 주문 처리 강화 + 정확한 포지션 매칭"""
+        try:
+            # 비트겟 주문 정보 추출
+            order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
+            side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
             
+            # 트리거 가격 추출
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if bitget_order.get(price_field):
+                    trigger_price = float(bitget_order.get(price_field))
+                    break
+            
+            if trigger_price <= 0:
+                raise Exception("유효한 트리거 가격을 찾을 수 없습니다")
+            
+            # 🔥 TP/SL 정보 정확하게 추출
+            tp_price = None
+            sl_price = None
+            
+            # TP 추출 - 비트겟 공식 필드
+            tp_fields = ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice']
             for field in tp_fields:
-                value = order.get(field)
+                value = bitget_order.get(field)
                 if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
                     try:
                         tp_price = float(value)
                         if tp_price > 0:
-                            logger.debug(f"미러링 TP 가격 추출 성공: {field} = {tp_price}")
-                            return tp_price
+                            logger.info(f"🎯 비트겟 TP 추출: {field} = ${tp_price:.2f}")
+                            break
                     except:
                         continue
             
-            return None
-            
-        except Exception as e:
-            logger.debug(f"미러링 TP 가격 추출 오류: {e}")
-            return None
-    
-    def _extract_sl_price(self, order: Dict) -> Optional[float]:
-        """🔥🔥🔥 SL 가격 추출 - 모든 가능한 필드 확인"""
-        try:
-            # 가능한 SL 필드명들
-            sl_fields = [
-                'presetStopLossPrice',  # 주요 필드
-                'stopLossPrice',
-                'stopPrice',
-                'slPrice',
-                'lossPrice'
-            ]
-            
+            # SL 추출 - 비트겟 공식 필드
+            sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice']
             for field in sl_fields:
-                value = order.get(field)
+                value = bitget_order.get(field)
                 if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
                     try:
                         sl_price = float(value)
                         if sl_price > 0:
-                            logger.debug(f"미러링 SL 가격 추출 성공: {field} = {sl_price}")
-                            return sl_price
+                            logger.info(f"🛡️ 비트겟 SL 추출: {field} = ${sl_price:.2f}")
+                            break
                     except:
                         continue
             
-            return None
+            # 🔥🔥🔥 클로즈 주문 여부 및 방향 판단 강화
+            reduce_only = bitget_order.get('reduceOnly', False)
+            is_close_order = (
+                'close' in side or 
+                reduce_only is True or 
+                reduce_only == 'true' or
+                str(reduce_only).lower() == 'true'
+            )
+            
+            # 🔥🔥🔥 클로즈 주문인 경우 현재 포지션 크기 기반 처리
+            if is_close_order:
+                final_size, reduce_only_flag = await self._calculate_close_order_size_based_on_position(
+                    bitget_order, gate_size, side
+                )
+                logger.info(f"🔄 클로즈 주문 처리: 원본크기={gate_size} → 조정크기={final_size}")
+            else:
+                # 오픈 주문: 방향 고려
+                reduce_only_flag = False
+                if 'short' in side or 'sell' in side:
+                    final_size = -abs(gate_size)
+                    logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {final_size})")
+                else:
+                    final_size = abs(gate_size)
+                    logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {final_size})")
+            
+            # Gate.io 트리거 타입 결정
+            gate_trigger_type = "ge" if trigger_price > current_gate_price else "le"
+            
+            logger.info(f"🔍 완벽 미러링 주문 생성:")
+            logger.info(f"   - 비트겟 ID: {order_id}")
+            logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
+            logger.info(f"   - 트리거가: ${trigger_price:.2f}")
+            
+            # TP/SL 표시 수정
+            tp_display = f"${tp_price:.2f}" if tp_price is not None else "없음"
+            sl_display = f"${sl_price:.2f}" if sl_price is not None else "없음"
+            
+            logger.info(f"   - TP: {tp_display}")
+            logger.info(f"   - SL: {sl_display}")
+            logger.info(f"   - 게이트 사이즈: {final_size}")
+            
+            # 🔥 TP/SL 포함 통합 주문 생성
+            if tp_price or sl_price:
+                logger.info(f"🎯 TP/SL 포함 통합 주문 생성")
+                
+                gate_order = await self.create_conditional_order_with_tp_sl(
+                    trigger_price=trigger_price,
+                    order_size=final_size,
+                    tp_price=tp_price,
+                    sl_price=sl_price,
+                    reduce_only=reduce_only_flag,
+                    trigger_type=gate_trigger_type
+                )
+                
+                # TP/SL 설정 확인
+                actual_tp = gate_order.get('stop_profit_price', '')
+                actual_sl = gate_order.get('stop_loss_price', '')
+                has_tp_sl = bool(actual_tp or actual_sl)
+                
+                return {
+                    'success': True,
+                    'gate_order_id': gate_order.get('id'),
+                    'gate_order': gate_order,
+                    'has_tp_sl': has_tp_sl,
+                    'tp_price': tp_price,
+                    'sl_price': sl_price,
+                    'actual_tp_price': actual_tp,
+                    'actual_sl_price': actual_sl,
+                    'is_close_order': is_close_order,
+                    'reduce_only': reduce_only_flag,
+                    'perfect_mirror': has_tp_sl,
+                    'position_adjusted': is_close_order  # 포지션 기반 조정 여부
+                }
+                
+            else:
+                # TP/SL 없는 일반 주문
+                logger.info(f"📝 일반 예약 주문 생성 (TP/SL 없음)")
+                
+                gate_order = await self.create_price_triggered_order(
+                    trigger_price=trigger_price,
+                    order_size=final_size,
+                    reduce_only=reduce_only_flag,
+                    trigger_type=gate_trigger_type
+                )
+                
+                return {
+                    'success': True,
+                    'gate_order_id': gate_order.get('id'),
+                    'gate_order': gate_order,
+                    'has_tp_sl': False,
+                    'is_close_order': is_close_order,
+                    'reduce_only': reduce_only_flag,
+                    'perfect_mirror': True,  # TP/SL이 없으면 완벽
+                    'position_adjusted': is_close_order
+                }
             
         except Exception as e:
-            logger.debug(f"미러링 SL 가격 추출 오류: {e}")
-            return None
+            logger.error(f"완벽한 TP/SL 미러링 주문 생성 실패: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'has_tp_sl': False,
+                'perfect_mirror': False,
+                'position_adjusted': False
+            }
     
-    async def get_api_connection_status(self) -> Dict:
-        """🔥🔥🔥 API 연결 상태 조회"""
-        return {
-            'healthy': self.api_connection_healthy,
-            'consecutive_failures': self.consecutive_failures,
-            'last_successful_call': self.last_successful_call.isoformat(),
-            'api_keys_validated': self.api_keys_validated,
-            'max_failures_threshold': self.max_consecutive_failures
-        }
+    async def _calculate_close_order_size_based_on_position(self, bitget_order: Dict, 
+                                                           original_gate_size: int, 
+                                                           side: str) -> Tuple[int, bool]:
+        """🔥🔥🔥 현재 포지션 크기 기반 클로즈 주문 크기 계산 - 정확한 BTC 매칭"""
+        try:
+            # 현재 게이트 포지션 조회
+            gate_positions = await self.get_positions("BTC_USDT")
+            
+            if not gate_positions:
+                logger.warning(f"⚠️ 게이트에 포지션이 없어 원본 크기 사용: {original_gate_size}")
+                # 포지션이 없으면 원본 크기로 클로즈 주문 생성 (reduce_only=True)
+                if 'short' in side.lower() or 'sell' in side.lower() or 'close_long' in side.lower():
+                    return -abs(original_gate_size), True
+                else:
+                    return abs(original_gate_size), True
+            
+            position = gate_positions[0]
+            current_gate_size = int(position.get('size', 0))
+            
+            if current_gate_size == 0:
+                logger.warning(f"⚠️ 게이트 포지션 크기가 0이어서 원본 크기 사용: {original_gate_size}")
+                if 'short' in side.lower() or 'sell' in side.lower() or 'close_long' in side.lower():
+                    return -abs(original_gate_size), True
+                else:
+                    return abs(original_gate_size), True
+            
+            # 현재 포지션 방향 확인
+            current_position_side = 'long' if current_gate_size > 0 else 'short'
+            current_position_abs_size = abs(current_gate_size)
+            
+            logger.info(f"🔍 현재 게이트 포지션: {current_gate_size} ({current_position_side})")
+            
+            # 🔥🔥🔥 비트겟 클로즈 주문에서 실제 클로즈할 BTC 크기 추출
+            bitget_close_btc = float(bitget_order.get('size', 0))
+            
+            # 🔥🔥🔥 비트겟 클로즈 크기를 게이트 계약 수로 변환
+            # 1 BTC = 10,000 계약 (Gate.io 표준)
+            bitget_close_contracts = int(bitget_close_btc * 10000)
+            
+            logger.info(f"🔍 비트겟 클로즈 요청: {bitget_close_btc} BTC = {bitget_close_contracts} 계약")
+            
+            # 부분 청산 비율 계산
+            if bitget_close_contracts > 0 and current_position_abs_size > 0:
+                close_ratio = min(bitget_close_contracts / current_position_abs_size, 1.0)
+                logger.info(f"🔍 부분 청산 비율: {close_ratio*100:.1f}% (요청: {bitget_close_contracts}, 현재: {current_position_abs_size})")
+            else:
+                close_ratio = 1.0
+                logger.info(f"🔍 전체 청산으로 처리")
+            
+            # 🔥🔥🔥 게이트 실제 클로즈 크기 계산
+            actual_close_size = int(current_position_abs_size * close_ratio)
+            
+            # 최소 1개는 클로즈
+            if actual_close_size == 0:
+                actual_close_size = 1
+            
+            # 현재 포지션보다 클 수 없음
+            if actual_close_size > current_position_abs_size:
+                actual_close_size = current_position_abs_size
+            
+            # 🔥🔥🔥 클로즈 주문 방향 결정 (포지션과 반대 방향) - 강화된 로직
+            if current_position_side == 'long':
+                # 롱 포지션 클로즈 → 매도 (음수)
+                final_size = -actual_close_size
+                logger.info(f"🔴 롱 포지션 클로즈: {actual_close_size} → 매도 주문 (음수: {final_size})")
+            else:
+                # 숏 포지션 클로즈 → 매수 (양수)
+                final_size = actual_close_size
+                logger.info(f"🟢 숏 포지션 클로즈: {actual_close_size} → 매수 주문 (양수: {final_size})")
+            
+            # 🔥🔥🔥 비트겟 side와 현재 포지션 방향 검증
+            bitget_side = side.lower()
+            if 'close_long' in bitget_side and current_position_side != 'long':
+                logger.warning(f"⚠️ 비트겟은 close_long인데 현재 포지션은 {current_position_side}")
+            elif 'close_short' in bitget_side and current_position_side != 'short':
+                logger.warning(f"⚠️ 비트겟은 close_short인데 현재 포지션은 {current_position_side}")
+            
+            logger.info(f"✅ 포지션 기반 클로즈 주문 크기 계산 완료:")
+            logger.info(f"   - 현재 포지션: {current_gate_size}")
+            logger.info(f"   - 비트겟 클로즈 BTC: {bitget_close_btc}")
+            logger.info(f"   - 비트겟 클로즈 계약: {bitget_close_contracts}")
+            logger.info(f"   - 클로즈 비율: {close_ratio*100:.1f}%")
+            logger.info(f"   - 최종 클로즈 크기: {final_size}")
+            
+            return final_size, True  # reduce_only=True
+            
+        except Exception as e:
+            logger.error(f"포지션 기반 클로즈 주문 크기 계산 실패: {e}")
+            # 실패 시 원본 크기 사용
+            if 'short' in side.lower() or 'sell' in side.lower() or 'close_long' in side.lower():
+                return -abs(original_gate_size), True
+            else:
+                return abs(original_gate_size), True
     
-    async def reset_connection_status(self):
-        """🔥🔥🔥 연결 상태 리셋"""
-        self.api_connection_healthy = True
-        self.consecutive_failures = 0
-        self.last_successful_call = datetime.now()
-        logger.info("비트겟 미러링 API 연결 상태 리셋 완료")
+    async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
+                                                tp_price: Optional[float] = None,
+                                                sl_price: Optional[float] = None,
+                                                reduce_only: bool = False,
+                                                trigger_type: str = "ge") -> Dict:
+        """🔥 TP/SL 포함 조건부 주문 생성 - Gate.io 공식 API"""
+        try:
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            
+            # 기본 주문 데이터
+            initial_data = {
+                "type": "market",  # 시장가 주문
+                "contract": "BTC_USDT",
+                "size": order_size,
+                "price": str(trigger_price)  # Gate.io는 시장가에도 price 필수
+            }
+            
+            if reduce_only:
+                initial_data["reduce_only"] = True
+            
+            # 트리거 rule 설정 (Gate.io 공식 문서)
+            rule_value = 1 if trigger_type == "ge" else 2
+            
+            data = {
+                "initial": initial_data,
+                "trigger": {
+                    "strategy_type": 0,  # 가격 기반 트리거
+                    "price_type": 0,     # 마크 가격 기준
+                    "price": str(trigger_price),
+                    "rule": rule_value   # 1: >=, 2: <=
+                }
+            }
+            
+            # 🔥 TP/SL 설정 (Gate.io 공식 필드)
+            if tp_price and tp_price > 0:
+                data["stop_profit_price"] = str(tp_price)
+                logger.info(f"🎯 TP 설정: ${tp_price:.2f}")
+            
+            if sl_price and sl_price > 0:
+                data["stop_loss_price"] = str(sl_price)
+                logger.info(f"🛡️ SL 설정: ${sl_price:.2f}")
+            
+            logger.info(f"Gate.io TP/SL 통합 주문 데이터: {json.dumps(data, indent=2)}")
+            
+            response = await self._request('POST', endpoint, data=data)
+            
+            logger.info(f"✅ Gate.io TP/SL 통합 주문 생성 성공: {response.get('id')}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"TP/SL 포함 조건부 주문 생성 실패: {e}")
+            raise
+    
+    async def create_price_triggered_order(self, trigger_price: float, order_size: int,
+                                         reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        """일반 가격 트리거 주문 생성"""
+        try:
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            
+            initial_data = {
+                "type": "market",
+                "contract": "BTC_USDT",
+                "size": order_size,
+                "price": str(trigger_price)
+            }
+            
+            if reduce_only:
+                initial_data["reduce_only"] = True
+            
+            rule_value = 1 if trigger_type == "ge" else 2
+            
+            data = {
+                "initial": initial_data,
+                "trigger": {
+                    "strategy_type": 0,
+                    "price_type": 0,
+                    "price": str(trigger_price),
+                    "rule": rule_value
+                }
+            }
+            
+            response = await self._request('POST', endpoint, data=data)
+            return response
+            
+        except Exception as e:
+            logger.error(f"가격 트리거 주문 생성 실패: {e}")
+            raise
+    
+    async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
+        """가격 트리거 주문 조회"""
+        try:
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            params = {
+                "contract": contract,
+                "status": status
+            }
+            
+            response = await self._request('GET', endpoint, params=params)
+            return response if isinstance(response, list) else []
+            
+        except Exception as e:
+            logger.error(f"가격 트리거 주문 조회 실패: {e}")
+            return []
+    
+    async def cancel_price_triggered_order(self, order_id: str) -> Dict:
+        """가격 트리거 주문 취소"""
+        try:
+            endpoint = f"/api/v4/futures/usdt/price_orders/{order_id}"
+            response = await self._request('DELETE', endpoint)
+            logger.info(f"✅ Gate.io 가격 트리거 주문 취소 성공: {order_id}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"가격 트리거 주문 취소 실패: {order_id} - {e}")
+            raise
+    
+    async def place_order(self, contract: str, size: int, price: Optional[float] = None,
+                         reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0,
+                         use_slippage_protection: bool = True) -> Dict:
+        """🔥🔥🔥 시장가/지정가 주문 생성 - 강화된 슬리피지 보호"""
+        try:
+            # 🔥🔥🔥 시장가 주문이고 슬리피지 보호가 활성화된 경우
+            if price is None and use_slippage_protection and self.SLIPPAGE_CHECK_ENABLED:
+                logger.info(f"슬리피지 보호가 적용된 시장가 주문 실행: {size}")
+                return await self._place_order_with_slippage_protection(contract, size, reduce_only)
+            
+            # 기본 주문 로직
+            endpoint = "/api/v4/futures/usdt/orders"
+            
+            data = {
+                "contract": contract,
+                "size": size
+            }
+            
+            if price is not None:
+                data["price"] = str(price)
+                data["tif"] = tif
+            
+            if reduce_only:
+                data["reduce_only"] = True
+            
+            if iceberg > 0:
+                data["iceberg"] = iceberg
+            
+            response = await self._request('POST', endpoint, data=data)
+            return response
+            
+        except Exception as e:
+            logger.error(f"Gate.io 주문 생성 실패: {e}")
+            raise
+    
+    async def close_position(self, contract: str, size: Optional[int] = None) -> Dict:
+        """포지션 종료 - 슬리피지 보호 적용"""
+        try:
+            positions = await self.get_positions(contract)
+            
+            if not positions or positions[0].get('size', 0) == 0:
+                return {"status": "no_position"}
+            
+            position = positions[0]
+            position_size = int(position['size'])
+            
+            if size is None:
+                close_size = -position_size
+            else:
+                if position_size > 0:
+                    close_size = -min(abs(size), position_size)
+                else:
+                    close_size = min(abs(size), abs(position_size))
+            
+            # 🔥🔥🔥 슬리피지 보호가 적용된 포지션 클로즈
+            logger.info(f"슬리피지 보호 포지션 클로즈: {close_size}")
+            result = await self.place_order(
+                contract=contract,
+                size=close_size,
+                price=None,
+                reduce_only=True,
+                use_slippage_protection=True  # 슬리피지 보호 활성화
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"포지션 종료 실패: {e}")
+            raise
+    
+    async def get_current_position_details(self, contract: str = "BTC_USDT") -> Dict:
+        """🔥🔥🔥 현재 포지션 상세 정보 조회"""
+        try:
+            positions = await self.get_positions(contract)
+            
+            if not positions:
+                return {
+                    'has_position': False,
+                    'size': 0,
+                    'abs_size': 0,
+                    'side': 'none',
+                    'entry_price': 0,
+                    'unrealized_pnl': 0
+                }
+            
+            position = positions[0]
+            size = int(position.get('size', 0))
+            
+            if size == 0:
+                return {
+                    'has_position': False,
+                    'size': 0,
+                    'abs_size': 0,
+                    'side': 'none',
+                    'entry_price': 0,
+                    'unrealized_pnl': 0
+                }
+            
+            side = 'long' if size > 0 else 'short'
+            abs_size = abs(size)
+            entry_price = float(position.get('entry_price', 0))
+            unrealized_pnl = float(position.get('unrealised_pnl', 0))
+            
+            return {
+                'has_position': True,
+                'size': size,
+                'abs_size': abs_size,
+                'side': side,
+                'entry_price': entry_price,
+                'unrealized_pnl': unrealized_pnl,
+                'raw_position': position
+            }
+            
+        except Exception as e:
+            logger.error(f"현재 포지션 상세 정보 조회 실패: {e}")
+            return {
+                'has_position': False,
+                'size': 0,
+                'abs_size': 0,
+                'side': 'error',
+                'entry_price': 0,
+                'unrealized_pnl': 0,
+                'error': str(e)
+            }
     
     async def close(self):
         """세션 종료"""
         if self.session:
             await self.session.close()
-            logger.info("Bitget 미러링 클라이언트 세션 종료")
+            logger.info("Gate.io 미러링 클라이언트 세션 종료")
