@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 클로즈 주문 방향 수정 완료"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 포지션 크기 기반 클로즈 주문 처리 강화"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -57,7 +57,7 @@ class MirrorTradingUtils:
         # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값도 상향
         self.ABNORMAL_PRICE_DIFF_THRESHOLD = 2000.0  # 1000달러 → 2000달러로 상향
         
-        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 클로즈 주문 방향 수정 완료")
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 포지션 크기 기반 클로즈 주문 처리 강화")
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
         """비트겟 예약 주문에서 TP/SL 정보 추출"""
@@ -531,6 +531,96 @@ class MirrorTradingUtils:
                 'reduce_only': False
             }
     
+    async def calculate_gate_order_size_for_close_order(self, current_gate_position_size: int, 
+                                                       close_order_details: Dict, 
+                                                       bitget_order: Dict) -> Tuple[int, bool]:
+        """🔥🔥🔥 클로즈 주문을 위한 게이트 주문 크기 계산 - 현재 포지션 크기 기반"""
+        try:
+            position_side = close_order_details['position_side']  # 'long' 또는 'short'
+            order_direction = close_order_details['order_direction']  # 'buy' 또는 'sell'
+            
+            self.logger.info(f"🎯 클로즈 주문 크기 계산: 현재 게이트 포지션={current_gate_position_size}, 포지션={position_side}, 방향={order_direction}")
+            
+            # 현재 포지션이 0이면 클로즈 주문 불가
+            if current_gate_position_size == 0:
+                self.logger.warning(f"⚠️ 현재 포지션이 0이므로 클로즈 주문 불가")
+                return 0, True
+            
+            # 현재 포지션 방향 확인
+            current_position_side = 'long' if current_gate_position_size > 0 else 'short'
+            current_position_abs_size = abs(current_gate_position_size)
+            
+            # 포지션 방향과 클로즈 주문 방향이 일치하는지 확인
+            if current_position_side != position_side:
+                self.logger.warning(f"⚠️ 포지션 방향 불일치: 현재={current_position_side}, 예상={position_side}")
+                # 현재 포지션에 맞게 조정
+                actual_position_side = current_position_side
+            else:
+                actual_position_side = position_side
+            
+            # 🔥🔥🔥 비트겟 클로즈 주문에서 부분 청산 비율 확인
+            bitget_size = float(bitget_order.get('size', 0))
+            
+            # 비트겟에서 현재 포지션 조회하여 부분 청산 비율 계산
+            try:
+                bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+                bitget_current_position = None
+                
+                for pos in bitget_positions:
+                    pos_side = pos.get('holdSide', '').lower()
+                    if pos_side == actual_position_side and float(pos.get('total', 0)) > 0:
+                        bitget_current_position = pos
+                        break
+                
+                if bitget_current_position:
+                    bitget_position_size = float(bitget_current_position.get('total', 0))
+                    
+                    # 부분 청산 비율 계산
+                    if bitget_position_size > 0:
+                        close_ratio = min(bitget_size / bitget_position_size, 1.0)
+                        self.logger.info(f"🔍 부분 청산 비율: {close_ratio*100:.1f}% (비트겟 포지션: {bitget_position_size}, 클로즈 크기: {bitget_size})")
+                    else:
+                        close_ratio = 1.0
+                        self.logger.warning(f"⚠️ 비트겟 포지션 크기가 0, 전체 청산으로 처리")
+                else:
+                    # 비트겟 포지션을 찾을 수 없으면 전체 청산
+                    close_ratio = 1.0
+                    self.logger.warning(f"⚠️ 비트겟에서 해당 포지션을 찾을 수 없음, 전체 청산으로 처리")
+                    
+            except Exception as e:
+                # 비트겟 포지션 조회 실패 시 전체 청산
+                close_ratio = 1.0
+                self.logger.error(f"비트겟 포지션 조회 실패, 전체 청산으로 처리: {e}")
+            
+            # 🔥🔥🔥 게이트 클로즈 주문 크기 계산
+            gate_close_size = int(current_position_abs_size * close_ratio)
+            
+            # 최소 1개는 클로즈
+            if gate_close_size == 0:
+                gate_close_size = 1
+            
+            # 현재 포지션보다 클 수 없음
+            if gate_close_size > current_position_abs_size:
+                gate_close_size = current_position_abs_size
+            
+            # 🔥🔥🔥 클로즈 주문 방향 결정 (포지션과 반대 방향)
+            if actual_position_side == 'long':
+                # 롱 포지션 클로즈 → 매도 (음수)
+                final_gate_size = -gate_close_size
+                self.logger.info(f"🔴 롱 포지션 클로즈: {gate_close_size} → 매도 주문 (음수: {final_gate_size})")
+            else:
+                # 숏 포지션 클로즈 → 매수 (양수)
+                final_gate_size = gate_close_size
+                self.logger.info(f"🟢 숏 포지션 클로즈: {gate_close_size} → 매수 주문 (양수: {final_gate_size})")
+            
+            self.logger.info(f"✅ 클로즈 주문 크기 계산 완료: 현재 포지션={current_gate_position_size} → 클로즈 크기={final_gate_size} (비율: {close_ratio*100:.1f}%)")
+            
+            return final_gate_size, True  # reduce_only=True
+            
+        except Exception as e:
+            self.logger.error(f"클로즈 주문 크기 계산 실패: {e}")
+            return current_gate_position_size, True
+    
     async def calculate_gate_order_size_fixed(self, side: str, base_size: int, is_close_order: bool = False) -> Tuple[int, bool]:
         """🔥🔥🔥 게이트 주문 수량 계산 - 클로즈 주문 방향 완전 수정"""
         try:
@@ -619,6 +709,59 @@ class MirrorTradingUtils:
         except Exception as e:
             self.logger.error(f"Gate.io 트리거 타입 결정 실패: {e}")
             return "ge"
+    
+    async def get_current_gate_position_size(self, gate_mirror_client, position_side: str = None) -> Tuple[int, str]:
+        """🔥🔥🔥 현재 게이트 포지션 크기 조회"""
+        try:
+            gate_positions = await gate_mirror_client.get_positions(self.GATE_CONTRACT)
+            
+            if not gate_positions:
+                self.logger.info("🔍 게이트에 포지션이 없음")
+                return 0, 'none'
+            
+            position = gate_positions[0]
+            current_size = int(position.get('size', 0))
+            
+            if current_size == 0:
+                self.logger.info("🔍 게이트 포지션 크기가 0")
+                return 0, 'none'
+            
+            # 포지션 방향 확인
+            current_side = 'long' if current_size > 0 else 'short'
+            
+            # 특정 방향이 요청된 경우 매칭 확인
+            if position_side and current_side != position_side:
+                self.logger.warning(f"⚠️ 요청된 포지션 방향({position_side})과 현재 포지션 방향({current_side})이 다름")
+                return current_size, current_side  # 실제 정보 반환
+            
+            self.logger.info(f"✅ 현재 게이트 포지션: {current_size} ({current_side})")
+            return current_size, current_side
+            
+        except Exception as e:
+            self.logger.error(f"현재 게이트 포지션 크기 조회 실패: {e}")
+            return 0, 'error'
+    
+    async def validate_close_order_against_position(self, close_order_details: Dict, 
+                                                   current_gate_position_size: int) -> Tuple[bool, str]:
+        """🔥🔥🔥 클로즈 주문과 현재 포지션 간의 유효성 검증"""
+        try:
+            if current_gate_position_size == 0:
+                return False, "현재 포지션이 없어 클로즈 주문 불가"
+            
+            # 현재 포지션 방향
+            current_position_side = 'long' if current_gate_position_size > 0 else 'short'
+            
+            # 클로즈 주문에서 예상하는 포지션 방향
+            expected_position_side = close_order_details['position_side']
+            
+            if current_position_side != expected_position_side:
+                return True, f"포지션 방향 불일치하지만 현재 포지션({current_position_side})에 맞게 조정 가능"
+            
+            return True, f"클로즈 주문 유효: {current_position_side} 포지션 → {close_order_details['order_direction']} 주문"
+            
+        except Exception as e:
+            self.logger.error(f"클로즈 주문 유효성 검증 실패: {e}")
+            return False, f"검증 오류: {str(e)}"
     
     async def calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
         """실제 달러 마진 비율 동적 계산"""
