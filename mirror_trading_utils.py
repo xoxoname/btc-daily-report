@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 시세 차이 제한 완전 제거"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 정확한 심볼 사용"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -40,8 +40,8 @@ class MirrorTradingUtils:
         self.gate = gate_client
         self.logger = logging.getLogger('mirror_trading_utils')
         
-        # 상수 설정 - 🔥🔥🔥 비트겟 선물 심볼 수정
-        self.SYMBOL = "BTCUSDT_UMCBL"  # Bitget USDT-M Futures 심볼
+        # 🔥🔥🔥 정확한 심볼 설정
+        self.SYMBOL = "BTCUSDT"  # Bitget 정확한 심볼
         self.GATE_CONTRACT = "BTC_USDT"
         self.MIN_MARGIN = 1.0
         self.MAX_PRICE_DIFF_PERCENT = 50.0  # 🔥🔥🔥 매우 관대하게 설정 (50%)
@@ -57,7 +57,7 @@ class MirrorTradingUtils:
         # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값도 매우 관대하게
         self.ABNORMAL_PRICE_DIFF_THRESHOLD = 10000.0  # 2000달러 → 10000달러로 대폭 상향
         
-        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 시세 차이 제한 완전 제거")
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 정확한 심볼 사용")
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
         """비트겟 예약 주문에서 TP/SL 정보 추출"""
