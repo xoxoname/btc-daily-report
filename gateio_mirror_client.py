@@ -192,21 +192,25 @@ class GateioMirrorClient:
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
                           retry_count: int = 5) -> Dict:
-        """🔥 레버리지 설정 - Gate.io API 수정된 방식"""
+        """🔥 레버리지 설정 - Gate.io API 수정된 방식 (오류 수정)"""
         for attempt in range(retry_count):
             try:
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
                 
-                # 🔥🔥🔥 수정된 데이터 구조 - leverage를 문자열로 전송
-                data = {
-                    "leverage": str(leverage),  # 문자열로 전송
-                    "cross_leverage_limit": str(cross_leverage_limit) if cross_leverage_limit > 0 else "0"
+                # 🔥🔥🔥 Gate.io API v4 정확한 형식
+                # API 문서에 따르면 쿼리 파라미터로 전송해야 함
+                params = {
+                    "leverage": str(leverage)
                 }
                 
-                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
-                logger.debug(f"레버리지 설정 데이터: {json.dumps(data, indent=2)}")
+                if cross_leverage_limit > 0:
+                    params["cross_leverage_limit"] = str(cross_leverage_limit)
                 
-                response = await self._request('POST', endpoint, data=data)
+                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
+                logger.debug(f"레버리지 설정 파라미터: {params}")
+                
+                # POST 요청이지만 파라미터로 전송
+                response = await self._request('POST', endpoint, params=params)
                 
                 await asyncio.sleep(1.0)
                 
@@ -226,35 +230,6 @@ class GateioMirrorClient:
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Gate.io 레버리지 설정 시도 {attempt + 1} 실패: {error_msg}")
-                
-                # 🔥🔥🔥 특정 오류에 대한 대체 방법 시도
-                if "MISSING_REQUIRED_PARAM" in error_msg and "leverage" in error_msg:
-                    try:
-                        # 대체 방법 1: 정수로 전송
-                        logger.info(f"레버리지 파라미터를 정수로 재시도: {attempt + 1}")
-                        alt_data = {
-                            "leverage": leverage,  # 정수로 전송
-                        }
-                        response = await self._request('POST', endpoint, data=alt_data)
-                        await asyncio.sleep(1.0)
-                        logger.info(f"✅ Gate.io 레버리지 설정 완료 (정수 방식): {contract} - {leverage}x")
-                        return response
-                    except Exception as alt_error:
-                        logger.warning(f"정수 방법도 실패: {alt_error}")
-                        
-                        # 대체 방법 2: mode 파라미터 포함
-                        try:
-                            logger.info(f"mode 파라미터 포함하여 재시도: {attempt + 1}")
-                            mode_data = {
-                                "leverage": str(leverage),
-                                "mode": "single"
-                            }
-                            response = await self._request('POST', endpoint, data=mode_data)
-                            await asyncio.sleep(1.0)
-                            logger.info(f"✅ Gate.io 레버리지 설정 완료 (mode 포함): {contract} - {leverage}x")
-                            return response
-                        except Exception as mode_error:
-                            logger.warning(f"mode 파라미터 방법도 실패: {mode_error}")
                 
                 if attempt < retry_count - 1:
                     await asyncio.sleep(2.0)
