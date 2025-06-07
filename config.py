@@ -43,6 +43,13 @@ class Config:
         self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
         self.ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')  # Claude API 추가
         
+        # 🔥🔥🔥 미러 트레이딩 강화 설정
+        self.ENABLE_MIRROR_TRADING = os.getenv('ENABLE_MIRROR_TRADING', 'false').lower() == 'true'
+        self.MIRROR_CHECK_INTERVAL = int(os.getenv('MIRROR_CHECK_INTERVAL', '5'))  # 5초로 단축
+        
+        # 🔥🔥🔥 추가 미러 트레이딩 관련 환경변수 지원
+        self.SDATA_KEY = os.getenv('SDATA_KEY')  # 추가 데이터 소스
+        
         # 설정 검증
         self._validate_config()
     
@@ -61,58 +68,45 @@ class Config:
         if self.MIRROR_TRADING_MODE:
             if not self.GATE_API_KEY or not self.GATE_API_SECRET:
                 print("\n⚠️  미러 트레이딩 모드가 활성화되었지만 Gate.io API가 설정되지 않았습니다.")
-                print("미러 트레이딩을 사용하려면 다음 환경변수를 설정하세요:")
-                print("  GATE_API_KEY=your_gate_api_key")
-                print("  GATE_API_SECRET=your_gate_api_secret")
-                print("\n분석 전용 모드로 전환합니다...")
-                self.MIRROR_TRADING_MODE = False
+                print("   다음 환경변수를 설정해주세요:")
+                print("   - GATE_API_KEY")
+                print("   - GATE_API_SECRET")
+                print("   또는 MIRROR_TRADING_MODE=false로 설정하여 분석 전용 모드로 실행하세요.")
+                # 시스템 종료하지 않고 경고만 출력
             else:
                 required_configs.update({
                     'GATE_API_KEY': self.GATE_API_KEY,
                     'GATE_API_SECRET': self.GATE_API_SECRET
                 })
         
+        # 필수 설정 검증
         missing_configs = []
         for config_name, config_value in required_configs.items():
             if not config_value:
                 missing_configs.append(config_name)
         
         if missing_configs:
-            raise ValueError(f"다음 환경변수가 설정되지 않았습니다: {', '.join(missing_configs)}")
+            print(f"\n❌ 필수 환경변수가 설정되지 않았습니다:")
+            for config in missing_configs:
+                print(f"   - {config}")
+            print(f"\n환경변수를 설정한 후 다시 실행해주세요.")
+            exit(1)
         
-        # API 상태 출력
-        self._print_config_status()
-    
-    def _print_config_status(self):
-        """설정 상태 출력"""
-        print("\n🔧 API 설정 상태:")
-        print("━" * 50)
+        # 설정 완료 메시지
+        print(f"\n✅ 기본 설정 검증 완료")
+        print(f"📊 모드: {'🔄 미러 트레이딩' if self.MIRROR_TRADING_MODE else '📈 분석 전용'}")
         
-        # 운영 모드
-        if self.MIRROR_TRADING_MODE:
-            print("🔄 운영 모드: 미러 트레이딩 모드")
-        else:
-            print("📊 운영 모드: 분석 전용 모드")
-        
-        print("\n✅ 필수 API:")
-        print(f"  • Telegram Bot: {'설정됨' if self.TELEGRAM_BOT_TOKEN else '미설정'}")
-        print(f"  • Bitget API: {'설정됨' if self.BITGET_API_KEY else '미설정'}")
-        
-        if self.MIRROR_TRADING_MODE:
-            print(f"  • Gate.io API: {'설정됨' if self.GATE_API_KEY else '미설정'}")
-        elif self.GATE_API_KEY:
-            print(f"  • Gate.io API: 설정됨 (미사용)")
-        
-        # 선택 API들
+        # 선택적 API 상태 확인
         optional_apis = {
-            'OpenAI GPT': self.OPENAI_API_KEY,
-            'Claude (Anthropic)': self.ANTHROPIC_API_KEY,
             'NewsAPI': self.NEWSAPI_KEY,
             'NewsData': self.NEWSDATA_KEY,
             'Alpha Vantage': self.ALPHA_VANTAGE_KEY,
             'CoinGecko': self.COINGECKO_API_KEY,
             'CryptoCompare': self.CRYPTOCOMPARE_API_KEY,
-            'Glassnode': self.GLASSNODE_API_KEY
+            'Glassnode': self.GLASSNODE_API_KEY,
+            'OpenAI': self.OPENAI_API_KEY,
+            'Anthropic': self.ANTHROPIC_API_KEY,
+            'SData': self.SDATA_KEY
         }
         
         available = []
@@ -152,6 +146,9 @@ class Config:
             print("  • 미러링 방식: 마진 비율 기반")
             print("  • 기존 포지션: 복제 제외")
             print("  • 신규 진입만 미러링")
+            print(f"  • 🔥 예약 주문 체크 주기: {self.MIRROR_CHECK_INTERVAL}초 (강화)")
+            print("  • 🔥 강제 동기화: 15초마다 (강화)")
+            print("  • 🔥 스타트업 제외: 15분으로 단축")
         else:
             print("\n💡 현재 기능:")
             print("  • 실시간 가격 모니터링")
@@ -173,49 +170,24 @@ class Config:
         if not self.ANTHROPIC_API_KEY:
             print("  ANTHROPIC_API_KEY=your_key (Claude 번역 활성화)")
         if not self.OPENAI_API_KEY:
-            print("  OPENAI_API_KEY=your_key (GPT 분석 활성화)")
+            print("  OPENAI_API_KEY=your_key (GPT 번역 활성화)")
         if not self.NEWSAPI_KEY:
-            print("  NEWSAPI_KEY=your_key (뉴스 수집 강화)")
+            print("  NEWSAPI_KEY=your_key (뉴스 수집 활성화)")
         if not self.COINGECKO_API_KEY:
-            print("  COINGECKO_API_KEY=your_key (시장 데이터 확장)")
+            print("  COINGECKO_API_KEY=your_key (시장 데이터 강화)")
+        if not self.CRYPTOCOMPARE_API_KEY:
+            print("  CRYPTOCOMPARE_API_KEY=your_key (가격 데이터 강화)")
         
-        print("━" * 50 + "\n")
-    
-    def is_mirror_mode_enabled(self):
-        """미러 트레이딩 모드 활성화 여부"""
-        return self.MIRROR_TRADING_MODE
-    
-    def get_active_apis(self):
-        """활성화된 API 목록 반환"""
-        active_apis = {
-            'telegram': bool(self.TELEGRAM_BOT_TOKEN),
-            'bitget': bool(self.BITGET_API_KEY),
-            'gate': bool(self.GATE_API_KEY),
-            'openai': bool(self.OPENAI_API_KEY),
-            'anthropic': bool(self.ANTHROPIC_API_KEY),
-            'newsapi': bool(self.NEWSAPI_KEY),
-            'newsdata': bool(self.NEWSDATA_KEY),
-            'alpha_vantage': bool(self.ALPHA_VANTAGE_KEY),
-            'coingecko': bool(self.COINGECKO_API_KEY),
-            'cryptocompare': bool(self.CRYPTOCOMPARE_API_KEY),
-            'glassnode': bool(self.GLASSNODE_API_KEY)
-        }
-        return active_apis
-    
-    def get_config_summary(self):
-        """설정 요약 정보"""
-        return {
-            'mode': 'mirror' if self.MIRROR_TRADING_MODE else 'analysis',
-            'exchanges': {
-                'bitget': bool(self.BITGET_API_KEY),
-                'gate': bool(self.GATE_API_KEY) if self.MIRROR_TRADING_MODE else False
-            },
-            'features': {
-                'ai_analysis': bool(self.OPENAI_API_KEY or self.ANTHROPIC_API_KEY),
-                'claude_translation': bool(self.ANTHROPIC_API_KEY),
-                'gpt_analysis': bool(self.OPENAI_API_KEY),
-                'news_collection': any([self.NEWSAPI_KEY, self.NEWSDATA_KEY, self.ALPHA_VANTAGE_KEY]),
-                'market_data': any([self.COINGECKO_API_KEY, self.CRYPTOCOMPARE_API_KEY]),
-                'onchain_data': bool(self.GLASSNODE_API_KEY)
-            }
-        }
+        print("\n" + "="*50)
+        
+        # 🔥🔥🔥 미러 트레이딩 모드 전용 추가 검증
+        if self.MIRROR_TRADING_MODE:
+            print("\n🔥 미러 트레이딩 강화 설정:")
+            print(f"  • ENABLE_MIRROR_TRADING: {self.ENABLE_MIRROR_TRADING}")
+            print(f"  • MIRROR_CHECK_INTERVAL: {self.MIRROR_CHECK_INTERVAL}초")
+            print("  • 🚀 더 빠른 동기화로 누락 복제 최소화")
+            print("  • 🎯 클로즈 주문 즉시 감지 및 복제")
+            print("  • 🔄 적극적인 강제 동기화")
+
+# 전역 설정 인스턴스
+config = Config()
