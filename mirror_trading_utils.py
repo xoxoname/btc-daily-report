@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 시세 차이 제한 완전 제거"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 레버리지 미러링 강화"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -46,6 +46,12 @@ class MirrorTradingUtils:
         self.MIN_MARGIN = 1.0
         self.MAX_PRICE_DIFF_PERCENT = 50.0  # 🔥🔥🔥 매우 관대하게 설정 (50%)
         
+        # 🔥🔥🔥 레버리지 설정 강화
+        self.DEFAULT_LEVERAGE = 30  # 기본 레버리지 30배
+        self.MAX_LEVERAGE = 100
+        self.MIN_LEVERAGE = 1
+        self.leverage_cache = {}  # 레버리지 캐시
+        
         # 🔥🔥🔥 트리거 가격 검증 완전히 제거 - 모든 가격 허용
         self.TRIGGER_PRICE_MIN_DIFF_PERCENT = 0.0
         self.ALLOW_VERY_CLOSE_PRICES = True
@@ -57,7 +63,120 @@ class MirrorTradingUtils:
         # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값도 매우 관대하게
         self.ABNORMAL_PRICE_DIFF_THRESHOLD = 10000.0  # 2000달러 → 10000달러로 대폭 상향
         
-        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 시세 차이 제한 완전 제거")
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 레버리지 미러링 강화")
+    
+    async def extract_bitget_leverage_enhanced(self, order_data: Dict = None, position_data: Dict = None, account_data: Dict = None) -> int:
+        """🔥🔥🔥 비트겟 레버리지 추출 - 다중 소스 강화"""
+        try:
+            extracted_leverage = self.DEFAULT_LEVERAGE
+            source = "기본값"
+            
+            # 🔥 1순위: 주문 데이터에서 레버리지 추출
+            if order_data:
+                for leverage_field in ['leverage', 'marginLeverage', 'leverageRatio']:
+                    order_leverage = order_data.get(leverage_field)
+                    if order_leverage:
+                        try:
+                            lev_value = int(float(order_leverage))
+                            if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
+                                extracted_leverage = lev_value
+                                source = f"주문({leverage_field})"
+                                self.logger.info(f"✅ 주문에서 레버리지 추출: {extracted_leverage}x ({source})")
+                                return extracted_leverage
+                        except (ValueError, TypeError):
+                            continue
+            
+            # 🔥 2순위: 포지션 데이터에서 레버리지 추출
+            if position_data:
+                for leverage_field in ['leverage', 'marginLeverage', 'leverageRatio']:
+                    pos_leverage = position_data.get(leverage_field)
+                    if pos_leverage:
+                        try:
+                            lev_value = int(float(pos_leverage))
+                            if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
+                                extracted_leverage = lev_value
+                                source = f"포지션({leverage_field})"
+                                self.logger.info(f"✅ 포지션에서 레버리지 추출: {extracted_leverage}x ({source})")
+                                return extracted_leverage
+                        except (ValueError, TypeError):
+                            continue
+            
+            # 🔥 3순위: 계정 데이터에서 레버리지 추출
+            if account_data:
+                for leverage_field in ['crossMarginLeverage', 'leverage', 'defaultLeverage', 'marginLeverage']:
+                    account_leverage = account_data.get(leverage_field)
+                    if account_leverage:
+                        try:
+                            lev_value = int(float(account_leverage))
+                            if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
+                                extracted_leverage = lev_value
+                                source = f"계정({leverage_field})"
+                                self.logger.info(f"✅ 계정에서 레버리지 추출: {extracted_leverage}x ({source})")
+                                return extracted_leverage
+                        except (ValueError, TypeError):
+                            continue
+            
+            # 🔥 4순위: 실시간 비트겟 계정 조회
+            try:
+                fresh_account = await self.bitget.get_account_info()
+                for leverage_field in ['crossMarginLeverage', 'leverage', 'defaultLeverage', 'marginLeverage']:
+                    account_leverage = fresh_account.get(leverage_field)
+                    if account_leverage:
+                        try:
+                            lev_value = int(float(account_leverage))
+                            if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
+                                extracted_leverage = lev_value
+                                source = f"실시간계정({leverage_field})"
+                                self.logger.info(f"✅ 실시간 계정에서 레버리지 추출: {extracted_leverage}x ({source})")
+                                
+                                # 캐시 저장
+                                self.leverage_cache['bitget_default'] = {
+                                    'leverage': extracted_leverage,
+                                    'timestamp': datetime.now(),
+                                    'source': source
+                                }
+                                return extracted_leverage
+                        except (ValueError, TypeError):
+                            continue
+            except Exception as e:
+                self.logger.warning(f"실시간 계정 조회 실패: {e}")
+            
+            # 🔥 5순위: 실시간 비트겟 포지션 조회
+            try:
+                positions = await self.bitget.get_positions(self.SYMBOL)
+                for position in positions:
+                    if float(position.get('total', 0)) > 0:
+                        pos_leverage = position.get('leverage')
+                        if pos_leverage:
+                            try:
+                                lev_value = int(float(pos_leverage))
+                                if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
+                                    extracted_leverage = lev_value
+                                    source = "실시간포지션"
+                                    self.logger.info(f"✅ 실시간 포지션에서 레버리지 추출: {extracted_leverage}x ({source})")
+                                    return extracted_leverage
+                            except (ValueError, TypeError):
+                                continue
+            except Exception as e:
+                self.logger.warning(f"실시간 포지션 조회 실패: {e}")
+            
+            # 🔥 6순위: 캐시에서 가져오기
+            if 'bitget_default' in self.leverage_cache:
+                cache_data = self.leverage_cache['bitget_default']
+                cache_time = cache_data['timestamp']
+                if (datetime.now() - cache_time).total_seconds() < 3600:  # 1시간 캐시
+                    extracted_leverage = cache_data['leverage']
+                    source = f"캐시({cache_data['source']})"
+                    self.logger.info(f"✅ 캐시에서 레버리지 사용: {extracted_leverage}x ({source})")
+                    return extracted_leverage
+            
+            # 🔥 최종: 기본값 사용
+            self.logger.warning(f"⚠️ 레버리지 추출 실패, 기본값 사용: {extracted_leverage}x")
+            return extracted_leverage
+            
+        except Exception as e:
+            self.logger.error(f"레버리지 추출 오류: {e}")
+            return self.DEFAULT_LEVERAGE
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
         """비트겟 예약 주문에서 TP/SL 정보 추출"""
@@ -743,7 +862,7 @@ class MirrorTradingUtils:
             return False, f"검증 오류: {str(e)}"
     
     async def calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
-        """실제 달러 마진 비율 동적 계산"""
+        """🔥🔥🔥 실제 달러 마진 비율 동적 계산 - 레버리지 추출 강화"""
         try:
             if size is None or trigger_price is None:
                 return {
@@ -751,41 +870,19 @@ class MirrorTradingUtils:
                     'error': 'size 또는 trigger_price가 None입니다.'
                 }
             
-            # 레버리지 정보 추출 - 강화된 로직
-            bitget_leverage = 10  # 기본값
-            
-            # 1. 주문에서 레버리지 추출
-            order_leverage = bitget_order.get('leverage')
-            if order_leverage:
-                try:
-                    bitget_leverage = int(float(order_leverage))
-                    self.logger.info(f"주문에서 레버리지 추출: {bitget_leverage}x")
-                except Exception as lev_error:
-                    self.logger.warning(f"주문 레버리지 변환 실패: {lev_error}")
-            
-            # 2. 계정 정보에서 레버리지 추출 (폴백)
-            if not order_leverage or bitget_leverage == 10:
-                try:
-                    bitget_account = await self.bitget.get_account_info()
-                    
-                    # 여러 레버리지 필드 확인
-                    for lev_field in ['crossMarginLeverage', 'leverage', 'defaultLeverage']:
-                        account_leverage = bitget_account.get(lev_field)
-                        if account_leverage:
-                            try:
-                                extracted_lev = int(float(account_leverage))
-                                if extracted_lev > 1:  # 유효한 레버리지인 경우
-                                    bitget_leverage = extracted_lev
-                                    self.logger.info(f"계정에서 레버리지 추출: {lev_field} = {bitget_leverage}x")
-                                    break
-                            except:
-                                continue
-                                
-                except Exception as account_error:
-                    self.logger.warning(f"계정 레버리지 조회 실패: {account_error}")
-            
-            # 3. 비트겟 계정 정보 조회
+            # 🔥🔥🔥 강화된 레버리지 추출
             bitget_account = await self.bitget.get_account_info()
+            
+            # 강화된 레버리지 추출 사용
+            extracted_leverage = await self.extract_bitget_leverage_enhanced(
+                order_data=bitget_order,
+                position_data=None,  # 포지션 데이터는 별도 조회
+                account_data=bitget_account
+            )
+            
+            self.logger.info(f"💪 추출된 레버리지: {extracted_leverage}x")
+            
+            # 3. 비트겟 계정 정보에서 총 자산 추출
             bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
             
             if bitget_total_equity <= 0:
@@ -796,7 +893,7 @@ class MirrorTradingUtils:
             
             # 4. 비트겟에서 이 주문이 체결될 때 사용할 실제 마진 계산
             bitget_notional_value = size * trigger_price
-            bitget_required_margin = bitget_notional_value / bitget_leverage
+            bitget_required_margin = bitget_notional_value / extracted_leverage
             
             # 5. 비트겟 총 자산 대비 실제 마진 투입 비율 계산
             margin_ratio = bitget_required_margin / bitget_total_equity
@@ -811,13 +908,13 @@ class MirrorTradingUtils:
             result = {
                 'success': True,
                 'margin_ratio': margin_ratio,
-                'leverage': bitget_leverage,
+                'leverage': extracted_leverage,
                 'required_margin': bitget_required_margin,
                 'total_equity': bitget_total_equity,
                 'notional_value': bitget_notional_value
             }
             
-            self.logger.info(f"💰 마진 비율 계산 성공: {margin_ratio*100:.3f}% (레버리지: {bitget_leverage}x)")
+            self.logger.info(f"💰 마진 비율 계산 성공: {margin_ratio*100:.3f}% (레버리지: {extracted_leverage}x)")
             
             return result
             
