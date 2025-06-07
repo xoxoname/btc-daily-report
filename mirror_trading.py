@@ -76,47 +76,42 @@ class MirrorTradingSystem:
         self.order_sync_interval: int = 15
         self.last_order_sync_time: datetime = datetime.min
         
-        # 🔥🔥🔥 슬리피지 보호 설정 개선 - 0.05% (약 50달러)
-        self.slippage_protection_enabled: bool = True
-        self.max_slippage_percent: float = 0.05  # 🔥🔥🔥 0.05% (약 50달러)로 변경
-        self.price_check_interval: float = 0.5  # 가격 체크 간격 0.5초
+        # 🔥🔥🔥 슬리피지 보호 개선 - 0.05% (약 50달러)
+        self.max_slippage_percent: float = 0.05
         
-        # 🔥🔥🔥 모니터링 상태 관리
+        # 모니터링 상태
         self.monitoring = True
         self.system_initialized = False
-        self.initialization_errors = 0
-        self.max_initialization_retries = 3
         
-        # 🔥🔥🔥 정확한 심볼 설정
-        self.SYMBOL = "BTCUSDT"  # Bitget 정확한 심볼
-        self.GATE_CONTRACT = "BTC_USDT"
-        self.CHECK_INTERVAL = 1
-        self.ORDER_CHECK_INTERVAL = 0.5
-        self.PLAN_ORDER_CHECK_INTERVAL = 0.2
+        # 타이밍 설정
+        self.CHECK_INTERVAL = 2
+        self.ORDER_CHECK_INTERVAL = 1
         self.SYNC_CHECK_INTERVAL = 30
-        self.MAX_RETRIES = 3
-        self.MIN_POSITION_SIZE = 0.00001
-        self.MIN_MARGIN = 1.0
+        self.PRICE_CHECK_INTERVAL = 5
         self.DAILY_REPORT_HOUR = 9
         
-        # 성과 추적 (포지션 매니저와 공유)
+        # 정확한 심볼 설정
+        self.SYMBOL = "BTCUSDT"  # Bitget
+        self.GATE_CONTRACT = "BTC_USDT"  # Gate.io
+        
+        # 성과 추적 (포지션 매니저에 위임)
         self.daily_stats = self.position_manager.daily_stats
         
-        self.logger.info("🔥 미러 트레이딩 시스템 초기화 완료 - 정확한 심볼 사용 + 슬리피지 보호 0.05%")
+        logger.info("✅ 미러 트레이딩 시스템 초기화 완료")
 
     async def start(self):
-        """🔥🔥🔥 미러 트레이딩 시작 - 강화된 초기화 및 오류 처리"""
+        """미러 트레이딩 시작"""
         try:
-            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 정확한 심볼 사용 + 슬리피지 보호 0.05%")
+            self.logger.info("🚀 미러 트레이딩 시스템 시작")
             
-            # 🔥🔥🔥 단계별 초기화 - 실패해도 계속 진행
+            # 🔥🔥🔥 초기화 수행 - 실패해도 시스템 시작
             initialization_success = await self._perform_initialization()
             
             if initialization_success:
-                self.logger.info("✅ 미러 트레이딩 시스템 초기화 완료")
+                self.logger.info("✅ 초기화 완료 - 모든 기능 정상")
                 self.system_initialized = True
             else:
-                self.logger.warning("⚠️ 미러 트레이딩 시스템 초기화 일부 실패하지만 계속 진행")
+                self.logger.warning("⚠️ 초기화 일부 실패하지만 계속 진행")
                 self.system_initialized = False
             
             # 🔥🔥🔥 초기화 성공 여부와 관계없이 모니터링 시작
@@ -229,311 +224,26 @@ class MirrorTradingSystem:
                     continue
                 
                 # 포지션 매니저의 모니터링 사이클 실행
-                await self.position_manager.monitor_plan_orders_cycle()
+                await self.position_manager.monitor_plan_orders()
                 
                 consecutive_errors = 0
-                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL)
+                await asyncio.sleep(self.CHECK_INTERVAL)
                 
             except Exception as e:
                 consecutive_errors += 1
-                self.logger.error(f"예약 주문 모니터링 중 오류 (연속 {consecutive_errors}회): {e}")
+                self.logger.error(f"예약 주문 모니터링 오류 (연속 {consecutive_errors}회): {e}")
                 
                 if consecutive_errors >= max_consecutive_errors:
                     await self.telegram.send_message(
-                        f"❌ 예약 주문 모니터링 연속 실패\n"
-                        f"연속 오류: {consecutive_errors}회\n"
-                        f"마지막 오류: {str(e)[:200]}\n"
-                        f"🔄 5분 후 자동 재시작"
+                        f"⚠️ 예약 주문 모니터링 시스템 오류\n"
+                        f"연속 {consecutive_errors}회 실패\n"
+                        f"시스템 재시작을 권장합니다."
                     )
-                    
-                    # 5분 대기 후 재시작
-                    await asyncio.sleep(300)
+                    # 연속 실패 카운터 리셋하고 계속 시도
                     consecutive_errors = 0
-                    
-                    # 포지션 매니저 재활성화
-                    self.position_manager.monitoring_enabled = True
-                    self.position_manager.monitoring_error_count = 0
-                    
-                    self.logger.info("🔄 예약 주문 모니터링 자동 재시작")
-                
-                await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * (consecutive_errors + 1))
-
-    async def monitor_order_synchronization(self):
-        """예약 주문 동기화 모니터링"""
-        try:
-            self.logger.info("🔄 예약 주문 동기화 모니터링 시작")
-            
-            while self.monitoring:
-                try:
-                    if not self.order_sync_enabled:
-                        await asyncio.sleep(self.order_sync_interval)
-                        continue
-                    
-                    current_time = datetime.now()
-                    
-                    # 더 빠른 정기 동기화 체크 (15초마다)
-                    if (current_time - self.last_order_sync_time).total_seconds() >= self.order_sync_interval:
-                        await self._perform_comprehensive_order_sync()
-                        self.last_order_sync_time = current_time
-                    
-                    await asyncio.sleep(3)
-                    
-                except Exception as e:
-                    self.logger.error(f"예약 주문 동기화 모니터링 오류: {e}")
-                    await asyncio.sleep(self.order_sync_interval)
-                    
-        except Exception as e:
-            self.logger.error(f"예약 주문 동기화 모니터링 시스템 실패: {e}")
-
-    async def _perform_comprehensive_order_sync(self):
-        """종합적인 예약 주문 동기화"""
-        try:
-            self.logger.debug("🔄 종합 예약 주문 동기화 시작")
-            
-            # 1. 비트겟 예약 주문 조회
-            plan_data = await self.bitget_mirror.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-            bitget_plan_orders = plan_data.get('plan_orders', [])
-            bitget_tp_sl_orders = plan_data.get('tp_sl_orders', [])
-            
-            # 모든 비트겟 예약 주문 (TP/SL 클로즈 주문 포함)
-            all_bitget_orders = []
-            all_bitget_orders.extend(bitget_plan_orders)
-            
-            # TP/SL 주문 중 클로즈 주문만 추가
-            for tp_sl_order in bitget_tp_sl_orders:
-                side = tp_sl_order.get('side', tp_sl_order.get('tradeSide', '')).lower()
-                reduce_only = tp_sl_order.get('reduceOnly', False)
-                
-                is_close_order = (
-                    'close' in side or 
-                    reduce_only is True or 
-                    reduce_only == 'true'
-                )
-                
-                if is_close_order:
-                    all_bitget_orders.append(tp_sl_order)
-            
-            # 2. 게이트 예약 주문 조회
-            gate_orders = await self.gate_mirror.get_price_triggered_orders(self.GATE_CONTRACT, "open")
-            
-            # 3. 동기화 분석
-            sync_analysis = await self._analyze_comprehensive_sync(all_bitget_orders, gate_orders)
-            
-            # 4. 문제가 있으면 수정
-            if sync_analysis['requires_action']:
-                await self._fix_sync_issues(sync_analysis)
-            else:
-                self.logger.debug(f"✅ 예약 주문 동기화 상태 양호: 비트겟 {len(all_bitget_orders)}개, 게이트 {len(gate_orders)}개")
-            
-        except Exception as e:
-            self.logger.error(f"종합 예약 주문 동기화 실패: {e}")
-
-    async def _analyze_comprehensive_sync(self, bitget_orders: List[Dict], gate_orders: List[Dict]) -> Dict:
-        """종합적인 동기화 분석"""
-        try:
-            analysis = {
-                'requires_action': False,
-                'missing_mirrors': [],
-                'orphaned_orders': [],
-                'price_mismatches': [],
-                'size_mismatches': [],
-                'total_issues': 0
-            }
-            
-            # 비트겟 주문 분석
-            for bitget_order in bitget_orders:
-                bitget_order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
-                if not bitget_order_id:
-                    continue
-                
-                # 스타트업 주문은 제외
-                if bitget_order_id in self.position_manager.startup_plan_orders:
-                    continue
-                
-                # 미러링 기록 확인
-                if bitget_order_id in self.position_manager.mirrored_plan_orders:
-                    mirror_info = self.position_manager.mirrored_plan_orders[bitget_order_id]
-                    expected_gate_id = mirror_info.get('gate_order_id')
-                    
-                    # 게이트에서 해당 주문 찾기
-                    gate_order_found = None
-                    for gate_order in gate_orders:
-                        if gate_order.get('id') == expected_gate_id:
-                            gate_order_found = gate_order
-                            break
-                    
-                    if not gate_order_found:
-                        analysis['missing_mirrors'].append({
-                            'bitget_order_id': bitget_order_id,
-                            'bitget_order': bitget_order,
-                            'expected_gate_id': expected_gate_id,
-                            'type': 'missing_mirror'
-                        })
+                    await asyncio.sleep(30)
                 else:
-                    # 미러링 기록이 없는 비트겟 주문
-                    analysis['missing_mirrors'].append({
-                        'bitget_order_id': bitget_order_id,
-                        'bitget_order': bitget_order,
-                        'expected_gate_id': None,
-                        'type': 'unmirrored'
-                    })
-            
-            # 게이트 고아 주문 찾기
-            for gate_order in gate_orders:
-                gate_order_id = gate_order.get('id', '')
-                if not gate_order_id:
-                    continue
-                
-                # 미러링 매핑에서 비트겟 주문 찾기
-                bitget_order_id = self.position_manager.gate_to_bitget_order_mapping.get(gate_order_id)
-                
-                if not bitget_order_id:
-                    # 매핑이 없는 경우, 기존 게이트 주문인지 확인
-                    if gate_order_id not in self.position_manager.gate_existing_orders_detailed:
-                        analysis['orphaned_orders'].append({
-                            'gate_order_id': gate_order_id,
-                            'gate_order': gate_order,
-                            'type': 'orphaned'
-                        })
-                else:
-                    # 매핑이 있는데 비트겟에서 해당 주문이 없는 경우
-                    bitget_exists = any(
-                        order.get('orderId', order.get('planOrderId', '')) == bitget_order_id 
-                        for order in bitget_orders
-                    )
-                    
-                    if not bitget_exists:
-                        analysis['orphaned_orders'].append({
-                            'gate_order_id': gate_order_id,
-                            'gate_order': gate_order,
-                            'mapped_bitget_id': bitget_order_id,
-                            'type': 'orphaned_mapped'
-                        })
-            
-            # 총 문제 개수 계산
-            analysis['total_issues'] = (
-                len(analysis['missing_mirrors']) + 
-                len(analysis['orphaned_orders']) + 
-                len(analysis['price_mismatches']) + 
-                len(analysis['size_mismatches'])
-            )
-            
-            analysis['requires_action'] = analysis['total_issues'] > 0
-            
-            if analysis['requires_action']:
-                self.logger.info(f"🔍 동기화 문제 발견: {analysis['total_issues']}건")
-                self.logger.info(f"   - 누락 미러링: {len(analysis['missing_mirrors'])}건")
-                self.logger.info(f"   - 고아 주문: {len(analysis['orphaned_orders'])}건")
-            
-            return analysis
-            
-        except Exception as e:
-            self.logger.error(f"종합 동기화 분석 실패: {e}")
-            return {'requires_action': False, 'total_issues': 0, 'missing_mirrors': [], 'orphaned_orders': [], 'price_mismatches': [], 'size_mismatches': []}
-
-    async def _fix_sync_issues(self, sync_analysis: Dict):
-        """동기화 문제 해결"""
-        try:
-            fixed_count = 0
-            
-            # 1. 누락된 미러링 처리 (병렬 처리로 속도 개선)
-            missing_tasks = []
-            for missing in sync_analysis['missing_mirrors'][:5]:  # 최대 5개씩 병렬 처리
-                try:
-                    bitget_order = missing['bitget_order']
-                    bitget_order_id = missing['bitget_order_id']
-                    
-                    self.logger.info(f"🔄 누락된 미러링 복제: {bitget_order_id}")
-                    
-                    # 이미 처리된 주문인지 확인
-                    if bitget_order_id not in self.position_manager.processed_plan_orders:
-                        task = self.position_manager._process_perfect_mirror_order(bitget_order)
-                        missing_tasks.append((bitget_order_id, task))
-                        
-                        self.position_manager.processed_plan_orders.add(bitget_order_id)
-                    
-                except Exception as e:
-                    self.logger.error(f"누락 미러링 태스크 생성 실패: {missing['bitget_order_id']} - {e}")
-            
-            # 병렬 실행
-            if missing_tasks:
-                results = await asyncio.gather(*[task for _, task in missing_tasks], return_exceptions=True)
-                
-                for i, (order_id, _) in enumerate(missing_tasks):
-                    try:
-                        result = results[i]
-                        if isinstance(result, Exception):
-                            self.logger.error(f"누락 미러링 실행 실패: {order_id} - {result}")
-                        elif result in ["perfect_success", "partial_success"]:
-                            fixed_count += 1
-                            self.daily_stats['sync_corrections'] += 1
-                            self.logger.info(f"✅ 누락 미러링 완료: {order_id}")
-                    except Exception as e:
-                        self.logger.error(f"누락 미러링 결과 처리 실패: {order_id} - {e}")
-            
-            # 2. 고아 주문 삭제 (병렬 처리)
-            orphan_tasks = []
-            for orphaned in sync_analysis['orphaned_orders'][:10]:  # 최대 10개씩 병렬 처리
-                try:
-                    gate_order_id = orphaned['gate_order_id']
-                    self.logger.info(f"🗑️ 고아 주문 삭제: {gate_order_id}")
-                    
-                    task = self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                    orphan_tasks.append((gate_order_id, task))
-                    
-                except Exception as e:
-                    self.logger.error(f"고아 주문 삭제 태스크 생성 실패: {orphaned['gate_order_id']} - {e}")
-            
-            # 병렬 실행
-            if orphan_tasks:
-                results = await asyncio.gather(*[task for _, task in orphan_tasks], return_exceptions=True)
-                
-                for i, (order_id, _) in enumerate(orphan_tasks):
-                    try:
-                        result = results[i]
-                        if isinstance(result, Exception):
-                            error_msg = str(result).lower()
-                            if any(keyword in error_msg for keyword in [
-                                "not found", "order not exist", "invalid order",
-                                "order does not exist", "auto_order_not_found"
-                            ]):
-                                fixed_count += 1
-                                self.logger.info(f"고아 주문이 이미 처리됨: {order_id}")
-                            else:
-                                self.logger.error(f"고아 주문 삭제 실패: {order_id} - {result}")
-                        else:
-                            fixed_count += 1
-                            self.daily_stats['sync_deletions'] += 1
-                            
-                        # 매핑에서도 제거
-                        if order_id in self.position_manager.gate_to_bitget_order_mapping:
-                            bitget_id = self.position_manager.gate_to_bitget_order_mapping[order_id]
-                            del self.position_manager.gate_to_bitget_order_mapping[order_id]
-                            if bitget_id in self.position_manager.bitget_to_gate_order_mapping:
-                                del self.position_manager.bitget_to_gate_order_mapping[bitget_id]
-                        
-                        self.logger.info(f"✅ 고아 주문 삭제 완료: {order_id}")
-                        
-                    except Exception as e:
-                        self.logger.error(f"고아 주문 삭제 결과 처리 실패: {order_id} - {e}")
-            
-            # 동기화 결과 알림 (5개 이상 문제가 해결되었을 때만)
-            if fixed_count >= 5:
-                price_diff = abs(self.bitget_current_price - self.gate_current_price) if (self.bitget_current_price > 0 and self.gate_current_price > 0) else 0
-                await self.telegram.send_message(
-                    f"🔄 예약 주문 대규모 동기화 완료\n"
-                    f"해결된 문제: {fixed_count}건\n"
-                    f"- 누락 미러링 복제: {len(sync_analysis['missing_mirrors'])}건\n"
-                    f"- 고아 주문 삭제: {len(sync_analysis['orphaned_orders'])}건\n\n"
-                    f"📊 현재 시세 차이: ${price_diff:.2f}\n"
-                    f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리\n"
-                    f"🛡️ 슬리피지 보호 0.05% (약 $50) 적용"
-                )
-            elif fixed_count > 0:
-                self.logger.info(f"🔄 예약 주문 동기화 완료: {fixed_count}건 해결")
-            
-        except Exception as e:
-            self.logger.error(f"동기화 문제 해결 실패: {e}")
+                    await asyncio.sleep(5)
 
     async def monitor_order_fills(self):
         """🔥🔥🔥 실시간 주문 체결 감지 - 슬리피지 보호 0.05% 적용"""
@@ -549,9 +259,8 @@ class MirrorTradingSystem:
                 if valid_price_diff is not None:
                     self.logger.debug(f"시세 차이 ${valid_price_diff:.2f} 확인됨, 슬리피지 보호 0.05% 적용하여 즉시 처리")
                 
-                # 미러링 클라이언트로 체결 주문 조회
+                # 미러링 클라이언트로 체결 주문 조회 - symbol 인자 제거
                 filled_orders = await self.bitget_mirror.get_recent_filled_orders(
-                    symbol=self.SYMBOL, 
                     minutes=1
                 )
                 
@@ -676,51 +385,39 @@ class MirrorTradingSystem:
             try:
                 bitget_ticker = await self.bitget_mirror.get_ticker(self.SYMBOL)
                 if bitget_ticker and bitget_ticker.get('last'):
-                    new_bitget_price = float(bitget_ticker.get('last', 0))
+                    new_bitget_price = float(bitget_ticker.get('last'))
                     if new_bitget_price > 0:
                         self.bitget_current_price = new_bitget_price
                         self.last_valid_bitget_price = new_bitget_price
                         self.bitget_price_failures = 0
-                    else:
-                        raise ValueError("비트겟 가격이 0 또는 None")
                 else:
-                    raise ValueError("비트겟 티커 응답 없음")
-                    
-            except Exception as bitget_error:
+                    self.bitget_price_failures += 1
+                    if self.last_valid_bitget_price > 0:
+                        self.bitget_current_price = self.last_valid_bitget_price
+            except Exception as e:
+                self.logger.debug(f"비트겟 시세 조회 실패: {e}")
                 self.bitget_price_failures += 1
-                self.logger.warning(f"비트겟 시세 조회 실패 ({self.bitget_price_failures}회): {bitget_error}")
-                
-                # 이전 유효 가격 사용 또는 게이트 가격으로 대체
                 if self.last_valid_bitget_price > 0:
                     self.bitget_current_price = self.last_valid_bitget_price
-                    self.logger.info(f"비트겟 이전 유효 가격 사용: ${self.bitget_current_price:.2f}")
-                elif self.gate_current_price > 0:
-                    self.bitget_current_price = self.gate_current_price
-                    self.logger.info(f"게이트 가격으로 비트겟 가격 대체: ${self.bitget_current_price:.2f}")
             
             # 게이트 현재가 조회
             try:
-                new_gate_price = await self.gate_mirror.get_current_price(self.GATE_CONTRACT)
-                if new_gate_price > 0:
-                    self.gate_current_price = new_gate_price
-                    self.last_valid_gate_price = new_gate_price
+                gate_price = await self.gate_mirror.get_current_price(self.GATE_CONTRACT)
+                if gate_price and gate_price > 0:
+                    self.gate_current_price = gate_price
+                    self.last_valid_gate_price = gate_price
                     self.gate_price_failures = 0
                 else:
-                    raise ValueError("게이트 가격이 0 또는 None")
-                    
-            except Exception as gate_error:
+                    self.gate_price_failures += 1
+                    if self.last_valid_gate_price > 0:
+                        self.gate_current_price = self.last_valid_gate_price
+            except Exception as e:
+                self.logger.debug(f"게이트 시세 조회 실패: {e}")
                 self.gate_price_failures += 1
-                self.logger.warning(f"게이트 시세 조회 실패 ({self.gate_price_failures}회): {gate_error}")
-                
-                # 이전 유효 가격 사용 또는 비트겟 가격으로 대체
                 if self.last_valid_gate_price > 0:
                     self.gate_current_price = self.last_valid_gate_price
-                    self.logger.info(f"게이트 이전 유효 가격 사용: ${self.gate_current_price:.2f}")
-                elif self.bitget_current_price > 0:
-                    self.gate_current_price = self.bitget_current_price
-                    self.logger.info(f"비트겟 가격으로 게이트 가격 대체: ${self.gate_current_price:.2f}")
             
-            # 시세 차이 계산 (정보용)
+            # 시세 차이 계산 - 정보용으로만 사용
             if self.bitget_current_price > 0 and self.gate_current_price > 0:
                 price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
                 self.price_diff_percent = price_diff_abs / self.bitget_current_price * 100
@@ -779,107 +476,343 @@ class MirrorTradingSystem:
                 if valid_price_diff is None:
                     self.logger.debug("유효하지 않은 시세 차이")
                     consecutive_errors = 0
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(self.PRICE_CHECK_INTERVAL)
                     continue
                 
-                now = datetime.now()
-                
-                # 🔥🔥🔥 알림 빈도 감소 - 6시간마다만 상태 알림
-                if ((now - last_normal_report_time).total_seconds() > 21600 and 
-                    self.price_diff_percent > 0.05):
-                    
-                    status_emoji = "📊"
-                    status_text = "정상 처리"
-                    
-                    await self.telegram.send_message(
-                        f"📊 6시간 시세 현황 리포트\n"
-                        f"비트겟: ${self.bitget_current_price:,.2f}\n"
-                        f"게이트: ${self.gate_current_price:,.2f}\n"
-                        f"차이: ${valid_price_diff:.2f}\n"
-                        f"상태: {status_emoji} {status_text}\n\n"
-                        f"🔄 예약 주문 동기화: 15초마다 자동 실행\n"
-                        f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리\n"
-                        f"🛡️ 슬리피지 보호: 0.05% (약 $50) 제한\n"
-                        f"⏰ 지정가 주문: 5초 대기 후 시장가 전환"
-                    )
-                    last_normal_report_time = now
+                # 🔥🔥🔥 극도로 높은 임계값 설정으로 알림 최소화
+                if valid_price_diff > 10000:  # 10000달러 이상일 때만 알림
+                    if datetime.now() - last_warning_time > timedelta(minutes=30):
+                        await self.telegram.send_message(
+                            f"📊 큰 시세 차이 정보\n"
+                            f"비트겟: ${self.bitget_current_price:,.2f}\n"
+                            f"게이트: ${self.gate_current_price:,.2f}\n"
+                            f"차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)\n"
+                            f"💡 슬리피지 보호 0.05%로 안전하게 처리 중"
+                        )
+                        last_warning_time = datetime.now()
+                else:
+                    # 🔥🔥🔥 정상 범위 알림은 하루에 한 번만
+                    if datetime.now() - last_normal_report_time > timedelta(hours=24):
+                        self.logger.info(
+                            f"시세 차이 정상 범위: ${valid_price_diff:.2f} "
+                            f"(비트겟 ${self.bitget_current_price:.2f}, 게이트 ${self.gate_current_price:.2f})"
+                        )
+                        last_normal_report_time = datetime.now()
                 
                 consecutive_errors = 0
-                await asyncio.sleep(60)
+                await asyncio.sleep(self.PRICE_CHECK_INTERVAL)
                 
             except Exception as e:
                 consecutive_errors += 1
-                self.logger.error(f"시세 차이 모니터링 오류 (연속 {consecutive_errors}회): {e}")
+                self.logger.error(f"시세 차이 모니터링 오류: {e}")
                 
                 if consecutive_errors >= 5:
-                    await self.telegram.send_message(
-                        f"⚠️ 시세 차이 모니터링 시스템 오류\n연속 {consecutive_errors}회 실패"
-                    )
+                    self.logger.warning(f"시세 차이 모니터링 연속 {consecutive_errors}회 실패")
                 
-                await asyncio.sleep(60)
+                await asyncio.sleep(self.PRICE_CHECK_INTERVAL * 2)
 
-    async def monitor_sync_status(self):
-        """포지션 동기화 상태 모니터링"""
+    async def monitor_order_synchronization(self):
+        """🔥🔥🔥 예약 주문 동기화 상태 모니터링 - 종합 개선"""
         sync_retry_count = 0
         
         while self.monitoring:
             try:
-                await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
+                if not self.order_sync_enabled:
+                    await asyncio.sleep(self.order_sync_interval)
+                    continue
                 
-                # 포지션 매니저에서 동기화 상태 확인
-                sync_status = await self.position_manager.check_sync_status()
+                # 동기화 체크 주기
+                if datetime.now() - self.last_order_sync_time > timedelta(seconds=self.order_sync_interval):
+                    await self._comprehensive_order_sync()
+                    self.last_order_sync_time = datetime.now()
+                    sync_retry_count = 0
                 
-                if not sync_status['is_synced']:
-                    sync_retry_count += 1
+                await asyncio.sleep(5)
+                
+            except Exception as e:
+                sync_retry_count += 1
+                self.logger.error(f"예약 주문 동기화 오류 (시도 {sync_retry_count}): {e}")
+                
+                if sync_retry_count >= 3:
+                    await self.telegram.send_message(
+                        f"⚠️ 예약 주문 동기화 연속 실패\n"
+                        f"오류: {str(e)[:200]}\n"
+                        f"🔄 30초 후 재시도"
+                    )
+                    await asyncio.sleep(30)
+                else:
+                    await asyncio.sleep(10)
+
+    async def _comprehensive_order_sync(self):
+        """🔥🔥🔥 종합적인 예약 주문 동기화 - 누락/고아 주문 처리"""
+        try:
+            self.logger.info("🔄 예약 주문 동기화 모니터링 시작")
+            
+            # 1. 비트겟 예약 주문 조회
+            plan_data = await self.bitget_mirror.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            bitget_plan_orders = plan_data.get('plan_orders', [])
+            bitget_tp_sl_orders = plan_data.get('tp_sl_orders', [])
+            
+            # 모든 비트겟 예약 주문 (TP/SL 클로즈 주문 포함)
+            all_bitget_orders = []
+            all_bitget_orders.extend(bitget_plan_orders)
+            
+            # TP/SL 주문 중 클로즈 주문만 추가
+            for tp_sl_order in bitget_tp_sl_orders:
+                side = tp_sl_order.get('side', tp_sl_order.get('tradeSide', '')).lower()
+                reduce_only = tp_sl_order.get('reduceOnly', False)
+                
+                is_close_order = (
+                    'close' in side or 
+                    reduce_only is True or 
+                    reduce_only == 'true'
+                )
+                
+                if is_close_order:
+                    all_bitget_orders.append(tp_sl_order)
+            
+            # 2. 게이트 예약 주문 조회
+            gate_orders = await self.gate_mirror.get_price_triggered_orders(self.GATE_CONTRACT, "open")
+            
+            # 3. 동기화 분석
+            sync_analysis = await self._analyze_comprehensive_sync(all_bitget_orders, gate_orders)
+            
+            # 4. 문제가 있으면 수정
+            if sync_analysis['requires_action']:
+                await self._fix_sync_issues(sync_analysis)
+            else:
+                self.logger.debug(f"✅ 예약 주문 동기화 상태 양호: 비트겟 {len(all_bitget_orders)}개, 게이트 {len(gate_orders)}개")
+            
+        except Exception as e:
+            self.logger.error(f"종합 예약 주문 동기화 실패: {e}")
+
+    async def _analyze_comprehensive_sync(self, bitget_orders: List[Dict], gate_orders: List[Dict]) -> Dict:
+        """종합적인 동기화 분석"""
+        try:
+            analysis = {
+                'requires_action': False,
+                'missing_mirrors': [],
+                'orphaned_orders': [],
+                'price_mismatches': [],
+                'size_mismatches': [],
+                'total_issues': 0
+            }
+            
+            # 비트겟 주문 분석
+            for bitget_order in bitget_orders:
+                bitget_order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
+                if not bitget_order_id:
+                    continue
+                
+                # 스타트업 주문은 제외
+                if bitget_order_id in self.position_manager.startup_plan_orders:
+                    continue
+                
+                # 미러링 기록 확인
+                if bitget_order_id in self.position_manager.mirrored_plan_orders:
+                    mirror_info = self.position_manager.mirrored_plan_orders[bitget_order_id]
+                    expected_gate_id = mirror_info.get('gate_order_id')
                     
-                    if sync_retry_count >= 3:  # 3회 연속 불일치
-                        # 실제 원인 분석
-                        valid_price_diff = self._get_valid_price_difference()
+                    # 게이트에서 해당 주문 찾기
+                    gate_order_found = None
+                    for gate_order in gate_orders:
+                        if gate_order.get('id') == expected_gate_id:
+                            gate_order_found = gate_order
+                            break
+                    
+                    if not gate_order_found:
+                        # 미러링 기록은 있는데 게이트에 주문이 없음 (누락)
+                        analysis['missing_mirrors'].append({
+                            'bitget_order_id': bitget_order_id,
+                            'bitget_order': bitget_order,
+                            'expected_gate_id': expected_gate_id
+                        })
+                        analysis['requires_action'] = True
                         
-                        # 가능한 원인들 분석
-                        possible_causes = []
+                else:
+                    # 미러링 기록이 없음 (새로운 주문)
+                    analysis['missing_mirrors'].append({
+                        'bitget_order_id': bitget_order_id,
+                        'bitget_order': bitget_order,
+                        'expected_gate_id': None
+                    })
+                    analysis['requires_action'] = True
+            
+            # 게이트 고아 주문 찾기
+            for gate_order in gate_orders:
+                gate_order_id = gate_order.get('id')
+                if not gate_order_id:
+                    continue
+                
+                # 이 게이트 주문이 어떤 비트겟 주문의 미러인지 찾기
+                is_orphan = True
+                for bitget_order_id, mirror_info in self.position_manager.mirrored_plan_orders.items():
+                    if mirror_info.get('gate_order_id') == gate_order_id:
+                        # 비트겟에 원본이 있는지 확인
+                        bitget_exists = any(
+                            o.get('orderId', o.get('planOrderId', '')) == bitget_order_id 
+                            for o in bitget_orders
+                        )
+                        if bitget_exists:
+                            is_orphan = False
+                            break
+                
+                if is_orphan:
+                    analysis['orphaned_orders'].append({
+                        'gate_order_id': gate_order_id,
+                        'gate_order': gate_order
+                    })
+                    analysis['requires_action'] = True
+            
+            analysis['total_issues'] = (
+                len(analysis['missing_mirrors']) + 
+                len(analysis['orphaned_orders'])
+            )
+            
+            if analysis['total_issues'] > 0:
+                self.logger.info(
+                    f"🔍 동기화 문제 발견: "
+                    f"누락 미러링 {len(analysis['missing_mirrors'])}개, "
+                    f"고아 주문 {len(analysis['orphaned_orders'])}개"
+                )
+            
+            return analysis
+            
+        except Exception as e:
+            self.logger.error(f"동기화 분석 실패: {e}")
+            return {'requires_action': False, 'total_issues': 0}
+
+    async def _fix_sync_issues(self, sync_analysis: Dict):
+        """동기화 문제 해결"""
+        try:
+            fixed_count = 0
+            
+            # 1. 누락된 미러링 처리 (병렬 처리로 속도 개선)
+            missing_tasks = []
+            for missing in sync_analysis['missing_mirrors'][:5]:  # 최대 5개씩 병렬 처리
+                try:
+                    bitget_order = missing['bitget_order']
+                    bitget_order_id = missing['bitget_order_id']
+                    
+                    self.logger.info(f"🔄 누락된 미러링 복제: {bitget_order_id}")
+                    
+                    # 이미 처리된 주문인지 확인
+                    if bitget_order_id not in self.position_manager.processed_plan_orders:
+                        task = self.position_manager._process_perfect_mirror_order(bitget_order)
+                        missing_tasks.append((bitget_order_id, task))
                         
-                        # 1. 시세 차이 원인 (정보용으로만 표시)
-                        if valid_price_diff and valid_price_diff > 1000:
-                            possible_causes.append(f"시세 차이 큼 (${valid_price_diff:.2f}) - 슬리피지 보호 0.05%로 안전 처리")
-                        
-                        # 2. 가격 조회 실패 원인
-                        if self.bitget_price_failures > 0 or self.gate_price_failures > 0:
-                            possible_causes.append(f"가격 조회 실패 (비트겟: {self.bitget_price_failures}회, 게이트: {self.gate_price_failures}회)")
-                        
-                        # 3. 렌더 재구동 원인
-                        if self.position_manager.render_restart_detected:
-                            possible_causes.append("렌더 재구동 후 기존 포지션 존재")
-                        
-                        # 4. 시스템 초기화 중
-                        startup_time = datetime.now() - self.position_manager.startup_time if hasattr(self.position_manager, 'startup_time') else timedelta(minutes=10)
-                        if startup_time.total_seconds() < 300:
-                            possible_causes.append("시스템 초기화 중 (정상)")
-                        
-                        # 5. 실제 포지션 차이
-                        actual_diff = abs(sync_status['bitget_total_count'] - sync_status['gate_total_count'])
-                        if actual_diff > 1:
-                            possible_causes.append(f"실제 포지션 개수 차이 (비트겟: {sync_status['bitget_total_count']}개, 게이트: {sync_status['gate_total_count']}개)")
-                        
-                        # 6. 원인 없음
-                        if not possible_causes:
-                            possible_causes.append("알 수 없는 원인 (대부분 정상적인 일시적 차이)")
-                        
-                        await self.telegram.send_message(
-                            f"📊 포지션 동기화 상태 분석\n"
-                            f"비트겟 신규: {sync_status['bitget_new_count']}개\n"
-                            f"게이트 신규: {sync_status['gate_new_count']}개\n"
-                            f"차이: {sync_status['position_diff']}개\n\n"
-                            f"🔍 분석된 원인:\n"
-                            f"• {chr(10).join(possible_causes)}\n\n"
-                            f"💡 시세 차이는 미러링 처리에 영향을 주지 않습니다.\n"
-                            f"🔥 모든 주문이 즉시 처리되고 있습니다.\n"
-                            f"🛡️ 슬리피지 보호 0.05% 시스템이 활성화되어 있습니다."
+                        self.position_manager.processed_plan_orders.add(bitget_order_id)
+                    
+                except Exception as e:
+                    self.logger.error(f"누락 미러링 태스크 생성 실패: {missing['bitget_order_id']} - {e}")
+            
+            # 병렬 실행
+            if missing_tasks:
+                results = await asyncio.gather(*[task for _, task in missing_tasks], return_exceptions=True)
+                
+                for i, (order_id, _) in enumerate(missing_tasks):
+                    try:
+                        result = results[i]
+                        if isinstance(result, Exception):
+                            self.logger.error(f"누락 미러링 실행 실패: {order_id} - {result}")
+                        elif result in ["perfect_success", "partial_success"]:
+                            fixed_count += 1
+                            self.daily_stats['sync_corrections'] += 1
+                            self.logger.info(f"✅ 누락 미러링 완료: {order_id}")
+                    except Exception as e:
+                        self.logger.error(f"누락 미러링 결과 처리 실패: {order_id} - {e}")
+            
+            # 2. 고아 주문 삭제 (병렬 처리)
+            orphan_tasks = []
+            for orphan in sync_analysis['orphaned_orders'][:5]:  # 최대 5개씩 병렬 처리
+                try:
+                    gate_order_id = orphan['gate_order_id']
+                    self.logger.info(f"🗑️ 고아 주문 삭제: {gate_order_id}")
+                    
+                    task = self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                    orphan_tasks.append((gate_order_id, task))
+                    
+                except Exception as e:
+                    self.logger.error(f"고아 주문 삭제 태스크 생성 실패: {orphan['gate_order_id']} - {e}")
+            
+            # 병렬 실행
+            if orphan_tasks:
+                results = await asyncio.gather(*[task for _, task in orphan_tasks], return_exceptions=True)
+                
+                for i, (order_id, _) in enumerate(orphan_tasks):
+                    try:
+                        result = results[i]
+                        if isinstance(result, Exception):
+                            self.logger.error(f"고아 주문 삭제 실패: {order_id} - {result}")
+                        elif result:
+                            fixed_count += 1
+                            self.daily_stats['sync_deletions'] += 1
+                            self.logger.info(f"✅ 고아 주문 삭제 완료: {order_id}")
+                    except Exception as e:
+                        self.logger.error(f"고아 주문 삭제 결과 처리 실패: {order_id} - {e}")
+            
+            # 동기화 결과 알림 (5개 이상 문제가 해결되었을 때만)
+            if fixed_count >= 5:
+                price_diff = abs(self.bitget_current_price - self.gate_current_price) if (self.bitget_current_price > 0 and self.gate_current_price > 0) else 0
+                await self.telegram.send_message(
+                    f"🔄 예약 주문 대규모 동기화 완료\n"
+                    f"해결된 문제: {fixed_count}건\n"
+                    f"- 누락 미러링 복제: {len(sync_analysis['missing_mirrors'])}건\n"
+                    f"- 고아 주문 삭제: {len(sync_analysis['orphaned_orders'])}건\n\n"
+                    f"📊 현재 시세 차이: ${price_diff:.2f}\n"
+                    f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리\n"
+                    f"🛡️ 슬리피지 보호 0.05% (약 $50) 적용"
+                )
+            elif fixed_count > 0:
+                self.logger.info(f"🔄 예약 주문 동기화 완료: {fixed_count}건 해결")
+            
+        except Exception as e:
+            self.logger.error(f"동기화 문제 해결 실패: {e}")
+
+    async def monitor_sync_status(self):
+        """동기화 상태 모니터링"""
+        while self.monitoring:
+            try:
+                now = datetime.now()
+                
+                if now - self.last_sync_check > timedelta(minutes=5):
+                    sync_retry_count = 0
+                    
+                    # 포지션 동기화 체크
+                    bitget_positions = await self.bitget_mirror.get_positions(self.SYMBOL)
+                    bitget_active = [
+                        pos for pos in bitget_positions 
+                        if float(pos.get('total', 0)) > 0
+                    ]
+                    
+                    # 게이트 포지션 확인
+                    gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
+                    gate_active = [
+                        pos for pos in gate_positions 
+                        if pos.get('size', 0) != 0
+                    ]
+                    
+                    if len(bitget_active) != len(gate_active):
+                        sync_retry_count += 1
+                        self.logger.warning(
+                            f"포지션 동기화 불일치: 비트겟 {len(bitget_active)}개, "
+                            f"게이트 {len(gate_active)}개"
                         )
                         
+                        if sync_retry_count >= 3:
+                            await self.telegram.send_message(
+                                f"⚠️ 포지션 동기화 경고\n"
+                                f"비트겟: {len(bitget_active)}개\n"
+                                f"게이트: {len(gate_active)}개\n"
+                                f"수동 확인이 필요할 수 있습니다."
+                            )
+                            sync_retry_count = 0
+                    else:
                         sync_retry_count = 0
-                else:
-                    sync_retry_count = 0
+                    
+                    self.last_sync_check = now
+                    
+                await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
                 
             except Exception as e:
                 self.logger.error(f"동기화 모니터링 오류: {e}")
@@ -1056,82 +989,22 @@ class MirrorTradingSystem:
         # 시세 조회 실패 카운터 리셋
         self.bitget_price_failures = 0
         self.gate_price_failures = 0
-        
-        # 포지션 매니저의 통계도 동기화
-        self.position_manager.daily_stats = self.daily_stats
 
     async def _log_account_status(self):
-        """계정 상태 로깅"""
+        """계정 상태 로그"""
         try:
-            # 기본 클라이언트로 계정 조회
+            # 기본 클라이언트로 계정 상태 조회
             bitget_account = await self.bitget.get_account_info()
-            bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
-            
             gate_account = await self.gate_mirror.get_account_balance()
-            gate_equity = float(gate_account.get('total', 0))
             
-            # 시세 차이 정보
-            valid_price_diff = self._get_valid_price_difference()
-            
-            if valid_price_diff is not None:
-                price_info = f"""📈 시세 상태:
-- 비트겟: ${self.bitget_current_price:,.2f}
-- 게이트: ${self.gate_current_price:,.2f}
-- 차이: ${valid_price_diff:.2f}
-- 🔥 처리: 시세 차이와 무관하게 즉시 처리
-- 🛡️ 슬리피지 보호: 0.05% (약 $50) 제한
-- ⏰ 지정가 대기: 5초 후 시장가 전환"""
-            else:
-                price_info = f"""📈 시세 상태:
-- 시세 조회 중 문제 발생
-- 시스템이 자동으로 복구 중
-- 🔥 처리: 시세 조회 실패와 무관하게 정상 처리
-- 🛡️ 슬리피지 보호: 0.05% 활성화됨"""
-            
-            await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작\n\n"
-                f"💰 계정 잔고:\n"
-                f"- 비트겟: ${bitget_equity:,.2f}\n"
-                f"- 게이트: ${gate_equity:,.2f}\n\n"
-                f"{price_info}\n\n"
-                f"📊 현재 상태:\n"
-                f"- 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
-                f"- 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
-                f"- 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
-                f"⚡ 핵심 기능:\n"
-                f"- 🎯 완벽한 TP/SL 미러링\n"
-                f"- 🔄 15초마다 자동 동기화\n"
-                f"- 🛡️ 중복 복제 방지\n"
-                f"- 🗑️ 고아 주문 자동 정리\n"
-                f"- 📊 클로즈 주문 포지션 체크\n"
-                f"- 🔥 시세 차이와 무관하게 즉시 처리\n"
-                f"- 🛡️ 슬리피지 보호 0.05% (약 $50)\n"
-                f"- ⏰ 지정가 주문 5초 대기 후 시장가 전환\n"
-                f"- 📱 시장가 체결 시 즉시 텔레그램 알림\n"
-                f"- 🎯 예약 주문 체결/취소 구분 시스템\n\n"
-                f"🚀 시스템이 정상적으로 시작되었습니다."
-            )
+            self.logger.info(f"💰 비트겟 계정: ${float(bitget_account.get('accountEquity', 0)):,.2f}")
+            self.logger.info(f"💰 게이트 계정: ${float(gate_account.get('total', 0)):,.2f}")
             
         except Exception as e:
             self.logger.error(f"계정 상태 조회 실패: {e}")
 
-    async def stop(self):
+    def stop(self):
         """미러 트레이딩 중지"""
+        self.logger.info("미러 트레이딩 시스템 중지 요청")
         self.monitoring = False
-        
-        try:
-            # 포지션 매니저 중지
-            await self.position_manager.stop()
-            
-            # Bitget 미러링 클라이언트 종료
-            await self.bitget_mirror.close()
-            
-            # Gate.io 미러링 클라이언트 종료
-            await self.gate_mirror.close()
-            
-            final_report = await self._create_daily_report()
-            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료\n\n{final_report}")
-        except:
-            pass
-        
-        self.logger.info("미러 트레이딩 시스템 중지")
+        self.position_manager.monitoring = False
