@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - 포지션 크기 기반 클로즈 주문 처리 강화"""
+    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제 + 클로즈 주문 방향 수정"""
     
     def __init__(self, config):
         self.config = config
@@ -283,7 +283,7 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 포지션 크기 기반 클로즈 주문 처리 강화"""
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 클로즈 주문 방향 수정"""
         try:
             # 비트겟 주문 정보 추출
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
@@ -333,11 +333,32 @@ class GateioMirrorClient:
             reduce_only = bitget_order.get('reduceOnly', False)
             is_close_order = ('close' in side or reduce_only is True or reduce_only == 'true')
             
-            # 🔥🔥🔥 클로즈 주문인 경우 현재 포지션 크기 기반 처리
+            # 🔥🔥🔥 클로즈 주문 방향 수정 로직
             if is_close_order:
-                final_size, reduce_only_flag = await self._calculate_close_order_size_based_on_position(
-                    bitget_order, gate_size, side
-                )
+                # 클로즈 주문: reduce_only=True
+                final_size = gate_size
+                reduce_only_flag = True
+                
+                # 🔥🔥🔥 클로즈 주문 방향 매핑 수정
+                if 'close_long' in side or side == 'close long':
+                    # 롱 포지션 종료 → 매도 (음수)
+                    final_size = -abs(gate_size)
+                    logger.info(f"🔴 클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
+                    
+                elif 'close_short' in side or side == 'close short':
+                    # 숏 포지션 종료 → 매수 (양수)
+                    final_size = abs(gate_size)
+                    logger.info(f"🟢 클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
+                    
+                else:
+                    # 일반적인 매도/매수 기반 판단 (클로즈 주문)
+                    if 'sell' in side or 'short' in side:
+                        final_size = -abs(gate_size)
+                        logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
+                    else:
+                        final_size = abs(gate_size)
+                        logger.info(f"🟢 클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
+                
             else:
                 # 오픈 주문: 방향 고려
                 reduce_only_flag = False
@@ -393,8 +414,7 @@ class GateioMirrorClient:
                     'actual_sl_price': actual_sl,
                     'is_close_order': is_close_order,
                     'reduce_only': reduce_only_flag,
-                    'perfect_mirror': has_tp_sl,
-                    'position_adjusted': is_close_order  # 포지션 기반 조정 여부
+                    'perfect_mirror': has_tp_sl
                 }
                 
             else:
@@ -415,8 +435,7 @@ class GateioMirrorClient:
                     'has_tp_sl': False,
                     'is_close_order': is_close_order,
                     'reduce_only': reduce_only_flag,
-                    'perfect_mirror': True,  # TP/SL이 없으면 완벽
-                    'position_adjusted': is_close_order
+                    'perfect_mirror': True  # TP/SL이 없으면 완벽
                 }
             
         except Exception as e:
@@ -425,104 +444,8 @@ class GateioMirrorClient:
                 'success': False,
                 'error': str(e),
                 'has_tp_sl': False,
-                'perfect_mirror': False,
-                'position_adjusted': False
+                'perfect_mirror': False
             }
-    
-    async def _calculate_close_order_size_based_on_position(self, bitget_order: Dict, 
-                                                           original_gate_size: int, 
-                                                           side: str) -> Tuple[int, bool]:
-        """🔥🔥🔥 현재 포지션 크기 기반 클로즈 주문 크기 계산"""
-        try:
-            # 현재 게이트 포지션 조회
-            gate_positions = await self.get_positions("BTC_USDT")
-            
-            if not gate_positions:
-                logger.warning(f"⚠️ 게이트에 포지션이 없어 원본 크기 사용: {original_gate_size}")
-                # 포지션이 없으면 원본 크기로 클로즈 주문 생성 (reduce_only=True)
-                if 'short' in side.lower() or 'sell' in side.lower():
-                    return -abs(original_gate_size), True
-                else:
-                    return abs(original_gate_size), True
-            
-            position = gate_positions[0]
-            current_gate_size = int(position.get('size', 0))
-            
-            if current_gate_size == 0:
-                logger.warning(f"⚠️ 게이트 포지션 크기가 0이어서 원본 크기 사용: {original_gate_size}")
-                if 'short' in side.lower() or 'sell' in side.lower():
-                    return -abs(original_gate_size), True
-                else:
-                    return abs(original_gate_size), True
-            
-            # 현재 포지션 방향 확인
-            current_position_side = 'long' if current_gate_size > 0 else 'short'
-            current_position_abs_size = abs(current_gate_size)
-            
-            logger.info(f"🔍 현재 게이트 포지션: {current_gate_size} ({current_position_side})")
-            
-            # 🔥🔥🔥 비트겟 클로즈 주문에서 부분 청산 비율 계산
-            try:
-                # 비트겟에서 해당 포지션 조회
-                from mirror_trading_utils import MirrorTradingUtils
-                utils = MirrorTradingUtils(self.config, None, None)
-                
-                # 임시로 bitget 클라이언트 설정 (실제 구현에서는 의존성 주입 필요)
-                # 여기서는 단순화하여 1:1 비율로 가정
-                bitget_size = float(bitget_order.get('size', 0))
-                close_ratio = 1.0  # 기본값은 전체 청산
-                
-                # 비트겟 주문 크기와 현재 게이트 포지션 크기 비교
-                if bitget_size > 0 and current_position_abs_size > 0:
-                    # 비트겟 크기를 게이트 계약 수로 변환하여 비교
-                    bitget_size_in_contracts = int(bitget_size * 10000)  # BTC를 계약 수로 변환
-                    
-                    if bitget_size_in_contracts < current_position_abs_size:
-                        close_ratio = bitget_size_in_contracts / current_position_abs_size
-                        logger.info(f"🔍 부분 청산 감지: 비율 {close_ratio*100:.1f}% (비트겟: {bitget_size_in_contracts}, 게이트: {current_position_abs_size})")
-                    else:
-                        close_ratio = 1.0
-                        logger.info(f"🔍 전체 청산 감지: 비율 100%")
-                
-            except Exception as e:
-                logger.error(f"부분 청산 비율 계산 실패, 전체 청산으로 처리: {e}")
-                close_ratio = 1.0
-            
-            # 🔥🔥🔥 실제 클로즈할 크기 계산
-            actual_close_size = int(current_position_abs_size * close_ratio)
-            
-            # 최소 1개는 클로즈
-            if actual_close_size == 0:
-                actual_close_size = 1
-            
-            # 현재 포지션보다 클 수 없음
-            if actual_close_size > current_position_abs_size:
-                actual_close_size = current_position_abs_size
-            
-            # 🔥🔥🔥 클로즈 주문 방향 결정 (포지션과 반대 방향)
-            if current_position_side == 'long':
-                # 롱 포지션 클로즈 → 매도 (음수)
-                final_size = -actual_close_size
-                logger.info(f"🔴 롱 포지션 클로즈: {actual_close_size} → 매도 주문 (음수: {final_size})")
-            else:
-                # 숏 포지션 클로즈 → 매수 (양수)
-                final_size = actual_close_size
-                logger.info(f"🟢 숏 포지션 클로즈: {actual_close_size} → 매수 주문 (양수: {final_size})")
-            
-            logger.info(f"✅ 포지션 기반 클로즈 주문 크기 계산 완료:")
-            logger.info(f"   - 현재 포지션: {current_gate_size}")
-            logger.info(f"   - 클로즈 비율: {close_ratio*100:.1f}%")
-            logger.info(f"   - 최종 클로즈 크기: {final_size}")
-            
-            return final_size, True  # reduce_only=True
-            
-        except Exception as e:
-            logger.error(f"포지션 기반 클로즈 주문 크기 계산 실패: {e}")
-            # 실패 시 원본 크기 사용
-            if 'short' in side.lower() or 'sell' in side.lower():
-                return -abs(original_gate_size), True
-            else:
-                return abs(original_gate_size), True
     
     async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
                                                 tp_price: Optional[float] = None,
@@ -700,61 +623,6 @@ class GateioMirrorClient:
         except Exception as e:
             logger.error(f"포지션 종료 실패: {e}")
             raise
-    
-    async def get_current_position_details(self, contract: str = "BTC_USDT") -> Dict:
-        """🔥🔥🔥 현재 포지션 상세 정보 조회"""
-        try:
-            positions = await self.get_positions(contract)
-            
-            if not positions:
-                return {
-                    'has_position': False,
-                    'size': 0,
-                    'abs_size': 0,
-                    'side': 'none',
-                    'entry_price': 0,
-                    'unrealized_pnl': 0
-                }
-            
-            position = positions[0]
-            size = int(position.get('size', 0))
-            
-            if size == 0:
-                return {
-                    'has_position': False,
-                    'size': 0,
-                    'abs_size': 0,
-                    'side': 'none',
-                    'entry_price': 0,
-                    'unrealized_pnl': 0
-                }
-            
-            side = 'long' if size > 0 else 'short'
-            abs_size = abs(size)
-            entry_price = float(position.get('entry_price', 0))
-            unrealized_pnl = float(position.get('unrealised_pnl', 0))
-            
-            return {
-                'has_position': True,
-                'size': size,
-                'abs_size': abs_size,
-                'side': side,
-                'entry_price': entry_price,
-                'unrealized_pnl': unrealized_pnl,
-                'raw_position': position
-            }
-            
-        except Exception as e:
-            logger.error(f"현재 포지션 상세 정보 조회 실패: {e}")
-            return {
-                'has_position': False,
-                'size': 0,
-                'abs_size': 0,
-                'side': 'error',
-                'entry_price': 0,
-                'unrealized_pnl': 0,
-                'error': str(e)
-            }
     
     async def close(self):
         """세션 종료"""
