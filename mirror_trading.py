@@ -71,7 +71,7 @@ class MirrorTradingSystem:
         
         # 예약 주문 동기화 강화 설정
         self.order_sync_enabled: bool = True
-        self.order_sync_interval: int = 15
+        self.order_sync_interval: int = 30  # 🔥🔥🔥 15초 → 30초로 변경 (덜 공격적)
         self.last_order_sync_time: datetime = datetime.min
         
         # 설정
@@ -135,9 +135,9 @@ class MirrorTradingSystem:
             raise
 
     async def monitor_order_synchronization(self):
-        """예약 주문 동기화 모니터링"""
+        """🔥🔥🔥 예약 주문 동기화 모니터링 - 더 신중한 접근"""
         try:
-            self.logger.info("🔄 예약 주문 동기화 모니터링 시작")
+            self.logger.info("🔄 신중한 예약 주문 동기화 모니터링 시작")
             
             while self.monitoring:
                 try:
@@ -147,12 +147,12 @@ class MirrorTradingSystem:
                     
                     current_time = datetime.now()
                     
-                    # 더 빠른 정기 동기화 체크 (15초마다)
+                    # 🔥🔥🔥 더 긴 간격으로 동기화 체크 (30초마다)
                     if (current_time - self.last_order_sync_time).total_seconds() >= self.order_sync_interval:
                         await self._perform_comprehensive_order_sync()
                         self.last_order_sync_time = current_time
                     
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(5)  # 체크 간격도 조금 늘림
                     
                 except Exception as e:
                     self.logger.error(f"예약 주문 동기화 모니터링 오류: {e}")
@@ -205,12 +205,14 @@ class MirrorTradingSystem:
             self.logger.error(f"종합 예약 주문 동기화 실패: {e}")
 
     async def _analyze_comprehensive_sync(self, bitget_orders: List[Dict], gate_orders: List[Dict]) -> Dict:
-        """종합적인 동기화 분석"""
+        """🔥🔥🔥 종합적인 동기화 분석 - 고아 주문 판별 강화"""
         try:
             analysis = {
                 'requires_action': False,
                 'missing_mirrors': [],
                 'orphaned_orders': [],
+                'suspicious_orders': [],  # 🔥 새로운 카테고리 - 의심스러운 주문
+                'verified_orphans': [],   # 🔥 확실히 검증된 고아 주문만
                 'price_mismatches': [],
                 'size_mismatches': [],
                 'total_issues': 0
@@ -254,61 +256,206 @@ class MirrorTradingSystem:
                         'type': 'unmirrored'
                     })
             
-            # 게이트 고아 주문 찾기
+            # 🔥🔥🔥 게이트 고아 주문 찾기 - 매우 신중한 접근
+            bitget_order_ids = set()
+            for order in bitget_orders:
+                order_id = order.get('orderId', order.get('planOrderId', ''))
+                if order_id:
+                    bitget_order_ids.add(order_id)
+            
             for gate_order in gate_orders:
                 gate_order_id = gate_order.get('id', '')
                 if not gate_order_id:
                     continue
                 
-                # 미러링 매핑에서 비트겟 주문 찾기
+                # 🔥🔥🔥 1단계: 매핑 확인
                 bitget_order_id = self.position_manager.gate_to_bitget_order_mapping.get(gate_order_id)
                 
                 if not bitget_order_id:
-                    # 매핑이 없는 경우, 기존 게이트 주문인지 확인
-                    if gate_order_id not in self.position_manager.gate_existing_orders_detailed:
-                        analysis['orphaned_orders'].append({
+                    # 매핑이 없는 경우 - 기존 게이트 주문인지 확인
+                    if gate_order_id in self.position_manager.gate_existing_orders_detailed:
+                        self.logger.debug(f"기존 게이트 주문이므로 건드리지 않음: {gate_order_id}")
+                        continue
+                    else:
+                        # 🔥🔥🔥 매핑이 없고 기존 주문도 아닌 경우 - 의심스러운 주문으로 분류
+                        analysis['suspicious_orders'].append({
                             'gate_order_id': gate_order_id,
                             'gate_order': gate_order,
-                            'type': 'orphaned'
+                            'type': 'no_mapping',
+                            'reason': '매핑 없음 + 기존 주문 아님'
                         })
-                else:
-                    # 매핑이 있는데 비트겟에서 해당 주문이 없는 경우
-                    bitget_exists = any(
-                        order.get('orderId', order.get('planOrderId', '')) == bitget_order_id 
-                        for order in bitget_orders
-                    )
-                    
-                    if not bitget_exists:
-                        analysis['orphaned_orders'].append({
+                        continue
+                
+                # 🔥🔥🔥 2단계: 비트겟에서 해당 주문 존재 여부 재확인
+                bitget_exists = bitget_order_id in bitget_order_ids
+                
+                if not bitget_exists:
+                    # 🔥🔥🔥 3단계: 비트겟에서 직접 재조회로 2차 확인
+                    try:
+                        recheck_result = await self._recheck_bitget_order_exists(bitget_order_id)
+                        
+                        if recheck_result['exists']:
+                            self.logger.info(f"비트겟 주문 재조회로 발견됨, 고아 아님: {bitget_order_id}")
+                            # 조회 결과를 업데이트하여 다음번에는 정상적으로 찾을 수 있도록
+                            continue
+                        elif recheck_result['definitely_not_exists']:
+                            # 🔥🔥🔥 확실히 존재하지 않는 경우만 고아로 분류
+                            analysis['verified_orphans'].append({
+                                'gate_order_id': gate_order_id,
+                                'gate_order': gate_order,
+                                'mapped_bitget_id': bitget_order_id,
+                                'type': 'verified_orphan',
+                                'verification': recheck_result
+                            })
+                        else:
+                            # 🔥🔥🔥 확실하지 않은 경우 의심스러운 주문으로 분류
+                            analysis['suspicious_orders'].append({
+                                'gate_order_id': gate_order_id,
+                                'gate_order': gate_order,
+                                'mapped_bitget_id': bitget_order_id,
+                                'type': 'uncertain',
+                                'reason': '비트겟 주문 상태 불확실',
+                                'verification': recheck_result
+                            })
+                            
+                    except Exception as recheck_error:
+                        self.logger.error(f"비트겟 주문 재확인 실패: {bitget_order_id} - {recheck_error}")
+                        # 재확인 실패 시 의심스러운 주문으로 분류 (삭제하지 않음)
+                        analysis['suspicious_orders'].append({
                             'gate_order_id': gate_order_id,
                             'gate_order': gate_order,
                             'mapped_bitget_id': bitget_order_id,
-                            'type': 'orphaned_mapped'
+                            'type': 'recheck_failed',
+                            'reason': f'재확인 실패: {recheck_error}',
+                            'verification': {'error': str(recheck_error)}
                         })
             
-            # 총 문제 개수 계산
+            # 🔥🔥🔥 총 문제 개수 계산 - 확실한 것만
             analysis['total_issues'] = (
                 len(analysis['missing_mirrors']) + 
-                len(analysis['orphaned_orders']) + 
-                len(analysis['price_mismatches']) + 
-                len(analysis['size_mismatches'])
+                len(analysis['verified_orphans'])  # suspicious_orders는 포함하지 않음
             )
             
             analysis['requires_action'] = analysis['total_issues'] > 0
             
             if analysis['requires_action']:
-                self.logger.info(f"🔍 동기화 문제 발견: {analysis['total_issues']}건")
+                self.logger.info(f"🔍 동기화 문제 발견: {analysis['total_issues']}건 (확실한 것만)")
                 self.logger.info(f"   - 누락 미러링: {len(analysis['missing_mirrors'])}건")
-                self.logger.info(f"   - 고아 주문: {len(analysis['orphaned_orders'])}건")
+                self.logger.info(f"   - 확실한 고아 주문: {len(analysis['verified_orphans'])}건")
+                if analysis['suspicious_orders']:
+                    self.logger.info(f"   - 의심스러운 주문 (보류): {len(analysis['suspicious_orders'])}건")
             
             return analysis
             
         except Exception as e:
             self.logger.error(f"종합 동기화 분석 실패: {e}")
-            return {'requires_action': False, 'total_issues': 0, 'missing_mirrors': [], 'orphaned_orders': [], 'price_mismatches': [], 'size_mismatches': []}
+            return {
+                'requires_action': False, 
+                'total_issues': 0, 
+                'missing_mirrors': [], 
+                'verified_orphans': [],
+                'suspicious_orders': [],
+                'orphaned_orders': [],
+                'price_mismatches': [], 
+                'size_mismatches': []
+            }
+
+    async def _recheck_bitget_order_exists(self, bitget_order_id: str) -> Dict:
+        """🔥🔥🔥 비트겟에서 특정 주문 존재 여부 재확인"""
+        try:
+            self.logger.info(f"🔍 비트겟 주문 재확인 시작: {bitget_order_id}")
+            
+            # 🔥 1. 현재 활성 예약 주문에서 찾기
+            try:
+                plan_data = await self.bitget_mirror.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+                all_current_orders = plan_data.get('plan_orders', []) + plan_data.get('tp_sl_orders', [])
+                
+                for order in all_current_orders:
+                    order_id = order.get('orderId', order.get('planOrderId', ''))
+                    if order_id == bitget_order_id:
+                        self.logger.info(f"✅ 현재 활성 예약 주문에서 발견: {bitget_order_id}")
+                        return {
+                            'exists': True,
+                            'definitely_not_exists': False,
+                            'found_in': 'active_orders',
+                            'order_data': order
+                        }
+                        
+            except Exception as active_error:
+                self.logger.warning(f"활성 예약 주문 조회 실패: {active_error}")
+            
+            # 🔥 2. 최근 주문 내역에서 찾기 (취소되었을 수도 있음)
+            try:
+                # 최근 2시간 주문 내역 조회
+                end_time = int(datetime.now().timestamp() * 1000)
+                start_time = end_time - (2 * 60 * 60 * 1000)  # 2시간 전
+                
+                order_history = await self.bitget_mirror.get_order_history(
+                    symbol=self.SYMBOL,
+                    status=None,  # 모든 상태
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=100
+                )
+                
+                for order in order_history:
+                    order_id = order.get('orderId', order.get('planOrderId', ''))
+                    if order_id == bitget_order_id:
+                        order_status = order.get('status', '').lower()
+                        
+                        if order_status in ['cancelled', 'canceled']:
+                            self.logger.info(f"🚫 비트겟에서 취소된 주문 발견: {bitget_order_id}")
+                            return {
+                                'exists': False,
+                                'definitely_not_exists': True,
+                                'found_in': 'order_history',
+                                'status': 'cancelled',
+                                'order_data': order
+                            }
+                        elif order_status in ['filled', 'completed']:
+                            self.logger.info(f"✅ 비트겟에서 체결된 주문 발견: {bitget_order_id}")
+                            return {
+                                'exists': False,
+                                'definitely_not_exists': True,
+                                'found_in': 'order_history',
+                                'status': 'filled',
+                                'order_data': order
+                            }
+                        else:
+                            self.logger.info(f"📋 비트겟 주문 상태: {bitget_order_id} = {order_status}")
+                            return {
+                                'exists': True,
+                                'definitely_not_exists': False,
+                                'found_in': 'order_history',
+                                'status': order_status,
+                                'order_data': order
+                            }
+                            
+            except Exception as history_error:
+                self.logger.warning(f"주문 내역 조회 실패: {history_error}")
+            
+            # 🔥 3. 결론: 찾을 수 없음 (하지만 확실하지 않음)
+            self.logger.warning(f"⚠️ 비트겟에서 주문을 찾을 수 없음: {bitget_order_id}")
+            
+            return {
+                'exists': False,
+                'definitely_not_exists': False,  # 🔥🔥🔥 확실하지 않으므로 False
+                'found_in': 'nowhere',
+                'status': 'unknown',
+                'note': '조회 범위에서 찾을 수 없지만 확실하지 않음'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"비트겟 주문 재확인 오류: {e}")
+            return {
+                'exists': False,
+                'definitely_not_exists': False,  # 🔥🔥🔥 오류 시에도 확실하지 않음
+                'found_in': 'error',
+                'error': str(e)
+            }
 
     async def _fix_sync_issues(self, sync_analysis: Dict):
-        """동기화 문제 해결"""
+        """🔥🔥🔥 동기화 문제 해결 - 매우 신중한 고아 주문 처리"""
         try:
             fixed_count = 0
             
@@ -347,65 +494,104 @@ class MirrorTradingSystem:
                     except Exception as e:
                         self.logger.error(f"누락 미러링 결과 처리 실패: {order_id} - {e}")
             
-            # 2. 고아 주문 삭제 (병렬 처리)
-            orphan_tasks = []
-            for orphaned in sync_analysis['orphaned_orders'][:10]:  # 최대 10개씩 병렬 처리
-                try:
-                    gate_order_id = orphaned['gate_order_id']
-                    self.logger.info(f"🗑️ 고아 주문 삭제: {gate_order_id}")
-                    
-                    task = self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                    orphan_tasks.append((gate_order_id, task))
-                    
-                except Exception as e:
-                    self.logger.error(f"고아 주문 삭제 태스크 생성 실패: {orphaned['gate_order_id']} - {e}")
+            # 🔥🔥🔥 2. 확실한 고아 주문만 처리 (매우 신중)
+            verified_orphans = sync_analysis.get('verified_orphans', [])
+            suspicious_orders = sync_analysis.get('suspicious_orders', [])
             
-            # 병렬 실행
-            if orphan_tasks:
-                results = await asyncio.gather(*[task for _, task in orphan_tasks], return_exceptions=True)
+            if verified_orphans:
+                self.logger.info(f"🔍 확실한 고아 주문 {len(verified_orphans)}개 처리 시작")
                 
-                for i, (order_id, _) in enumerate(orphan_tasks):
+                orphan_tasks = []
+                for orphaned in verified_orphans[:5]:  # 최대 5개씩
                     try:
-                        result = results[i]
-                        if isinstance(result, Exception):
-                            error_msg = str(result).lower()
-                            if any(keyword in error_msg for keyword in [
-                                "not found", "order not exist", "invalid order",
-                                "order does not exist", "auto_order_not_found"
-                            ]):
-                                fixed_count += 1
-                                self.logger.info(f"고아 주문이 이미 처리됨: {order_id}")
-                            else:
-                                self.logger.error(f"고아 주문 삭제 실패: {order_id} - {result}")
+                        gate_order_id = orphaned['gate_order_id']
+                        verification = orphaned.get('verification', {})
+                        
+                        # 🔥🔥🔥 한 번 더 확인
+                        if verification.get('definitely_not_exists') and verification.get('status') in ['cancelled', 'filled']:
+                            self.logger.info(f"🗑️ 확실한 고아 주문 삭제: {gate_order_id} (비트겟 상태: {verification.get('status')})")
+                            task = self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                            orphan_tasks.append((gate_order_id, task))
                         else:
-                            fixed_count += 1
-                            self.daily_stats['sync_deletions'] += 1
+                            self.logger.warning(f"⚠️ 확실하지 않은 주문은 보존: {gate_order_id}")
                             
-                        # 매핑에서도 제거
-                        if order_id in self.position_manager.gate_to_bitget_order_mapping:
-                            bitget_id = self.position_manager.gate_to_bitget_order_mapping[order_id]
-                            del self.position_manager.gate_to_bitget_order_mapping[order_id]
-                            if bitget_id in self.position_manager.bitget_to_gate_order_mapping:
-                                del self.position_manager.bitget_to_gate_order_mapping[bitget_id]
-                        
-                        self.logger.info(f"✅ 고아 주문 삭제 완료: {order_id}")
-                        
                     except Exception as e:
-                        self.logger.error(f"고아 주문 삭제 결과 처리 실패: {order_id} - {e}")
+                        self.logger.error(f"확실한 고아 주문 처리 태스크 생성 실패: {orphaned['gate_order_id']} - {e}")
+                
+                # 병렬 실행
+                if orphan_tasks:
+                    results = await asyncio.gather(*[task for _, task in orphan_tasks], return_exceptions=True)
+                    
+                    for i, (order_id, _) in enumerate(orphan_tasks):
+                        try:
+                            result = results[i]
+                            if isinstance(result, Exception):
+                                error_msg = str(result).lower()
+                                if any(keyword in error_msg for keyword in [
+                                    "not found", "order not exist", "invalid order",
+                                    "order does not exist", "auto_order_not_found"
+                                ]):
+                                    fixed_count += 1
+                                    self.logger.info(f"고아 주문이 이미 처리됨: {order_id}")
+                                else:
+                                    self.logger.error(f"고아 주문 삭제 실패: {order_id} - {result}")
+                            else:
+                                fixed_count += 1
+                                self.daily_stats['sync_deletions'] += 1
+                                
+                            # 매핑에서도 제거
+                            if order_id in self.position_manager.gate_to_bitget_order_mapping:
+                                bitget_id = self.position_manager.gate_to_bitget_order_mapping[order_id]
+                                del self.position_manager.gate_to_bitget_order_mapping[order_id]
+                                if bitget_id in self.position_manager.bitget_to_gate_order_mapping:
+                                    del self.position_manager.bitget_to_gate_order_mapping[bitget_id]
+                            
+                            self.logger.info(f"✅ 확실한 고아 주문 삭제 완료: {order_id}")
+                            
+                        except Exception as e:
+                            self.logger.error(f"고아 주문 삭제 결과 처리 실패: {order_id} - {e}")
+            
+            # 🔥🔥🔥 3. 의심스러운 주문 리포트 (삭제하지 않음)
+            if suspicious_orders:
+                self.logger.warning(f"⚠️ 의심스러운 주문 {len(suspicious_orders)}개 발견 (자동 삭제하지 않음)")
+                
+                # 1시간에 한 번만 알림 (스팸 방지)
+                if not hasattr(self, '_last_suspicious_alert') or \
+                   (datetime.now() - self._last_suspicious_alert).total_seconds() > 3600:
+                    
+                    suspicious_report = f"🔍 의심스러운 게이트 예약 주문 발견\n"
+                    suspicious_report += f"개수: {len(suspicious_orders)}개\n"
+                    suspicious_report += f"상태: 비트겟 상태 불확실\n"
+                    suspicious_report += f"조치: 자동 삭제하지 않고 보존\n\n"
+                    
+                    for i, suspicious in enumerate(suspicious_orders[:3], 1):
+                        gate_order_id = suspicious['gate_order_id']
+                        reason = suspicious.get('reason', '알 수 없음')
+                        suspicious_report += f"{i}. 게이트 ID: {gate_order_id}\n"
+                        suspicious_report += f"   이유: {reason}\n"
+                    
+                    if len(suspicious_orders) > 3:
+                        suspicious_report += f"   ... 및 {len(suspicious_orders) - 3}개 더\n"
+                    
+                    suspicious_report += f"\n🛡️ 안전을 위해 수동 확인 필요"
+                    
+                    await self.telegram.send_message(suspicious_report)
+                    self._last_suspicious_alert = datetime.now()
             
             # 동기화 결과 알림 (5개 이상 문제가 해결되었을 때만)
             if fixed_count >= 5:
                 price_diff = abs(self.bitget_current_price - self.gate_current_price)
                 await self.telegram.send_message(
-                    f"🔄 예약 주문 대규모 동기화 완료\n"
+                    f"🔄 예약 주문 신중한 동기화 완료\n"
                     f"해결된 문제: {fixed_count}건\n"
                     f"- 누락 미러링 복제: {len(sync_analysis['missing_mirrors'])}건\n"
-                    f"- 고아 주문 삭제: {len(sync_analysis['orphaned_orders'])}건\n\n"
-                    f"📊 현재 시세 차이: ${price_diff:.2f} (처리 완료)\n"
-                    f"🔥 시세 차이와 무관하게 모든 주문 정상 처리됨"
+                    f"- 확실한 고아 주문 삭제: {len(verified_orphans)}건\n"
+                    f"- 의심스러운 주문 보존: {len(suspicious_orders)}건\n\n"
+                    f"📊 현재 시세 차이: ${price_diff:.2f}\n"
+                    f"🛡️ 비트겟에 예약 주문이 있는 한 게이트에서 자동 삭제하지 않음"
                 )
             elif fixed_count > 0:
-                self.logger.info(f"🔄 예약 주문 동기화 완료: {fixed_count}건 해결")
+                self.logger.info(f"🔄 예약 주문 신중한 동기화 완료: {fixed_count}건 해결")
             
         except Exception as e:
             self.logger.error(f"동기화 문제 해결 실패: {e}")
@@ -643,7 +829,7 @@ class MirrorTradingSystem:
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f}\n\n"
-                        f"🔄 미러링은 정상 진행되며 15초마다 자동 동기화됩니다\n"
+                        f"🔄 미러링은 정상 진행되며 30초마다 자동 동기화됩니다\n"
                         f"🔥 시세 차이와 무관하게 모든 주문이 즉시 처리됩니다"
                     )
                     last_warning_time = now
@@ -661,7 +847,7 @@ class MirrorTradingSystem:
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f}\n"
                         f"상태: {status_emoji} {status_text}\n\n"
-                        f"🔄 예약 주문 동기화: 15초마다 자동 실행\n"
+                        f"🔄 예약 주문 동기화: 30초마다 자동 실행\n"
                         f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리"
                     )
                     last_normal_report_time = now
@@ -840,7 +1026,7 @@ class MirrorTradingSystem:
 
 📈 동기화 성과:
 - 자동 동기화 수정: {self.daily_stats.get('sync_corrections', 0)}회
-- 고아 주문 삭제: {self.daily_stats.get('sync_deletions', 0)}회
+- 확실한 고아 주문 삭제: {self.daily_stats.get('sync_deletions', 0)}회
 - 자동 클로즈 주문 정리: {self.daily_stats.get('auto_close_order_cleanups', 0)}회
 - 포지션 종료 정리: {self.daily_stats.get('position_closed_cleanups', 0)}회
 
@@ -855,13 +1041,15 @@ class MirrorTradingSystem:
 - 완벽한 TP/SL 주문: {len([o for o in self.position_manager.mirrored_plan_orders.values() if o.get('perfect_mirror')])}개
 - 실패 기록: {len(self.failed_mirrors)}건
 
-🔥 시세 차이 대응 개선:
-- 시세 차이 임계값: ${self.price_sync_threshold:.0f}
-- 처리 방식: 시세 차이와 무관하게 즉시 처리
-- 대기 없음: 모든 주문 즉시 복제
+🔥 안전장치 강화:
+- 동기화 간격: 30초 (이전 15초)
+- 의심스러운 주문 보존: 자동 삭제 방지
+- 확실한 고아만 삭제: 3단계 검증
+- 비트겟 재확인: 주문 내역까지 조회
 
 ━━━━━━━━━━━━━━━━━━━
-✅ 미러 트레이딩 시스템 정상 작동 중"""
+✅ 미러 트레이딩 시스템 정상 작동 중
+🛡️ 비트겟에 예약 주문이 있는 한 게이트에서 자동 삭제하지 않음"""
             
             if self.daily_stats.get('errors'):
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -947,11 +1135,12 @@ class MirrorTradingSystem:
                 f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
                 f"⚡ 핵심 기능:\n"
                 f"• 🎯 완벽한 TP/SL 미러링\n"
-                f"• 🔄 15초마다 자동 동기화\n"
+                f"• 🔄 30초마다 신중한 자동 동기화\n"
                 f"• 🛡️ 중복 복제 방지\n"
-                f"• 🗑️ 고아 주문 자동 정리\n"
+                f"• 🗑️ 확실한 고아 주문만 정리\n"
                 f"• 📊 클로즈 주문 포지션 체크\n"
-                f"• 🔥 시세 차이와 무관하게 즉시 처리\n\n"
+                f"• 🔥 시세 차이와 무관하게 즉시 처리\n"
+                f"• 🛡️ 의심스러운 주문 보존\n\n"
                 f"🚀 시스템이 정상적으로 시작되었습니다."
             )
             
@@ -978,3 +1167,4 @@ class MirrorTradingSystem:
             pass
         
         self.logger.info("미러 트레이딩 시스템 중지")
+            '
