@@ -9,7 +9,7 @@ from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 logger = logging.getLogger(__name__)
 
 class MirrorPositionManager:
-    """포지션 및 주문 관리 클래스 - 포지션별 투입 크기 추적 강화"""
+    """포지션 및 주문 관리 클래스 - 최적화 버전"""
     
     def __init__(self, config, bitget_client, gate_client, gate_mirror_client, telegram_bot, utils):
         self.config = config
@@ -26,11 +26,8 @@ class MirrorPositionManager:
         self.startup_gate_positions: Set[str] = set()
         self.failed_mirrors: List[MirrorResult] = []
         
-        # 🔥🔥🔥 포지션별 실제 투입 크기 추적 강화
+        # 포지션 크기 추적
         self.position_sizes: Dict[str, float] = {}
-        self.gate_position_actual_sizes: Dict[str, int] = {}  # 게이트 실제 계약 수
-        self.gate_position_actual_margins: Dict[str, float] = {}  # 게이트 실제 투입 마진
-        self.position_entry_info: Dict[str, Dict] = {}  # 포지션 진입 정보 상세 기록
         
         # 주문 체결 추적
         self.processed_orders: Set[str] = set()
@@ -116,11 +113,10 @@ class MirrorPositionManager:
             'position_closed_cleanups': 0,
             'sync_corrections': 0,
             'sync_deletions': 0,
-            'position_size_corrections': 0,  # 포지션 크기 보정 통계
             'errors': []
         }
         
-        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - 포지션 크기 추적 강화 버전")
+        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - 최적화 버전")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -138,9 +134,6 @@ class MirrorPositionManager:
             
             # 렌더 재구동 시 기존 게이트 포지션 확인
             await self._check_existing_gate_positions()
-            
-            # 🔥🔥🔥 기존 게이트 포지션의 실제 크기 기록
-            await self._record_existing_gate_position_sizes()
             
             # 게이트 기존 예약 주문 확인
             await self._record_gate_existing_orders()
@@ -161,42 +154,6 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"포지션 매니저 초기화 실패: {e}")
             raise
-
-    async def _record_existing_gate_position_sizes(self):
-        """🔥🔥🔥 기존 게이트 포지션의 실제 크기 기록"""
-        try:
-            gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
-            
-            for pos in gate_positions:
-                size = int(pos.get('size', 0))
-                if size == 0:
-                    continue
-                
-                # 포지션 ID 생성
-                gate_pos_id = self._generate_gate_position_id(pos)
-                
-                # 실제 크기 기록
-                self.gate_position_actual_sizes[gate_pos_id] = size
-                
-                # 마진 정보 기록 (추정)
-                entry_price = float(pos.get('entry_price', self.gate_current_price or 50000))
-                estimated_margin = abs(size) * entry_price * 0.0001 / 10  # 10배 레버리지 가정
-                self.gate_position_actual_margins[gate_pos_id] = estimated_margin
-                
-                # 상세 정보 기록
-                self.position_entry_info[gate_pos_id] = {
-                    'gate_size': size,
-                    'gate_margin': estimated_margin,
-                    'entry_price': entry_price,
-                    'side': 'long' if size > 0 else 'short',
-                    'created_at': datetime.now().isoformat(),
-                    'is_existing': True
-                }
-                
-                self.logger.info(f"🔍 기존 게이트 포지션 크기 기록: {gate_pos_id} → 크기={size}, 마진=${estimated_margin:.2f}")
-            
-        except Exception as e:
-            self.logger.error(f"기존 게이트 포지션 크기 기록 실패: {e}")
 
     async def monitor_plan_orders_cycle(self):
         """예약 주문 모니터링 사이클 - 최적화"""
@@ -314,11 +271,7 @@ class MirrorPositionManager:
                                 self.processed_plan_orders.add(order_id)
                                 continue
                         
-                        # 🔥🔥🔥 클로즈 주문과 오픈 주문을 구분하여 처리
-                        if is_close_order:
-                            result = await self._process_close_order_with_position_matching(order, close_details)
-                        else:
-                            result = await self._process_perfect_mirror_order(order)
+                        result = await self._process_perfect_mirror_order(order)
                         
                         if result == "perfect_success":
                             new_orders_count += 1
@@ -371,156 +324,6 @@ class MirrorPositionManager:
                 
         except Exception as e:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
-
-    async def _process_close_order_with_position_matching(self, bitget_order: Dict, close_details: Dict) -> str:
-        """🔥🔥🔥 포지션 크기 매칭을 통한 클로즈 주문 처리"""
-        try:
-            order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
-            position_side = close_details['position_side']  # 'long' 또는 'short'
-            
-            self.logger.info(f"🎯 포지션 매칭 클로즈 주문 처리: {order_id} (포지션: {position_side})")
-            
-            # 현재 게이트 포지션 조회
-            gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
-            
-            if not gate_positions:
-                self.logger.warning(f"⚠️ 게이트에 포지션이 없어 클로즈 주문 스킵: {order_id}")
-                return "skipped"
-            
-            gate_position = gate_positions[0]
-            current_gate_size = int(gate_position.get('size', 0))
-            
-            if current_gate_size == 0:
-                self.logger.warning(f"⚠️ 게이트 포지션 크기가 0이어 클로즈 주문 스킵: {order_id}")
-                return "skipped"
-            
-            # 포지션 방향 확인
-            current_position_side = 'long' if current_gate_size > 0 else 'short'
-            
-            if current_position_side != position_side:
-                self.logger.warning(f"⚠️ 포지션 방향 불일치: 현재={current_position_side}, 예상={position_side}")
-                # 방향이 다르더라도 현재 포지션에 맞게 클로즈 주문 생성
-                actual_position_side = current_position_side
-                actual_gate_size = abs(current_gate_size)
-            else:
-                actual_position_side = position_side
-                actual_gate_size = abs(current_gate_size)
-            
-            # 🔥🔥🔥 현재 게이트 포지션 크기를 기준으로 클로즈 주문 생성
-            self.logger.info(f"🎯 현재 게이트 포지션 기준 클로즈 주문 생성: 크기={actual_gate_size}, 포지션={actual_position_side}")
-            
-            # 트리거 가격 추출
-            trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if bitget_order.get(price_field):
-                    trigger_price = float(bitget_order.get(price_field))
-                    break
-            
-            if trigger_price == 0:
-                return "failed"
-            
-            # 비트겟 레버리지 정보 추출
-            bitget_leverage = 10  # 기본값
-            order_leverage = bitget_order.get('leverage')
-            if order_leverage:
-                try:
-                    bitget_leverage = int(float(order_leverage))
-                except:
-                    pass
-            
-            # 레버리지 설정
-            try:
-                await self.gate_mirror.set_leverage(self.GATE_CONTRACT, bitget_leverage)
-            except Exception as e:
-                self.logger.error(f"레버리지 설정 실패하지만 계속 진행: {e}")
-            
-            # Gate 미러링 클라이언트로 포지션 크기 기반 클로즈 주문 생성
-            mirror_result = await self.gate_mirror.create_perfect_tp_sl_order(
-                bitget_order=bitget_order,
-                gate_size=actual_gate_size,  # 🔥🔥🔥 현재 포지션 크기 사용
-                gate_margin=0,  # 클로즈 주문이므로 마진 불필요
-                leverage=bitget_leverage,
-                current_gate_price=self.gate_current_price
-            )
-            
-            if not mirror_result['success']:
-                self.daily_stats['failed_mirrors'] += 1
-                return "failed"
-            
-            gate_order_id = mirror_result['gate_order_id']
-            
-            # 주문 ID 매핑 기록
-            if order_id and gate_order_id:
-                self.bitget_to_gate_order_mapping[order_id] = gate_order_id
-                self.gate_to_bitget_order_mapping[gate_order_id] = order_id
-                self.logger.info(f"클로즈 주문 매핑 기록: {order_id} ↔ {gate_order_id}")
-            
-            # 미러링 성공 기록
-            self.mirrored_plan_orders[order_id] = {
-                'gate_order_id': gate_order_id,
-                'bitget_order': bitget_order,
-                'gate_order': mirror_result['gate_order'],
-                'created_at': datetime.now().isoformat(),
-                'margin': 0,  # 클로즈 주문
-                'size': actual_gate_size,
-                'margin_ratio': 0,  # 클로즈 주문
-                'leverage': bitget_leverage,
-                'trigger_price': trigger_price,
-                'has_tp_sl': mirror_result.get('has_tp_sl', False),
-                'tp_price': mirror_result.get('tp_price'),
-                'sl_price': mirror_result.get('sl_price'),
-                'actual_tp_price': mirror_result.get('actual_tp_price'),
-                'actual_sl_price': mirror_result.get('actual_sl_price'),
-                'is_close_order': True,
-                'reduce_only': True,
-                'perfect_mirror': mirror_result.get('perfect_mirror', False),
-                'close_details': close_details,
-                'position_matched': True,  # 포지션 매칭 표시
-                'original_position_size': current_gate_size  # 원본 포지션 크기 기록
-            }
-            
-            self.daily_stats['plan_order_mirrors'] += 1
-            self.daily_stats['position_size_corrections'] += 1
-            
-            # TP/SL 통계 업데이트
-            if mirror_result.get('has_tp_sl', False):
-                self.daily_stats['tp_sl_success'] += 1
-            elif mirror_result.get('tp_price') or mirror_result.get('sl_price'):
-                self.daily_stats['tp_sl_failed'] += 1
-            
-            # 성공 메시지
-            perfect_status = "완벽" if mirror_result.get('perfect_mirror') else "부분"
-            
-            tp_sl_info = ""
-            if mirror_result.get('has_tp_sl'):
-                tp_sl_info = f"\n\n🎯 TP/SL 완벽 미러링:"
-                if mirror_result.get('actual_tp_price'):
-                    tp_sl_info += f"\n✅ TP: ${mirror_result['actual_tp_price']}"
-                if mirror_result.get('actual_sl_price'):
-                    tp_sl_info += f"\n✅ SL: ${mirror_result['actual_sl_price']}"
-            
-            await self.telegram.send_message(
-                f"✅ 포지션 매칭 클로즈 주문 {perfect_status} 미러링 성공\n"
-                f"비트겟 ID: {order_id}\n"
-                f"게이트 ID: {gate_order_id}\n"
-                f"트리거가: ${trigger_price:,.2f}\n"
-                f"🔄 포지션 기반 크기 조정:\n"
-                f"현재 게이트 포지션: {current_gate_size} ({actual_position_side})\n"
-                f"클로즈 주문 크기: {actual_gate_size}\n"
-                f"시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}{tp_sl_info}"
-            )
-            
-            return "perfect_success" if mirror_result.get('perfect_mirror') else "partial_success"
-            
-        except Exception as e:
-            self.logger.error(f"포지션 매칭 클로즈 주문 처리 중 오류: {e}")
-            self.daily_stats['errors'].append({
-                'time': datetime.now().isoformat(),
-                'error': str(e),
-                'plan_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', 'unknown')),
-                'type': 'close_order_position_matching'
-            })
-            return "failed"
 
     async def _check_and_cleanup_close_orders_if_no_position(self):
         """포지션이 없으면 게이트의 클로즈 주문들을 자동 정리"""
@@ -604,33 +407,13 @@ class MirrorPositionManager:
                         f"게이트가 깔끔하게 정리되었습니다! ✨"
                     )
                     
-                    # 🔥🔥🔥 포지션 종료 시 관련 기록도 정리
-                    await self._cleanup_position_records_after_close()
-                    
                     self.logger.info(f"🎯 포지션 종료로 인한 클로즈 주문 자동 정리 완료: {deleted_count}개")
             
         except Exception as e:
             self.logger.error(f"포지션 없음 시 클로즈 주문 정리 실패: {e}")
 
-    async def _cleanup_position_records_after_close(self):
-        """🔥🔥🔥 포지션 종료 후 관련 기록 정리"""
-        try:
-            # 게이트 포지션 크기 기록 정리
-            keys_to_remove = list(self.gate_position_actual_sizes.keys())
-            for key in keys_to_remove:
-                del self.gate_position_actual_sizes[key]
-                if key in self.gate_position_actual_margins:
-                    del self.gate_position_actual_margins[key]
-                if key in self.position_entry_info:
-                    del self.position_entry_info[key]
-            
-            self.logger.info(f"🧹 포지션 종료 후 기록 정리 완료: {len(keys_to_remove)}개 기록 제거")
-            
-        except Exception as e:
-            self.logger.error(f"포지션 종료 후 기록 정리 실패: {e}")
-
     async def _process_perfect_mirror_order(self, bitget_order: Dict) -> str:
-        """완벽한 미러링 주문 처리 (오픈 주문용)"""
+        """완벽한 미러링 주문 처리"""
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             
@@ -717,25 +500,6 @@ class MirrorPositionManager:
                 self.bitget_to_gate_order_mapping[order_id] = gate_order_id
                 self.gate_to_bitget_order_mapping[gate_order_id] = order_id
                 self.logger.info(f"주문 매핑 기록: {order_id} ↔ {gate_order_id}")
-            
-            # 🔥🔥🔥 오픈 주문인 경우 포지션 진입 정보 기록
-            if not is_close_order:
-                position_id = f"{self.GATE_CONTRACT}_{position_side}_{trigger_price}"
-                self.gate_position_actual_sizes[position_id] = gate_size
-                self.gate_position_actual_margins[position_id] = gate_margin
-                self.position_entry_info[position_id] = {
-                    'gate_size': gate_size,
-                    'gate_margin': gate_margin,
-                    'entry_price': trigger_price,
-                    'side': position_side,
-                    'bitget_order_id': order_id,
-                    'gate_order_id': gate_order_id,
-                    'leverage': bitget_leverage,
-                    'margin_ratio': margin_ratio,
-                    'created_at': datetime.now().isoformat(),
-                    'is_existing': False
-                }
-                self.logger.info(f"🔰 오픈 주문 포지션 진입 정보 기록: {position_id}")
             
             # 미러링 성공 기록
             self.mirrored_plan_orders[order_id] = {
@@ -1170,27 +934,6 @@ class MirrorPositionManager:
             if result.success:
                 self.mirrored_positions[pos_id] = await self.utils.create_position_info(synthetic_position)
                 self.position_sizes[pos_id] = size
-                
-                # 🔥🔥🔥 게이트 포지션 크기 기록
-                gate_pos_id = f"{self.GATE_CONTRACT}_{position_side}_{fill_price}"
-                gate_size = int(size * 10000)
-                if position_side == 'short':
-                    gate_size = -gate_size
-                
-                self.gate_position_actual_sizes[gate_pos_id] = gate_size
-                self.gate_position_actual_margins[gate_pos_id] = margin_ratio_result['required_margin']
-                self.position_entry_info[gate_pos_id] = {
-                    'gate_size': gate_size,
-                    'gate_margin': margin_ratio_result['required_margin'],
-                    'entry_price': fill_price,
-                    'side': position_side,
-                    'leverage': leverage,
-                    'created_at': datetime.now().isoformat(),
-                    'is_existing': False,
-                    'from_filled_order': True,
-                    'bitget_order_id': order_id
-                }
-                
                 self.daily_stats['successful_mirrors'] += 1
                 self.daily_stats['order_mirrors'] += 1
                 
@@ -1202,8 +945,7 @@ class MirrorPositionManager:
                     f"수량: {size}\n"
                     f"레버리지: {leverage}x\n"
                     f"시세 차이: ${price_diff_abs:.2f}\n"
-                    f"실제 마진 비율: {margin_ratio_result['margin_ratio']*100:.2f}%\n"
-                    f"🔰 게이트 포지션 기록: {gate_size}"
+                    f"실제 마진 비율: {margin_ratio_result['margin_ratio']*100:.2f}%"
                 )
             else:
                 self.failed_mirrors.append(result)
@@ -1242,31 +984,6 @@ class MirrorPositionManager:
                     if result.success:
                         self.mirrored_positions[pos_id] = await self.utils.create_position_info(bitget_pos)
                         self.position_sizes[pos_id] = current_size
-                        
-                        # 🔥🔥🔥 게이트 포지션 크기 기록
-                        position_side = bitget_pos.get('holdSide', '').lower()
-                        entry_price = float(bitget_pos.get('openPriceAvg', 0))
-                        gate_pos_id = f"{self.GATE_CONTRACT}_{position_side}_{entry_price}"
-                        
-                        gate_size = int(current_size * 10000)
-                        if position_side == 'short':
-                            gate_size = -gate_size
-                        
-                        margin_size = float(bitget_pos.get('marginSize', 0))
-                        
-                        self.gate_position_actual_sizes[gate_pos_id] = gate_size
-                        self.gate_position_actual_margins[gate_pos_id] = margin_size
-                        self.position_entry_info[gate_pos_id] = {
-                            'gate_size': gate_size,
-                            'gate_margin': margin_size,
-                            'entry_price': entry_price,
-                            'side': position_side,
-                            'leverage': int(float(bitget_pos.get('leverage', 10))),
-                            'created_at': datetime.now().isoformat(),
-                            'is_existing': False,
-                            'from_position': True
-                        }
-                        
                         self.daily_stats['successful_mirrors'] += 1
                         self.daily_stats['position_mirrors'] += 1
                         
@@ -1275,8 +992,7 @@ class MirrorPositionManager:
                             f"✅ 포지션 기반 미러링 성공\n"
                             f"방향: {bitget_pos.get('holdSide', '')}\n"
                             f"진입가: ${float(bitget_pos.get('openPriceAvg', 0)):,.2f}\n"
-                            f"레버리지: {leverage}x\n"
-                            f"🔰 게이트 포지션 기록: {gate_size}"
+                            f"레버리지: {leverage}x"
                         )
                     else:
                         self.failed_mirrors.append(result)
@@ -1587,15 +1303,8 @@ class MirrorPositionManager:
                             skipped_count += 1
                             continue
                         
-                        # 클로즈 주문 여부 확인
-                        close_details = await self.utils.determine_close_order_details(order_data)
-                        is_close_order = close_details['is_close_order']
-                        
-                        # 🔥🔥🔥 클로즈 주문과 오픈 주문을 구분하여 처리
-                        if is_close_order:
-                            result = await self._process_close_order_with_position_matching(order_data, close_details)
-                        else:
-                            result = await self._process_perfect_mirror_order(order_data)
+                        # 완벽한 미러링 시도
+                        result = await self._process_perfect_mirror_order(order_data)
                         
                         if result in ["perfect_success", "partial_success"]:
                             mirrored_count += 1
@@ -1619,8 +1328,7 @@ class MirrorPositionManager:
                     f"성공: {mirrored_count}개\n"
                     f"스킵: {skipped_count}개\n"
                     f"실패: {failed_count}개\n"
-                    f"총 {len(self.startup_plan_orders)}개 중 {mirrored_count}개 복제\n"
-                    f"🔰 포지션 크기 매칭 기능 적용됨"
+                    f"총 {len(self.startup_plan_orders)}개 중 {mirrored_count}개 복제"
                 )
             
             self.startup_plan_orders_processed = True
