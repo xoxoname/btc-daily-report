@@ -9,7 +9,7 @@ from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 logger = logging.getLogger(__name__)
 
 class MirrorPositionManager:
-    """포지션 및 주문 관리 클래스 - 최적화 버전"""
+    """포지션 및 주문 관리 클래스 - 예약 주문 미러링 개선 버전"""
     
     def __init__(self, config, bitget_client, gate_client, gate_mirror_client, telegram_bot, utils):
         self.config = config
@@ -32,21 +32,21 @@ class MirrorPositionManager:
         # 주문 체결 추적
         self.processed_orders: Set[str] = set()
         
-        # 예약 주문 추적 관리
+        # 🔥🔥🔥 예약 주문 추적 관리 - 개선된 버전
         self.mirrored_plan_orders: Dict[str, Dict] = {}
         self.processed_plan_orders: Set[str] = set()
         self.startup_plan_orders: Set[str] = set()
         self.startup_plan_orders_processed: bool = False
         
-        # 중복 복제 방지 시스템
+        # 🔥🔥🔥 중복 복제 방지 시스템 - 완화된 버전
         self.order_processing_locks: Dict[str, asyncio.Lock] = {}
         self.recently_processed_orders: Dict[str, datetime] = {}
-        self.order_deduplication_window = 30
+        self.order_deduplication_window = 15  # 30초 → 15초로 단축
         
-        # 중복 방지 해시 시스템
+        # 🔥🔥🔥 해시 기반 중복 방지 - 더 정확한 버전
         self.processed_order_hashes: Set[str] = set()
         self.order_hash_timestamps: Dict[str, datetime] = {}
-        self.hash_cleanup_interval = 300
+        self.hash_cleanup_interval = 180  # 300초 → 180초로 단축
         
         # 예약 주문 취소 감지 시스템
         self.last_plan_order_ids: Set[str] = set()
@@ -59,14 +59,15 @@ class MirrorPositionManager:
         self.price_sync_threshold: float = 100.0
         self.position_wait_timeout: int = 60
         
-        # 가격 기반 중복 방지 시스템
+        # 🔥🔥🔥 가격 기반 중복 방지 시스템 - 완화된 버전
         self.mirrored_trigger_prices: Set[str] = set()
+        self.price_tolerance = 5.0  # ±5달러 허용
         
         # 렌더 재구동 시 기존 게이트 포지션 확인
         self.existing_gate_positions: Dict = {}
         self.render_restart_detected: bool = False
         
-        # 게이트 기존 예약 주문 중복 방지
+        # 🔥🔥🔥 게이트 기존 예약 주문 중복 방지 - 개선된 버전
         self.gate_existing_order_hashes: Set[str] = set()
         self.gate_existing_orders_detailed: Dict[str, Dict] = {}
         
@@ -116,7 +117,7 @@ class MirrorPositionManager:
             'errors': []
         }
         
-        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - 최적화 버전")
+        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - 예약 주문 미러링 개선 버전")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -156,7 +157,7 @@ class MirrorPositionManager:
             raise
 
     async def monitor_plan_orders_cycle(self):
-        """예약 주문 모니터링 사이클 - 최적화"""
+        """🔥🔥🔥 예약 주문 모니터링 사이클 - 개선된 감지 로직"""
         try:
             if not self.startup_plan_orders_processed:
                 await asyncio.sleep(0.1)
@@ -177,26 +178,14 @@ class MirrorPositionManager:
             # 포지션 종료 시 클로즈 주문 자동 정리
             await self._check_and_cleanup_close_orders_if_no_position()
             
-            # 현재 비트겟 예약 주문 조회
-            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-            current_plan_orders = plan_data.get('plan_orders', [])
-            current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
-            
-            # 클로즈 주문 정확하게 필터링
-            orders_to_monitor = []
-            orders_to_monitor.extend(current_plan_orders)
-            
-            # TP/SL 주문 중에서 클로즈 주문만 추가
-            for tp_sl_order in current_tp_sl_orders:
-                close_details = await self.utils.determine_close_order_details(tp_sl_order)
-                if close_details['is_close_order']:
-                    orders_to_monitor.append(tp_sl_order)
+            # 🔥🔥🔥 모든 예약 주문 조회 - 단순화된 로직
+            all_current_orders = await self._get_all_current_plan_orders()
             
             # 현재 존재하는 예약주문 ID 집합
             current_order_ids = set()
             current_snapshot = {}
             
-            for order in orders_to_monitor:
+            for order in all_current_orders:
                 order_id = order.get('orderId', order.get('planOrderId', ''))
                 if order_id:
                     current_order_ids.add(order_id)
@@ -222,13 +211,13 @@ class MirrorPositionManager:
             new_close_orders_count = 0
             perfect_mirrors = 0
             
-            for order in orders_to_monitor:
+            for order in all_current_orders:
                 order_id = order.get('orderId', order.get('planOrderId', ''))
                 if not order_id:
                     continue
                 
-                # 강화된 중복 처리 방지
-                if await self._is_order_recently_processed_enhanced(order_id, order):
+                # 🔥🔥🔥 개선된 중복 처리 방지
+                if await self._is_order_recently_processed_improved(order_id, order):
                     continue
                 
                 # 이미 처리된 주문은 스킵
@@ -249,8 +238,8 @@ class MirrorPositionManager:
                     if order_id in self.processed_plan_orders:
                         continue
                     
-                    # 강화된 중복 복제 확인
-                    is_duplicate = await self._is_duplicate_order_enhanced(order)
+                    # 🔥🔥🔥 개선된 중복 복제 확인
+                    is_duplicate = await self._is_duplicate_order_improved(order)
                     if is_duplicate:
                         self.daily_stats['duplicate_orders_prevented'] += 1
                         self.logger.info(f"🛡️ 중복 감지로 스킵: {order_id}")
@@ -259,9 +248,11 @@ class MirrorPositionManager:
                     
                     # 새로운 예약 주문 처리
                     try:
-                        # 클로즈 주문 상세 분석
+                        # 🔥🔥🔥 클로즈 주문 상세 분석 - 개선된 버전
                         close_details = await self.utils.determine_close_order_details(order)
                         is_close_order = close_details['is_close_order']
+                        
+                        self.logger.info(f"🎯 새로운 예약 주문 감지: {order_id} (클로즈: {is_close_order})")
                         
                         # 클로즈 주문인 경우 현재 포지션 상태 확인
                         if is_close_order:
@@ -325,6 +316,151 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
 
+    async def _get_all_current_plan_orders(self) -> List[Dict]:
+        """🔥🔥🔥 모든 현재 예약 주문 조회 - 단순화된 로직"""
+        try:
+            all_orders = []
+            
+            # 1. 비트겟에서 모든 예약 주문 조회
+            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            
+            # 2. 일반 예약 주문 추가
+            general_orders = plan_data.get('plan_orders', [])
+            if general_orders:
+                all_orders.extend(general_orders)
+                self.logger.debug(f"일반 예약 주문 {len(general_orders)}개 추가")
+            
+            # 3. TP/SL 주문 중에서 모든 주문을 추가 (클로즈 판단은 나중에)
+            tp_sl_orders = plan_data.get('tp_sl_orders', [])
+            if tp_sl_orders:
+                all_orders.extend(tp_sl_orders)
+                self.logger.debug(f"TP/SL 주문 {len(tp_sl_orders)}개 추가")
+            
+            self.logger.debug(f"총 {len(all_orders)}개의 현재 예약 주문 조회 완료")
+            return all_orders
+            
+        except Exception as e:
+            self.logger.error(f"현재 예약 주문 조회 실패: {e}")
+            return []
+
+    async def _is_order_recently_processed_improved(self, order_id: str, order: Dict) -> bool:
+        """🔥🔥🔥 개선된 최근 처리 주문 확인 - 완화된 버전"""
+        try:
+            # 1. 기본 시간 기반 확인 (단축된 시간)
+            if order_id in self.recently_processed_orders:
+                time_diff = (datetime.now() - self.recently_processed_orders[order_id]).total_seconds()
+                if time_diff < self.order_deduplication_window:
+                    self.logger.debug(f"최근 처리된 주문: {order_id} ({time_diff:.1f}초 전)")
+                    return True
+                else:
+                    del self.recently_processed_orders[order_id]
+            
+            # 2. 정확한 해시 기반 확인만 사용
+            order_hash = await self._generate_primary_order_hash(order)
+            if order_hash and order_hash in self.processed_order_hashes:
+                self.logger.debug(f"해시 기반 중복 감지: {order_hash}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"개선된 최근 처리 확인 실패: {e}")
+            return False
+
+    async def _is_duplicate_order_improved(self, bitget_order: Dict) -> bool:
+        """🔥🔥🔥 개선된 중복 주문 확인 - 더 정확한 판단"""
+        try:
+            # 1. 트리거 가격 추출
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if bitget_order.get(price_field):
+                    trigger_price = float(bitget_order.get(price_field))
+                    break
+            
+            if trigger_price <= 0:
+                return False
+            
+            # 2. 정확한 가격 매칭 확인 (±5달러 허용)
+            for existing_price_key in self.mirrored_trigger_prices:
+                try:
+                    if existing_price_key.startswith(f"{self.GATE_CONTRACT}_"):
+                        existing_price_str = existing_price_key.replace(f"{self.GATE_CONTRACT}_", "")
+                        existing_price = float(existing_price_str)
+                        
+                        price_diff = abs(trigger_price - existing_price)
+                        if price_diff <= self.price_tolerance:
+                            self.logger.debug(f"가격 기반 중복 감지: {trigger_price} ≈ {existing_price} (차이: ${price_diff:.2f})")
+                            return True
+                except (ValueError, IndexError):
+                    continue
+            
+            # 3. 기존 게이트 주문과의 정확한 해시 매칭만 확인
+            order_hash = await self._generate_primary_order_hash(bitget_order)
+            if order_hash and order_hash in self.gate_existing_order_hashes:
+                self.logger.debug(f"게이트 기존 주문과 해시 중복: {order_hash}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"개선된 중복 주문 확인 실패: {e}")
+            return False
+
+    async def _generate_primary_order_hash(self, order: Dict) -> str:
+        """🔥🔥🔥 주 해시 생성 - 정확한 매칭용"""
+        try:
+            # 트리거 가격 추출
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if order.get(price_field):
+                    trigger_price = float(order.get(price_field))
+                    break
+            
+            if trigger_price <= 0:
+                return ""
+            
+            # 크기 추출
+            size = order.get('size', 0)
+            if size:
+                size = int(float(size))
+                abs_size = abs(size)
+                # 정확한 해시: 계약_트리거가격_절대크기
+                return f"{self.GATE_CONTRACT}_{trigger_price:.2f}_{abs_size}"
+            else:
+                # 크기가 없으면 가격 기반 해시
+                return f"{self.GATE_CONTRACT}_price_{trigger_price:.2f}"
+            
+        except Exception as e:
+            self.logger.error(f"주 해시 생성 실패: {e}")
+            return ""
+
+    async def _record_order_processing_hash(self, order_id: str, order: Dict):
+        """주문 처리 해시 기록 - 단순화된 버전"""
+        try:
+            current_time = datetime.now()
+            self.recently_processed_orders[order_id] = current_time
+            
+            # 주 해시만 기록
+            order_hash = await self._generate_primary_order_hash(order)
+            if order_hash:
+                self.processed_order_hashes.add(order_hash)
+                self.order_hash_timestamps[order_hash] = current_time
+            
+            # 가격 기반 중복 방지 기록
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if order.get(price_field):
+                    trigger_price = float(order.get(price_field))
+                    break
+            
+            if trigger_price > 0:
+                price_key = f"{self.GATE_CONTRACT}_{trigger_price:.2f}"
+                self.mirrored_trigger_prices.add(price_key)
+            
+        except Exception as e:
+            self.logger.error(f"주문 처리 해시 기록 실패: {e}")
+
+    # 나머지 메서드들은 기존과 동일하게 유지...
     async def _check_and_cleanup_close_orders_if_no_position(self):
         """포지션이 없으면 게이트의 클로즈 주문들을 자동 정리"""
         try:
@@ -710,131 +846,6 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"해시 정리 실패: {e}")
 
-    async def _is_order_recently_processed_enhanced(self, order_id: str, order: Dict) -> bool:
-        """강화된 최근 처리 주문 확인"""
-        try:
-            # 1. 기본 시간 기반 확인
-            if order_id in self.recently_processed_orders:
-                time_diff = (datetime.now() - self.recently_processed_orders[order_id]).total_seconds()
-                if time_diff < self.order_deduplication_window:
-                    return True
-                else:
-                    del self.recently_processed_orders[order_id]
-            
-            # 2. 해시 기반 확인
-            order_hashes = await self._generate_order_hashes(order)
-            for order_hash in order_hashes:
-                if order_hash in self.processed_order_hashes:
-                    self.logger.debug(f"해시 기반 중복 감지: {order_hash}")
-                    return True
-            
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"강화된 최근 처리 확인 실패: {e}")
-            return False
-
-    async def _is_duplicate_order_enhanced(self, bitget_order: Dict) -> bool:
-        """강화된 중복 주문 확인"""
-        try:
-            # 1. 기본 중복 체크 로직
-            trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if bitget_order.get(price_field):
-                    trigger_price = float(bitget_order.get(price_field))
-                    break
-            
-            # 2. 가격 기반 중복 확인
-            if trigger_price > 0:
-                price_key = f"BTC_USDT_{trigger_price:.2f}"
-                if price_key in self.mirrored_trigger_prices:
-                    return True
-                
-                # 더 관대한 가격 범위 확인 (±1달러)
-                for offset in [-1, -0.5, 0.5, 1]:
-                    adjusted_price = trigger_price + offset
-                    adjusted_key = f"BTC_USDT_{adjusted_price:.2f}"
-                    if adjusted_key in self.mirrored_trigger_prices:
-                        return True
-            
-            # 3. 해시 기반 고급 중복 확인
-            order_hashes = await self._generate_order_hashes(bitget_order)
-            for order_hash in order_hashes:
-                if order_hash in self.gate_existing_order_hashes:
-                    self.logger.debug(f"게이트 기존 주문 해시와 중복: {order_hash}")
-                    return True
-                if order_hash in self.processed_order_hashes:
-                    self.logger.debug(f"처리된 주문 해시와 중복: {order_hash}")
-                    return True
-            
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"강화된 중복 주문 확인 실패: {e}")
-            return False
-
-    async def _generate_order_hashes(self, order: Dict) -> List[str]:
-        """주문 해시 생성"""
-        try:
-            # utils 클래스의 해시 생성 기능 활용
-            order_details = {
-                'contract': self.GATE_CONTRACT,
-                'trigger_price': 0,
-                'size': 0,
-                'abs_size': 0
-            }
-            
-            # 트리거 가격 추출
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if order.get(price_field):
-                    order_details['trigger_price'] = float(order.get(price_field))
-                    break
-            
-            # 크기 추출
-            size = order.get('size', 0)
-            if size:
-                order_details['size'] = int(float(size))
-                order_details['abs_size'] = abs(int(float(size)))
-            
-            # TP/SL 정보 추출
-            tp_price, sl_price = await self.utils.extract_tp_sl_from_bitget_order(order)
-            if tp_price or sl_price:
-                order_details['has_tp_sl'] = True
-                order_details['tp_price'] = tp_price
-                order_details['sl_price'] = sl_price
-            
-            return await self.utils.generate_multiple_order_hashes(order_details)
-            
-        except Exception as e:
-            self.logger.error(f"주문 해시 생성 실패: {e}")
-            return []
-
-    async def _record_order_processing_hash(self, order_id: str, order: Dict):
-        """주문 처리 해시 기록"""
-        try:
-            current_time = datetime.now()
-            self.recently_processed_orders[order_id] = current_time
-            
-            # 해시 기록
-            order_hashes = await self._generate_order_hashes(order)
-            for order_hash in order_hashes:
-                self.processed_order_hashes.add(order_hash)
-                self.order_hash_timestamps[order_hash] = current_time
-            
-            # 가격 기반 중복 방지 기록
-            trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if order.get(price_field):
-                    trigger_price = float(order.get(price_field))
-                    break
-            
-            if trigger_price > 0:
-                price_key = f"BTC_USDT_{trigger_price:.2f}"
-                self.mirrored_trigger_prices.add(price_key)
-            
-        except Exception as e:
-            self.logger.error(f"주문 처리 해시 기록 실패: {e}")
-
     async def _check_close_order_validity_enhanced(self, order: Dict, close_details: Dict) -> str:
         """강화된 클로즈 주문 유효성 확인"""
         try:
@@ -866,7 +877,7 @@ class MirrorPositionManager:
             self.logger.error(f"강화된 클로즈 주문 유효성 확인 실패: {e}")
             return "proceed"
 
-    # === 기존 헬퍼 메서드들 (최적화) ===
+    # === 기존 메서드들 (기본 로직은 유지) ===
 
     async def process_filled_order(self, order: Dict):
         """체결된 주문으로부터 미러링 실행"""
@@ -1162,17 +1173,17 @@ class MirrorPositionManager:
                         price_key = f"BTC_USDT_{trigger_price:.2f}"
                         self.mirrored_trigger_prices.add(price_key)
                         
-                        hashes = await self.utils.generate_multiple_order_hashes(order_details)
+                        # 🔥🔥🔥 단순화된 해시 생성
+                        order_hash = await self._generate_primary_order_hash_from_details(order_details)
                         
-                        if hashes:
-                            for hash_key in hashes:
-                                self.gate_existing_order_hashes.add(hash_key)
+                        if order_hash:
+                            self.gate_existing_order_hashes.add(order_hash)
                             
                             order_id = gate_order.get('id', f'existing_{i}')
                             self.gate_existing_orders_detailed[order_id] = {
                                 'gate_order': gate_order,
                                 'order_details': order_details,
-                                'hashes': hashes,
+                                'hash': order_hash,
                                 'recorded_at': datetime.now().isoformat()
                             }
                             
@@ -1186,6 +1197,25 @@ class MirrorPositionManager:
             
         except Exception as e:
             self.logger.error(f"게이트 기존 예약 주문 기록 실패: {e}")
+
+    async def _generate_primary_order_hash_from_details(self, order_details: Dict) -> str:
+        """주문 상세정보로부터 주 해시 생성"""
+        try:
+            trigger_price = order_details.get('trigger_price', 0)
+            size = order_details.get('size', 0)
+            abs_size = order_details.get('abs_size', abs(size) if size else 0)
+            
+            if trigger_price <= 0:
+                return ""
+            
+            if abs_size > 0:
+                return f"BTC_USDT_{trigger_price:.2f}_{abs_size}"
+            else:
+                return f"BTC_USDT_price_{trigger_price:.2f}"
+            
+        except Exception as e:
+            self.logger.error(f"상세정보 기반 해시 생성 실패: {e}")
+            return ""
 
     async def _record_startup_positions(self):
         """시작 시 비트겟 포지션 기록"""
@@ -1204,20 +1234,10 @@ class MirrorPositionManager:
             self.logger.error(f"시작 시 포지션 기록 실패: {e}")
 
     async def _record_startup_plan_orders(self):
-        """시작 시 비트겟 예약 주문 기록"""
+        """🔥🔥🔥 시작 시 비트겟 예약 주문 기록 - 단순화된 로직"""
         try:
-            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-            current_plan_orders = plan_data.get('plan_orders', [])
-            current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
-            
-            all_startup_orders = []
-            all_startup_orders.extend(current_plan_orders)
-            
-            # TP/SL 주문 중에서 클로즈 주문만 추가
-            for tp_sl_order in current_tp_sl_orders:
-                close_details = await self.utils.determine_close_order_details(tp_sl_order)
-                if close_details['is_close_order']:
-                    all_startup_orders.append(tp_sl_order)
+            # 모든 현재 예약 주문 조회
+            all_startup_orders = await self._get_all_current_plan_orders()
             
             for order in all_startup_orders:
                 order_id = order.get('orderId', order.get('planOrderId', ''))
@@ -1251,17 +1271,7 @@ class MirrorPositionManager:
     async def _create_initial_plan_order_snapshot(self):
         """초기 예약 주문 스냅샷 생성"""
         try:
-            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-            current_plan_orders = plan_data.get('plan_orders', [])
-            current_tp_sl_orders = plan_data.get('tp_sl_orders', [])
-            
-            all_orders = []
-            all_orders.extend(current_plan_orders)
-            
-            for tp_sl_order in current_tp_sl_orders:
-                close_details = await self.utils.determine_close_order_details(tp_sl_order)
-                if close_details['is_close_order']:
-                    all_orders.append(tp_sl_order)
+            all_orders = await self._get_all_current_plan_orders()
             
             for order in all_orders:
                 order_id = order.get('orderId', order.get('planOrderId', ''))
@@ -1297,7 +1307,7 @@ class MirrorPositionManager:
                         order_data = self.plan_order_snapshot[order_id]['order_data']
                         
                         # 중복 체크
-                        is_duplicate = await self._is_duplicate_order_enhanced(order_data)
+                        is_duplicate = await self._is_duplicate_order_improved(order_data)
                         if is_duplicate:
                             self.logger.info(f"중복으로 인한 시작 시 주문 스킵: {order_id}")
                             skipped_count += 1
