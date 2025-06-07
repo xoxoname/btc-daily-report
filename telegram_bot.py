@@ -141,125 +141,83 @@ class TelegramBot:
                 return
             
             self._starting = True
+            self.logger.info("텔레그램 봇 시작 중...")
             
-            if self.application is None:
+            # Application 초기화 확인
+            if not self.application:
                 self._initialize_bot()
             
-            # 🔥🔥🔥 Application 상태 확인 및 정리
+            # 🔥🔥🔥 Application 시작 - 중복 방지
             if hasattr(self.application, 'updater') and self.application.updater:
-                if self.application.updater.running:
-                    self.logger.warning("기존 updater가 실행 중입니다. 정지 시도...")
-                    try:
-                        await self.application.updater.stop()
-                        await asyncio.sleep(1)  # 정지 완료 대기
-                    except Exception as stop_error:
-                        self.logger.warning(f"기존 updater 정지 실패: {stop_error}")
-            
-            # 🔥🔥🔥 Application 초기화 및 시작 (예외 처리 강화)
-            self.logger.info("텔레그램 봇 Application 초기화 중...")
-            await self.application.initialize()
-            
-            self.logger.info("텔레그램 봇 Application 시작 중...")
-            await self.application.start()
-            
-            # 🔥🔥🔥 Polling 시작 (ConflictError 방지)
-            self.logger.info("텔레그램 봇 Polling 시작 중...")
-            try:
-                await self.application.updater.start_polling(
-                    drop_pending_updates=True,  # 대기 중인 업데이트 삭제
-                    allowed_updates=Update.ALL_TYPES,
-                    read_timeout=30,
-                    write_timeout=30,
-                    connect_timeout=30,
-                    pool_timeout=30
-                )
-                
-                self._running = True
-                self._starting = False
-                self.logger.info("✅ 텔레그램 봇 시작됨")
-                
-            except Exception as polling_error:
-                error_msg = str(polling_error).lower()
-                
-                # 🔥🔥🔥 ConflictError 처리 (다른 인스턴스가 실행 중)
-                if "conflict" in error_msg or "terminated by other getupdates" in error_msg:
-                    self.logger.error("❌ 다른 봇 인스턴스가 이미 실행 중입니다!")
-                    self.logger.error("해결 방법:")
-                    self.logger.error("1. 다른 실행 중인 봇 프로세스를 종료하세요")
-                    self.logger.error("2. 또는 webhook을 사용 중이라면 삭제하세요")
-                    self.logger.error("3. 몇 분 후 다시 시도하세요")
+                if not self.application.updater.running:
+                    await self.application.initialize()
+                    await self.application.start()
                     
-                    # 현재 Application 정리
-                    try:
-                        await self.application.stop()
-                        await self.application.shutdown()
-                    except:
-                        pass
-                    
-                    self._running = False
-                    self._starting = False
-                    raise Exception("ConflictError: 다른 봇 인스턴스가 실행 중입니다.")
+                    # 🔥🔥🔥 폴링 방식으로 시작 (웹훅 대신)
+                    await self.application.updater.start_polling(
+                        poll_interval=1.0,
+                        timeout=10,
+                        read_timeout=20,
+                        write_timeout=20,
+                        connect_timeout=20,
+                        pool_timeout=20
+                    )
                 else:
-                    self.logger.error(f"Polling 시작 실패: {polling_error}")
-                    self._running = False
-                    self._starting = False
-                    raise
+                    self.logger.info("Application이 이미 실행 중입니다.")
+            else:
+                # Application 시작
+                await self.application.initialize()
+                await self.application.start()
+                
+                # 🔥🔥🔥 폴링 방식으로 시작 (웹훅 대신)
+                await self.application.updater.start_polling(
+                    poll_interval=1.0,
+                    timeout=10,
+                    read_timeout=20,
+                    write_timeout=20,
+                    connect_timeout=20,
+                    pool_timeout=20
+                )
+            
+            self._running = True
+            self._starting = False
+            self.logger.info("✅ 텔레그램 봇 시작 완료")
             
         except Exception as e:
-            self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
-            self._running = False
             self._starting = False
+            self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
             raise
     
     async def stop(self):
-        """봇 정지 - 안전한 종료 로직"""
+        """봇 종료 - 중복 종료 방지"""
         try:
             if self._stopping:
-                self.logger.info("텔레그램 봇이 이미 정지 중입니다.")
+                self.logger.info("텔레그램 봇이 이미 종료 중입니다.")
                 return
             
             if not self._running:
-                self.logger.info("텔레그램 봇이 실행 중이 아닙니다.")
+                self.logger.info("텔레그램 봇이 이미 종료되었습니다.")
                 return
             
             self._stopping = True
+            self.logger.info("텔레그램 봇 종료 중...")
             
-            self.logger.info("텔레그램 봇 정지 중...")
+            if self.application and hasattr(self.application, 'updater') and self.application.updater:
+                if self.application.updater.running:
+                    await self.application.updater.stop()
+                await self.application.stop()
+                await self.application.shutdown()
             
-            if self.application:
-                try:
-                    # Updater 정지
-                    if hasattr(self.application, 'updater') and self.application.updater:
-                        if self.application.updater.running:
-                            await self.application.updater.stop()
-                            await asyncio.sleep(0.5)  # 정지 완료 대기
-                    
-                    # Application 정지
-                    await self.application.stop()
-                    await asyncio.sleep(0.5)  # 정지 완료 대기
-                    
-                    # Application 종료
-                    await self.application.shutdown()
-                    await asyncio.sleep(0.5)  # 종료 완료 대기
-                    
-                    self.logger.info("✅ 텔레그램 봇 정지됨")
-                    
-                except Exception as stop_error:
-                    self.logger.error(f"텔레그램 봇 정지 중 오류: {stop_error}")
-                finally:
-                    self._running = False
-                    self._stopping = False
-            else:
-                self._running = False
-                self._stopping = False
-                
-        except Exception as e:
-            self.logger.error(f"텔레그램 봇 정지 실패: {str(e)}")
             self._running = False
             self._stopping = False
+            self.logger.info("✅ 텔레그램 봇 종료 완료")
+            
+        except Exception as e:
+            self._stopping = False
+            self.logger.error(f"텔레그램 봇 종료 실패: {str(e)}")
     
     def _clean_html_message(self, text: str) -> str:
-        """🔥🔥 HTML 메시지 정리 및 검증 - 오류 방지 강화"""
+        """HTML 메시지 정리 - 강화된 버전"""
         try:
             # 1. 기본 null/None 체크
             if not text:
@@ -333,55 +291,45 @@ class TelegramBot:
             if not chat_id:
                 raise Exception("TELEGRAM_CHAT_ID가 설정되지 않았습니다.")
             
-            # 🔥🔥🔥 텍스트 전처리 및 검증
             if not text or not str(text).strip():
-                self.logger.warning("빈 메시지 전송 요청 무시")
+                self.logger.warning("빈 메시지 전송 시도")
                 return
             
-            # HTML 파싱 모드인 경우 메시지 정리
-            if parse_mode == 'HTML':
-                original_text = text
-                text = self._clean_html_message(text)
-                
-                # 정리 후에도 문제가 있는지 확인
-                if len(text) < len(original_text) * 0.3:  # 원본의 30% 미만으로 줄어들면
-                    self.logger.warning("HTML 정리 후 텍스트가 너무 많이 줄어듦, 텍스트 모드로 전환")
-                    parse_mode = None
-                    text = re.sub(r'<[^>]*>', '', original_text)
+            # 메시지 길이 체크 및 정리
+            if len(text) > 4000:
+                text = text[:3950] + "\n\n... (메시지가 잘림)"
             
-            # 1차: HTML 모드 시도
-            if parse_mode == 'HTML':
-                try:
+            # 1차: HTML 모드로 시도
+            try:
+                if parse_mode == 'HTML' or parse_mode is None:
+                    # HTML 메시지 정리
+                    clean_text = self._clean_html_message(text)
+                    
                     await self.bot.send_message(
                         chat_id=chat_id,
-                        text=text,
+                        text=clean_text,
                         parse_mode='HTML'
                     )
                     self.logger.debug("HTML 모드 메시지 전송 성공")
                     return
+                else:
+                    # Markdown 또는 기타 모드
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        parse_mode=parse_mode
+                    )
+                    self.logger.debug(f"{parse_mode} 모드 메시지 전송 성공")
+                    return
                     
-                except Exception as html_error:
-                    error_msg = str(html_error).lower()
-                    self.logger.warning(f"HTML 모드 전송 실패: {html_error}")
-                    
-                    # HTML 파싱 오류인 경우 텍스트 모드로 폴백
-                    if any(keyword in error_msg for keyword in [
-                        "can't parse entities", "unsupported start tag", "can't parse",
-                        "bad character", "html parsing", "entities", "tag"
-                    ]):
-                        self.logger.info("HTML 파싱 오류로 텍스트 모드로 전환")
-                        parse_mode = None  # 텍스트 모드로 전환
-                    else:
-                        raise html_error
-            
-            # 2차: 텍스트 모드 시도
-            if parse_mode != 'HTML':
+            except Exception as html_error:
+                self.logger.warning(f"HTML 모드 전송 실패: {html_error}")
+                
+                # 2차: 텍스트 모드로 폴백
                 try:
                     # HTML 태그 완전 제거
                     text_only = re.sub(r'<[^>]*>', '', str(text))
-                    
-                    # HTML 엔티티 디코딩
-                    text_only = text_only.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+                    text_only = text_only.replace('&lt;', '<').replace('&gt;', '>')
                     text_only = text_only.replace('&quot;', '"').replace('&#39;', "'")
                     
                     # 연속 공백 정리
@@ -446,6 +394,23 @@ class TelegramBot:
                         self.logger.error(f"문제 구간 (offset {offset} 주변): {repr(problem_area)}")
             
             raise
+    
+    async def send_message_safe(self, text: str, parse_mode: str = 'HTML', chat_id: str = None):
+        """안전한 메시지 전송 - 오류 처리 강화"""
+        try:
+            await self.send_message(text, parse_mode, chat_id)
+        except Exception as e:
+            self.logger.error(f"안전한 메시지 전송 실패: {e}")
+            
+            # 최후 수단으로 간단한 메시지 전송 시도
+            try:
+                simple_message = "⚠️ 메시지 전송 중 오류가 발생했습니다. 시스템은 정상 작동 중입니다."
+                await self.bot.send_message(
+                    chat_id=chat_id or self.config.TELEGRAM_CHAT_ID,
+                    text=simple_message
+                )
+            except Exception as final_error:
+                self.logger.error(f"최후 수단 메시지 전송도 실패: {final_error}")
     
     def is_running(self) -> bool:
         """봇 실행 상태 확인"""
