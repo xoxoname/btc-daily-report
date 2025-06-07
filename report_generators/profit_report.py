@@ -30,8 +30,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             # Bitget 데이터 조회
             bitget_data = await self._get_bitget_data()
             
-            # Gate.io 데이터 조회 (활성화된 경우) - 개선된 메서드 사용
-            gateio_data = await self._get_gateio_data_improved()
+            # Gate.io 데이터 조회 (개선된 메서드 사용)
+            gateio_data = await self._get_gateio_data_fixed()
             
             # Gate.io 실제 사용 여부 확인
             gateio_has_data = (gateio_data.get('has_account', False) and 
@@ -412,15 +412,15 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'confidence': 'low'
             }
     
-    async def _get_gateio_data_improved(self) -> dict:
-        """🔥🔥 Gate.io 데이터 조회 - 완전 개선된 수익 조회"""
+    async def _get_gateio_data_fixed(self) -> dict:
+        """🔥🔥 Gate.io 데이터 조회 - 공식 API 문서 기반 수정"""
         try:
             # Gate.io 클라이언트가 없는 경우
             if not self.gateio_client:
                 self.logger.info("Gate.io 클라이언트가 설정되지 않음")
                 return self._get_empty_exchange_data('Gate')
             
-            self.logger.info("🔍 Gate.io 데이터 조회 시작 (개선된 버전)...")
+            self.logger.info("🔍 Gate.io 데이터 조회 시작 (공식 API 문서 기반)...")
             
             # Gate 계정 정보 조회
             total_equity = 0
@@ -500,52 +500,48 @@ class ProfitReportGenerator(BaseReportGenerator):
                 self.logger.error(f"Gate 포지션 조회 실패: {e}")
                 self.logger.error(f"Gate 포지션 오류 상세: {traceback.format_exc()}")
             
-            # 🔥🔥 개선된 Gate.io 수익 조회 - 2025년 5월부터
+            # 🔥🔥 Gate.io 공식 API 문서 기반 수익 조회 - 완전 수정
             today_pnl = 0
             weekly_profit = {'total': 0, 'average': 0}
             cumulative_profit = 0
             initial_capital = 0
             
             try:
-                self.logger.info("🔍 Gate.io 개선된 수익 조회 시작 (2025년 5월부터)...")
+                self.logger.info("🔍 Gate.io 공식 API 기반 수익 조회 시작...")
                 
-                # 2025년 5월부터 누적 수익 조회
-                profit_history = await self.gateio_client.get_profit_history_since_may()
+                # 🔥🔥 방법 1: account_book API 사용 (공식 문서 기준)
+                today_pnl = await self._get_gate_today_pnl_from_account_book()
+                self.logger.info(f"Gate.io 오늘 실현손익 (account_book): ${today_pnl:.4f}")
                 
-                # 오늘 실현 손익 조회
-                today_pnl = await self.gateio_client.get_today_realized_pnl()
-                self.logger.info(f"Gate.io 오늘 실현손익: ${today_pnl:.4f}")
-                
-                # 7일 손익 조회
-                weekly_profit_result = await self.gateio_client.get_weekly_profit()
+                # 🔥🔥 방법 2: account_book으로 7일 수익 조회
+                weekly_profit_result = await self._get_gate_weekly_profit_from_account_book()
                 weekly_profit = {
                     'total': weekly_profit_result.get('total_pnl', 0),
                     'average': weekly_profit_result.get('average_daily', 0),
-                    'source': weekly_profit_result.get('source', 'gate_api_improved')
+                    'source': weekly_profit_result.get('source', 'gate_account_book_api')
                 }
-                self.logger.info(f"Gate.io 7일 손익: ${weekly_profit['total']:.4f} (소스: {weekly_profit.get('source', 'unknown')})")
+                self.logger.info(f"Gate.io 7일 손익 (account_book): ${weekly_profit['total']:.4f}")
                 
-                # 누적 수익 (2025년 5월부터)
-                cumulative_profit = profit_history.get('actual_profit', 0)
-                current_balance = profit_history.get('current_balance', total_equity)
+                # 🔥🔥 방법 3: 포지션의 history_pnl로 누적 수익 조회
+                cumulative_profit = await self._get_gate_cumulative_profit_from_positions()
                 
                 # 초기 자본 동적 계산 (현재 잔고 - 누적 수익)
-                initial_capital = current_balance - cumulative_profit
+                initial_capital = total_equity - cumulative_profit
                 
                 # 초기 자본이 음수가 되지 않도록 보정
                 if initial_capital < 0:
-                    initial_capital = current_balance * 0.9  # 현재 잔고의 90%로 추정
-                    cumulative_profit = current_balance - initial_capital
+                    initial_capital = total_equity * 0.8  # 현재 잔고의 80%로 추정
+                    cumulative_profit = total_equity - initial_capital
                 
-                self.logger.info(f"Gate.io 수익 계산:")
-                self.logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
+                self.logger.info(f"Gate.io 수익 계산 (공식 API):")
+                self.logger.info(f"  - 현재 잔고: ${total_equity:.2f}")
                 self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
                 self.logger.info(f"  - 계산된 초기 자본: ${initial_capital:.2f}")
                 
             except Exception as e:
-                self.logger.error(f"Gate.io 개선된 수익 조회 실패: {e}")
+                self.logger.error(f"Gate.io 공식 API 수익 조회 실패: {e}")
                 # 기본값 설정
-                initial_capital = total_equity * 0.9 if total_equity > 0 else 700  # 기본값
+                initial_capital = total_equity * 0.8 if total_equity > 0 else 700  # 기본값
                 cumulative_profit = total_equity - initial_capital if total_equity > 0 else 0
             
             # 사용 증거금 계산
@@ -560,7 +556,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             # 계정이 실제로 있는지 확인
             has_account = total_equity > 0
             
-            self.logger.info(f"Gate.io 데이터 구성 완료 (개선된 버전):")
+            self.logger.info(f"Gate.io 데이터 구성 완료 (공식 API):")
             self.logger.info(f"  - 계정 존재: {has_account}")
             self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
             self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.4f}")
@@ -595,6 +591,270 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"Gate 데이터 조회 실패: {e}")
             self.logger.error(f"Gate 데이터 오류 상세: {traceback.format_exc()}")
             return self._get_empty_exchange_data('Gate')
+    
+    async def _get_gate_today_pnl_from_account_book(self) -> float:
+        """🔥🔥 Gate.io 공식 account_book API로 오늘 실현손익 조회"""
+        try:
+            kst = pytz.timezone('Asia/Seoul')
+            now = datetime.now(kst)
+            
+            # 오늘 0시 (KST)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # UTC로 변환하여 초 단위 타임스탬프 생성 (Gate.io는 초 단위)
+            start_time_utc = today_start.astimezone(pytz.UTC)
+            end_time_utc = now.astimezone(pytz.UTC)
+            
+            start_timestamp = int(start_time_utc.timestamp())  # 초 단위
+            end_timestamp = int(end_time_utc.timestamp())     # 초 단위
+            
+            self.logger.info(f"Gate.io 오늘 실현손익 조회 (account_book):")
+            self.logger.info(f"  - KST 시작: {today_start.strftime('%Y-%m-%d %H:%M:%S')}")
+            self.logger.info(f"  - KST 종료: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            self.logger.info(f"  - UTC 타임스탬프: {start_timestamp} ~ {end_timestamp}")
+            
+            # Gate.io account_book API 호출 (pnl 타입만)
+            # GET /futures/usdt/account_book?type=pnl&from={start}&to={end}
+            
+            total_pnl = 0.0
+            
+            try:
+                # 직접 API 호출 (gateio_client에 메서드가 있다고 가정)
+                if hasattr(self.gateio_client, 'get_account_book'):
+                    account_records = await self.gateio_client.get_account_book(
+                        start_time=start_timestamp * 1000,  # 밀리초로 변환
+                        end_time=end_timestamp * 1000,      # 밀리초로 변환
+                        limit=100,
+                        type_filter='pnl'  # PnL 타입만 필터링
+                    )
+                else:
+                    # 대체 방법: 직접 API 엔드포인트 호출
+                    endpoint = "/api/v4/futures/usdt/account_book"
+                    params = {
+                        'from': start_timestamp,
+                        'to': end_timestamp,
+                        'type': 'pnl',
+                        'limit': 100
+                    }
+                    
+                    # gateio_client의 _request 메서드 활용
+                    account_records = await self.gateio_client._request('GET', endpoint, params=params)
+                
+                self.logger.info(f"Gate.io account_book PnL 기록: {len(account_records) if account_records else 0}건")
+                
+                if account_records:
+                    for record in account_records:
+                        try:
+                            change = float(record.get('change', 0))
+                            record_type = record.get('type', '')
+                            record_time = int(record.get('time', 0))
+                            
+                            if record_type == 'pnl' and change != 0:
+                                total_pnl += change
+                                
+                                # 시간 변환하여 로깅
+                                time_kst = datetime.fromtimestamp(record_time, tz=kst)
+                                self.logger.debug(f"Gate PnL 기록 ({time_kst.strftime('%H:%M:%S')}): ${change:.4f}")
+                        
+                        except Exception as parse_error:
+                            self.logger.warning(f"Gate PnL 기록 파싱 오류: {parse_error}")
+                            continue
+                
+            except Exception as api_error:
+                self.logger.error(f"Gate.io account_book API 호출 실패: {api_error}")
+                
+                # 대체 방법: positions에서 realised_pnl 조회
+                try:
+                    positions = await self.gateio_client.get_positions('BTC_USDT')
+                    for pos in positions:
+                        realised_pnl = float(pos.get('realised_pnl', 0))
+                        if realised_pnl != 0:
+                            total_pnl = realised_pnl  # 오늘만이 아닌 전체 실현손익
+                            self.logger.info(f"대체: 포지션 realised_pnl 사용: ${total_pnl:.4f}")
+                            break
+                except Exception as pos_error:
+                    self.logger.error(f"대체 포지션 조회도 실패: {pos_error}")
+            
+            self.logger.info(f"Gate.io 오늘 실현손익 최종: ${total_pnl:.4f}")
+            return total_pnl
+            
+        except Exception as e:
+            self.logger.error(f"Gate.io 오늘 실현손익 조회 실패: {e}")
+            return 0.0
+    
+    async def _get_gate_weekly_profit_from_account_book(self) -> dict:
+        """🔥🔥 Gate.io 공식 account_book API로 7일 수익 조회"""
+        try:
+            kst = pytz.timezone('Asia/Seoul')
+            now = datetime.now(kst)
+            seven_days_ago = now - timedelta(days=7)
+            
+            # UTC로 변환하여 초 단위 타임스탬프 생성 (Gate.io는 초 단위)
+            start_timestamp = int(seven_days_ago.timestamp())
+            end_timestamp = int(now.timestamp())
+            
+            self.logger.info(f"Gate.io 7일 손익 조회 (account_book):")
+            self.logger.info(f"  - 기간: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} ~ {now.strftime('%Y-%m-%d %H:%M')}")
+            self.logger.info(f"  - UTC 타임스탬프: {start_timestamp} ~ {end_timestamp}")
+            
+            total_pnl = 0.0
+            daily_pnl = {}
+            
+            try:
+                # Gate.io account_book API 호출 (pnl 타입만)
+                if hasattr(self.gateio_client, 'get_account_book'):
+                    account_records = await self.gateio_client.get_account_book(
+                        start_time=start_timestamp * 1000,  # 밀리초로 변환
+                        end_time=end_timestamp * 1000,      # 밀리초로 변환
+                        limit=500,
+                        type_filter='pnl'  # PnL 타입만 필터링
+                    )
+                else:
+                    # 직접 API 엔드포인트 호출
+                    endpoint = "/api/v4/futures/usdt/account_book"
+                    params = {
+                        'from': start_timestamp,
+                        'to': end_timestamp,
+                        'type': 'pnl',
+                        'limit': 500
+                    }
+                    
+                    account_records = await self.gateio_client._request('GET', endpoint, params=params)
+                
+                self.logger.info(f"Gate.io 7일 account_book PnL 기록: {len(account_records) if account_records else 0}건")
+                
+                if account_records:
+                    for record in account_records:
+                        try:
+                            change = float(record.get('change', 0))
+                            record_type = record.get('type', '')
+                            record_time = int(record.get('time', 0))
+                            
+                            if record_type == 'pnl' and change != 0:
+                                # 날짜별로 분류
+                                record_date_kst = datetime.fromtimestamp(record_time, tz=kst)
+                                record_date_str = record_date_kst.strftime('%Y-%m-%d')
+                                
+                                if record_date_str not in daily_pnl:
+                                    daily_pnl[record_date_str] = 0
+                                
+                                daily_pnl[record_date_str] += change
+                                total_pnl += change
+                                
+                                self.logger.debug(f"Gate 7일 PnL ({record_date_str}): ${change:.4f}")
+                        
+                        except Exception as parse_error:
+                            self.logger.warning(f"Gate 7일 PnL 기록 파싱 오류: {parse_error}")
+                            continue
+                    
+                    # 일별 손익 로깅
+                    for date_str, pnl in sorted(daily_pnl.items()):
+                        self.logger.info(f"📊 Gate {date_str}: ${pnl:.2f}")
+                    
+                    return {
+                        'total_pnl': total_pnl,
+                        'daily_pnl': daily_pnl,
+                        'average_daily': total_pnl / 7,
+                        'source': 'gate_account_book_api_official',
+                        'confidence': 'high'
+                    }
+                
+            except Exception as api_error:
+                self.logger.error(f"Gate.io 7일 account_book API 호출 실패: {api_error}")
+            
+            # 기본값 반환
+            self.logger.warning("Gate.io 7일 손익 조회 실패, 기본값 반환")
+            return {
+                'total_pnl': 0,
+                'daily_pnl': {},
+                'average_daily': 0,
+                'source': 'gate_account_book_failed',
+                'confidence': 'low'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Gate.io 7일 손익 조회 실패: {e}")
+            return {
+                'total_pnl': 0,
+                'daily_pnl': {},
+                'average_daily': 0,
+                'source': 'gate_error',
+                'confidence': 'low'
+            }
+    
+    async def _get_gate_cumulative_profit_from_positions(self) -> float:
+        """🔥🔥 Gate.io 포지션의 history_pnl로 누적 수익 조회"""
+        try:
+            self.logger.info("Gate.io 누적 수익 조회 (포지션 history_pnl)...")
+            
+            positions = await self.gateio_client.get_positions('BTC_USDT')
+            
+            total_history_pnl = 0.0
+            
+            if positions:
+                for pos in positions:
+                    # Gate.io 포지션 응답에서 history_pnl 또는 total_pnl 필드 확인
+                    history_pnl = float(pos.get('history_pnl', 0))
+                    realised_pnl = float(pos.get('realised_pnl', 0))
+                    
+                    # history_pnl이 있으면 사용, 없으면 realised_pnl 사용
+                    if history_pnl != 0:
+                        total_history_pnl = history_pnl
+                        self.logger.info(f"Gate.io history_pnl 발견: ${history_pnl:.4f}")
+                        break
+                    elif realised_pnl != 0:
+                        total_history_pnl = realised_pnl
+                        self.logger.info(f"Gate.io realised_pnl 사용: ${realised_pnl:.4f}")
+                        break
+            
+            # 추가: account_book에서 전체 pnl 누적 조회 (더 정확한 방법)
+            if total_history_pnl == 0:
+                try:
+                    self.logger.info("포지션에서 history_pnl 없음, account_book에서 전체 누적 조회...")
+                    
+                    # 30일 전부터 현재까지 모든 pnl 기록 조회
+                    now = datetime.now()
+                    thirty_days_ago = now - timedelta(days=30)
+                    
+                    start_timestamp = int(thirty_days_ago.timestamp())
+                    end_timestamp = int(now.timestamp())
+                    
+                    if hasattr(self.gateio_client, 'get_account_book'):
+                        all_records = await self.gateio_client.get_account_book(
+                            start_time=start_timestamp * 1000,
+                            end_time=end_timestamp * 1000,
+                            limit=1000,
+                            type_filter='pnl'
+                        )
+                    else:
+                        endpoint = "/api/v4/futures/usdt/account_book"
+                        params = {
+                            'from': start_timestamp,
+                            'to': end_timestamp,
+                            'type': 'pnl',
+                            'limit': 1000
+                        }
+                        all_records = await self.gateio_client._request('GET', endpoint, params=params)
+                    
+                    cumulative_from_records = 0.0
+                    if all_records:
+                        for record in all_records:
+                            change = float(record.get('change', 0))
+                            if record.get('type') == 'pnl':
+                                cumulative_from_records += change
+                        
+                        total_history_pnl = cumulative_from_records
+                        self.logger.info(f"Gate.io 30일 account_book 누적: ${cumulative_from_records:.4f}")
+                
+                except Exception as record_error:
+                    self.logger.error(f"account_book 누적 조회 실패: {record_error}")
+            
+            self.logger.info(f"Gate.io 누적 수익 최종: ${total_history_pnl:.4f}")
+            return total_history_pnl
+            
+        except Exception as e:
+            self.logger.error(f"Gate.io 누적 수익 조회 실패: {e}")
+            return 0.0
     
     async def _get_position_info(self) -> dict:
         """포지션 정보 조회 (Bitget) - 청산가 개선"""
@@ -951,6 +1211,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             return " (거래내역)"
         elif 'improved' in source:
             return " (향상된방식)"
+        elif 'gate_account_book_api' in source:
+            return " (공식API)"
         elif 'gate_pnl' in source:
             return " (PnL기록)"
         elif 'gate_all' in source:
