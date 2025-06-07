@@ -43,6 +43,13 @@ class BitgetMirrorClient:
             "/api/mix/v1/order/historyOrders",        # v1 대체
         ]
         
+        # 🔥🔥🔥 시세 조회 엔드포인트들
+        self.ticker_endpoints = [
+            "/api/v2/mix/market/ticker",              # ✅ v2 시세 조회
+            "/api/mix/v1/market/ticker",              # v1 대체
+            "/api/v2/spot/market/tickers",            # 스팟 백업
+        ]
+        
         # API 키 검증 상태
         self.api_keys_validated = False
         self.api_connection_healthy = True
@@ -172,367 +179,367 @@ class BitgetMirrorClient:
         body = json.dumps(data) if data else ''
         headers = self._get_headers(method, request_path, body)
         
+        # 재시도 로직
         for attempt in range(max_retries):
             try:
                 logger.debug(f"비트겟 미러링 API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
                 
-                attempt_timeout = aiohttp.ClientTimeout(total=20 + (attempt * 10), connect=10 + (attempt * 5))
-                
-                async with self.session.request(
-                    method, url, headers=headers, data=body, timeout=attempt_timeout
-                ) as response:
+                async with self.session.request(method, url, headers=headers, data=body) as response:
                     response_text = await response.text()
                     
-                    # 🔥🔥🔥 404 오류는 즉시 실패 처리 (재시도 없음)
-                    if response.status == 404:
-                        error_msg = f"HTTP 404: 엔드포인트가 존재하지 않음 - {endpoint}"
-                        logger.warning(f"비트겟 API 404 오류 (재시도 안함): {error_msg}")
-                        raise Exception(error_msg)
+                    logger.debug(f"비트겟 미러링 API 응답 상태: {response.status}")
+                    logger.debug(f"비트겟 미러링 API 응답 내용: {response_text[:500]}...")
                     
-                    if response.status != 200:
-                        error_msg = f"HTTP {response.status}: {response_text}"
-                        
-                        # 🔥🔥🔥 파라미터 오류 시 상세 로깅
-                        if response.status == 400:
-                            logger.warning(f"HTTP 400: {response_text}")
-                            logger.error("파라미터 검증 실패 상세:")
-                            logger.error(f"  - 엔드포인트: {endpoint}")
-                            logger.error(f"  - 파라미터: {params}")
-                            logger.error(f"  - URL: {url}")
-                            logger.error(f"  - 응답: {response_text}")
-                        else:
-                            logger.warning(error_msg)
-                        
+                    # 빈 응답 체크
+                    if not response_text.strip():
+                        error_msg = f"빈 응답 받음 (상태: {response.status})"
+                        logger.warning(error_msg)
                         if attempt < max_retries - 1:
-                            wait_time = (2 ** attempt) + (attempt * 0.5)
-                            await asyncio.sleep(wait_time)
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
-                            self.consecutive_failures += 1
-                            self.api_connection_healthy = False
-                            logger.error(f"요청 실패 (3/3): HTTP {response.status}")
+                            logger.error(error_msg)
                             raise Exception(error_msg)
                     
-                    if not response_text.strip():
+                    # HTTP 상태 코드 체크
+                    if response.status != 200:
+                        error_msg = f"HTTP {response.status}: {response_text}"
+                        logger.error(f"비트겟 미러링 API HTTP 오류: {error_msg}")
                         if attempt < max_retries - 1:
                             await asyncio.sleep(2 ** attempt)
                             continue
                         else:
-                            raise Exception("빈 응답")
+                            logger.error(error_msg)
+                            raise Exception(error_msg)
                     
+                    # JSON 파싱
                     try:
-                        result = json.loads(response_text)
-                        
-                        # Bitget API 응답 구조 확인
-                        if isinstance(result, dict):
-                            if result.get('code') == '00000':
-                                # 성공 응답
-                                self.consecutive_failures = 0
-                                self.api_connection_healthy = True
-                                self.last_successful_call = datetime.now()
-                                logger.debug(f"비트겟 API 응답 성공: {method} {endpoint}")
-                                return result.get('data', result)
-                            else:
-                                # 에러 응답
-                                error_code = result.get('code', 'unknown')
-                                error_msg = result.get('msg', 'Unknown error')
-                                logger.error(f"비트겟 API 에러: {error_code} - {error_msg}")
-                                if attempt < max_retries - 1:
-                                    await asyncio.sleep(2 ** attempt)
-                                    continue
-                                else:
-                                    self.consecutive_failures += 1
-                                    raise Exception(f"Bitget API Error: {error_code} - {error_msg}")
-                        else:
-                            # 리스트나 다른 형태의 응답
-                            self.consecutive_failures = 0
-                            self.api_connection_healthy = True
-                            self.last_successful_call = datetime.now()
-                            return result
-                            
-                    except json.JSONDecodeError as e:
+                        response_data = json.loads(response_text)
+                    except json.JSONDecodeError as json_error:
+                        error_msg = f"JSON 파싱 실패: {json_error}, 응답: {response_text[:200]}"
+                        logger.error(error_msg)
                         if attempt < max_retries - 1:
                             await asyncio.sleep(2 ** attempt)
                             continue
                         else:
-                            raise Exception(f"JSON 파싱 실패: {e}")
-                            
-            except asyncio.TimeoutError:
-                logger.warning(f"비트겟 API 타임아웃 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(3 + (attempt * 2))
-                    continue
-                else:
-                    self.consecutive_failures += 1
-                    self.api_connection_healthy = False
-                    raise Exception(f"요청 타임아웃 (최대 {max_retries}회 시도)")
+                            logger.error(error_msg)
+                            raise Exception(error_msg)
                     
-            except aiohttp.ClientError as e:
-                logger.warning(f"비트겟 API 클라이언트 오류 (시도 {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-                else:
-                    self.consecutive_failures += 1
-                    self.api_connection_healthy = False
-                    raise Exception(f"클라이언트 오류: {e}")
+                    # API 응답 코드 체크
+                    if response_data.get('code') != '00000':
+                        error_msg = f"API 오류 코드: {response_data.get('code')}, 메시지: {response_data.get('msg', 'Unknown error')}"
+                        logger.error(f"비트겟 미러링 API 오류: {error_msg}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                        else:
+                            logger.error(error_msg)
+                            raise Exception(error_msg)
+                    
+                    # 성공 시 연결 상태 업데이트
+                    self.api_connection_healthy = True
+                    self.consecutive_failures = 0
+                    self.last_successful_call = datetime.now()
+                    
+                    return response_data.get('data')
                     
             except Exception as e:
-                # 404 오류는 재시도하지 않음
-                if "404" in str(e) or "NOT FOUND" in str(e):
-                    logger.warning(f"비트겟 API 404 오류 - 엔드포인트 사용 불가: {endpoint}")
-                    raise
+                self.consecutive_failures += 1
+                logger.error(f"비트겟 미러링 API 요청 실패 (시도 {attempt + 1}): {e}")
                 
-                logger.error(f"비트겟 API 예상치 못한 오류 (시도 {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
-                    continue
                 else:
-                    self.consecutive_failures += 1
-                    self.api_connection_healthy = False
+                    if self.consecutive_failures >= 5:
+                        self.api_connection_healthy = False
+                    logger.error(f"비트겟 미러링 API 요청 최종 실패: {e}")
                     raise
+        
+        return None
+
+    # 🔥🔥🔥 누락된 메서드들 추가 🔥🔥🔥
     
-    async def get_account_info(self) -> Dict:
-        """계정 정보 조회"""
+    async def get_ticker(self, symbol: str = None) -> Dict:
+        """현재가 정보 조회"""
+        symbol = symbol or self.symbol
+        
+        # 여러 엔드포인트 순차 시도
+        for i, endpoint in enumerate(self.ticker_endpoints):
+            try:
+                logger.debug(f"티커 조회 시도 {i + 1}/{len(self.ticker_endpoints)}: {endpoint}")
+                
+                if endpoint == "/api/v2/mix/market/ticker":
+                    # V2 믹스 마켓 (기본)
+                    params = {
+                        'symbol': symbol,
+                        'productType': self.product_type
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, list) and len(response) > 0:
+                        ticker_data = response[0]
+                    elif isinstance(response, dict):
+                        ticker_data = response
+                    else:
+                        continue
+                    
+                elif endpoint == "/api/mix/v1/market/ticker":
+                    # V1 믹스 마켓 (백업)
+                    v1_symbol = f"{symbol}_UMCBL"
+                    params = {
+                        'symbol': v1_symbol
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, dict):
+                        ticker_data = response
+                    else:
+                        continue
+                        
+                elif endpoint == "/api/v2/spot/market/tickers":
+                    # 스팟 마켓 (최후 백업)
+                    spot_symbol = symbol.replace('USDT', '-USDT')
+                    params = {
+                        'symbol': spot_symbol
+                    }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
+                    if isinstance(response, list) and len(response) > 0:
+                        ticker_data = response[0]
+                    elif isinstance(response, dict):
+                        ticker_data = response
+                    else:
+                        continue
+                
+                # 응답 데이터 검증 및 정규화
+                if ticker_data and self._validate_ticker_data(ticker_data):
+                    normalized_ticker = self._normalize_ticker_data(ticker_data, endpoint)
+                    logger.debug(f"✅ 티커 조회 성공 ({endpoint}): ${normalized_ticker.get('last', 'N/A')}")
+                    return normalized_ticker
+                else:
+                    logger.warning(f"티커 데이터 검증 실패: {endpoint}")
+                    continue
+                    
+            except Exception as e:
+                logger.warning(f"티커 엔드포인트 {endpoint} 실패: {e}")
+                continue
+        
+        # 모든 엔드포인트 실패
+        error_msg = f"모든 티커 엔드포인트 실패: {', '.join(self.ticker_endpoints)}"
+        logger.error(error_msg)
+        return {}
+    
+    def _validate_ticker_data(self, ticker_data: Dict) -> bool:
+        """티커 데이터 유효성 검증"""
         try:
-            # 🔥🔥🔥 올바른 파라미터로 계정 정보 조회
-            params = {
-                'productType': self.product_type,
-                'marginCoin': self.margin_coin
-            }
+            if not isinstance(ticker_data, dict):
+                return False
             
-            response = await self._request('GET', "/api/v2/mix/account/accounts", params=params)
+            # 필수 가격 필드 중 하나라도 있어야 함
+            price_fields = ['last', 'lastPr', 'close', 'price', 'mark_price', 'markPrice']
             
-            if response is not None:
-                if isinstance(response, list) and len(response) > 0:
-                    return response[0]
-                elif isinstance(response, dict):
-                    return response
+            for field in price_fields:
+                value = ticker_data.get(field)
+                if value is not None:
+                    try:
+                        price = float(value)
+                        if price > 0:
+                            return True
+                    except:
+                        continue
             
-            return {}
+            logger.warning(f"유효한 가격 필드 없음: {list(ticker_data.keys())}")
+            return False
             
         except Exception as e:
-            logger.error(f"계정 정보 조회 실패: {e}")
-            return {}
+            logger.error(f"티커 데이터 검증 오류: {e}")
+            return False
     
+    def _normalize_ticker_data(self, ticker_data: Dict, endpoint: str) -> Dict:
+        """티커 데이터 정규화"""
+        try:
+            normalized = {}
+            
+            # 가격 필드 정규화
+            price_mappings = [
+                ('last', ['last', 'lastPr', 'close', 'price']),
+                ('high', ['high', 'high24h', 'highPrice']),
+                ('low', ['low', 'low24h', 'lowPrice']),
+                ('volume', ['volume', 'vol', 'baseVolume', 'baseVol']),
+                ('changeUtc', ['changeUtc', 'change', 'priceChange', 'priceChangePercent'])
+            ]
+            
+            for target_field, source_fields in price_mappings:
+                for source_field in source_fields:
+                    value = ticker_data.get(source_field)
+                    if value is not None:
+                        try:
+                            if target_field == 'changeUtc':
+                                # 변화율을 소수로 변환 (예: "2.5%" -> 0.025)
+                                if isinstance(value, str) and '%' in value:
+                                    normalized[target_field] = float(value.replace('%', '')) / 100
+                                else:
+                                    normalized[target_field] = float(value)
+                            else:
+                                normalized[target_field] = float(value)
+                            break
+                        except:
+                            continue
+            
+            # 기본값 설정
+            if 'last' not in normalized:
+                normalized['last'] = 0
+            
+            logger.debug(f"티커 데이터 정규화 완료: {normalized}")
+            return normalized
+            
+        except Exception as e:
+            logger.error(f"티커 데이터 정규화 오류: {e}")
+            return {}
+
     async def get_positions(self) -> List[Dict]:
-        """포지션 조회 - 엔드포인트별 시도"""
-        positions = []
-        
-        for endpoint in self.position_endpoints:
+        """포지션 조회 - 인자 수정"""
+        # 여러 엔드포인트 순차 시도
+        for i, endpoint in enumerate(self.position_endpoints):
             try:
-                logger.debug(f"포지션 조회 시도: {endpoint}")
+                logger.debug(f"포지션 조회 시도 {i + 1}/{len(self.position_endpoints)}: {endpoint}")
                 
                 if endpoint == "/api/v2/mix/position/all-position":
-                    # v2 API 파라미터
+                    # V2 API
                     params = {
                         'productType': self.product_type,
                         'marginCoin': self.margin_coin
                     }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
                 elif endpoint == "/api/mix/v1/position/allPosition":
-                    # v1 API 파라미터
+                    # V1 API
                     params = {
                         'symbol': self.symbol_v1,
                         'marginCoin': self.margin_coin
                     }
-                else:
-                    params = {'productType': self.product_type}
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
                 
-                response = await self._request('GET', endpoint, params=params, max_retries=2)
-                
-                if response:
+                if response is not None:
                     if isinstance(response, list):
-                        positions = response
+                        logger.debug(f"✅ 포지션 조회 성공 ({endpoint}): {len(response)}개")
+                        return response
                     elif isinstance(response, dict) and 'data' in response:
-                        positions = response['data']
+                        logger.debug(f"✅ 포지션 조회 성공 ({endpoint}): {len(response['data'])}개")
+                        return response['data']
                     else:
-                        positions = [response] if response else []
-                    
-                    logger.info(f"✅ 포지션 조회 성공 ({endpoint}): {len(positions)}개")
-                    break
-                    
+                        logger.debug(f"✅ 포지션 조회 성공 ({endpoint}): 빈 결과")
+                        return []
+                        
             except Exception as e:
-                error_msg = str(e)
-                if "404" in error_msg or "NOT FOUND" in error_msg:
-                    logger.debug(f"포지션 엔드포인트 {endpoint} 404 오류 (예상됨), 다음 시도")
-                else:
-                    logger.warning(f"포지션 엔드포인트 {endpoint} 실패: {e}")
+                logger.warning(f"포지션 엔드포인트 {endpoint} 실패: {e}")
                 continue
         
-        return positions or []
-    
-    async def get_plan_orders(self) -> List[Dict]:
-        """예약 주문 조회 - 엔드포인트별 시도"""
-        orders = []
-        
-        for endpoint in self.plan_order_endpoints:
+        # 모든 엔드포인트 실패
+        logger.error("모든 포지션 엔드포인트 실패")
+        return []
+
+    async def get_all_plan_orders_with_tp_sl(self) -> List[Dict]:
+        """TP/SL 포함 예약 주문 조회"""
+        # 여러 엔드포인트 순차 시도
+        for i, endpoint in enumerate(self.plan_order_endpoints):
             try:
-                logger.debug(f"예약 주문 조회 시도: {endpoint}")
+                logger.debug(f"예약 주문 조회 시도 {i + 1}/{len(self.plan_order_endpoints)}: {endpoint}")
                 
                 if endpoint == "/api/v2/mix/order/orders-plan-pending":
-                    # v2 API 파라미터
+                    # V2 API
                     params = {
                         'productType': self.product_type,
                         'symbol': self.symbol
                     }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
                 elif endpoint == "/api/mix/v1/plan/currentPlan":
-                    # v1 API 파라미터
+                    # V1 API
                     params = {
                         'symbol': self.symbol_v1,
                         'productType': 'umcbl'
                     }
-                else:
-                    params = {'symbol': self.symbol}
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
                 
-                response = await self._request('GET', endpoint, params=params, max_retries=2)
-                
-                if response:
+                if response is not None:
                     if isinstance(response, list):
-                        orders = response
+                        logger.debug(f"✅ 예약 주문 조회 성공 ({endpoint}): {len(response)}개")
+                        return response
                     elif isinstance(response, dict) and 'data' in response:
-                        orders = response['data']
+                        logger.debug(f"✅ 예약 주문 조회 성공 ({endpoint}): {len(response['data'])}개")
+                        return response['data']
                     else:
-                        orders = [response] if response else []
-                    
-                    logger.info(f"✅ 예약 주문 조회 성공 ({endpoint}): {len(orders)}개")
-                    break
-                    
+                        logger.debug(f"✅ 예약 주문 조회 성공 ({endpoint}): 빈 결과")
+                        return []
+                        
             except Exception as e:
-                error_msg = str(e)
-                if "404" in error_msg or "NOT FOUND" in error_msg:
-                    logger.debug(f"예약 주문 엔드포인트 {endpoint} 404 오류 (예상됨), 다음 시도")
-                else:
-                    logger.warning(f"예약 주문 엔드포인트 {endpoint} 실패: {e}")
+                logger.warning(f"예약 주문 엔드포인트 {endpoint} 실패: {e}")
                 continue
         
-        if not orders:
-            logger.error("예약 주문 조회 실패: HTTP 400")
-        
-        return orders or []
-    
-    async def get_tp_sl_orders(self) -> List[Dict]:
-        """TP/SL 주문 조회"""
-        try:
-            # 🔥🔥🔥 올바른 TP/SL 엔드포인트 사용
-            params = {
-                'productType': self.product_type,
-                'symbol': self.symbol
-            }
-            
-            response = await self._request('GET', "/api/v2/mix/order/orders-tpsl-pending", params=params)
-            
-            if response:
-                if isinstance(response, list):
-                    return response
-                elif isinstance(response, dict) and 'data' in response:
-                    return response['data']
-                else:
-                    return [response] if response else []
-            
-            return []
-            
-        except Exception as e:
-            error_msg = str(e)
-            if "404" in error_msg or "NOT FOUND" in error_msg:
-                logger.debug("TP/SL 엔드포인트 404 오류 (예상됨)")
-            else:
-                logger.error(f"TP/SL 주문 조회 실패: {e}")
-            logger.error("TP/SL 주문 조회 실패: HTTP 404")
-            return []
-    
-    async def get_order_history(self, start_time: Optional[int] = None, end_time: Optional[int] = None) -> List[Dict]:
-        """주문 히스토리 조회"""
-        orders = []
-        
-        for endpoint in self.order_history_endpoints:
+        # 모든 엔드포인트 실패
+        logger.error("모든 예약 주문 엔드포인트 실패")
+        return []
+
+    async def get_recent_filled_orders(self, limit: int = 100) -> List[Dict]:
+        """최근 체결 주문 조회"""
+        # 여러 엔드포인트 순차 시도
+        for i, endpoint in enumerate(self.order_history_endpoints):
             try:
-                logger.debug(f"주문 히스토리 조회 시도: {endpoint}")
+                logger.debug(f"체결 주문 조회 시도 {i + 1}/{len(self.order_history_endpoints)}: {endpoint}")
                 
                 if endpoint == "/api/v2/mix/order/orders-history":
-                    # v2 API 파라미터
+                    # V2 API
                     params = {
                         'productType': self.product_type,
-                        'symbol': self.symbol
+                        'symbol': self.symbol,
+                        'limit': str(limit)
                     }
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
+                    
                 elif endpoint == "/api/mix/v1/order/historyOrders":
-                    # v1 API 파라미터
+                    # V1 API
                     params = {
                         'symbol': self.symbol_v1,
-                        'productType': 'umcbl'
+                        'pageSize': str(limit)
                     }
-                else:
-                    params = {'symbol': self.symbol}
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
                 
-                # 시간 범위 추가 (선택적)
-                if start_time:
-                    params['startTime'] = str(start_time)
-                if end_time:
-                    params['endTime'] = str(end_time)
-                
-                response = await self._request('GET', endpoint, params=params, max_retries=2)
-                
-                if response:
+                if response is not None:
                     if isinstance(response, list):
-                        orders = response
+                        # 체결된 주문만 필터링
+                        filled_orders = [order for order in response if order.get('state') == 'filled' or order.get('status') == 'filled']
+                        logger.debug(f"✅ 체결 주문 조회 성공 ({endpoint}): {len(filled_orders)}개")
+                        return filled_orders
                     elif isinstance(response, dict) and 'data' in response:
-                        orders = response['data']
+                        filled_orders = [order for order in response['data'] if order.get('state') == 'filled' or order.get('status') == 'filled']
+                        logger.debug(f"✅ 체결 주문 조회 성공 ({endpoint}): {len(filled_orders)}개")
+                        return filled_orders
                     else:
-                        orders = [response] if response else []
-                    
-                    logger.info(f"✅ 주문 히스토리 조회 성공 ({endpoint}): {len(orders)}개")
-                    break
-                    
+                        logger.debug(f"✅ 체결 주문 조회 성공 ({endpoint}): 빈 결과")
+                        return []
+                        
             except Exception as e:
-                error_msg = str(e)
-                if "404" in error_msg or "NOT FOUND" in error_msg:
-                    logger.debug(f"주문 히스토리 엔드포인트 {endpoint} 404 오류 (예상됨), 다음 시도")
-                else:
-                    logger.warning(f"주문 히스토리 엔드포인트 {endpoint} 실패: {e}")
+                logger.warning(f"체결 주문 엔드포인트 {endpoint} 실패: {e}")
                 continue
         
-        return orders or []
-    
-    async def place_order(self, side: str, size: str, order_type: str = "market", 
-                          price: Optional[str] = None, reduce_only: bool = False) -> Optional[Dict]:
-        """주문 실행"""
-        try:
-            # 🔥🔥🔥 올바른 주문 실행 엔드포인트 및 파라미터
-            order_data = {
-                'symbol': self.symbol,
-                'productType': self.product_type,
-                'marginMode': 'crossed',
-                'marginCoin': self.margin_coin,
-                'size': size,
-                'side': side,
-                'orderType': order_type,
-                'force': 'gtc'
-            }
-            
-            if price:
-                order_data['price'] = price
-            
-            if reduce_only:
-                order_data['reduceOnly'] = 'YES'
-            
-            response = await self._request('POST', "/api/v2/mix/order/place-order", data=order_data)
-            
-            if response:
-                logger.info(f"✅ 주문 실행 성공: {side} {size} {self.symbol}")
-                return response
-            else:
-                logger.error(f"❌ 주문 실행 실패: 응답 없음")
-                return None
-                
-        except Exception as e:
-            logger.error(f"❌ 주문 실행 실패: {e}")
-            return None
-    
+        # 모든 엔드포인트 실패
+        logger.error("모든 체결 주문 엔드포인트 실패")
+        return []
+
     async def close(self):
         """클라이언트 종료"""
         try:
-            if self.session:
+            if self.session and not self.session.closed:
                 await self.session.close()
-                self.session = None
                 logger.info("Bitget 미러링 클라이언트 세션 종료")
         except Exception as e:
-            logger.error(f"클라이언트 종료 실패: {e}")
+            logger.error(f"Bitget 미러링 클라이언트 종료 오류: {e}")
+
+    def __del__(self):
+        """소멸자"""
+        try:
+            if self.session and not self.session.closed:
+                asyncio.create_task(self.session.close())
+        except:
+            pass
