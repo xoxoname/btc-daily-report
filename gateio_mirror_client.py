@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - 포지션 크기 기반 클로즈 주문 처리 강화 + 슬리피지 보호 개선 + 정확한 포지션 매칭"""
+    """Gate.io 미러링 전용 클라이언트 - 포지션 크기 기반 클로즈 주문 처리 강화 + 슬리피지 보호 개선"""
     
     def __init__(self, config):
         self.config = config
@@ -223,24 +223,14 @@ class GateioMirrorClient:
             raise
     
     async def get_positions(self, contract: str = "BTC_USDT") -> List[Dict]:
-        """🔥🔥🔥 포지션 조회 - 정확한 포지션 정보 반환"""
+        """포지션 조회"""
         try:
             endpoint = f"/api/v4/futures/usdt/positions/{contract}"
             response = await self._request('GET', endpoint)
             
             if isinstance(response, dict):
-                size = response.get('size', 0)
-                if size != 0:
-                    logger.info(f"🔍 게이트 포지션 발견: 계약={contract}, 크기={size}")
-                    logger.info(f"  - 진입가: {response.get('entry_price', 'N/A')}")
-                    logger.info(f"  - 미실현 손익: {response.get('unrealised_pnl', 'N/A')}")
-                    logger.info(f"  - 레버리지: {response.get('leverage', 'N/A')}")
-                    return [response]
-                else:
-                    logger.debug(f"게이트 포지션 없음: {contract}")
-                    return []
-            
-            return response if isinstance(response, list) else []
+                return [response] if response.get('size', 0) != 0 else []
+            return response
             
         except Exception as e:
             logger.error(f"포지션 조회 실패: {e}")
@@ -573,7 +563,7 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 클로즈 주문 처리 강화 + 정확한 포지션 매칭"""
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 클로즈 주문 처리 강화"""
         try:
             # 비트겟 주문 정보 추출
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
@@ -728,7 +718,7 @@ class GateioMirrorClient:
     async def _calculate_close_order_size_based_on_position(self, bitget_order: Dict, 
                                                            original_gate_size: int, 
                                                            side: str) -> Tuple[int, bool]:
-        """🔥🔥🔥 현재 포지션 크기 기반 클로즈 주문 크기 계산 - 정확한 BTC 매칭"""
+        """🔥🔥🔥 현재 포지션 크기 기반 클로즈 주문 크기 계산 - 강화"""
         try:
             # 현재 게이트 포지션 조회
             gate_positions = await self.get_positions("BTC_USDT")
@@ -757,24 +747,27 @@ class GateioMirrorClient:
             
             logger.info(f"🔍 현재 게이트 포지션: {current_gate_size} ({current_position_side})")
             
-            # 🔥🔥🔥 비트겟 클로즈 주문에서 실제 클로즈할 BTC 크기 추출
-            bitget_close_btc = float(bitget_order.get('size', 0))
-            
-            # 🔥🔥🔥 비트겟 클로즈 크기를 게이트 계약 수로 변환
-            # 1 BTC = 10,000 계약 (Gate.io 표준)
-            bitget_close_contracts = int(bitget_close_btc * 10000)
-            
-            logger.info(f"🔍 비트겟 클로즈 요청: {bitget_close_btc} BTC = {bitget_close_contracts} 계약")
-            
-            # 부분 청산 비율 계산
-            if bitget_close_contracts > 0 and current_position_abs_size > 0:
-                close_ratio = min(bitget_close_contracts / current_position_abs_size, 1.0)
-                logger.info(f"🔍 부분 청산 비율: {close_ratio*100:.1f}% (요청: {bitget_close_contracts}, 현재: {current_position_abs_size})")
-            else:
+            # 🔥🔥🔥 비트겟 클로즈 주문의 실제 클로즈 비율 계산
+            try:
+                bitget_size = float(bitget_order.get('size', 0))
+                close_ratio = 1.0  # 기본값은 전체 청산
+                
+                if bitget_size > 0:
+                    # 비트겟 크기를 게이트 계약 수로 변환하여 비교
+                    bitget_size_in_contracts = int(bitget_size * 10000)  # BTC를 계약 수로 변환
+                    
+                    if bitget_size_in_contracts < current_position_abs_size:
+                        close_ratio = bitget_size_in_contracts / current_position_abs_size
+                        logger.info(f"🔍 부분 청산 감지: 비율 {close_ratio*100:.1f}% (비트겟: {bitget_size_in_contracts}, 게이트: {current_position_abs_size})")
+                    else:
+                        close_ratio = 1.0
+                        logger.info(f"🔍 전체 청산 감지: 비율 100%")
+                
+            except Exception as e:
+                logger.error(f"부분 청산 비율 계산 실패, 전체 청산으로 처리: {e}")
                 close_ratio = 1.0
-                logger.info(f"🔍 전체 청산으로 처리")
             
-            # 🔥🔥🔥 게이트 실제 클로즈 크기 계산
+            # 🔥🔥🔥 실제 클로즈할 크기 계산
             actual_close_size = int(current_position_abs_size * close_ratio)
             
             # 최소 1개는 클로즈
@@ -804,8 +797,6 @@ class GateioMirrorClient:
             
             logger.info(f"✅ 포지션 기반 클로즈 주문 크기 계산 완료:")
             logger.info(f"   - 현재 포지션: {current_gate_size}")
-            logger.info(f"   - 비트겟 클로즈 BTC: {bitget_close_btc}")
-            logger.info(f"   - 비트겟 클로즈 계약: {bitget_close_contracts}")
             logger.info(f"   - 클로즈 비율: {close_ratio*100:.1f}%")
             logger.info(f"   - 최종 클로즈 크기: {final_size}")
             
