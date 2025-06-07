@@ -14,7 +14,7 @@ import traceback
 logger = logging.getLogger(__name__)
 
 class BitgetMirrorClient:
-    """Bitget 미러링 전용 클라이언트 - 정확한 API 파라미터 사용 + USDT-M Futures 지원"""
+    """Bitget 미러링 전용 클라이언트 - 정확한 API 엔드포인트 및 파라미터 사용"""
     
     def __init__(self, config):
         self.config = config
@@ -27,43 +27,34 @@ class BitgetMirrorClient:
         self.last_successful_call = datetime.now()
         self.max_consecutive_failures = 10
         
-        # 🔥🔥🔥 정확한 Bitget 파라미터 설정 (수정)
-        self.product_type = "usdt-futures"  # 소문자로 변경
+        # 🔥🔥🔥 정확한 Bitget 파라미터 설정
+        self.product_type = "usdt-futures"  # 정확한 소문자 형식
         self.symbol = "BTCUSDT"             # 기본 심볼
-        self.symbol_v1 = "BTCUSDT_UMCBL"    # 🔥🔥🔥 v1 API용 심볼 형식
+        self.symbol_v1 = "BTCUSDT_UMCBL"    # v1 API용 심볼 형식
         self.margin_coin = "USDT"           # 마진 코인
         
-        # 🔥🔥🔥 대체 파라미터들 (API 버전별 다름)
-        self.alternative_product_types = [
-            "usdt-futures",
-            "USDT-FUTURES", 
-            "umcbl",
-            "UMCBL",
-            "mix"
-        ]
-        
-        # 🔥🔥🔥 정확한 v2 API 엔드포인트들
+        # 🔥🔥🔥 정확한 v2 API 엔드포인트들 (수정됨)
         self.ticker_endpoints = [
             "/api/v2/mix/market/ticker",   # v2 API 메인
             "/api/mix/v1/market/ticker",   # v1 대체
         ]
         
-        # 🔥🔥🔥 정확한 예약 주문 조회 엔드포인트들
+        # 🔥🔥🔥 정확한 예약 주문 조회 엔드포인트들 (수정됨)
         self.plan_order_endpoints = [
-            "/api/v2/mix/order/orders-plan-pending",  # v2 정확한 엔드포인트
+            "/api/v2/mix/order/orders-plan-pending",  # ✅ 정확한 v2 엔드포인트
             "/api/mix/v1/plan/currentPlan",           # v1 대체
         ]
         
-        # 🔥🔥🔥 정확한 예약 주문 체결 내역 엔드포인트들
+        # 🔥🔥🔥 정확한 예약 주문 히스토리 엔드포인트들 (수정됨)
         self.plan_history_endpoints = [
-            "/api/v2/mix/order/orders-plan-history",  # v2 정확한 엔드포인트
+            "/api/v2/mix/order/orders-plan-history",  # ✅ 정확한 v2 엔드포인트
             "/api/mix/v1/plan/historyPlan",           # v1 대체
         ]
         
-        # 🔥🔥🔥 체결 내역 엔드포인트
-        self.fill_history_endpoints = [
-            "/api/v2/mix/order/fills-history",        # v2 정확한 엔드포인트
-            "/api/mix/v1/order/fills",                # v1 대체
+        # 🔥🔥🔥 정확한 주문 히스토리 엔드포인트들 (수정됨)
+        self.order_history_endpoints = [
+            "/api/v2/mix/order/orders-history",       # ✅ 정확한 v2 엔드포인트
+            "/api/mix/v1/order/historyOrders",        # v1 대체
         ]
         
         # API 키 검증 상태
@@ -91,21 +82,18 @@ class BitgetMirrorClient:
         try:
             logger.info("비트겟 미러링 API 키 유효성 검증 시작...")
             
-            # 🔥🔥🔥 더 간단한 엔드포인트로 검증 시도
+            # 🔥🔥🔥 정확한 파라미터로 검증 시도
             endpoints_to_try = [
                 ("/api/v2/mix/account/accounts", {
-                    'productType': self.product_type,
+                    'productType': self.product_type,  # usdt-futures
                     'marginCoin': self.margin_coin
                 }),
                 ("/api/mix/v1/account/accounts", {
-                    'symbol': self.symbol_v1,  # 🔥🔥🔥 v1 API는 _UMCBL 형식 사용
+                    'symbol': self.symbol_v1,  # v1 API는 _UMCBL 형식 사용
                     'marginCoin': self.margin_coin
                 }),
                 ("/api/v2/mix/account/accounts", {
-                    'productType': 'usdt-futures'
-                }),
-                ("/api/v2/mix/account/accounts", {
-                    'productType': 'umcbl'
+                    'productType': self.product_type
                 })
             ]
             
@@ -175,7 +163,7 @@ class BitgetMirrorClient:
         return "/v1/" in endpoint or endpoint.startswith("/api/mix/v1/")
     
     async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
-        """API 요청 - 강화된 오류 처리 + 파라미터 검증 로깅"""
+        """API 요청 - 강화된 오류 처리"""
         if not self.session:
             self._initialize_session()
             
@@ -308,39 +296,21 @@ class BitgetMirrorClient:
                     raise
     
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회 - 다양한 파라미터 시도"""
+        """계정 정보 조회"""
         try:
-            # 🔥🔥🔥 여러 가지 파라미터 조합 시도
-            param_combinations = [
-                {'productType': 'usdt-futures', 'marginCoin': self.margin_coin},
-                {'productType': 'umcbl', 'marginCoin': self.margin_coin},
-                {'productType': 'UMCBL', 'marginCoin': self.margin_coin},
-                {'productType': 'mix', 'marginCoin': self.margin_coin},
-                {'marginCoin': self.margin_coin},
-                {}
-            ]
+            params = {
+                'productType': self.product_type,
+                'marginCoin': self.margin_coin
+            }
             
-            endpoint = "/api/v2/mix/account/accounts"
+            response = await self._request('GET', "/api/v2/mix/account/accounts", params=params)
             
-            for params in param_combinations:
-                try:
-                    logger.debug(f"계정 정보 조회 시도: {params}")
-                    response = await self._request('GET', endpoint, params=params, max_retries=1)
+            if response is not None:
+                if isinstance(response, list) and len(response) > 0:
+                    return response[0]
+                elif isinstance(response, dict):
+                    return response
                     
-                    if response is not None:
-                        if isinstance(response, list) and len(response) > 0:
-                            logger.info(f"✅ 계정 정보 조회 성공: {params}")
-                            return response[0]
-                        elif isinstance(response, dict):
-                            logger.info(f"✅ 계정 정보 조회 성공: {params}")
-                            return response
-                        
-                except Exception as e:
-                    logger.warning(f"계정 정보 조회 실패: {params} - {e}")
-                    continue
-            
-            # 모든 시도 실패
-            logger.error("모든 계정 정보 조회 파라미터 시도 실패")
             return {}
                 
         except Exception as e:
@@ -348,413 +318,237 @@ class BitgetMirrorClient:
             raise
     
     async def get_positions(self, symbol: str = "BTCUSDT") -> List[Dict]:
-        """포지션 조회 - 다양한 파라미터 시도"""
+        """포지션 조회"""
         try:
-            # 🔥🔥🔥 여러 가지 파라미터 조합 시도
-            param_combinations = [
-                {'productType': 'usdt-futures', 'marginCoin': self.margin_coin},
-                {'productType': 'umcbl', 'marginCoin': self.margin_coin},
-                {'productType': 'UMCBL', 'marginCoin': self.margin_coin},
-                {'productType': 'mix', 'marginCoin': self.margin_coin},
-                {'marginCoin': self.margin_coin},
-                {'symbol': symbol, 'productType': 'usdt-futures'},
-                {'symbol': symbol}
-            ]
+            params = {
+                'productType': self.product_type,
+                'marginCoin': self.margin_coin
+            }
             
-            endpoint = "/api/v2/mix/position/all-position"
+            if symbol:
+                params['symbol'] = symbol
             
-            for params in param_combinations:
-                try:
-                    logger.debug(f"포지션 조회 시도: {params}")
-                    response = await self._request('GET', endpoint, params=params, max_retries=1)
-                    
-                    if response is not None:
-                        if isinstance(response, list):
-                            filtered_positions = []
-                            for pos in response:
-                                if pos.get('symbol') == symbol and float(pos.get('total', 0)) > 0:
-                                    filtered_positions.append(pos)
-                            
-                            logger.info(f"✅ 포지션 조회 성공: {params}, {len(filtered_positions)}개 포지션")
-                            return filtered_positions
-                        
-                except Exception as e:
-                    logger.warning(f"포지션 조회 실패: {params} - {e}")
-                    continue
+            response = await self._request('GET', "/api/v2/mix/position/all-position", params=params)
             
-            logger.warning("모든 포지션 조회 파라미터 시도 실패")
+            if response is not None:
+                return response if isinstance(response, list) else []
+            
             return []
             
         except Exception as e:
             logger.error(f"포지션 조회 실패: {e}")
             return []
     
-    async def get_ticker(self, symbol: str = "BTCUSDT") -> Dict:
-        """🔥🔥🔥 티커 정보 조회 - 다양한 파라미터와 엔드포인트 시도"""
+    async def get_pending_orders(self, symbol: str = "BTCUSDT") -> List[Dict]:
+        """미체결 주문 조회"""
         try:
-            # 🔥🔥🔥 여러 엔드포인트와 파라미터 조합 시도
-            endpoint_param_combinations = [
-                # v2 API 시도들
-                ("/api/v2/mix/market/ticker", {'symbol': symbol}),
-                ("/api/v2/mix/market/ticker", {'symbol': symbol, 'productType': 'usdt-futures'}),
-                ("/api/v2/mix/market/ticker", {'symbol': symbol, 'productType': 'umcbl'}),
-                ("/api/v2/mix/market/ticker", {'symbol': symbol, 'productType': 'UMCBL'}),
-                ("/api/v2/mix/market/ticker", {'symbol': symbol, 'productType': 'mix'}),
-                
-                # v1 API 대체들 - 🔥🔥🔥 _UMCBL 형식 사용
-                ("/api/mix/v1/market/ticker", {'symbol': self._get_v1_symbol(symbol)}),
-                ("/api/mix/v1/market/ticker", {'symbol': self._get_v1_symbol(symbol), 'productType': 'umcbl'}),
-                
-                # 공통 market 엔드포인트들
-                ("/api/v2/market/ticker", {'symbol': symbol}),
-                ("/api/v1/market/ticker", {'symbol': symbol}),
-            ]
-            
-            for endpoint, params in endpoint_param_combinations:
-                try:
-                    logger.debug(f"티커 조회 시도: {endpoint}, 파라미터: {params}")
-                    
-                    response = await self._request('GET', endpoint, params=params, max_retries=1)
-                    
-                    if response is None:
-                        continue
-                    
-                    # 응답 처리
-                    ticker_data = None
-                    if isinstance(response, list) and len(response) > 0:
-                        ticker_data = response[0]
-                    elif isinstance(response, dict):
-                        ticker_data = response
-                    else:
-                        continue
-                    
-                    # 데이터 정규화 및 검증
-                    if ticker_data and isinstance(ticker_data, dict):
-                        # last 가격 확인 및 정규화
-                        last_price = None
-                        for price_field in ['last', 'close', 'price', 'lastPr', 'lastPrice']:
-                            if ticker_data.get(price_field):
-                                try:
-                                    last_price = float(ticker_data[price_field])
-                                    if last_price > 0:
-                                        ticker_data['last'] = last_price
-                                        break
-                                except (ValueError, TypeError):
-                                    continue
-                        
-                        if last_price and last_price > 0:
-                            logger.info(f"✅ 티커 조회 성공: {endpoint}, 가격: ${last_price:,.2f}")
-                            return ticker_data
-                        else:
-                            logger.debug(f"티커 데이터에 유효한 가격 없음: {ticker_data}")
-                            continue
-                    else:
-                        logger.debug(f"티커 데이터 형식 오류: {type(ticker_data)}")
-                        continue
-                        
-                except Exception as e:
-                    logger.debug(f"티커 조회 시도 실패: {endpoint} - {e}")
-                    continue
-            
-            logger.warning(f"모든 티커 조회 시도 실패: {symbol}")
-            return {}
-                
-        except Exception as e:
-            logger.error(f"티커 조회 실패 - 심볼: {symbol}, 오류: {e}")
-            return {}
-    
-    async def get_all_plan_orders_with_tp_sl(self, symbol: str = "BTCUSDT") -> Dict:
-        """🔥🔥🔥 모든 예약 주문 (Plan Orders + TP/SL Orders) 조회 - 다양한 파라미터 시도"""
-        try:
-            logger.info(f"🎯 비트겟 모든 예약 주문 조회 시작: {symbol}")
-            
-            plan_orders = []
-            tp_sl_orders = []
-            
-            # 🔥🔥🔥 v1 API용 심볼 변환
-            symbol_v1 = self._get_v1_symbol(symbol)
-            
-            # 🔥🔥🔥 여러 엔드포인트와 파라미터 조합 시도
-            endpoint_param_combinations = [
-                # v2 API 시도들
-                ("/api/v2/mix/order/orders-plan-pending", {'symbol': symbol}),
-                ("/api/v2/mix/order/orders-plan-pending", {'symbol': symbol, 'productType': 'usdt-futures'}),
-                ("/api/v2/mix/order/orders-plan-pending", {'symbol': symbol, 'productType': 'umcbl'}),
-                ("/api/v2/mix/order/orders-plan-pending", {'symbol': symbol, 'productType': 'UMCBL'}),
-                ("/api/v2/mix/order/orders-plan-pending", {'symbol': symbol, 'productType': 'mix'}),
-                
-                # v1 API 대체들 - 🔥🔥🔥 _UMCBL 형식 사용
-                ("/api/mix/v1/plan/currentPlan", {'symbol': symbol_v1}),
-                ("/api/mix/v1/plan/currentPlan", {'symbol': symbol_v1, 'productType': 'umcbl'}),
-                
-                # 추가 가능한 엔드포인트들
-                ("/api/v2/mix/order/plan-pending", {'symbol': symbol}),
-                ("/api/v1/mix/order/current-plan", {'symbol': symbol_v1}),
-            ]
-            
-            for endpoint, params in endpoint_param_combinations:
-                try:
-                    logger.debug(f"예약 주문 조회 시도: {endpoint}, 파라미터: {params}")
-                    
-                    response = await self._request('GET', endpoint, params=params, max_retries=1)
-                    
-                    if response is None:
-                        continue
-                    
-                    # 응답 처리
-                    all_orders = []
-                    if isinstance(response, list):
-                        all_orders = response
-                    elif isinstance(response, dict):
-                        # v2 API는 여러 형태의 응답 구조를 가질 수 있음
-                        all_orders = response.get('orderList', response.get('entrustedList', response.get('data', [])))
-                    else:
-                        continue
-                    
-                    if not all_orders:
-                        continue
-                    
-                    # 주문 타입별로 분류
-                    current_plan_orders = []
-                    current_tp_sl_orders = []
-                    
-                    for order in all_orders:
-                        plan_type = order.get('planType', '').lower()
-                        order_type = order.get('orderType', '').lower()
-                        
-                        # TP/SL 주문인지 확인
-                        if any(tp_sl_keyword in plan_type for tp_sl_keyword in ['profit_loss', 'tp_sl', 'stop']) or \
-                           any(tp_sl_keyword in order_type for tp_sl_keyword in ['stop', 'take_profit']):
-                            current_tp_sl_orders.append(order)
-                        else:
-                            current_plan_orders.append(order)
-                    
-                    # 성공한 경우 결과 설정
-                    plan_orders = current_plan_orders
-                    tp_sl_orders = current_tp_sl_orders
-                    
-                    logger.info(f"✅ 예약 주문 조회 성공: {endpoint}, 일반 {len(plan_orders)}개, TP/SL {len(tp_sl_orders)}개")
-                    break
-                        
-                except Exception as e:
-                    logger.debug(f"예약 주문 조회 시도 실패: {endpoint} - {e}")
-                    continue
-            
-            # 결과 정리
-            result = {
-                'plan_orders': plan_orders,
-                'tp_sl_orders': tp_sl_orders,
-                'total_count': len(plan_orders) + len(tp_sl_orders)
-            }
-            
-            if result['total_count'] > 0:
-                logger.info(f"✅ 예약 주문 조회 완료: 일반 {len(plan_orders)}개, TP/SL {len(tp_sl_orders)}개, 총 {result['total_count']}개")
-            else:
-                logger.info(f"📝 예약 주문 없음: {symbol}")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"모든 예약 주문 조회 실패: {e}")
-            return {
-                'plan_orders': [],
-                'tp_sl_orders': [],
-                'total_count': 0,
-                'error': str(e)
-            }
-    
-    async def get_recent_filled_orders(self, symbol: str = "BTCUSDT", minutes: int = 5) -> List[Dict]:
-        """🔥🔥🔥 최근 체결된 주문 조회 - 다양한 파라미터 시도"""
-        try:
-            # 시간 범위 계산 (UTC)
-            end_time = datetime.now(timezone.utc)
-            start_time = end_time - timedelta(minutes=minutes)
-            
-            filled_orders = []
-            
-            # 🔥🔥🔥 v1 API용 심볼 변환
-            symbol_v1 = self._get_v1_symbol(symbol)
-            
-            # 🔥🔥🔥 여러 엔드포인트와 파라미터 조합 시도
-            endpoint_param_combinations = [
-                # v2 API 시도들
-                ("/api/v2/mix/order/fills-history", {
-                    'symbol': symbol,
-                    'startTime': str(int(start_time.timestamp() * 1000)),
-                    'endTime': str(int(end_time.timestamp() * 1000)),
-                    'limit': '100'
-                }),
-                ("/api/v2/mix/order/fills-history", {
-                    'symbol': symbol,
-                    'productType': 'usdt-futures',
-                    'startTime': str(int(start_time.timestamp() * 1000)),
-                    'endTime': str(int(end_time.timestamp() * 1000)),
-                    'limit': '100'
-                }),
-                ("/api/v2/mix/order/fills-history", {
-                    'symbol': symbol,
-                    'productType': 'umcbl',
-                    'startTime': str(int(start_time.timestamp() * 1000)),
-                    'endTime': str(int(end_time.timestamp() * 1000)),
-                    'limit': '100'
-                }),
-                
-                # v1 API 대체들 - 🔥🔥🔥 _UMCBL 형식 사용
-                ("/api/mix/v1/order/fills", {
-                    'symbol': symbol_v1,
-                    'startTime': str(int(start_time.timestamp() * 1000)),
-                    'endTime': str(int(end_time.timestamp() * 1000)),
-                    'limit': '100'
-                }),
-            ]
-            
-            for endpoint, params in endpoint_param_combinations:
-                try:
-                    logger.debug(f"체결 주문 조회 시도: {endpoint}")
-                    
-                    response = await self._request('GET', endpoint, params=params, max_retries=1)
-                    
-                    if response is None:
-                        continue
-                    
-                    # 응답 처리
-                    if isinstance(response, list):
-                        filled_orders = response
-                    elif isinstance(response, dict):
-                        filled_orders = response.get('fillList', response.get('data', []))
-                    else:
-                        continue
-                    
-                    if filled_orders:
-                        # 중복 제거 및 정렬
-                        unique_orders = {}
-                        for order in filled_orders:
-                            order_id = order.get('orderId', order.get('id', ''))
-                            if order_id and order_id not in unique_orders:
-                                unique_orders[order_id] = order
-                        
-                        result = list(unique_orders.values())
-                        
-                        logger.info(f"✅ 최근 {minutes}분간 체결된 주문: {len(result)}개")
-                        return result
-                    
-                except Exception as e:
-                    logger.debug(f"체결 주문 조회 시도 실패: {endpoint} - {e}")
-                    continue
-            
-            logger.debug(f"최근 {minutes}분간 체결된 주문 없음")
-            return []
-            
-        except Exception as e:
-            logger.error(f"최근 체결 주문 조회 실패: {e}")
-            return []
-    
-    async def get_recent_filled_plan_orders(self, symbol: str = "BTCUSDT", minutes: int = 5, order_id: str = None) -> List[Dict]:
-        """🔥🔥🔥 최근 체결된 예약 주문 조회 - 다양한 파라미터 시도"""
-        try:
-            logger.info(f"🎯 최근 체결된 예약 주문 조회: {symbol}, {minutes}분간")
-            
-            # 시간 범위 계산
-            end_time = datetime.now(timezone.utc)
-            start_time = end_time - timedelta(minutes=minutes)
-            
-            filled_plan_orders = []
-            
-            # 🔥🔥🔥 v1 API용 심볼 변환
-            symbol_v1 = self._get_v1_symbol(symbol)
-            
-            # 🔥🔥🔥 여러 엔드포인트와 파라미터 조합 시도
-            base_params = {
+            params = {
                 'symbol': symbol,
-                'startTime': str(int(start_time.timestamp() * 1000)),
-                'endTime': str(int(end_time.timestamp() * 1000)),
-                'limit': '100'
+                'productType': self.product_type
             }
             
-            base_params_v1 = {
-                'symbol': symbol_v1,  # 🔥🔥🔥 v1 API는 _UMCBL 형식 사용
-                'startTime': str(int(start_time.timestamp() * 1000)),
-                'endTime': str(int(end_time.timestamp() * 1000)),
-                'limit': '100'
-            }
+            response = await self._request('GET', "/api/v2/mix/order/orders-pending", params=params)
             
-            if order_id:
-                base_params['planOrderId'] = order_id
-                base_params_v1['planOrderId'] = order_id
-            
-            endpoint_param_combinations = [
-                # v2 API 시도들
-                ("/api/v2/mix/order/orders-plan-history", base_params),
-                ("/api/v2/mix/order/orders-plan-history", {**base_params, 'productType': 'usdt-futures'}),
-                ("/api/v2/mix/order/orders-plan-history", {**base_params, 'productType': 'umcbl'}),
-                ("/api/v2/mix/order/orders-plan-history", {**base_params, 'productType': 'UMCBL'}),
-                
-                # v1 API 대체들 - 🔥🔥🔥 _UMCBL 형식 사용
-                ("/api/mix/v1/plan/historyPlan", base_params_v1),
-                ("/api/mix/v1/plan/historyPlan", {**base_params_v1, 'productType': 'umcbl'}),
-            ]
-            
-            for endpoint, params in endpoint_param_combinations:
-                try:
-                    logger.debug(f"체결 예약 주문 조회 시도: {endpoint}")
-                    
-                    response = await self._request('GET', endpoint, params=params, max_retries=1)
-                    
-                    if response is None:
-                        continue
-                    
-                    # 응답 처리
-                    if isinstance(response, list):
-                        filled_plan_orders = response
-                    elif isinstance(response, dict):
-                        filled_plan_orders = response.get('orderList', response.get('entrustedList', response.get('data', [])))
-                    else:
-                        continue
-                    
-                    if filled_plan_orders:
-                        # 특정 주문 ID 검색
-                        if order_id:
-                            matching_orders = []
-                            for order in filled_plan_orders:
-                                order_check_id = order.get('orderId', order.get('planOrderId', order.get('id', '')))
-                                if order_check_id == order_id:
-                                    matching_orders.append(order)
-                            
-                            if matching_orders:
-                                logger.info(f"🎯 특정 주문 ID {order_id} 체결 내역 발견: {len(matching_orders)}개")
-                                return matching_orders
-                            else:
-                                continue
-                        
-                        # 중복 제거
-                        unique_filled_orders = {}
-                        for order in filled_plan_orders:
-                            order_check_id = order.get('orderId', order.get('planOrderId', order.get('id', '')))
-                            if order_check_id and order_check_id not in unique_filled_orders:
-                                unique_filled_orders[order_check_id] = order
-                        
-                        result = list(unique_filled_orders.values())
-                        
-                        logger.info(f"✅ 최근 {minutes}분간 체결된 예약 주문: {len(result)}개")
-                        return result
-                    
-                except Exception as e:
-                    logger.debug(f"체결 예약 주문 조회 시도 실패: {endpoint} - {e}")
-                    continue
-            
-            if order_id:
-                logger.info(f"📝 특정 주문 ID {order_id} 체결 내역 없음")
-            else:
-                logger.debug(f"최근 {minutes}분간 체결된 예약 주문 없음")
+            if response is not None:
+                return response if isinstance(response, list) else []
             
             return []
             
         except Exception as e:
-            logger.error(f"최근 체결 예약 주문 조회 실패: {e}")
+            logger.error(f"미체결 주문 조회 실패: {e}")
             return []
+    
+    async def get_plan_orders(self, symbol: str = "BTCUSDT") -> List[Dict]:
+        """🔥🔥🔥 예약 주문 조회 - 정확한 엔드포인트 사용"""
+        try:
+            # 🔥🔥🔥 정확한 파라미터 사용
+            params = {
+                'symbol': symbol,
+                'productType': self.product_type  # usdt-futures
+            }
+            
+            # 🔥🔥🔥 정확한 엔드포인트 사용
+            response = await self._request('GET', "/api/v2/mix/order/orders-plan-pending", params=params)
+            
+            if response is not None:
+                return response if isinstance(response, list) else []
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"예약 주문 조회 실패: {e}")
+            return []
+    
+    async def get_all_plan_orders(self, symbol: str = "BTCUSDT") -> List[Dict]:
+        """🎯 비트겟 모든 예약 주문 조회 (모든 타입)"""
+        logger.info(f"🎯 비트겟 모든 예약 주문 조회 시작: {symbol}")
+        
+        all_orders = []
+        
+        # 🔥🔥🔥 모든 예약 주문 타입 조회
+        plan_types = [
+            'profit_loss',      # TP/SL 주문
+            'normal_plan',      # 일반 예약 주문
+            'pos_profit_loss',  # 포지션 TP/SL
+            'moving_plan'       # 트레일링 스탑
+        ]
+        
+        for plan_type in plan_types:
+            try:
+                params = {
+                    'symbol': symbol,
+                    'productType': self.product_type,  # usdt-futures
+                    'planType': plan_type
+                }
+                
+                logger.debug(f"예약 주문 조회 - 타입: {plan_type}")
+                
+                # 🔥🔥🔥 정확한 엔드포인트 사용
+                response = await self._request('GET', "/api/v2/mix/order/orders-plan-pending", params=params)
+                
+                if response and isinstance(response, list):
+                    for order in response:
+                        order['planType'] = plan_type  # 타입 명시
+                    all_orders.extend(response)
+                    logger.debug(f"예약 주문 발견: {plan_type} - {len(response)}개")
+                    
+            except Exception as e:
+                logger.warning(f"예약 주문 타입 {plan_type} 조회 실패: {e}")
+                continue
+        
+        logger.info(f"🎯 비트겟 모든 예약 주문 조회 완료: 총 {len(all_orders)}개")
+        return all_orders
+    
+    async def get_plan_order_history(self, symbol: str = "BTCUSDT", days: int = 7) -> List[Dict]:
+        """🔥🔥🔥 예약 주문 히스토리 조회 - 정확한 엔드포인트 사용"""
+        try:
+            # 🔥🔥🔥 정확한 파라미터 사용
+            params = {
+                'symbol': symbol,
+                'productType': self.product_type,  # usdt-futures
+                'startTime': str(int((datetime.now() - timedelta(days=days)).timestamp() * 1000)),
+                'endTime': str(int(datetime.now().timestamp() * 1000))
+            }
+            
+            # 🔥🔥🔥 정확한 엔드포인트 사용
+            response = await self._request('GET', "/api/v2/mix/order/orders-plan-history", params=params)
+            
+            if response is not None:
+                return response if isinstance(response, list) else []
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"예약 주문 히스토리 조회 실패: {e}")
+            return []
+    
+    async def get_order_history(self, symbol: str = "BTCUSDT", days: int = 7) -> List[Dict]:
+        """🔥🔥🔥 주문 히스토리 조회 - 정확한 엔드포인트 사용"""
+        try:
+            # 🔥🔥🔥 정확한 파라미터 사용
+            params = {
+                'symbol': symbol,
+                'productType': self.product_type,  # usdt-futures
+                'startTime': str(int((datetime.now() - timedelta(days=days)).timestamp() * 1000)),
+                'endTime': str(int(datetime.now().timestamp() * 1000))
+            }
+            
+            # 🔥🔥🔥 정확한 엔드포인트 사용
+            response = await self._request('GET', "/api/v2/mix/order/orders-history", params=params)
+            
+            if response is not None:
+                # 응답이 dict이고 entrustedList가 있는 경우
+                if isinstance(response, dict) and 'entrustedList' in response:
+                    return response['entrustedList']
+                # 응답이 list인 경우
+                elif isinstance(response, list):
+                    return response
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"주문 히스토리 조회 실패: {e}")
+            return []
+    
+    async def get_ticker(self, symbol: str = "BTCUSDT") -> Optional[Dict]:
+        """티커 정보 조회"""
+        try:
+            params = {
+                'symbol': symbol,
+                'productType': self.product_type
+            }
+            
+            response = await self._request('GET', "/api/v2/mix/market/ticker", params=params)
+            
+            if response and isinstance(response, list) and len(response) > 0:
+                return response[0]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"티커 정보 조회 실패: {e}")
+            return None
+    
+    async def place_order(self, order_data: Dict) -> Optional[Dict]:
+        """주문 생성"""
+        try:
+            # 기본 파라미터 추가
+            order_data['productType'] = self.product_type
+            if 'marginCoin' not in order_data:
+                order_data['marginCoin'] = self.margin_coin
+            
+            response = await self._request('POST', "/api/v2/mix/order/place-order", data=order_data)
+            return response
+            
+        except Exception as e:
+            logger.error(f"주문 생성 실패: {e}")
+            return None
+    
+    async def cancel_order(self, order_id: str, symbol: str = "BTCUSDT") -> bool:
+        """주문 취소"""
+        try:
+            order_data = {
+                'orderId': order_id,
+                'symbol': symbol,
+                'productType': self.product_type
+            }
+            
+            response = await self._request('POST', "/api/v2/mix/order/cancel-order", data=order_data)
+            return response is not None
+            
+        except Exception as e:
+            logger.error(f"주문 취소 실패: {e}")
+            return False
+    
+    async def cancel_plan_order(self, order_id: str, symbol: str = "BTCUSDT", plan_type: str = "normal_plan") -> bool:
+        """예약 주문 취소"""
+        try:
+            order_data = {
+                'orderId': order_id,
+                'symbol': symbol,
+                'productType': self.product_type,
+                'planType': plan_type
+            }
+            
+            response = await self._request('POST', "/api/v2/mix/order/cancel-plan-order", data=order_data)
+            return response is not None
+            
+        except Exception as e:
+            logger.error(f"예약 주문 취소 실패: {e}")
+            return False
     
     async def close(self):
-        """세션 종료"""
+        """클라이언트 종료"""
         if self.session:
             await self.session.close()
-            logger.info("비트겟 미러링 클라이언트 세션 종료")
+            self.session = None
+            logger.info("Bitget 미러링 클라이언트 세션 종료")
+    
+    def __del__(self):
+        """소멸자"""
+        if self.session:
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(self.close())
+            except:
+                pass
