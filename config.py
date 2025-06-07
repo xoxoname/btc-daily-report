@@ -1,221 +1,236 @@
 import os
-from dotenv import load_dotenv
-
-# .env 파일 로드
-load_dotenv()
+from typing import Optional
 
 class Config:
+    """🔥🔥🔥 환경변수 설정 클래스 - Render 환경변수와 완전 호환"""
+    
     def __init__(self):
-        # 미러 트레이딩 모드 먼저 확인
-        self.MIRROR_TRADING_MODE = os.getenv('MIRROR_TRADING_MODE', 'false').lower() == 'true'
+        # 🔥🔥🔥 Render 환경변수 그대로 사용 (변경 금지)
         
-        # Telegram 설정
-        self.TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-        self.TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+        # Alpha Vantage API
+        self.ALPHA_VANTAGE_KEY: Optional[str] = os.getenv('ALPHA_VANTAGE_KEY')
         
         # Bitget API 설정
-        self.BITGET_API_KEY = os.getenv('BITGET_APIKEY')
-        self.BITGET_SECRET_KEY = os.getenv('BITGET_APISECRET')
-        self.BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+        self.BITGET_APIKEY: Optional[str] = os.getenv('BITGET_APIKEY')
+        self.BITGET_APISECRET: Optional[str] = os.getenv('BITGET_APISECRET')
+        self.BITGET_PASSPHRASE: Optional[str] = os.getenv('BITGET_PASSPHRASE')
         
-        # Gate.io API 설정 (선택사항)
-        self.GATE_API_KEY = os.getenv('GATE_API_KEY')
-        self.GATE_API_SECRET = os.getenv('GATE_API_SECRET')
+        # CoinGecko API
+        self.COINGECKO_API_KEY: Optional[str] = os.getenv('COINGECKO_API_KEY')
         
-        # Bitget 추가 설정
-        self.bitget_base_url = "https://api.bitget.com"
-        self.bitget_api_key = self.BITGET_API_KEY
-        self.bitget_api_secret = self.BITGET_SECRET_KEY
-        self.bitget_passphrase = self.BITGET_PASSPHRASE
-        self.symbol = "BTCUSDT"
+        # CryptoCompare API
+        self.CRYPTOCOMPARE_API_KEY: Optional[str] = os.getenv('CRYPTOCOMPARE_API_KEY')
         
-        # 기존 뉴스 API (3개)
-        self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
-        self.NEWSDATA_KEY = os.getenv('NEWSDATA_KEY')
-        self.ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')
+        # 미러 트레이딩 활성화 설정
+        self.ENABLE_MIRROR_TRADING: str = os.getenv('ENABLE_MIRROR_TRADING', 'false')
         
-        # 추가 데이터 소스 API
-        self.COINGECKO_API_KEY = os.getenv('COINGECKO_API_KEY')  # 선택사항
-        self.CRYPTOCOMPARE_API_KEY = os.getenv('CRYPTOCOMPARE_API_KEY')
-        self.GLASSNODE_API_KEY = os.getenv('GLASSNODE_API_KEY')
+        # Gate.io API 설정
+        self.GATE_API_KEY: Optional[str] = os.getenv('GATE_API_KEY')
+        self.GATE_API_SECRET: Optional[str] = os.getenv('GATE_API_SECRET')
         
-        # AI API 설정
-        self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-        self.ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')  # Claude API 추가
+        # 미러 체크 간격 (초)
+        self.MIRROR_CHECK_INTERVAL: int = int(os.getenv('MIRROR_CHECK_INTERVAL', '2'))
         
-        # 설정 검증
+        # 미러 트레이딩 모드
+        self.MIRROR_TRADING_MODE: str = os.getenv('MIRROR_TRADING_MODE', 'auto')
+        
+        # NewsAPI 설정
+        self.NEWSAPI_KEY: Optional[str] = os.getenv('NEWSAPI_KEY')
+        
+        # SDATA API 설정
+        self.SDATA_KEY: Optional[str] = os.getenv('SDATA_KEY')
+        
+        # OpenAI API 설정
+        self.OPENAI_API_KEY: Optional[str] = os.getenv('OPENAI_API_KEY')
+        
+        # Telegram Bot 설정
+        self.TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.TELEGRAM_CHAT_ID: Optional[str] = os.getenv('TELEGRAM_CHAT_ID')
+        
+        # 🔥🔥🔥 미러 트레이딩 고급 설정
+        self.MIRROR_MAX_POSITION_SIZE: float = float(os.getenv('MIRROR_MAX_POSITION_SIZE', '1000.0'))
+        self.MIRROR_RISK_LIMIT_PERCENT: float = float(os.getenv('MIRROR_RISK_LIMIT_PERCENT', '2.0'))
+        self.MIRROR_SLIPPAGE_TOLERANCE: float = float(os.getenv('MIRROR_SLIPPAGE_TOLERANCE', '0.05'))
+        
+        # 🔥🔥🔥 시세 동기화 설정
+        self.PRICE_SYNC_THRESHOLD: float = float(os.getenv('PRICE_SYNC_THRESHOLD', '1000.0'))
+        self.PRICE_SYNC_ENABLED: bool = os.getenv('PRICE_SYNC_ENABLED', 'true').lower() == 'true'
+        
+        # 🔥🔥🔥 알림 설정
+        self.ALERT_PRICE_DIFF_THRESHOLD: float = float(os.getenv('ALERT_PRICE_DIFF_THRESHOLD', '100.0'))
+        self.ALERT_VOLUME_SPIKE_THRESHOLD: float = float(os.getenv('ALERT_VOLUME_SPIKE_THRESHOLD', '3.0'))
+        
+        # 🔥🔥🔥 로깅 설정
+        self.LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
+        self.LOG_TO_FILE: bool = os.getenv('LOG_TO_FILE', 'true').lower() == 'true'
+        
+        # 🔥🔥🔥 데이터베이스 설정 (선택사항)
+        self.DATABASE_URL: Optional[str] = os.getenv('DATABASE_URL')
+        
+        # 🔥🔥🔥 Redis 설정 (선택사항)
+        self.REDIS_URL: Optional[str] = os.getenv('REDIS_URL')
+        
+        # 검증 수행
         self._validate_config()
     
     def _validate_config(self):
-        """필수 설정 검증"""
-        # 기본 필수 설정 (항상 필요)
-        required_configs = {
-            'TELEGRAM_BOT_TOKEN': self.TELEGRAM_BOT_TOKEN,
-            'TELEGRAM_CHAT_ID': self.TELEGRAM_CHAT_ID,
-            'BITGET_API_KEY': self.BITGET_API_KEY,
-            'BITGET_SECRET_KEY': self.BITGET_SECRET_KEY,
-            'BITGET_PASSPHRASE': self.BITGET_PASSPHRASE
-        }
+        """🔥🔥🔥 설정 검증"""
         
-        # 미러 트레이딩 모드일 때만 Gate.io API 필수
-        if self.MIRROR_TRADING_MODE:
-            if not self.GATE_API_KEY or not self.GATE_API_SECRET:
-                print("\n⚠️  미러 트레이딩 모드가 활성화되었지만 Gate.io API가 설정되지 않았습니다.")
-                print("미러 트레이딩을 사용하려면 다음 환경변수를 설정하세요:")
-                print("  GATE_API_KEY=your_gate_api_key")
-                print("  GATE_API_SECRET=your_gate_api_secret")
-                print("\n분석 전용 모드로 전환합니다...")
-                self.MIRROR_TRADING_MODE = False
-            else:
-                required_configs.update({
-                    'GATE_API_KEY': self.GATE_API_KEY,
-                    'GATE_API_SECRET': self.GATE_API_SECRET
-                })
+        # 필수 환경변수 검증
+        required_for_basic = [
+            'TELEGRAM_BOT_TOKEN',
+            'TELEGRAM_CHAT_ID'
+        ]
         
-        missing_configs = []
-        for config_name, config_value in required_configs.items():
-            if not config_value:
-                missing_configs.append(config_name)
+        missing_basic = [var for var in required_for_basic if not getattr(self, var)]
+        if missing_basic:
+            raise ValueError(f"기본 기능을 위한 필수 환경변수가 누락되었습니다: {missing_basic}")
         
-        if missing_configs:
-            raise ValueError(f"다음 환경변수가 설정되지 않았습니다: {', '.join(missing_configs)}")
-        
-        # API 상태 출력
-        self._print_config_status()
-    
-    def _print_config_status(self):
-        """설정 상태 출력"""
-        print("\n🔧 API 설정 상태:")
-        print("━" * 50)
-        
-        # 운영 모드
-        if self.MIRROR_TRADING_MODE:
-            print("🔄 운영 모드: 미러 트레이딩 모드")
-        else:
-            print("📊 운영 모드: 분석 전용 모드")
-        
-        print("\n✅ 필수 API:")
-        print(f"  • Telegram Bot: {'설정됨' if self.TELEGRAM_BOT_TOKEN else '미설정'}")
-        print(f"  • Bitget API: {'설정됨' if self.BITGET_API_KEY else '미설정'}")
-        
-        if self.MIRROR_TRADING_MODE:
-            print(f"  • Gate.io API: {'설정됨' if self.GATE_API_KEY else '미설정'}")
-        elif self.GATE_API_KEY:
-            print(f"  • Gate.io API: 설정됨 (미사용)")
-        
-        # 선택 API들
-        optional_apis = {
-            'OpenAI GPT': self.OPENAI_API_KEY,
-            'Claude (Anthropic)': self.ANTHROPIC_API_KEY,
-            'NewsAPI': self.NEWSAPI_KEY,
-            'NewsData': self.NEWSDATA_KEY,
-            'Alpha Vantage': self.ALPHA_VANTAGE_KEY,
-            'CoinGecko': self.COINGECKO_API_KEY,
-            'CryptoCompare': self.CRYPTOCOMPARE_API_KEY,
-            'Glassnode': self.GLASSNODE_API_KEY
-        }
-        
-        available = []
-        missing = []
-        
-        for api_name, api_key in optional_apis.items():
-            if api_key:
-                available.append(api_name)
-            else:
-                missing.append(api_name)
-        
-        if available:
-            print(f"\n✅ 사용 가능한 추가 API ({len(available)}개):")
-            for api in available:
-                print(f"  • {api}")
-        
-        if missing:
-            print(f"\n⚠️  미설정 API ({len(missing)}개):")
-            for api in missing:
-                print(f"  • {api}")
-        
-        # AI 번역 우선순위 표시
-        if self.ANTHROPIC_API_KEY and self.OPENAI_API_KEY:
-            print(f"\n🤖 AI 번역 설정: Claude 우선, GPT 백업")
-        elif self.ANTHROPIC_API_KEY:
-            print(f"\n🤖 AI 번역 설정: Claude만 사용")
-        elif self.OPENAI_API_KEY:
-            print(f"\n🤖 AI 번역 설정: GPT만 사용")
-        else:
-            print(f"\n⚠️  AI 번역 미설정 (번역 기능 제한)")
-        
-        # 운영 모드별 추가 정보
-        if self.MIRROR_TRADING_MODE:
-            print("\n💡 미러 트레이딩 설정:")
-            print("  • 기준 거래소: Bitget")
-            print("  • 미러 거래소: Gate.io")
-            print("  • 미러링 방식: 마진 비율 기반")
-            print("  • 기존 포지션: 복제 제외")
-            print("  • 신규 진입만 미러링")
-        else:
-            print("\n💡 현재 기능:")
-            print("  • 실시간 가격 모니터링")
-            print("  • 기술적 분석 리포트")
-            print("  • AI 기반 예측")
-            print("  • 뉴스 및 이벤트 추적")
-            print("  • 수익 현황 조회")
+        # 미러 트레이딩이 활성화된 경우 추가 검증
+        if self.ENABLE_MIRROR_TRADING.lower() in ['true', '1', 'yes', 'on']:
+            required_for_mirror = [
+                'BITGET_APIKEY',
+                'BITGET_APISECRET', 
+                'BITGET_PASSPHRASE',
+                'GATE_API_KEY',
+                'GATE_API_SECRET'
+            ]
             
-            if not self.GATE_API_KEY:
-                print("\n💡 미러 트레이딩 활성화 방법:")
-                print("  환경변수에 다음 추가:")
-                print("  MIRROR_TRADING_MODE=true")
-                print("  GATE_API_KEY=your_gate_key")
-                print("  GATE_API_SECRET=your_gate_secret")
+            missing_mirror = [var for var in required_for_mirror if not getattr(self, var)]
+            if missing_mirror:
+                print(f"⚠️ 미러 트레이딩 필수 환경변수 누락: {missing_mirror}")
+                print("미러 트레이딩이 비활성화됩니다.")
+                self.ENABLE_MIRROR_TRADING = 'false'
         
-        print("\n💡 추가 API 설정 방법:")
-        print("  환경변수에 추가:")
+        # API 키 검증 (선택사항)
+        api_keys = [
+            'ALPHA_VANTAGE_KEY',
+            'COINGECKO_API_KEY', 
+            'CRYPTOCOMPARE_API_KEY',
+            'NEWSAPI_KEY',
+            'SDATA_KEY',
+            'OPENAI_API_KEY'
+        ]
         
-        if not self.ANTHROPIC_API_KEY:
-            print("  ANTHROPIC_API_KEY=your_key (Claude 번역 활성화)")
-        if not self.OPENAI_API_KEY:
-            print("  OPENAI_API_KEY=your_key (GPT 분석 활성화)")
-        if not self.NEWSAPI_KEY:
-            print("  NEWSAPI_KEY=your_key (뉴스 수집 강화)")
-        if not self.COINGECKO_API_KEY:
-            print("  COINGECKO_API_KEY=your_key (시장 데이터 확장)")
-        
-        print("━" * 50 + "\n")
+        missing_apis = [var for var in api_keys if not getattr(self, var)]
+        if missing_apis:
+            print(f"ℹ️ 선택적 API 키 누락: {missing_apis}")
+            print("해당 기능들이 제한될 수 있습니다.")
     
-    def is_mirror_mode_enabled(self):
-        """미러 트레이딩 모드 활성화 여부"""
-        return self.MIRROR_TRADING_MODE
+    def is_mirror_trading_enabled(self) -> bool:
+        """미러 트레이딩 활성화 여부 확인"""
+        return self.ENABLE_MIRROR_TRADING.lower() in ['true', '1', 'yes', 'on']
     
-    def get_active_apis(self):
-        """활성화된 API 목록 반환"""
-        active_apis = {
-            'telegram': bool(self.TELEGRAM_BOT_TOKEN),
-            'bitget': bool(self.BITGET_API_KEY),
-            'gate': bool(self.GATE_API_KEY),
-            'openai': bool(self.OPENAI_API_KEY),
-            'anthropic': bool(self.ANTHROPIC_API_KEY),
-            'newsapi': bool(self.NEWSAPI_KEY),
-            'newsdata': bool(self.NEWSDATA_KEY),
-            'alpha_vantage': bool(self.ALPHA_VANTAGE_KEY),
-            'coingecko': bool(self.COINGECKO_API_KEY),
-            'cryptocompare': bool(self.CRYPTOCOMPARE_API_KEY),
-            'glassnode': bool(self.GLASSNODE_API_KEY)
-        }
-        return active_apis
-    
-    def get_config_summary(self):
-        """설정 요약 정보"""
+    def get_api_endpoints(self) -> dict:
+        """API 엔드포인트 설정"""
         return {
-            'mode': 'mirror' if self.MIRROR_TRADING_MODE else 'analysis',
-            'exchanges': {
-                'bitget': bool(self.BITGET_API_KEY),
-                'gate': bool(self.GATE_API_KEY) if self.MIRROR_TRADING_MODE else False
+            'bitget': {
+                'base_url': 'https://api.bitget.com',
+                'ws_url': 'wss://ws.bitget.com/spot/v1/stream'
             },
-            'features': {
-                'ai_analysis': bool(self.OPENAI_API_KEY or self.ANTHROPIC_API_KEY),
-                'claude_translation': bool(self.ANTHROPIC_API_KEY),
-                'gpt_analysis': bool(self.OPENAI_API_KEY),
-                'news_collection': any([self.NEWSAPI_KEY, self.NEWSDATA_KEY, self.ALPHA_VANTAGE_KEY]),
-                'market_data': any([self.COINGECKO_API_KEY, self.CRYPTOCOMPARE_API_KEY]),
-                'onchain_data': bool(self.GLASSNODE_API_KEY)
+            'gate': {
+                'base_url': 'https://api.gateio.ws',
+                'ws_url': 'wss://api.gateio.ws/ws/v4/'
+            },
+            'coingecko': {
+                'base_url': 'https://api.coingecko.com/api/v3'
+            },
+            'newsapi': {
+                'base_url': 'https://newsapi.org/v2'
             }
         }
+    
+    def get_trading_symbols(self) -> dict:
+        """거래 심볼 설정"""
+        return {
+            'bitget': 'BTCUSDT',
+            'gate': 'BTC_USDT',
+            'coingecko': 'bitcoin'
+        }
+    
+    def get_mirror_settings(self) -> dict:
+        """미러 트레이딩 설정"""
+        return {
+            'enabled': self.is_mirror_trading_enabled(),
+            'check_interval': self.MIRROR_CHECK_INTERVAL,
+            'trading_mode': self.MIRROR_TRADING_MODE,
+            'max_position_size': self.MIRROR_MAX_POSITION_SIZE,
+            'risk_limit_percent': self.MIRROR_RISK_LIMIT_PERCENT,
+            'slippage_tolerance': self.MIRROR_SLIPPAGE_TOLERANCE,
+            'price_sync_threshold': self.PRICE_SYNC_THRESHOLD,
+            'price_sync_enabled': self.PRICE_SYNC_ENABLED
+        }
+    
+    def get_alert_settings(self) -> dict:
+        """알림 설정"""
+        return {
+            'price_diff_threshold': self.ALERT_PRICE_DIFF_THRESHOLD,
+            'volume_spike_threshold': self.ALERT_VOLUME_SPIKE_THRESHOLD
+        }
+    
+    def get_logging_config(self) -> dict:
+        """로깅 설정"""
+        return {
+            'level': self.LOG_LEVEL,
+            'to_file': self.LOG_TO_FILE,
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        }
+    
+    def __str__(self) -> str:
+        """설정 요약 출력 (민감한 정보 제외)"""
+        return f"""🔥🔥🔥 시스템 설정 요약:
+
+📊 기본 기능:
+- Telegram Bot: {'✅' if self.TELEGRAM_BOT_TOKEN else '❌'}
+- OpenAI API: {'✅' if self.OPENAI_API_KEY else '❌'}
+
+🔄 미러 트레이딩:
+- 활성화: {'✅' if self.is_mirror_trading_enabled() else '❌'}
+- Bitget API: {'✅' if self.BITGET_APIKEY else '❌'}
+- Gate.io API: {'✅' if self.GATE_API_KEY else '❌'}
+- 체크 간격: {self.MIRROR_CHECK_INTERVAL}초
+- 거래 모드: {self.MIRROR_TRADING_MODE}
+
+📈 데이터 소스:
+- Alpha Vantage: {'✅' if self.ALPHA_VANTAGE_KEY else '❌'}
+- CoinGecko: {'✅' if self.COINGECKO_API_KEY else '❌'}
+- CryptoCompare: {'✅' if self.CRYPTOCOMPARE_API_KEY else '❌'}
+- NewsAPI: {'✅' if self.NEWSAPI_KEY else '❌'}
+- SDATA: {'✅' if self.SDATA_KEY else '❌'}
+
+⚙️ 고급 설정:
+- 최대 포지션 크기: ${self.MIRROR_MAX_POSITION_SIZE:,.0f}
+- 위험 한도: {self.MIRROR_RISK_LIMIT_PERCENT}%
+- 슬리피지 허용: {self.MIRROR_SLIPPAGE_TOLERANCE}%
+- 시세 동기화 임계값: ${self.PRICE_SYNC_THRESHOLD:,.0f}
+- 로그 레벨: {self.LOG_LEVEL}"""
+    
+    def validate_environment(self) -> tuple[bool, list[str]]:
+        """환경 검증 및 결과 반환"""
+        errors = []
+        
+        # 기본 검증
+        if not self.TELEGRAM_BOT_TOKEN:
+            errors.append("TELEGRAM_BOT_TOKEN이 설정되지 않았습니다.")
+        
+        if not self.TELEGRAM_CHAT_ID:
+            errors.append("TELEGRAM_CHAT_ID가 설정되지 않았습니다.")
+        
+        # 미러 트레이딩 검증
+        if self.is_mirror_trading_enabled():
+            if not self.BITGET_APIKEY:
+                errors.append("미러 트레이딩을 위해 BITGET_APIKEY가 필요합니다.")
+            
+            if not self.BITGET_APISECRET:
+                errors.append("미러 트레이딩을 위해 BITGET_APISECRET이 필요합니다.")
+            
+            if not self.BITGET_PASSPHRASE:
+                errors.append("미러 트레이딩을 위해 BITGET_PASSPHRASE가 필요합니다.")
+            
+            if not self.GATE_API_KEY:
+                errors.append("미러 트레이딩을 위해 GATE_API_KEY가 필요합니다.")
+            
+            if not self.GATE_API_SECRET:
+                errors.append("미러 트레이딩을 위해 GATE_API_SECRET이 필요합니다.")
+        
+        return len(errors) == 0, errors
