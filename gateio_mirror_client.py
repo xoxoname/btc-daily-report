@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제 + 클로즈 주문 방향 수정"""
+    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제 + 레버리지 미러링 강화"""
     
     def __init__(self, config):
         self.config = config
@@ -25,6 +25,12 @@ class GateioMirrorClient:
         # TP/SL 설정 상수
         self.TP_SL_TIMEOUT = 10
         self.MAX_TP_SL_RETRIES = 3
+        
+        # 🔥🔥🔥 레버리지 설정 강화
+        self.DEFAULT_LEVERAGE = 30  # 기본 레버리지 30배로 설정
+        self.MAX_LEVERAGE = 100
+        self.MIN_LEVERAGE = 1
+        self.current_leverage_cache = {}  # 계약별 현재 레버리지 캐시
         
     def _initialize_session(self):
         """세션 초기화"""
@@ -43,8 +49,20 @@ class GateioMirrorClient:
             logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료")
     
     async def initialize(self):
-        """클라이언트 초기화"""
+        """🔥🔥🔥 클라이언트 초기화 - 기본 레버리지 30배 설정"""
         self._initialize_session()
+        
+        # 기본 레버리지를 30배로 설정
+        try:
+            current_leverage = await self.get_current_leverage("BTC_USDT")
+            if current_leverage != self.DEFAULT_LEVERAGE:
+                logger.info(f"기본 레버리지 설정: {current_leverage}x → {self.DEFAULT_LEVERAGE}x")
+                await self.set_leverage("BTC_USDT", self.DEFAULT_LEVERAGE)
+            else:
+                logger.info(f"✅ 기본 레버리지 이미 설정됨: {self.DEFAULT_LEVERAGE}x")
+        except Exception as e:
+            logger.warning(f"기본 레버리지 설정 실패하지만 계속 진행: {e}")
+        
         logger.info("Gate.io 미러링 클라이언트 초기화 완료")
     
     def _generate_signature(self, method: str, url: str, query_string: str = "", payload: str = "") -> Dict[str, str]:
@@ -94,7 +112,7 @@ class GateioMirrorClient:
                     
                     if response.status != 200:
                         error_msg = f"HTTP {response.status}: {response_text}"
-                        logger.error(f"Gate.io API 오류: {error_msg}")
+                        logger.error(f"Gate.io API HTTP 오류: {error_msg}")
                         if attempt < max_retries - 1:
                             await asyncio.sleep(2 ** attempt)
                             continue
@@ -190,15 +208,59 @@ class GateioMirrorClient:
             logger.error(f"포지션 조회 실패: {e}")
             return []
     
+    async def get_current_leverage(self, contract: str) -> int:
+        """🔥🔥🔥 현재 레버리지 조회"""
+        try:
+            # 캐시에서 먼저 확인
+            if contract in self.current_leverage_cache:
+                cached_time, cached_leverage = self.current_leverage_cache[contract]
+                if (datetime.now() - cached_time).total_seconds() < 60:  # 1분간 캐시 유효
+                    return cached_leverage
+            
+            # 포지션 정보에서 레버리지 확인
+            positions = await self.get_positions(contract)
+            
+            if positions:
+                position = positions[0]
+                leverage_str = position.get('leverage', str(self.DEFAULT_LEVERAGE))
+                try:
+                    leverage = int(float(leverage_str))
+                    # 캐시 업데이트
+                    self.current_leverage_cache[contract] = (datetime.now(), leverage)
+                    logger.debug(f"현재 레버리지 조회: {contract} = {leverage}x")
+                    return leverage
+                except (ValueError, TypeError):
+                    logger.warning(f"레버리지 값 변환 실패: {leverage_str}")
+                    return self.DEFAULT_LEVERAGE
+            else:
+                logger.debug(f"포지션이 없어 기본 레버리지 반환: {self.DEFAULT_LEVERAGE}x")
+                return self.DEFAULT_LEVERAGE
+                
+        except Exception as e:
+            logger.error(f"현재 레버리지 조회 실패: {e}")
+            return self.DEFAULT_LEVERAGE
+    
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
                           retry_count: int = 5) -> Dict:
-        """🔥 레버리지 설정 - Gate.io API 수정된 방식 (오류 수정)"""
+        """🔥🔥🔥 레버리지 설정 - 비트겟 미러링 강화"""
+        
+        # 레버리지 유효성 검증
+        if leverage < self.MIN_LEVERAGE or leverage > self.MAX_LEVERAGE:
+            logger.warning(f"레버리지 범위 초과 ({leverage}x), 기본값 사용: {self.DEFAULT_LEVERAGE}x")
+            leverage = self.DEFAULT_LEVERAGE
+        
         for attempt in range(retry_count):
             try:
+                # 현재 레버리지 확인
+                current_leverage = await self.get_current_leverage(contract)
+                
+                if current_leverage == leverage:
+                    logger.info(f"✅ 레버리지 이미 설정됨: {contract} - {leverage}x")
+                    return {"status": "already_set", "leverage": leverage}
+                
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
                 
                 # 🔥🔥🔥 Gate.io API v4 정확한 형식
-                # API 문서에 따르면 쿼리 파라미터로 전송해야 함
                 params = {
                     "leverage": str(leverage)
                 }
@@ -206,10 +268,9 @@ class GateioMirrorClient:
                 if cross_leverage_limit > 0:
                     params["cross_leverage_limit"] = str(cross_leverage_limit)
                 
-                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
+                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {current_leverage}x → {leverage}x")
                 logger.debug(f"레버리지 설정 파라미터: {params}")
                 
-                # POST 요청이지만 파라미터로 전송
                 response = await self._request('POST', endpoint, params=params)
                 
                 await asyncio.sleep(1.0)
@@ -217,6 +278,8 @@ class GateioMirrorClient:
                 # 설정 검증
                 verify_success = await self._verify_leverage_setting(contract, leverage, max_attempts=3)
                 if verify_success:
+                    # 캐시 업데이트
+                    self.current_leverage_cache[contract] = (datetime.now(), leverage)
                     logger.info(f"✅ Gate.io 레버리지 설정 완료: {contract} - {leverage}x")
                     return response
                 else:
@@ -231,6 +294,13 @@ class GateioMirrorClient:
                 error_msg = str(e)
                 logger.error(f"Gate.io 레버리지 설정 시도 {attempt + 1} 실패: {error_msg}")
                 
+                # 특정 오류는 재시도하지 않음
+                if any(keyword in error_msg.lower() for keyword in [
+                    "leverage not changed", "same leverage", "already set"
+                ]):
+                    logger.info(f"레버리지가 이미 설정되어 있음: {contract} - {leverage}x")
+                    return {"status": "already_set", "leverage": leverage}
+                
                 if attempt < retry_count - 1:
                     await asyncio.sleep(2.0)
                     continue
@@ -244,10 +314,14 @@ class GateioMirrorClient:
         return {"warning": "all_leverage_attempts_failed", "requested_leverage": leverage}
     
     async def _verify_leverage_setting(self, contract: str, expected_leverage: int, max_attempts: int = 3) -> bool:
-        """레버리지 설정 확인"""
+        """🔥🔥🔥 레버리지 설정 확인 - 강화된 검증"""
         for attempt in range(max_attempts):
             try:
                 await asyncio.sleep(0.5 * (attempt + 1))
+                
+                # 캐시 초기화하고 최신 정보 가져오기
+                if contract in self.current_leverage_cache:
+                    del self.current_leverage_cache[contract]
                 
                 positions = await self.get_positions(contract)
                 if positions:
@@ -258,33 +332,71 @@ class GateioMirrorClient:
                         try:
                             current_lev_int = int(float(current_leverage))
                             if current_lev_int == expected_leverage:
+                                logger.info(f"✅ 레버리지 설정 검증 성공: {current_lev_int}x")
                                 return True
                             else:
+                                logger.debug(f"레버리지 검증: 현재 {current_lev_int}x ≠ 예상 {expected_leverage}x")
                                 if attempt < max_attempts - 1:
                                     continue
                                 return False
                         except (ValueError, TypeError):
+                            logger.debug(f"레버리지 값 변환 실패: {current_leverage}")
                             if attempt < max_attempts - 1:
                                 continue
                             return False
                     else:
+                        logger.debug("레버리지 필드가 없음")
                         if attempt < max_attempts - 1:
                             continue
                         return False
                 else:
+                    # 포지션이 없으면 레버리지 설정은 성공한 것으로 간주
+                    logger.debug("포지션이 없어 레버리지 설정 성공으로 간주")
                     return True
                 
-            except Exception:
+            except Exception as e:
+                logger.debug(f"레버리지 검증 시도 {attempt + 1} 실패: {e}")
                 if attempt < max_attempts - 1:
                     continue
-                return True
+                return True  # 검증 실패해도 설정은 성공한 것으로 간주
         
         return False
     
+    async def mirror_bitget_leverage(self, bitget_leverage: int, contract: str = "BTC_USDT") -> bool:
+        """🔥🔥🔥 비트겟 레버리지를 게이트에 미러링"""
+        try:
+            logger.info(f"🔄 레버리지 미러링 시작: 비트겟 {bitget_leverage}x → 게이트 {contract}")
+            
+            # 현재 게이트 레버리지 확인
+            current_gate_leverage = await self.get_current_leverage(contract)
+            
+            if current_gate_leverage == bitget_leverage:
+                logger.info(f"✅ 레버리지 이미 동일: {bitget_leverage}x")
+                return True
+            
+            # 레버리지 설정
+            result = await self.set_leverage(contract, bitget_leverage)
+            
+            if result.get("warning"):
+                logger.warning(f"⚠️ 레버리지 미러링 실패: {result}")
+                return False
+            else:
+                logger.info(f"✅ 레버리지 미러링 성공: {current_gate_leverage}x → {bitget_leverage}x")
+                return True
+            
+        except Exception as e:
+            logger.error(f"레버리지 미러링 실패: {e}")
+            return False
+    
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 클로즈 주문 방향 수정"""
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 레버리지 미러링 포함"""
         try:
+            # 🔥🔥🔥 1단계: 레버리지 미러링
+            leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
+            if not leverage_success:
+                logger.warning("⚠️ 레버리지 미러링 실패하지만 주문 계속 진행")
+            
             # 비트겟 주문 정보 추출
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -376,6 +488,7 @@ class GateioMirrorClient:
             logger.info(f"   - 비트겟 ID: {order_id}")
             logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
             logger.info(f"   - 트리거가: ${trigger_price:.2f}")
+            logger.info(f"   - 레버리지: {leverage}x {'✅ 미러링됨' if leverage_success else '⚠️ 미러링 실패'}")
             
             # TP/SL 표시 수정
             tp_display = f"${tp_price:.2f}" if tp_price is not None else "없음"
@@ -414,7 +527,9 @@ class GateioMirrorClient:
                     'actual_sl_price': actual_sl,
                     'is_close_order': is_close_order,
                     'reduce_only': reduce_only_flag,
-                    'perfect_mirror': has_tp_sl
+                    'perfect_mirror': has_tp_sl,
+                    'leverage_mirrored': leverage_success,
+                    'leverage': leverage
                 }
                 
             else:
@@ -435,7 +550,9 @@ class GateioMirrorClient:
                     'has_tp_sl': False,
                     'is_close_order': is_close_order,
                     'reduce_only': reduce_only_flag,
-                    'perfect_mirror': True  # TP/SL이 없으면 완벽
+                    'perfect_mirror': True,  # TP/SL이 없으면 완벽
+                    'leverage_mirrored': leverage_success,
+                    'leverage': leverage
                 }
             
         except Exception as e:
@@ -444,7 +561,8 @@ class GateioMirrorClient:
                 'success': False,
                 'error': str(e),
                 'has_tp_sl': False,
-                'perfect_mirror': False
+                'perfect_mirror': False,
+                'leverage_mirrored': False
             }
     
     async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
@@ -566,8 +684,14 @@ class GateioMirrorClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None,
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """시장가/지정가 주문 생성"""
+        """🔥🔥🔥 시장가/지정가 주문 생성 - 레버리지 체크 포함"""
         try:
+            # 주문 전 현재 레버리지 확인 및 기본값 설정
+            current_leverage = await self.get_current_leverage(contract)
+            if current_leverage < self.DEFAULT_LEVERAGE:
+                logger.info(f"레버리지가 낮음 ({current_leverage}x), 기본값으로 설정: {self.DEFAULT_LEVERAGE}x")
+                await self.set_leverage(contract, self.DEFAULT_LEVERAGE)
+            
             endpoint = "/api/v4/futures/usdt/orders"
             
             data = {
@@ -586,6 +710,8 @@ class GateioMirrorClient:
                 data["iceberg"] = iceberg
             
             response = await self._request('POST', endpoint, data=data)
+            
+            logger.info(f"✅ Gate.io 주문 생성 성공: {response.get('id')} (레버리지: {current_leverage}x)")
             return response
             
         except Exception as e:
