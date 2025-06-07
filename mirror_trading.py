@@ -1167,4 +1167,3 @@ class MirrorTradingSystem:
             pass
         
         self.logger.info("미러 트레이딩 시스템 중지")
-            '
