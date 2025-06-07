@@ -14,7 +14,7 @@ import traceback
 logger = logging.getLogger(__name__)
 
 class BitgetMirrorClient:
-    """Bitget 미러링 전용 클라이언트 - 클로징 주문 감지 강화 + API 개선"""
+    """Bitget 미러링 전용 클라이언트 - 예약 주문 및 미러링 기능"""
     
     def __init__(self, config):
         self.config = config
@@ -27,7 +27,7 @@ class BitgetMirrorClient:
         self.last_successful_call = datetime.now()
         self.max_consecutive_failures = 10
         
-        # 🔥🔥🔥 백업 엔드포인트들 - 타임아웃 개선
+        # 🔥🔥🔥 백업 엔드포인트들
         self.ticker_endpoints = [
             "/api/v2/mix/market/ticker",  # 기본 V2
             "/api/mix/v1/market/ticker",  # V1 백업
@@ -38,23 +38,21 @@ class BitgetMirrorClient:
         self.api_keys_validated = False
         
     def _initialize_session(self):
-        """세션 초기화 - 타임아웃 개선"""
+        """세션 초기화"""
         if not self.session:
             # 🔥🔥🔥 연결 타임아웃 및 재시도 설정 강화
-            timeout = aiohttp.ClientTimeout(total=60, connect=30)  # 타임아웃 증가
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
             connector = aiohttp.TCPConnector(
                 limit=100,
                 limit_per_host=30,
                 ttl_dns_cache=300,
-                use_dns_cache=True,
-                keepalive_timeout=60,  # 연결 유지 시간 증가
-                enable_cleanup_closed=True
+                use_dns_cache=True
             )
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector
             )
-            logger.info("Bitget 미러링 클라이언트 세션 초기화 완료 (개선된 타임아웃)")
+            logger.info("Bitget 미러링 클라이언트 세션 초기화 완료")
         
     async def initialize(self):
         """클라이언트 초기화"""
@@ -118,8 +116,8 @@ class BitgetMirrorClient:
             'locale': 'en-US'
         }
     
-    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 5) -> Dict:
-        """🔥🔥🔥 API 요청 - 강화된 오류 처리 + 타임아웃 개선"""
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
+        """🔥🔥🔥 API 요청 - 강화된 오류 처리"""
         if not self.session:
             self._initialize_session()
             
@@ -135,20 +133,12 @@ class BitgetMirrorClient:
         body = json.dumps(data) if data else ''
         headers = self._get_headers(method, request_path, body)
         
-        # 🔥🔥🔥 재시도 로직 - 타임아웃 개선
+        # 🔥🔥🔥 재시도 로직
         for attempt in range(max_retries):
             try:
                 logger.debug(f"비트겟 미러링 API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
                 
-                # 🔥🔥🔥 각 시도마다 타임아웃 점진적 증가
-                attempt_timeout = aiohttp.ClientTimeout(
-                    total=30 + (attempt * 15),  # 30초에서 시작해서 점진적 증가
-                    connect=10 + (attempt * 5)
-                )
-                
-                async with self.session.request(
-                    method, url, headers=headers, data=body, timeout=attempt_timeout
-                ) as response:
+                async with self.session.request(method, url, headers=headers, data=body) as response:
                     response_text = await response.text()
                     
                     # 🔥🔥🔥 상세한 응답 로깅
@@ -161,7 +151,7 @@ class BitgetMirrorClient:
                         error_msg = f"빈 응답 받음 (상태: {response.status})"
                         logger.warning(error_msg)
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(3 + (attempt * 2))  # 더 긴 대기
+                            await asyncio.sleep(2 ** attempt)  # 지수 백오프
                             continue
                         else:
                             self._record_failure(error_msg)
@@ -172,7 +162,7 @@ class BitgetMirrorClient:
                         error_msg = f"HTTP {response.status}: {response_text}"
                         logger.error(f"비트겟 미러링 API HTTP 오류: {error_msg}")
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(3 + (attempt * 2))
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
                             self._record_failure(error_msg)
@@ -185,7 +175,7 @@ class BitgetMirrorClient:
                         error_msg = f"JSON 파싱 실패: {json_error}, 응답: {response_text[:200]}"
                         logger.error(error_msg)
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(3 + (attempt * 2))
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
                             self._record_failure(error_msg)
@@ -196,7 +186,7 @@ class BitgetMirrorClient:
                         error_msg = f"API 응답 오류: {response_data}"
                         logger.error(error_msg)
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(3 + (attempt * 2))
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
                             self._record_failure(error_msg)
@@ -210,7 +200,7 @@ class BitgetMirrorClient:
                 error_msg = f"요청 타임아웃 (시도 {attempt + 1})"
                 logger.warning(error_msg)
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(5 + (attempt * 3))  # 타임아웃 시 더 긴 대기
+                    await asyncio.sleep(2 ** attempt)
                     continue
                 else:
                     self._record_failure(error_msg)
@@ -220,7 +210,7 @@ class BitgetMirrorClient:
                 error_msg = f"클라이언트 오류 (시도 {attempt + 1}): {client_error}"
                 logger.warning(error_msg)
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(3 + (attempt * 2))
+                    await asyncio.sleep(2 ** attempt)
                     continue
                 else:
                     self._record_failure(error_msg)
@@ -230,7 +220,7 @@ class BitgetMirrorClient:
                 error_msg = f"예상치 못한 오류 (시도 {attempt + 1}): {e}"
                 logger.error(error_msg)
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(3 + (attempt * 2))
+                    await asyncio.sleep(2 ** attempt)
                     continue
                 else:
                     self._record_failure(error_msg)
@@ -258,7 +248,7 @@ class BitgetMirrorClient:
         logger.warning(f"비트겟 미러링 API 실패 기록: {error_msg} (연속 실패: {self.consecutive_failures}회)")
     
     async def get_ticker(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 현재가 정보 조회 - 다중 엔드포인트 지원 + 타임아웃 개선"""
+        """🔥🔥🔥 현재가 정보 조회 - 다중 엔드포인트 지원"""
         symbol = symbol or self.config.symbol
         
         # 🔥🔥🔥 여러 엔드포인트 순차 시도
@@ -272,7 +262,7 @@ class BitgetMirrorClient:
                         'symbol': symbol,
                         'productType': 'USDT-FUTURES'
                     }
-                    response = await self._request('GET', endpoint, params=params, max_retries=3)
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
                     
                     if isinstance(response, list) and len(response) > 0:
                         ticker_data = response[0]
@@ -288,7 +278,7 @@ class BitgetMirrorClient:
                     params = {
                         'symbol': v1_symbol
                     }
-                    response = await self._request('GET', endpoint, params=params, max_retries=3)
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
                     
                     if isinstance(response, dict):
                         ticker_data = response
@@ -302,7 +292,7 @@ class BitgetMirrorClient:
                     params = {
                         'symbol': spot_symbol
                     }
-                    response = await self._request('GET', endpoint, params=params, max_retries=3)
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
                     
                     if isinstance(response, list) and len(response) > 0:
                         ticker_data = response[0]
@@ -846,7 +836,7 @@ class BitgetMirrorClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 클로징 주문 분류 강화"""
+        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 개선된 분류 + TP 정보 강화 (수정된 f-string)"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -855,7 +845,7 @@ class BitgetMirrorClient:
             # 모든 트리거 주문 조회 (개선된 방식)
             all_orders = await self.get_all_trigger_orders(symbol)
             
-            # TP/SL과 일반 예약주문 분류 - 클로징 주문 감지 강화
+            # TP/SL과 일반 예약주문 분류
             tp_sl_orders = []
             plan_orders = []
             
@@ -865,27 +855,13 @@ class BitgetMirrorClient:
                     
                 is_tp_sl = False
                 
-                # 🔥🔥🔥 클로징 주문 분류 조건들 강화
-                side = order.get('side', order.get('tradeSide', '')).lower()
-                reduce_only = order.get('reduceOnly', False)
-                order_type = order.get('orderType', order.get('planType', '')).lower()
-                
-                # TP/SL 분류 조건들 강화
+                # TP/SL 분류 조건들
                 if (order.get('planType') == 'profit_loss' or 
                     order.get('isPlan') == 'profit_loss' or
-                    'close' in side or
-                    'tp/' in side or  # TP/SL 키워드 추가
-                    'sl/' in side or
-                    'profit' in side or
-                    'loss' in side or
-                    'close_long' in side or
-                    'close_short' in side or
-                    reduce_only == True or
-                    reduce_only == 'true' or
-                    str(reduce_only).lower() == 'true' or
-                    'profit' in order_type or
-                    'loss' in order_type or
-                    'close' in order_type):
+                    order.get('side') in ['close_long', 'close_short'] or
+                    order.get('tradeSide') in ['close_long', 'close_short'] or
+                    order.get('reduceOnly') == True or
+                    order.get('reduceOnly') == 'true'):
                     is_tp_sl = True
                 
                 # 🔥🔥🔥 TP/SL 가격이 설정된 경우 처리 개선
