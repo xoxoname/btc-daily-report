@@ -63,7 +63,11 @@ class BitcoinAnalysisBot:
         self.bitget_client = BitgetClient(self.config)
         self.data_collector = RealTimeDataCollector(self.config)
         self.indicator_system = AdvancedTradingIndicators()
-        self.analysis_engine = AnalysisEngine(self.config, self.data_collector, self.indicator_system)
+        
+        # 🔥🔥🔥 수정: AnalysisEngine은 bitget_client만 필요
+        self.analysis_engine = AnalysisEngine(self.bitget_client)
+        
+        # 🔥🔥🔥 수정: ExceptionDetector는 config, data_collector, indicator_system 필요
         self.exception_detector = ExceptionDetector(self.config, self.data_collector, self.indicator_system)
         
         # 🔥🔥🔥 미러 트레이딩 시스템 초기화 (사용 가능한 경우)
