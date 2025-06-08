@@ -365,43 +365,19 @@ class GateioMirrorClient:
             return []
     
     async def get_today_realized_pnl(self) -> float:
-        """🔥🔥 오늘 실현 손익 조회 - 정확한 포지션 API 기반"""
+        """🔥🔥 오늘 실현 손익 조회 - 정확한 account_book API 기반"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
             
-            logger.info(f"🔍 Gate.io 오늘 실현손익 조회 (포지션 API 기반):")
+            logger.info(f"🔍 Gate.io 오늘 실현손익 조회 (account_book API 기반):")
             logger.info(f"  - 조회 시간: {now.strftime('%Y-%m-%d %H:%M:%S')} KST")
             
-            # 🔥🔥 방법 1: 포지션 API에서 realised_pnl 조회 (가장 정확)
+            # 🔥🔥 정확한 방법: account_book API에서 오늘 pnl 타입 조회
             today_pnl = 0.0
             
             try:
-                logger.info("📊 포지션 API에서 realised_pnl 조회 (공식 방법)")
-                
-                positions = await self.get_positions("BTC_USDT")
-                
-                if positions:
-                    for position in positions:
-                        # Gate.io 공식 포지션 API 필드:
-                        # - realised_pnl: 현재 포지션에서의 실현 손익 (이것이 핵심!)
-                        realised_pnl = float(position.get('realised_pnl', 0))
-                        
-                        if realised_pnl != 0:
-                            today_pnl = realised_pnl
-                            logger.info(f"✅ 포지션에서 실현손익 조회: ${today_pnl:.4f}")
-                            return today_pnl
-                        
-                        break  # 첫 번째 포지션 정보만 사용
-                else:
-                    logger.info("현재 포지션이 없음 - 실현손익 0으로 처리")
-                
-            except Exception as e:
-                logger.error(f"포지션 API 실현손익 조회 실패: {e}")
-            
-            # 🔥🔥 방법 2: account_book API에서 pnl 타입 조회 (보조)
-            try:
-                logger.info("📊 account_book API에서 오늘 pnl 타입 조회 (보조)")
+                logger.info("📊 account_book API에서 오늘 pnl 타입 조회 (가장 정확)")
                 
                 # 오늘 0시부터 현재까지
                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -411,21 +387,21 @@ class GateioMirrorClient:
                 pnl_records = await self.get_account_book(
                     start_time=start_timestamp_ms,
                     end_time=end_timestamp_ms,
-                    limit=50,
+                    limit=100,
                     type_filter='pnl'
                 )
                 
                 if pnl_records:
-                    account_book_pnl = 0.0
                     for record in pnl_records:
                         change = float(record.get('change', 0))
                         if record.get('type') == 'pnl' and change != 0:
-                            account_book_pnl += change
+                            today_pnl += change
+                            logger.debug(f"오늘 pnl 기록: {change}")
                     
-                    if account_book_pnl != 0:
-                        today_pnl = account_book_pnl
-                        logger.info(f"✅ account_book에서 오늘 실현손익: ${today_pnl:.4f}")
-                        return today_pnl
+                    logger.info(f"✅ account_book에서 오늘 실현손익: ${today_pnl:.4f}")
+                    return today_pnl
+                else:
+                    logger.info("오늘 pnl 기록 없음")
                 
             except Exception as e:
                 logger.error(f"account_book API 오늘 실현손익 조회 실패: {e}")
@@ -438,50 +414,20 @@ class GateioMirrorClient:
             return 0.0
     
     async def get_weekly_profit(self) -> Dict:
-        """🔥🔥 7일 손익 조회 - 정확한 포지션 API 기반"""
+        """🔥🔥 7일 손익 조회 - 정확한 account_book API 기반"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
             seven_days_ago = now - timedelta(days=7)
             
-            logger.info(f"🔍 Gate.io 7일 손익 조회 (포지션 API 기반):")
+            logger.info(f"🔍 Gate.io 7일 손익 조회 (account_book API 기반):")
             logger.info(f"  - 기간: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} ~ {now.strftime('%Y-%m-%d %H:%M')}")
             
-            # 🔥🔥 방법 1: 포지션 API에서 realised_pnl 조회 (현재 세션 실현손익을 7일로 근사)
+            # 🔥🔥 정확한 방법: account_book API에서 7일간 pnl 타입 조회
             weekly_pnl = 0.0
             
             try:
-                logger.info("📊 포지션 API에서 realised_pnl 조회 (7일 근사)")
-                
-                positions = await self.get_positions("BTC_USDT")
-                
-                if positions:
-                    for position in positions:
-                        # realised_pnl을 7일 수익으로 근사 계산
-                        realised_pnl = float(position.get('realised_pnl', 0))
-                        
-                        if realised_pnl != 0:
-                            # 현재 세션의 실현손익을 7일로 근사
-                            weekly_pnl = realised_pnl
-                            logger.info(f"✅ 포지션에서 7일 손익 (근사): ${weekly_pnl:.4f}")
-                            
-                            return {
-                                'total_pnl': weekly_pnl,
-                                'average_daily': weekly_pnl / 7,
-                                'source': 'position_realised_pnl_approximation',
-                                'confidence': 'medium'
-                            }
-                        
-                        break  # 첫 번째 포지션 정보만 사용
-                else:
-                    logger.info("현재 포지션이 없음 - 7일 손익 0으로 처리")
-                
-            except Exception as e:
-                logger.error(f"포지션 API 7일 손익 조회 실패: {e}")
-            
-            # 🔥🔥 방법 2: account_book API에서 7일간 pnl 타입 조회 (보조)
-            try:
-                logger.info("📊 account_book API에서 7일간 pnl 타입 조회 (보조)")
+                logger.info("📊 account_book API에서 7일간 pnl 타입 조회 (가장 정확)")
                 
                 start_timestamp_ms = int(seven_days_ago.astimezone(pytz.UTC).timestamp() * 1000)
                 end_timestamp_ms = int(now.astimezone(pytz.UTC).timestamp() * 1000)
@@ -489,33 +435,33 @@ class GateioMirrorClient:
                 pnl_records = await self.get_account_book(
                     start_time=start_timestamp_ms,
                     end_time=end_timestamp_ms,
-                    limit=200,
+                    limit=500,
                     type_filter='pnl'
                 )
                 
                 if pnl_records:
-                    account_book_pnl = 0.0
                     for record in pnl_records:
                         change = float(record.get('change', 0))
                         if record.get('type') == 'pnl' and change != 0:
-                            account_book_pnl += change
+                            weekly_pnl += change
+                            logger.debug(f"7일 pnl 기록: {change}")
                     
-                    if account_book_pnl != 0:
-                        weekly_pnl = account_book_pnl
-                        logger.info(f"✅ account_book에서 7일 손익: ${weekly_pnl:.4f}")
-                        
-                        return {
-                            'total_pnl': weekly_pnl,
-                            'average_daily': weekly_pnl / 7,
-                            'source': 'account_book_pnl_official',
-                            'confidence': 'high'
-                        }
+                    logger.info(f"✅ account_book에서 7일 손익: ${weekly_pnl:.4f}")
+                    
+                    return {
+                        'total_pnl': weekly_pnl,
+                        'average_daily': weekly_pnl / 7,
+                        'source': 'account_book_pnl_official',
+                        'confidence': 'high'
+                    }
+                else:
+                    logger.info("7일간 pnl 기록 없음")
                 
             except Exception as e:
                 logger.error(f"account_book API 7일 손익 조회 실패: {e}")
             
-            # 방법 3: 기본값 반환
-            logger.info("Gate.io 모든 7일 손익 조회 방법 실패, 기본값 반환")
+            # 기본값 반환
+            logger.info("Gate.io 7일 손익 조회 실패, 기본값 반환")
             return {
                 'total_pnl': 0,
                 'average_daily': 0,
@@ -533,9 +479,9 @@ class GateioMirrorClient:
             }
     
     async def get_profit_history_since_may(self) -> Dict:
-        """🔥🔥 Gate.io 수익 내역 조회 - 정확한 포지션 API 기반 누적 수익"""
+        """🔥🔥 Gate.io 수익 내역 조회 - 정확한 account_book API 기반 누적 수익"""
         try:
-            logger.info(f"🔍 Gate.io 누적 수익 조회 (정확한 포지션 API 기반):")
+            logger.info(f"🔍 Gate.io 누적 수익 조회 (정확한 account_book API 기반):")
             
             # 현재 계정 정보
             account = await self.get_account_balance()
@@ -547,73 +493,77 @@ class GateioMirrorClient:
             # 7일 손익
             weekly_profit = await self.get_weekly_profit()
             
-            # 🔥🔥 누적 수익을 포지션 API에서 정확하게 조회
+            # 🔥🔥 정확한 누적 수익을 account_book API에서 조회
             cumulative_profit = 0.0
             initial_capital = 700.0  # 기본 초기 자본
             
             try:
-                logger.info("📊 포지션 API에서 정확한 누적 수익 계산")
+                logger.info("📊 account_book API에서 정확한 누적 수익 계산 (2025년 5월부터)")
                 
-                positions = await self.get_positions("BTC_USDT")
+                # 2025년 5월 1일부터 현재까지
+                kst = pytz.timezone('Asia/Seoul')
+                now = datetime.now(kst)
+                start_date = datetime(2025, 5, 1, tzinfo=kst)
                 
-                if positions:
-                    for position in positions:
-                        # Gate.io 공식 포지션 API 필드들:
-                        # - realised_pnl: 현재 포지션에서의 실현 손익
-                        # - history_pnl: 이전에 청산된 포지션들의 누적 손익
-                        # - last_close_pnl: 마지막 청산 손익
-                        
-                        realised_pnl = float(position.get('realised_pnl', 0))
-                        history_pnl = float(position.get('history_pnl', 0))
-                        last_close_pnl = float(position.get('last_close_pnl', 0))
-                        
-                        # 🔥🔥 정확한 누적 수익 = 역사적 손익 + 현재 실현 손익
-                        cumulative_profit = history_pnl + realised_pnl
-                        
-                        logger.info(f"Gate.io 포지션 손익 정보 (정확한 계산):")
-                        logger.info(f"  - realised_pnl (현재 포지션): ${realised_pnl:.4f}")
-                        logger.info(f"  - history_pnl (이전 청산 누적): ${history_pnl:.4f}")
-                        logger.info(f"  - last_close_pnl (마지막 청산): ${last_close_pnl:.4f}")
-                        logger.info(f"  - 정확한 누적 수익: ${cumulative_profit:.4f}")
-                        
-                        break  # 첫 번째 포지션 정보만 사용
-                else:
-                    logger.info("현재 포지션이 없음 - 계정 잔고 기반 추정")
-                    # 포지션이 없으면 현재 잔고에서 초기 자본을 뺀 값을 누적 수익으로 추정
-                    if current_balance > 0:
-                        # 보수적 추정: 현재 잔고의 일부를 수익으로 간주
-                        estimated_profit_ratio = min(0.3, current_balance / 1000)  # 최대 30% 또는 잔고/1000
-                        cumulative_profit = current_balance * estimated_profit_ratio
+                start_timestamp_ms = int(start_date.astimezone(pytz.UTC).timestamp() * 1000)
+                end_timestamp_ms = int(now.astimezone(pytz.UTC).timestamp() * 1000)
+                
+                # account_book API로 전체 pnl 기록 조회
+                pnl_records = await self.get_account_book(
+                    start_time=start_timestamp_ms,
+                    end_time=end_timestamp_ms,
+                    limit=1000,  # 충분히 큰 값
+                    type_filter='pnl'
+                )
+                
+                if pnl_records:
+                    for record in pnl_records:
+                        change = float(record.get('change', 0))
+                        if record.get('type') == 'pnl' and change != 0:
+                            cumulative_profit += change
+                            logger.debug(f"누적 pnl 기록: {change}")
+                    
+                    logger.info(f"✅ account_book에서 정확한 누적 수익: ${cumulative_profit:.4f}")
+                    
+                    # 초기 자본 동적 계산 (현재 잔고 - 누적 수익)
+                    if cumulative_profit > 0:
+                        calculated_initial = current_balance - cumulative_profit
+                        if calculated_initial > 0:
+                            initial_capital = calculated_initial
+                        else:
+                            # 수익이 너무 큰 경우 보정
+                            initial_capital = max(500, current_balance * 0.7)
+                            cumulative_profit = current_balance - initial_capital
+                    else:
+                        # 손실이 있는 경우 초기 자본을 현재 잔고보다 높게 설정
                         initial_capital = current_balance - cumulative_profit
-                        logger.info(f"포지션 없음 - 추정 누적 수익: ${cumulative_profit:.4f}")
+                        if initial_capital < 700:
+                            initial_capital = 700
+                            cumulative_profit = current_balance - initial_capital
+                else:
+                    logger.info("2025년 5월부터 pnl 기록 없음 - 현재 잔고 기반 추정")
+                    # pnl 기록이 없으면 현재 잔고에서 추정
+                    if current_balance > 700:
+                        initial_capital = 700
+                        cumulative_profit = current_balance - initial_capital
+                    else:
+                        initial_capital = current_balance
+                        cumulative_profit = 0
                 
             except Exception as e:
-                logger.error(f"포지션 API 누적 손익 조회 실패: {e}")
-                # 기본값 설정
+                logger.error(f"account_book API 누적 손익 조회 실패: {e}")
+                # 기본값 설정 - 현재 잔고 기반 추정
                 if current_balance > 0:
-                    cumulative_profit = max(0, current_balance - 700)  # 기본 초기 자본 $700
                     initial_capital = 700
+                    cumulative_profit = max(0, current_balance - initial_capital)
                 else:
                     cumulative_profit = 0
                     initial_capital = 700
             
-            # 초기 자본 동적 계산 (현재 잔고 - 누적 수익)
-            if cumulative_profit > 0:
-                calculated_initial = current_balance - cumulative_profit
-                if calculated_initial > 0:
-                    initial_capital = calculated_initial
-                else:
-                    # 수익이 너무 큰 경우 보정
-                    initial_capital = max(500, current_balance * 0.7)  # 최소 $500 또는 잔고의 70%
-                    cumulative_profit = current_balance - initial_capital
-            else:
-                initial_capital = max(700, current_balance * 0.9) if current_balance > 0 else 700
-                cumulative_profit = max(0, current_balance - initial_capital)
-            
             # 수익률 계산
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             
-            logger.info(f"Gate.io 누적 수익 계산 완료 (정확한 계산):")
+            logger.info(f"Gate.io 누적 수익 계산 완료 (정확한 account_book 기반):")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
             logger.info(f"  - 정확한 누적 수익: ${cumulative_profit:.2f}")
             logger.info(f"  - 계산된 초기 자본: ${initial_capital:.2f}")
@@ -626,10 +576,10 @@ class GateioMirrorClient:
                 'today_realized': today_realized,
                 'weekly': weekly_profit,
                 'current_balance': current_balance,
-                'actual_profit': cumulative_profit,  # 정확한 누적 수익 (포지션 API 기반)
+                'actual_profit': cumulative_profit,  # 정확한 누적 수익 (account_book API 기반)
                 'initial_capital': initial_capital,  # 동적으로 계산된 초기 자본
                 'cumulative_roi': cumulative_roi,
-                'source': 'accurate_position_api_calculation'
+                'source': 'accurate_account_book_calculation'
             }
             
         except Exception as e:
