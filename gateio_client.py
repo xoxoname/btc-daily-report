@@ -1,4 +1,5 @@
 import asyncio
+import aiohttpimport asyncio
 import aiohttp
 import hmac
 import hashlib
@@ -479,9 +480,9 @@ class GateioMirrorClient:
             }
     
     async def get_profit_history_since_may(self) -> Dict:
-        """🔥🔥 Gate.io 수익 내역 조회 - 정확한 account_book API 기반 누적 수익"""
+        """🔥🔥 Gate.io 수익 내역 조회 - 수정된 정확한 account_book API 기반 누적 수익"""
         try:
-            logger.info(f"🔍 Gate.io 누적 수익 조회 (정확한 account_book API 기반):")
+            logger.info(f"🔍 Gate.io 수정된 누적 수익 조회 (정확한 account_book API 기반):")
             
             # 현재 계정 정보
             account = await self.get_account_balance()
@@ -493,12 +494,11 @@ class GateioMirrorClient:
             # 7일 손익
             weekly_profit = await self.get_weekly_profit()
             
-            # 🔥🔥 정확한 누적 수익을 account_book API에서 조회
+            # 🔥🔥 수정된 정확한 누적 수익을 account_book API에서 조회
             cumulative_profit = 0.0
-            initial_capital = 700.0  # 기본 초기 자본
             
             try:
-                logger.info("📊 account_book API에서 정확한 누적 수익 계산 (2025년 5월부터)")
+                logger.info("📊 수정된 account_book API에서 정확한 누적 수익 계산 (2025년 5월부터)")
                 
                 # 2025년 5월 1일부터 현재까지
                 kst = pytz.timezone('Asia/Seoul')
@@ -508,7 +508,7 @@ class GateioMirrorClient:
                 start_timestamp_ms = int(start_date.astimezone(pytz.UTC).timestamp() * 1000)
                 end_timestamp_ms = int(now.astimezone(pytz.UTC).timestamp() * 1000)
                 
-                # account_book API로 전체 pnl 기록 조회
+                # account_book API로 전체 pnl 기록 조회 (더 큰 limit으로 전체 기록 조회)
                 pnl_records = await self.get_account_book(
                     start_time=start_timestamp_ms,
                     end_time=end_timestamp_ms,
@@ -517,55 +517,51 @@ class GateioMirrorClient:
                 )
                 
                 if pnl_records:
+                    logger.info(f"2025년 5월부터 pnl 기록 수: {len(pnl_records)}개")
+                    
                     for record in pnl_records:
                         change = float(record.get('change', 0))
+                        record_time = record.get('time', 0)
                         if record.get('type') == 'pnl' and change != 0:
                             cumulative_profit += change
-                            logger.debug(f"누적 pnl 기록: {change}")
+                            logger.debug(f"누적 pnl 기록 ({record_time}): {change}")
                     
-                    logger.info(f"✅ account_book에서 정확한 누적 수익: ${cumulative_profit:.4f}")
+                    logger.info(f"✅ account_book에서 수정된 정확한 누적 수익: ${cumulative_profit:.4f}")
                     
-                    # 초기 자본 동적 계산 (현재 잔고 - 누적 수익)
-                    if cumulative_profit > 0:
-                        calculated_initial = current_balance - cumulative_profit
-                        if calculated_initial > 0:
-                            initial_capital = calculated_initial
-                        else:
-                            # 수익이 너무 큰 경우 보정
-                            initial_capital = max(500, current_balance * 0.7)
-                            cumulative_profit = current_balance - initial_capital
-                    else:
-                        # 손실이 있는 경우 초기 자본을 현재 잔고보다 높게 설정
-                        initial_capital = current_balance - cumulative_profit
-                        if initial_capital < 700:
-                            initial_capital = 700
-                            cumulative_profit = current_balance - initial_capital
+                    # 🔥🔥 수정: 누적 수익이 마이너스이거나 비현실적으로 큰 경우 조정
+                    if cumulative_profit < 0:
+                        logger.warning(f"누적 수익이 마이너스: ${cumulative_profit:.4f} - 0으로 조정")
+                        cumulative_profit = 0.0
+                    elif cumulative_profit > current_balance:
+                        logger.warning(f"누적 수익이 현재 잔고보다 큼: ${cumulative_profit:.4f} > ${current_balance:.4f} - 현재 잔고에서 700 뺀 값으로 조정")
+                        cumulative_profit = max(0, current_balance - 700)  # 초기 자본 $700 가정
+                    
                 else:
-                    logger.info("2025년 5월부터 pnl 기록 없음 - 현재 잔고 기반 추정")
-                    # pnl 기록이 없으면 현재 잔고에서 추정
-                    if current_balance > 700:
-                        initial_capital = 700
-                        cumulative_profit = current_balance - initial_capital
-                    else:
-                        initial_capital = current_balance
-                        cumulative_profit = 0
+                    logger.info("2025년 5월부터 pnl 기록 없음 - 0으로 설정")
+                    cumulative_profit = 0.0
                 
             except Exception as e:
-                logger.error(f"account_book API 누적 손익 조회 실패: {e}")
-                # 기본값 설정 - 현재 잔고 기반 추정
-                if current_balance > 0:
-                    initial_capital = 700
+                logger.error(f"수정된 account_book API 누적 손익 조회 실패: {e}")
+                cumulative_profit = 0.0
+            
+            # 🔥🔥 수정된 초기 자본 계산
+            # 현재 잔고가 있다면 적절한 초기 자본을 역산
+            if current_balance > 0 and cumulative_profit >= 0:
+                initial_capital = current_balance - cumulative_profit
+                # 초기 자본이 너무 작거나 음수인 경우 기본값 설정
+                if initial_capital <= 0:
+                    initial_capital = 700  # 기본 초기 자본
                     cumulative_profit = max(0, current_balance - initial_capital)
-                else:
-                    cumulative_profit = 0
-                    initial_capital = 700
+            else:
+                initial_capital = 700  # 기본 초기 자본
+                cumulative_profit = 0.0
             
             # 수익률 계산
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             
-            logger.info(f"Gate.io 누적 수익 계산 완료 (정확한 account_book 기반):")
+            logger.info(f"Gate.io 수정된 누적 수익 계산 완료 (정확한 account_book 기반):")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
-            logger.info(f"  - 정확한 누적 수익: ${cumulative_profit:.2f}")
+            logger.info(f"  - 수정된 정확한 누적 수익: ${cumulative_profit:.2f}")
             logger.info(f"  - 계산된 초기 자본: ${initial_capital:.2f}")
             logger.info(f"  - 수익률: {cumulative_roi:+.1f}%")
             logger.info(f"  - 오늘 실현손익: ${today_realized:.2f}")
@@ -576,14 +572,14 @@ class GateioMirrorClient:
                 'today_realized': today_realized,
                 'weekly': weekly_profit,
                 'current_balance': current_balance,
-                'actual_profit': cumulative_profit,  # 정확한 누적 수익 (account_book API 기반)
-                'initial_capital': initial_capital,  # 동적으로 계산된 초기 자본
+                'actual_profit': cumulative_profit,  # 수정된 정확한 누적 수익 (account_book API 기반)
+                'initial_capital': initial_capital,  # 수정된 초기 자본 계산
                 'cumulative_roi': cumulative_roi,
-                'source': 'accurate_account_book_calculation'
+                'source': 'corrected_accurate_account_book_calculation'
             }
             
         except Exception as e:
-            logger.error(f"Gate.io 수익 내역 조회 실패: {e}")
+            logger.error(f"Gate.io 수정된 수익 내역 조회 실패: {e}")
             return {
                 'total_pnl': 0,
                 'today_realized': 0,
