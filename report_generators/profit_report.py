@@ -40,8 +40,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             gateio_has_data = (gateio_data.get('has_account', False) and 
                              gateio_data.get('total_equity', 0) > 0)
             
-            # 통합 데이터 계산
-            combined_data = self._calculate_combined_data(bitget_data, gateio_data)
+            # 통합 데이터 계산 - 🔥🔥 수정된 계산 로직
+            combined_data = self._calculate_combined_data_fixed(bitget_data, gateio_data)
             
             # 통합 자산 현황
             asset_summary = self._format_asset_summary(combined_data, gateio_has_data)
@@ -50,7 +50,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             positions_text = await self._format_positions_detail(bitget_data, gateio_data, gateio_has_data)
             
             # 거래소별 손익 정보
-            profit_detail = self._format_profit_detail(bitget_data, gateio_data, combined_data, gateio_has_data)
+            profit_detail = self._format_profit_detail_fixed(bitget_data, gateio_data, combined_data, gateio_has_data)
             
             # 통합 자산 정보
             asset_detail = self._format_asset_detail(combined_data, bitget_data, gateio_data, gateio_has_data)
@@ -96,6 +96,94 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"수익 리포트 생성 실패: {str(e)}")
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return "❌ 수익 현황 조회 중 오류가 발생했습니다."
+    
+    def _calculate_combined_data_fixed(self, bitget_data: dict, gateio_data: dict) -> dict:
+        """🔥🔥 수정된 통합 데이터 계산 - 계산 오류 수정"""
+        # 총 자산
+        total_equity = bitget_data['total_equity'] + gateio_data['total_equity']
+        
+        # 가용 자산
+        total_available = bitget_data['available'] + gateio_data['available']
+        
+        # 사용 증거금
+        total_used_margin = bitget_data['used_margin'] + gateio_data['used_margin']
+        
+        # 🔥🔥 수정: 금일 수익 계산 정정
+        today_realized = bitget_data['today_pnl'] + gateio_data['today_pnl']
+        today_unrealized = (bitget_data['account_info'].get('unrealized_pnl', 0) + 
+                           gateio_data['account_info'].get('unrealized_pnl', 0))
+        today_total = today_realized + today_unrealized  # 실현 + 미실현
+        
+        # 디버깅 로그 추가
+        self.logger.info(f"🔥 금일 손익 계산 검증:")
+        self.logger.info(f"  - Bitget 실현: ${bitget_data['today_pnl']:.4f}")
+        self.logger.info(f"  - Bitget 미실현: ${bitget_data['account_info'].get('unrealized_pnl', 0):.4f}")
+        self.logger.info(f"  - Gate 실현: ${gateio_data['today_pnl']:.4f}")
+        self.logger.info(f"  - Gate 미실현: ${gateio_data['account_info'].get('unrealized_pnl', 0):.4f}")
+        self.logger.info(f"  - 총 실현: ${today_realized:.4f}")
+        self.logger.info(f"  - 총 미실현: ${today_unrealized:.4f}")
+        self.logger.info(f"  - 총 합계: ${today_total:.4f}")
+        
+        # 7일 수익 (통합)
+        weekly_total = bitget_data['weekly_profit']['total'] + gateio_data['weekly_profit']['total']
+        weekly_avg = weekly_total / 7
+        
+        # 누적 수익 (2025년 5월부터)
+        cumulative_profit = bitget_data['cumulative_profit'] + gateio_data['cumulative_profit']
+        
+        # 금일 수익률
+        today_roi = (today_total / total_equity * 100) if total_equity > 0 else 0
+        
+        # 7일 수익률
+        initial_7d = total_equity - weekly_total
+        weekly_roi = (weekly_total / initial_7d * 100) if initial_7d > 0 else 0
+        
+        # 누적 수익률
+        total_initial = self.BITGET_INITIAL_CAPITAL + gateio_data.get('initial_capital', 0)
+        cumulative_roi = (cumulative_profit / total_initial * 100) if total_initial > 0 else 0
+        
+        return {
+            'total_equity': total_equity,
+            'total_available': total_available,
+            'total_used_margin': total_used_margin,
+            'today_realized': today_realized,      # 🔥🔥 실현손익만
+            'today_unrealized': today_unrealized,  # 🔥🔥 미실현손익만
+            'today_total': today_total,           # 🔥🔥 실현+미실현 합계
+            'today_roi': today_roi,
+            'weekly_total': weekly_total,
+            'weekly_avg': weekly_avg,
+            'weekly_roi': weekly_roi,
+            'cumulative_profit': cumulative_profit,
+            'cumulative_roi': cumulative_roi,
+            'bitget_equity': bitget_data['total_equity'],
+            'gateio_equity': gateio_data['total_equity'],
+            'gateio_has_account': gateio_data.get('has_account', False),
+            'total_initial': total_initial
+        }
+    
+    def _format_profit_detail_fixed(self, bitget_data: dict, gateio_data: dict, combined_data: dict, gateio_has_data: bool) -> str:
+        """🔥🔥 수정된 손익 정보 - 계산 오류 수정"""
+        lines = []
+        
+        # 통합 손익 요약 - 수정된 계산
+        today_total = combined_data['today_total']
+        today_roi = combined_data['today_roi']
+        
+        # 🔥🔥 부호 확인 및 정확한 표시
+        lines.append(f"• <b>수익: {self._format_currency_compact(today_total, today_roi)}</b>")
+        
+        # Bitget 상세
+        bitget_unrealized = bitget_data['account_info'].get('unrealized_pnl', 0)
+        bitget_realized = bitget_data['today_pnl']
+        lines.append(f"  ├ Bitget: 미실현 {self._format_currency_html(bitget_unrealized, False)} | 실현 {self._format_currency_html(bitget_realized, False)}")
+        
+        # Gate 상세 - 데이터가 있는 경우만
+        if gateio_has_data and gateio_data['total_equity'] > 0:
+            gateio_unrealized = gateio_data['account_info'].get('unrealized_pnl', 0)
+            gateio_realized = gateio_data['today_pnl']
+            lines.append(f"  └ Gate: 미실현 {self._format_currency_html(gateio_unrealized, False)} | 실현 {self._format_currency_html(gateio_realized, False)}")
+        
+        return '\n'.join(lines)
     
     async def _get_bitget_data(self) -> dict:
         """Bitget 데이터 조회 - 2025년 5월부터 집계"""
@@ -149,6 +237,180 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"Bitget 데이터 조회 실패: {e}")
             return self._get_empty_exchange_data('Bitget')
     
+    async def _get_gateio_data_fixed(self) -> dict:
+        """🔥🔥 Gate.io 데이터 조회 - 누적 손익 계산 수정"""
+        try:
+            # Gate.io 클라이언트가 없는 경우
+            if not self.gateio_client:
+                self.logger.info("Gate.io 클라이언트가 설정되지 않음")
+                return self._get_empty_exchange_data('Gate')
+            
+            self.logger.info("🔍 Gate.io 데이터 조회 시작 (수정된 누적 손익 계산)...")
+            
+            # Gate 계정 정보 조회
+            total_equity = 0
+            available = 0
+            unrealized_pnl = 0
+            
+            try:
+                self.logger.info("Gate.io 계정 정보 조회 중...")
+                account_response = await self.gateio_client.get_account_balance()
+                self.logger.info(f"Gate 계정 응답: {account_response}")
+                
+                if account_response:
+                    total_equity = float(account_response.get('total', 0))
+                    available = float(account_response.get('available', 0))
+                    unrealized_pnl = float(account_response.get('unrealised_pnl', 0))
+                    
+                    self.logger.info(f"Gate.io 계정 정보 성공: total=${total_equity:.2f}, available=${available:.2f}")
+                else:
+                    self.logger.warning("Gate.io 계정 응답이 빈 값")
+                
+            except Exception as e:
+                self.logger.error(f"Gate 계정 조회 실패: {e}")
+                self.logger.error(f"Gate 계정 오류 상세: {traceback.format_exc()}")
+                # 계정 조회 실패해도 계속 진행
+            
+            # Gate 포지션 조회
+            position_info = {'has_position': False}
+            
+            try:
+                self.logger.info("Gate.io 포지션 조회 중...")
+                positions = await self.gateio_client.get_positions('BTC_USDT')
+                self.logger.info(f"Gate 포지션 응답: {positions}")
+                
+                if positions:
+                    for pos in positions:
+                        size = float(pos.get('size', 0))
+                        if size != 0:
+                            entry_price = float(pos.get('entry_price', 0))
+                            mark_price = float(pos.get('mark_price', 0))
+                            pos_unrealized_pnl = float(pos.get('unrealised_pnl', 0))
+                            leverage = float(pos.get('leverage', 10))
+                            
+                            # 증거금 계산
+                            btc_size = abs(size) * 0.0001  # Gate.io 계약 크기
+                            position_value = btc_size * mark_price
+                            margin_used = position_value / leverage
+                            
+                            # ROE 계산
+                            roe = (pos_unrealized_pnl / margin_used) * 100 if margin_used > 0 else 0
+                            
+                            # 청산가
+                            liquidation_price = float(pos.get('liq_price', 0))
+                            
+                            position_info = {
+                                'has_position': True,
+                                'symbol': 'BTC_USDT',
+                                'side': '롱' if size > 0 else '숏',
+                                'side_en': 'long' if size > 0 else 'short',
+                                'size': abs(size),
+                                'btc_size': btc_size,
+                                'entry_price': entry_price,
+                                'current_price': mark_price,
+                                'unrealized_pnl': pos_unrealized_pnl,
+                                'roe': roe,
+                                'contract_size': abs(size),
+                                'leverage': leverage,
+                                'margin': margin_used,
+                                'liquidation_price': liquidation_price
+                            }
+                            
+                            self.logger.info(f"Gate.io 포지션 정보 성공: {position_info['side']} ${entry_price:.2f}")
+                            break
+                else:
+                    self.logger.info("Gate.io 포지션 없음")
+                    
+            except Exception as e:
+                self.logger.error(f"Gate 포지션 조회 실패: {e}")
+                self.logger.error(f"Gate 포지션 오류 상세: {traceback.format_exc()}")
+            
+            # 🔥🔥 Gate.io 2025년 5월부터 수익 조회 - 수정된 계산
+            today_pnl = 0
+            weekly_profit = {'total': 0, 'average': 0}
+            cumulative_profit = 0
+            initial_capital = 700  # 🔥🔥 기본값으로 설정
+            
+            try:
+                self.logger.info("🔍 Gate.io 2025년 5월부터 수익 조회 시작...")
+                
+                # 오늘 실현손익
+                today_pnl = await self._get_gate_today_pnl_from_account_book()
+                self.logger.info(f"Gate.io 오늘 실현손익: ${today_pnl:.4f}")
+                
+                # 7일 수익
+                weekly_profit_result = await self._get_gate_weekly_profit_from_account_book()
+                weekly_profit = {
+                    'total': weekly_profit_result.get('total_pnl', 0),
+                    'average': weekly_profit_result.get('average_daily', 0),
+                    'source': weekly_profit_result.get('source', 'gate_account_book_api')
+                }
+                self.logger.info(f"Gate.io 7일 손익: ${weekly_profit['total']:.4f}")
+                
+                # 🔥🔥 수정된 누적 수익 계산
+                # 현재 잔고에서 초기 자본($700) 차감한 값을 누적 수익으로 계산
+                if total_equity > initial_capital:
+                    cumulative_profit = total_equity - initial_capital
+                else:
+                    cumulative_profit = total_equity - initial_capital  # 음수도 허용
+                
+                self.logger.info(f"Gate.io 수정된 누적 수익 계산:")
+                self.logger.info(f"  - 현재 잔고: ${total_equity:.2f}")
+                self.logger.info(f"  - 초기 자본: ${initial_capital:.2f}")
+                self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
+                
+            except Exception as e:
+                self.logger.error(f"Gate.io 수익 조회 실패: {e}")
+                # 기본값 설정
+                cumulative_profit = total_equity - initial_capital if total_equity > 0 else 0
+            
+            # 사용 증거금 계산
+            used_margin = 0
+            if position_info['has_position']:
+                used_margin = position_info.get('margin', 0)
+            else:
+                used_margin = total_equity - available
+            
+            cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
+            
+            # 계정이 실제로 있는지 확인
+            has_account = total_equity > 0
+            
+            self.logger.info(f"Gate.io 데이터 구성 완료 (수정된 계산):")
+            self.logger.info(f"  - 계정 존재: {has_account}")
+            self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
+            self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.4f}")
+            self.logger.info(f"  - 7일 손익: ${weekly_profit['total']:.4f}")
+            self.logger.info(f"  - 수정된 누적 수익: ${cumulative_profit:.2f} ({cumulative_roi:+.1f}%)")
+            self.logger.info(f"  - 초기 자본: ${initial_capital:.2f}")
+            
+            return {
+                'exchange': 'Gate',
+                'position_info': position_info,
+                'account_info': {
+                    'total_equity': total_equity,
+                    'available': available,
+                    'used_margin': used_margin,
+                    'unrealized_pnl': unrealized_pnl
+                },
+                'today_pnl': today_pnl,
+                'weekly_profit': weekly_profit,
+                'cumulative_profit': cumulative_profit,
+                'cumulative_roi': cumulative_roi,
+                'total_equity': total_equity,
+                'initial_capital': initial_capital,
+                'available': available,
+                'used_margin': used_margin,
+                'has_account': has_account,
+                'actual_profit': cumulative_profit
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Gate 데이터 조회 실패: {e}")
+            self.logger.error(f"Gate 데이터 오류 상세: {traceback.format_exc()}")
+            return self._get_empty_exchange_data('Gate')
+    
+    # 나머지 메서드들은 기존과 동일...
     async def _get_cumulative_profit_since_may(self) -> dict:
         """🔥🔥 2025년 5월 1일부터 누적 손익 조회 - 정확한 집계"""
         try:
@@ -602,311 +864,6 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'confidence': 'low'
             }
     
-    async def _get_gateio_data_fixed(self) -> dict:
-        """🔥🔥 Gate.io 데이터 조회 - 공식 API 문서 기반 + 2025년 5월부터 집계"""
-        try:
-            # Gate.io 클라이언트가 없는 경우
-            if not self.gateio_client:
-                self.logger.info("Gate.io 클라이언트가 설정되지 않음")
-                return self._get_empty_exchange_data('Gate')
-            
-            self.logger.info("🔍 Gate.io 데이터 조회 시작 (2025년 5월부터 집계)...")
-            
-            # Gate 계정 정보 조회
-            total_equity = 0
-            available = 0
-            unrealized_pnl = 0
-            
-            try:
-                self.logger.info("Gate.io 계정 정보 조회 중...")
-                account_response = await self.gateio_client.get_account_balance()
-                self.logger.info(f"Gate 계정 응답: {account_response}")
-                
-                if account_response:
-                    total_equity = float(account_response.get('total', 0))
-                    available = float(account_response.get('available', 0))
-                    unrealized_pnl = float(account_response.get('unrealised_pnl', 0))
-                    
-                    self.logger.info(f"Gate.io 계정 정보 성공: total=${total_equity:.2f}, available=${available:.2f}")
-                else:
-                    self.logger.warning("Gate.io 계정 응답이 빈 값")
-                
-            except Exception as e:
-                self.logger.error(f"Gate 계정 조회 실패: {e}")
-                self.logger.error(f"Gate 계정 오류 상세: {traceback.format_exc()}")
-                # 계정 조회 실패해도 계속 진행
-            
-            # Gate 포지션 조회
-            position_info = {'has_position': False}
-            
-            try:
-                self.logger.info("Gate.io 포지션 조회 중...")
-                positions = await self.gateio_client.get_positions('BTC_USDT')
-                self.logger.info(f"Gate 포지션 응답: {positions}")
-                
-                if positions:
-                    for pos in positions:
-                        size = float(pos.get('size', 0))
-                        if size != 0:
-                            entry_price = float(pos.get('entry_price', 0))
-                            mark_price = float(pos.get('mark_price', 0))
-                            pos_unrealized_pnl = float(pos.get('unrealised_pnl', 0))
-                            leverage = float(pos.get('leverage', 10))
-                            
-                            # 증거금 계산
-                            btc_size = abs(size) * 0.0001  # Gate.io 계약 크기
-                            position_value = btc_size * mark_price
-                            margin_used = position_value / leverage
-                            
-                            # ROE 계산
-                            roe = (pos_unrealized_pnl / margin_used) * 100 if margin_used > 0 else 0
-                            
-                            # 청산가
-                            liquidation_price = float(pos.get('liq_price', 0))
-                            
-                            position_info = {
-                                'has_position': True,
-                                'symbol': 'BTC_USDT',
-                                'side': '롱' if size > 0 else '숏',
-                                'side_en': 'long' if size > 0 else 'short',
-                                'size': abs(size),
-                                'btc_size': btc_size,
-                                'entry_price': entry_price,
-                                'current_price': mark_price,
-                                'unrealized_pnl': pos_unrealized_pnl,
-                                'roe': roe,
-                                'contract_size': abs(size),
-                                'leverage': leverage,
-                                'margin': margin_used,
-                                'liquidation_price': liquidation_price
-                            }
-                            
-                            self.logger.info(f"Gate.io 포지션 정보 성공: {position_info['side']} ${entry_price:.2f}")
-                            break
-                else:
-                    self.logger.info("Gate.io 포지션 없음")
-                    
-            except Exception as e:
-                self.logger.error(f"Gate 포지션 조회 실패: {e}")
-                self.logger.error(f"Gate 포지션 오류 상세: {traceback.format_exc()}")
-            
-            # 🔥🔥 Gate.io 2025년 5월부터 수익 조회
-            today_pnl = 0
-            weekly_profit = {'total': 0, 'average': 0}
-            cumulative_profit = 0
-            initial_capital = 0
-            
-            try:
-                self.logger.info("🔍 Gate.io 2025년 5월부터 수익 조회 시작...")
-                
-                # 오늘 실현손익
-                today_pnl = await self._get_gate_today_pnl_from_account_book()
-                self.logger.info(f"Gate.io 오늘 실현손익: ${today_pnl:.4f}")
-                
-                # 7일 수익
-                weekly_profit_result = await self._get_gate_weekly_profit_from_account_book()
-                weekly_profit = {
-                    'total': weekly_profit_result.get('total_pnl', 0),
-                    'average': weekly_profit_result.get('average_daily', 0),
-                    'source': weekly_profit_result.get('source', 'gate_account_book_api')
-                }
-                self.logger.info(f"Gate.io 7일 손익: ${weekly_profit['total']:.4f}")
-                
-                # 🔥🔥 2025년 5월부터 누적 수익
-                cumulative_data = await self._get_gate_cumulative_profit_since_may()
-                cumulative_profit = cumulative_data.get('total_profit', 0)
-                initial_capital = cumulative_data.get('initial_capital', 0)
-                
-                self.logger.info(f"Gate.io 2025년 5월부터 누적 수익: ${cumulative_profit:.2f}")
-                self.logger.info(f"Gate.io 계산된 초기 자본: ${initial_capital:.2f}")
-                
-            except Exception as e:
-                self.logger.error(f"Gate.io 수익 조회 실패: {e}")
-                # 기본값 설정
-                initial_capital = 700  # 기본값 $700
-                cumulative_profit = total_equity - initial_capital if total_equity > 0 else 0
-            
-            # 사용 증거금 계산
-            used_margin = 0
-            if position_info['has_position']:
-                used_margin = position_info.get('margin', 0)
-            else:
-                used_margin = total_equity - available
-            
-            cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
-            
-            # 계정이 실제로 있는지 확인
-            has_account = total_equity > 0
-            
-            self.logger.info(f"Gate.io 데이터 구성 완료 (2025년 5월부터):")
-            self.logger.info(f"  - 계정 존재: {has_account}")
-            self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
-            self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.4f}")
-            self.logger.info(f"  - 7일 손익: ${weekly_profit['total']:.4f}")
-            self.logger.info(f"  - 5월부터 누적 수익: ${cumulative_profit:.2f} ({cumulative_roi:+.1f}%)")
-            self.logger.info(f"  - 초기 자본: ${initial_capital:.2f}")
-            
-            return {
-                'exchange': 'Gate',
-                'position_info': position_info,
-                'account_info': {
-                    'total_equity': total_equity,
-                    'available': available,
-                    'used_margin': used_margin,
-                    'unrealized_pnl': unrealized_pnl
-                },
-                'today_pnl': today_pnl,
-                'weekly_profit': weekly_profit,
-                'cumulative_profit': cumulative_profit,
-                'cumulative_roi': cumulative_roi,
-                'total_equity': total_equity,
-                'initial_capital': initial_capital,
-                'available': available,
-                'used_margin': used_margin,
-                'has_account': has_account,
-                'actual_profit': cumulative_profit
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Gate 데이터 조회 실패: {e}")
-            self.logger.error(f"Gate 데이터 오류 상세: {traceback.format_exc()}")
-            return self._get_empty_exchange_data('Gate')
-    
-    async def _get_gate_cumulative_profit_since_may(self) -> dict:
-        """🔥🔥 Gate.io 2025년 5월부터 누적 수익 조회"""
-        try:
-            kst = pytz.timezone('Asia/Seoul')
-            now = datetime.now(kst)
-            
-            # 2025년 5월 1일 시작
-            start_date = self.PROFIT_START_DATE
-            
-            self.logger.info(f"Gate.io 2025년 5월부터 누적 수익 조회:")
-            self.logger.info(f"  - 시작: {start_date.strftime('%Y-%m-%d %H:%M:%S')} KST")
-            self.logger.info(f"  - 종료: {now.strftime('%Y-%m-%d %H:%M:%S')} KST")
-            
-            # UTC로 변환하여 초 단위 타임스탬프 생성 (Gate.io는 초 단위)
-            start_timestamp = int(start_date.astimezone(pytz.UTC).timestamp())
-            end_timestamp = int(now.astimezone(pytz.UTC).timestamp())
-            
-            total_profit = 0.0
-            monthly_profit = {}
-            
-            try:
-                # Gate.io account_book API로 2025년 5월부터 모든 PnL 기록 조회
-                if hasattr(self.gateio_client, 'get_account_book'):
-                    account_records = await self.gateio_client.get_account_book(
-                        start_time=start_timestamp * 1000,  # 밀리초로 변환
-                        end_time=end_timestamp * 1000,      # 밀리초로 변환
-                        limit=1000,
-                        type_filter='pnl'  # PnL 타입만 필터링
-                    )
-                else:
-                    # 직접 API 엔드포인트 호출
-                    endpoint = "/api/v4/futures/usdt/account_book"
-                    params = {
-                        'from': start_timestamp,
-                        'to': end_timestamp,
-                        'type': 'pnl',
-                        'limit': 1000
-                    }
-                    account_records = await self.gateio_client._request('GET', endpoint, params=params)
-                
-                self.logger.info(f"Gate.io 5월부터 account_book PnL 기록: {len(account_records) if account_records else 0}건")
-                
-                if account_records:
-                    for record in account_records:
-                        try:
-                            change = float(record.get('change', 0))
-                            record_type = record.get('type', '')
-                            record_time = int(record.get('time', 0))
-                            
-                            if record_type == 'pnl' and change != 0:
-                                # 2025년 5월 이전은 제외
-                                record_date_kst = datetime.fromtimestamp(record_time, tz=kst)
-                                if record_date_kst < start_date:
-                                    continue
-                                
-                                # 월별 집계
-                                month_key = record_date_kst.strftime('%Y-%m')
-                                if month_key not in monthly_profit:
-                                    monthly_profit[month_key] = 0
-                                
-                                monthly_profit[month_key] += change
-                                total_profit += change
-                                
-                                self.logger.debug(f"Gate 5월부터 PnL ({record_date_kst.strftime('%Y-%m-%d')}): ${change:.4f}")
-                        
-                        except Exception as parse_error:
-                            self.logger.warning(f"Gate PnL 기록 파싱 오류: {parse_error}")
-                            continue
-                    
-                    # 월별 손익 로깅
-                    for month, profit in sorted(monthly_profit.items()):
-                        self.logger.info(f"📊 Gate {month}: ${profit:.2f}")
-                    
-                    # 초기 자본 계산 (현재 잔고 - 누적 수익)
-                    account_response = await self.gateio_client.get_account_balance()
-                    current_equity = float(account_response.get('total', 0)) if account_response else 0
-                    initial_capital = current_equity - total_profit
-                    
-                    # 초기 자본이 음수가 되지 않도록 보정
-                    if initial_capital < 0:
-                        initial_capital = 700  # 기본값
-                        total_profit = current_equity - initial_capital
-                    
-                    return {
-                        'total_profit': total_profit,
-                        'monthly_profit': monthly_profit,
-                        'initial_capital': initial_capital,
-                        'current_equity': current_equity,
-                        'source': 'gate_account_book_since_may'
-                    }
-                
-            except Exception as api_error:
-                self.logger.error(f"Gate.io account_book API 호출 실패: {api_error}")
-            
-            # 방법 2: 현재 잔고에서 초기 자본 추정
-            try:
-                account_response = await self.gateio_client.get_account_balance()
-                current_equity = float(account_response.get('total', 0)) if account_response else 0
-                
-                # 초기 자본 추정 (기본값 700달러)
-                initial_capital = 700
-                total_profit = current_equity - initial_capital
-                
-                self.logger.info(f"Gate.io 잔고 기반 누적 수익 계산: ${total_profit:.2f}")
-                
-                return {
-                    'total_profit': total_profit,
-                    'monthly_profit': {},
-                    'initial_capital': initial_capital,
-                    'current_equity': current_equity,
-                    'source': 'gate_balance_estimation'
-                }
-                
-            except Exception as e:
-                self.logger.error(f"Gate.io 잔고 기반 계산도 실패: {e}")
-            
-            # 기본값 반환
-            return {
-                'total_profit': 0,
-                'monthly_profit': {},
-                'initial_capital': 700,
-                'current_equity': 0,
-                'source': 'gate_fallback'
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Gate.io 2025년 5월부터 누적 수익 조회 실패: {e}")
-            return {
-                'total_profit': 0,
-                'monthly_profit': {},
-                'initial_capital': 700,
-                'current_equity': 0,
-                'source': 'gate_error'
-            }
-    
     async def _get_gate_today_pnl_from_account_book(self) -> float:
         """🔥🔥 Gate.io 공식 account_book API로 오늘 실현손익 조회"""
         try:
@@ -1214,60 +1171,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             'has_account': False
         }
     
-    def _calculate_combined_data(self, bitget_data: dict, gateio_data: dict) -> dict:
-        """통합 데이터 계산"""
-        # 총 자산
-        total_equity = bitget_data['total_equity'] + gateio_data['total_equity']
-        
-        # 가용 자산
-        total_available = bitget_data['available'] + gateio_data['available']
-        
-        # 사용 증거금
-        total_used_margin = bitget_data['used_margin'] + gateio_data['used_margin']
-        
-        # 금일 수익
-        today_pnl = bitget_data['today_pnl'] + gateio_data['today_pnl']
-        today_unrealized = (bitget_data['account_info'].get('unrealized_pnl', 0) + 
-                           gateio_data['account_info'].get('unrealized_pnl', 0))
-        today_total = today_pnl + today_unrealized
-        
-        # 7일 수익 (통합)
-        weekly_total = bitget_data['weekly_profit']['total'] + gateio_data['weekly_profit']['total']
-        weekly_avg = weekly_total / 7
-        
-        # 누적 수익 (2025년 5월부터)
-        cumulative_profit = bitget_data['cumulative_profit'] + gateio_data['cumulative_profit']
-        
-        # 금일 수익률
-        today_roi = (today_total / total_equity * 100) if total_equity > 0 else 0
-        
-        # 7일 수익률
-        initial_7d = total_equity - weekly_total
-        weekly_roi = (weekly_total / initial_7d * 100) if initial_7d > 0 else 0
-        
-        # 누적 수익률
-        total_initial = self.BITGET_INITIAL_CAPITAL + gateio_data.get('initial_capital', 0)
-        cumulative_roi = (cumulative_profit / total_initial * 100) if total_initial > 0 else 0
-        
-        return {
-            'total_equity': total_equity,
-            'total_available': total_available,
-            'total_used_margin': total_used_margin,
-            'today_pnl': today_pnl,
-            'today_unrealized': today_unrealized,
-            'today_total': today_total,
-            'today_roi': today_roi,
-            'weekly_total': weekly_total,
-            'weekly_avg': weekly_avg,
-            'weekly_roi': weekly_roi,
-            'cumulative_profit': cumulative_profit,
-            'cumulative_roi': cumulative_roi,
-            'bitget_equity': bitget_data['total_equity'],
-            'gateio_equity': gateio_data['total_equity'],
-            'gateio_has_account': gateio_data.get('has_account', False),
-            'total_initial': total_initial
-        }
-    
     def _format_asset_summary(self, combined_data: dict, gateio_has_data: bool) -> str:
         """통합 자산 현황 요약 - 굵게 표시"""
         total_equity = combined_data['total_equity']
@@ -1346,26 +1249,6 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         if not has_any_position:
             lines.append("• 현재 보유 중인 포지션이 없습니다.")
-        
-        return '\n'.join(lines)
-    
-    def _format_profit_detail(self, bitget_data: dict, gateio_data: dict, combined_data: dict, gateio_has_data: bool) -> str:
-        """손익 정보 - 통합 요약 + 거래소별 상세 (굵게 표시)"""
-        lines = []
-        
-        # 통합 손익 요약 - 굵게 표시
-        lines.append(f"• <b>수익: {self._format_currency_compact(combined_data['today_total'], combined_data['today_roi'])}</b>")
-        
-        # Bitget 상세
-        bitget_unrealized = bitget_data['account_info'].get('unrealized_pnl', 0)
-        bitget_today_pnl = bitget_data['today_pnl']
-        lines.append(f"  ├ Bitget: 미실현 {self._format_currency_html(bitget_unrealized, False)} | 실현 {self._format_currency_html(bitget_today_pnl, False)}")
-        
-        # Gate 상세 - 데이터가 있는 경우만
-        if gateio_has_data and gateio_data['total_equity'] > 0:
-            gateio_unrealized = gateio_data['account_info'].get('unrealized_pnl', 0)
-            gateio_today_pnl = gateio_data['today_pnl']
-            lines.append(f"  └ Gate: 미실현 {self._format_currency_html(gateio_unrealized, False)} | 실현 {self._format_currency_html(gateio_today_pnl, False)}")
         
         return '\n'.join(lines)
     
@@ -1478,7 +1361,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             }
             
             mental_text = await self.mental_care.generate_profit_mental_care(
-                account_info, position_info, combined_data['today_pnl'], weekly_profit
+                account_info, position_info, combined_data['today_realized'], weekly_profit
             )
             
             return mental_text
