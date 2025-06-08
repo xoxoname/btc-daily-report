@@ -661,8 +661,8 @@ class NewsProcessor:
         else:
             return "간접적"
     
-    def create_emergency_event(self, article: Dict, translator=None) -> Dict:
-        """긴급 이벤트 생성"""
+    async def create_emergency_event(self, article: Dict, translator=None) -> Dict:
+        """긴급 이벤트 생성 - async로 변경"""
         try:
             # 이미 처리된 뉴스인지 확인
             content_hash = self.generate_content_hash(article.get('title', ''), article.get('description', ''))
