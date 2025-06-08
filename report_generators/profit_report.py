@@ -260,7 +260,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_exchange_data('Gate')
     
     def _calculate_combined_data_accurate(self, bitget_data: dict, gateio_data: dict) -> dict:
-        """정확한 통합 데이터 계산"""
+        """정확한 통합 데이터 계산 - 수정된 Gate.io API 구조 반영"""
         # 총 자산
         total_equity = bitget_data['total_equity'] + gateio_data['total_equity']
         
@@ -278,9 +278,9 @@ class ProfitReportGenerator(BaseReportGenerator):
         today_unrealized = bitget_unrealized + gateio_unrealized
         today_total = today_realized + today_unrealized
         
-        # 7일 수익 (통합)
+        # 7일 수익 (통합) - 수정된 구조
         bitget_weekly = bitget_data['weekly_profit']['total']
-        gateio_weekly = gateio_data['weekly_profit']['total_pnl']
+        gateio_weekly = gateio_data['weekly_profit']['total_pnl']  # weekly_profit 구조 변경됨
         weekly_total = bitget_weekly + gateio_weekly
         weekly_avg = weekly_total / 7
         
