@@ -49,9 +49,15 @@ class RealTimeDataCollector:
             'social_metrics': {'data': None, 'timestamp': None}
         }
         
-        # 🔥🔥 뉴스 수집기 직접 초기화 - 임포트 문제 해결
-        self.news_collector = None
-        self._initialize_news_collector()
+        # RealisticNewsCollector 임포트 및 강화
+        try:
+            from realistic_news_collector import RealisticNewsCollector
+            self.news_collector = RealisticNewsCollector(config)
+            self.news_collector.data_collector = self
+            logger.info("✅ RealisticNewsCollector 초기화 완료 (Claude 번역 지원)")
+        except ImportError as e:
+            logger.error(f"RealisticNewsCollector 임포트 실패: {e}")
+            self.news_collector = None
         
         # 뉴스 처리 통계
         self.news_stats = {
@@ -63,296 +69,20 @@ class RealTimeDataCollector:
             'last_reset': datetime.now()
         }
         
-        # 🔥🔥 예외 감지 강화
-        self.last_exception_check = datetime.now()
-        self.exception_check_interval = 60  # 1분마다 체크
-        
-    def _initialize_news_collector(self):
-        """🔥🔥 뉴스 수집기 직접 초기화"""
-        try:
-            # news_collector_core.py 직접 사용
-            from news_collector_core import NewsCollectorCore
-            from news_processor import NewsProcessor
-            from news_translator import NewsTranslator
-            
-            # 뉴스 수집기 컴포넌트들 초기화
-            self.news_core = NewsCollectorCore(self.config)
-            self.news_processor = NewsProcessor(self.config)
-            self.news_translator = NewsTranslator(self.config)
-            
-            # 통합 뉴스 수집기 생성
-            self.news_collector = self
-            
-            logger.info("✅ 뉴스 수집기 직접 초기화 완료")
-            
-        except ImportError as e:
-            logger.error(f"❌ 뉴스 수집기 모듈 임포트 실패: {e}")
-            self.news_collector = None
-            self.news_core = None
-            self.news_processor = None
-            self.news_translator = None
-        except Exception as e:
-            logger.error(f"❌ 뉴스 수집기 초기화 실패: {e}")
-            self.news_collector = None
-    
-    async def start_monitoring(self):
-        """🔥🔥 뉴스 모니터링 시작 - 예외 감지 강화"""
-        if not self.news_core:
-            logger.error("❌ 뉴스 수집기가 초기화되지 않음")
-            return
-        
-        logger.info("🔥 뉴스 모니터링 시작")
-        
-        tasks = [
-            self.news_core.start_monitoring(),
-            self.process_news_continuously(),
-            self.generate_critical_events()
-        ]
-        
-        await asyncio.gather(*tasks, return_exceptions=True)
-    
-    async def process_news_continuously(self):
-        """🔥🔥 뉴스 지속적 처리 및 예외 이벤트 생성"""
-        while True:
-            try:
-                await asyncio.sleep(15)  # 15초마다 처리
-                
-                if not self.news_core or not self.news_processor:
-                    continue
-                
-                # 뉴스 코어에서 새로운 뉴스 가져오기
-                recent_news = self.news_core.news_buffer[-20:] if self.news_core.news_buffer else []
-                
-                if not recent_news:
-                    continue
-                
-                processed_count = 0
-                critical_count = 0
-                
-                for article in recent_news:
-                    try:
-                        # 비트코인 관련성 체크
-                        if not self.news_processor.is_bitcoin_or_macro_related(article):
-                            continue
-                        
-                        processed_count += 1
-                        
-                        # 크리티컬 뉴스 체크
-                        if self.news_processor.is_critical_news(article):
-                            # 중복 체크 - 더 관대하게 적용
-                            if not self.news_processor.is_duplicate_emergency(article, time_window=120):  # 2시간으로 단축
-                                critical_count += 1
-                                
-                                # 크리티컬 이벤트 생성
-                                event = await self.news_processor.create_emergency_event(
-                                    article, 
-                                    self.news_translator
-                                )
-                                
-                                if event:
-                                    self.events_buffer.append(event)
-                                    self.news_stats['critical_alerts'] += 1
-                                    
-                                    logger.warning(f"🚨 크리티컬 이벤트 생성: {event.get('title_ko', event.get('title', ''))[:60]}...")
-                        
-                        # 중요 뉴스도 처리
-                        elif self.news_processor.is_important_news(article):
-                            # 중요 뉴스는 별도 처리 (덜 엄격한 조건)
-                            event = {
-                                'type': 'important_news',
-                                'title': article.get('title', ''),
-                                'title_ko': article.get('title', ''),
-                                'description': article.get('description', '')[:800],
-                                'source': article.get('source', ''),
-                                'timestamp': datetime.now(),
-                                'severity': 'medium',
-                                'weight': article.get('weight', 5),
-                                'category': article.get('category', 'news')
-                            }
-                            
-                            # 중요 뉴스는 더 많이 허용
-                            if len(self.events_buffer) < 50:
-                                self.events_buffer.append(event)
-                    
-                    except Exception as e:
-                        logger.error(f"❌ 뉴스 처리 오류: {e}")
-                        continue
-                
-                if processed_count > 0:
-                    logger.info(f"📰 뉴스 처리: {processed_count}개 처리, {critical_count}개 크리티컬 생성")
-                
-                # 통계 업데이트
-                self.news_stats['total_processed'] += processed_count
-                
-            except Exception as e:
-                logger.error(f"❌ 뉴스 지속 처리 오류: {e}")
-                await asyncio.sleep(30)
-    
-    async def generate_critical_events(self):
-        """🔥🔥 강제로 크리티컬 이벤트 생성 (테스트/디버깅용)"""
-        while True:
-            try:
-                await asyncio.sleep(300)  # 5분마다
-                
-                current_time = datetime.now()
-                time_since_last = current_time - self.last_exception_check
-                
-                # 30분간 크리티컬 이벤트가 없으면 강제 생성
-                if time_since_last > timedelta(minutes=30):
-                    # 시장 데이터 기반 예외 상황 체크
-                    market_events = await self.check_market_anomalies()
-                    
-                    if market_events:
-                        for event in market_events:
-                            self.events_buffer.append(event)
-                            logger.warning(f"🔥 시장 예외 상황 감지: {event.get('title', '')}")
-                    
-                    # 뉴스 기반 강제 이벤트
-                    if not market_events and len(self.events_buffer) == 0:
-                        # 최근 뉴스 중에서 강제로 이벤트 생성
-                        await self.force_generate_news_event()
-                    
-                    self.last_exception_check = current_time
-                
-            except Exception as e:
-                logger.error(f"❌ 크리티컬 이벤트 생성 오류: {e}")
-                await asyncio.sleep(60)
-    
-    async def check_market_anomalies(self) -> List[Dict]:
-        """🔥🔥 시장 이상 징후 직접 체크"""
-        anomalies = []
-        
-        try:
-            if not self.bitget_client:
-                return anomalies
-            
-            # 현재 시장 데이터 조회
-            ticker = await self.bitget_client.get_ticker('BTCUSDT')
-            if not ticker:
-                return anomalies
-            
-            current_price = float(ticker.get('last', 0)) if ticker.get('last') else 0
-            change_24h = float(ticker.get('changeUtc', 0)) if ticker.get('changeUtc') else 0
-            volume_24h = float(ticker.get('baseVolume', 0)) if ticker.get('baseVolume') else 0
-            
-            if current_price <= 0:
-                return anomalies
-            
-            # 가격 급변동 체크 (1.5% 이상)
-            if abs(change_24h) >= 0.015:
-                anomaly = {
-                    'type': 'price_anomaly',
-                    'title': f"BTC {'급등' if change_24h > 0 else '급락'} {abs(change_24h*100):.1f}%",
-                    'title_ko': f"비트코인 {'급등' if change_24h > 0 else '급락'} {abs(change_24h*100):.1f}%",
-                    'description': f"24시간 내 ${current_price:,.0f}에서 {abs(change_24h*100):.1f}% {'상승' if change_24h > 0 else '하락'}",
-                    'timestamp': datetime.now(),
-                    'severity': 'high' if abs(change_24h) >= 0.03 else 'medium',
-                    'impact': f"{'📈 호재' if change_24h > 0 else '📉 악재'}",
-                    'expected_change': f"{'📈 추가 상승' if change_24h > 0 else '📉 추가 하락'} 가능성",
-                    'source': 'Market Data',
-                    'category': 'price_movement',
-                    'weight': 8
-                }
-                anomalies.append(anomaly)
-                logger.warning(f"🚨 가격 급변동 감지: {abs(change_24h*100):.1f}%")
-            
-            # 거래량 급증 체크
-            avg_volume = 50000  # 평균 거래량 기준
-            if volume_24h > avg_volume * 2:
-                anomaly = {
-                    'type': 'volume_anomaly',
-                    'title': f"BTC 거래량 급증 {volume_24h/avg_volume:.1f}배",
-                    'title_ko': f"비트코인 거래량 급증 {volume_24h/avg_volume:.1f}배",
-                    'description': f"24시간 거래량이 평균 대비 {volume_24h/avg_volume:.1f}배 증가",
-                    'timestamp': datetime.now(),
-                    'severity': 'medium',
-                    'impact': "⚡ 변동성 확대",
-                    'expected_change': "단기 변동성 증가 예상",
-                    'source': 'Market Data',
-                    'category': 'volume_spike',
-                    'weight': 7
-                }
-                anomalies.append(anomaly)
-                logger.info(f"📊 거래량 급증: {volume_24h/avg_volume:.1f}배")
-            
-        except Exception as e:
-            logger.error(f"❌ 시장 이상 징후 체크 실패: {e}")
-        
-        return anomalies
-    
-    async def force_generate_news_event(self):
-        """🔥🔥 강제 뉴스 이벤트 생성 (디버깅용)"""
-        try:
-            # 최근 뉴스에서 비트코인 관련 뉴스 찾기
-            if not self.news_core or not self.news_core.news_buffer:
-                # 뉴스가 없으면 기본 이벤트 생성
-                default_event = {
-                    'type': 'system_check',
-                    'title': 'Bitcoin Market Monitoring Active',
-                    'title_ko': '비트코인 시장 모니터링 활성화',
-                    'description': '시스템이 정상적으로 비트코인 시장을 모니터링하고 있습니다.',
-                    'timestamp': datetime.now(),
-                    'severity': 'low',
-                    'impact': '📊 시스템 정상',
-                    'expected_change': '지속적인 모니터링 중',
-                    'source': 'System Monitor',
-                    'category': 'system',
-                    'weight': 5
-                }
-                self.events_buffer.append(default_event)
-                logger.info("📊 기본 시스템 체크 이벤트 생성")
-                return
-            
-            # 최근 뉴스 중에서 비트코인 관련 뉴스 찾기
-            recent_news = self.news_core.news_buffer[-10:]
-            bitcoin_news = []
-            
-            for article in recent_news:
-                content = (article.get('title', '') + ' ' + article.get('description', '')).lower()
-                if any(word in content for word in ['bitcoin', 'btc', 'crypto', 'fed', 'etf']):
-                    bitcoin_news.append(article)
-            
-            if bitcoin_news:
-                # 가장 높은 가중치의 뉴스 선택
-                best_news = max(bitcoin_news, key=lambda x: x.get('weight', 0))
-                
-                event = {
-                    'type': 'forced_news',
-                    'title': best_news.get('title', ''),
-                    'title_ko': best_news.get('title', ''),
-                    'description': best_news.get('description', '')[:800],
-                    'timestamp': datetime.now(),
-                    'severity': 'medium',
-                    'impact': '📰 뉴스 업데이트',
-                    'expected_change': '시장 관심 지속',
-                    'source': best_news.get('source', 'News Monitor'),
-                    'category': 'forced_news',
-                    'weight': best_news.get('weight', 5),
-                    'url': best_news.get('url', '')
-                }
-                
-                self.events_buffer.append(event)
-                logger.info(f"📰 강제 뉴스 이벤트 생성: {event['title'][:50]}...")
-            
-        except Exception as e:
-            logger.error(f"❌ 강제 뉴스 이벤트 생성 실패: {e}")
-        
     async def start(self):
         """데이터 수집 시작 - 뉴스 우선도 높임"""
         if not self.session:
             self.session = aiohttp.ClientSession()
         
-        logger.info("🚀 실시간 데이터 수집 시작 (뉴스 강화)")
+        logger.info("🚀 실시간 데이터 수집 시작 (Claude 번역 강화)")
         
         # 병렬 태스크 실행
         tasks = []
         
-        # 🔥🔥 뉴스 모니터링을 최우선으로 시작
-        if self.news_core:
-            tasks.append(self.start_monitoring())
-            logger.info("📰 강화된 뉴스 모니터링 활성화")
-        else:
-            logger.error("❌ 뉴스 수집기가 없어서 뉴스 모니터링을 시작할 수 없음")
+        # 뉴스 모니터링을 최우선으로 시작
+        if self.news_collector:
+            tasks.append(self.news_collector.start_monitoring())
+            logger.info("📰 고급 뉴스 모니터링 활성화 (Claude 우선 번역)")
         
         # Bitget 클라이언트가 설정된 경우에만 가격 모니터링 시작
         if self.bitget_client:
@@ -396,8 +126,6 @@ class RealTimeDataCollector:
                         if total_translations > 0:
                             claude_ratio = claude_trans / total_translations * 100
                             logger.info(f"  번역 품질: Claude {claude_ratio:.1f}% / GPT {100-claude_ratio:.1f}%")
-                    else:
-                        logger.warning("⚠️ 지난 1시간 동안 처리된 뉴스가 없음")
                     
                     # 통계 리셋
                     self.news_stats = {
@@ -704,8 +432,8 @@ class RealTimeDataCollector:
     async def get_recent_news(self, hours: int = 6) -> List[Dict]:
         """최근 뉴스 가져오기 - 번역 통계 업데이트"""
         try:
-            if self.news_core:
-                news = await self.news_core.get_recent_news(hours)
+            if self.news_collector:
+                news = await self.news_collector.get_recent_news(hours)
                 
                 # 번역 통계 업데이트
                 for article in news:
@@ -713,11 +441,11 @@ class RealTimeDataCollector:
                         self.news_stats['translations_done'] += 1
                         
                         # Claude vs GPT 구분 (로그를 통해 추정)
-                        if hasattr(self.news_translator, 'claude_translation_count'):
-                            if self.news_translator.claude_translation_count > 0:
+                        if hasattr(self.news_collector, 'claude_translation_count'):
+                            if self.news_collector.claude_translation_count > 0:
                                 self.news_stats['claude_translations'] += 1
-                        elif hasattr(self.news_translator, 'gpt_translation_count'):
-                            if self.news_translator.gpt_translation_count > 0:
+                        elif hasattr(self.news_collector, 'gpt_translation_count'):
+                            if self.news_collector.gpt_translation_count > 0:
                                 self.news_stats['gpt_translations'] += 1
                 
                 logger.info(f"📰 최근 {hours}시간 뉴스 {len(news)}건 조회 (번역: {sum([1 for n in news if n.get('title_ko')])}건)")
@@ -770,8 +498,8 @@ class RealTimeDataCollector:
             if self.session:
                 await self.session.close()
             
-            if self.news_core:
-                await self.news_core.close()
+            if self.news_collector:
+                await self.news_collector.close()
             
             # 최종 통계 출력
             total = self.news_stats['total_processed']
