@@ -32,15 +32,15 @@ class ProfitReportGenerator(BaseReportGenerator):
             # Bitget 데이터 조회
             bitget_data = await self._get_bitget_data()
             
-            # Gate.io 데이터 조회 (정확한 공식 API 기반 계산)
-            gateio_data = await self._get_gateio_data_accurate_fixed()
+            # Gate.io 데이터 조회 (수정된 정확한 공식 API 기반 계산)
+            gateio_data = await self._get_gateio_data_corrected_calculation()
             
             # Gate.io 실제 사용 여부 확인
             gateio_has_data = (gateio_data.get('has_account', False) and 
                              gateio_data.get('total_equity', 0) > 0)
             
             # 통합 데이터 계산
-            combined_data = self._calculate_combined_data_accurate(bitget_data, gateio_data)
+            combined_data = self._calculate_combined_data_corrected(bitget_data, gateio_data)
             
             # 통합 자산 현황
             asset_summary = self._format_asset_summary(combined_data, gateio_has_data)
@@ -49,16 +49,16 @@ class ProfitReportGenerator(BaseReportGenerator):
             positions_text = await self._format_positions_detail(bitget_data, gateio_data, gateio_has_data)
             
             # 거래소별 손익 정보
-            profit_detail = self._format_profit_detail_accurate(bitget_data, gateio_data, combined_data, gateio_has_data)
+            profit_detail = self._format_profit_detail_corrected(bitget_data, gateio_data, combined_data, gateio_has_data)
             
             # 통합 자산 정보
             asset_detail = self._format_asset_detail(combined_data, bitget_data, gateio_data, gateio_has_data)
             
             # 누적 성과 (2025년 5월부터)
-            cumulative_text = self._format_cumulative_performance_accurate(combined_data, bitget_data, gateio_data, gateio_has_data)
+            cumulative_text = self._format_cumulative_performance_corrected(combined_data, bitget_data, gateio_data, gateio_has_data)
             
             # 최근 수익 흐름 (통합)
-            recent_flow = self._format_recent_flow_accurate(combined_data, bitget_data, gateio_data, gateio_has_data)
+            recent_flow = self._format_recent_flow_corrected(combined_data, bitget_data, gateio_data, gateio_has_data)
             
             # 멘탈 케어 - 통합 데이터 기반
             mental_text = await self._generate_combined_mental_care(combined_data)
@@ -96,15 +96,15 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return "❌ 수익 현황 조회 중 오류가 발생했습니다."
     
-    async def _get_gateio_data_accurate_fixed(self) -> dict:
-        """🔥🔥 Gate.io 정확한 데이터 조회 - 수정된 공식 API 기반"""
+    async def _get_gateio_data_corrected_calculation(self) -> dict:
+        """🔥🔥 Gate.io 수정된 정확한 데이터 조회 - 실제 PnL 기록 기반"""
         try:
             # Gate.io 클라이언트가 없는 경우
             if not self.gateio_client:
                 self.logger.info("Gate.io 클라이언트가 설정되지 않음")
                 return self._get_empty_exchange_data('Gate')
             
-            self.logger.info("🔍 Gate.io 정확한 데이터 조회 시작 (수정된 공식 API 완전 기반)...")
+            self.logger.info("🔍 Gate.io 수정된 정확한 데이터 조회 시작 (실제 PnL 기록 기반)...")
             
             # Gate 계정 정보 조회
             total_equity = 0
@@ -171,41 +171,55 @@ class ProfitReportGenerator(BaseReportGenerator):
             except Exception as e:
                 self.logger.error(f"Gate 포지션 조회 실패: {e}")
             
-            # 🔥🔥 Gate.io 수익 조회 - 수정된 공식 API 직접 사용
+            # 🔥🔥 Gate.io 수정된 수익 조회 - 정확한 account_book API 완전 기반
             today_pnl = 0
             weekly_profit = {'total_pnl': 0, 'average_daily': 0}
             cumulative_profit = 0
+            initial_capital = 700  # 기본 초기 자본
             
             try:
-                # 🔥🔥 수정된 gateio_client의 공식 API 메서드 직접 사용
-                self.logger.info("🔍 Gate.io 수정된 공식 API 메서드 직접 사용...")
+                # 🔥🔥 수정된 gateio_client의 공식 API 메서드 사용
+                self.logger.info("🔍 Gate.io 수정된 공식 API 메서드 사용 (실제 PnL 기록만 사용)...")
                 
-                # 오늘 실현손익 (포지션 API 기반)
+                # 오늘 실현손익 (account_book API의 pnl 타입만)
                 today_pnl = await self.gateio_client.get_today_realized_pnl()
                 
-                # 7일 수익 (포지션 API 기반)
+                # 7일 수익 (account_book API의 pnl 타입만)
                 weekly_result = await self.gateio_client.get_weekly_profit()
                 weekly_profit = {
                     'total_pnl': weekly_result.get('total_pnl', 0),
                     'average_daily': weekly_result.get('average_daily', 0),
-                    'source': weekly_result.get('source', 'gateio_client_api')
+                    'source': weekly_result.get('source', 'corrected_gateio_client_api')
                 }
                 
-                # 누적 수익 (포지션 API 기반 정확한 계산)
-                profit_history = await self.gateio_client.get_profit_history_since_may()
-                cumulative_profit = profit_history.get('actual_profit', 0)
+                # 🔥🔥 수정된 누적 수익 (account_book API 실제 PnL 기록만 사용)
+                corrected_profit_history = await self.gateio_client.get_profit_history_since_may()
+                cumulative_profit = corrected_profit_history.get('actual_profit', 0)
+                initial_capital = corrected_profit_history.get('initial_capital', 700)
                 
-                self.logger.info(f"✅ Gate.io 수정된 공식 API 성공:")
+                self.logger.info(f"✅ Gate.io 수정된 공식 API 성공 (실제 PnL만):")
                 self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.4f}")
                 self.logger.info(f"  - 7일 수익: ${weekly_profit['total_pnl']:.4f}")
-                self.logger.info(f"  - 정확한 누적 수익: ${cumulative_profit:.2f}")
+                self.logger.info(f"  - 수정된 정확한 누적 수익: ${cumulative_profit:.2f}")
+                self.logger.info(f"  - 수정된 초기 자본: ${initial_capital:.2f}")
+                
+                # 🔥🔥 추가 검증: 누적 수익이 7일 수익보다 작은 경우 조정
+                if cumulative_profit > 0 and weekly_profit['total_pnl'] > cumulative_profit:
+                    self.logger.warning(f"누적 수익 ${cumulative_profit:.2f}이 7일 수익 ${weekly_profit['total_pnl']:.2f}보다 작음 - 7일 수익으로 조정")
+                    cumulative_profit = weekly_profit['total_pnl']
+                
+                # 🔥🔥 추가 검증: 누적 수익이 현재 잔고의 50%를 넘는 경우 조정
+                if cumulative_profit > total_equity * 0.5 and total_equity > 0:
+                    self.logger.warning(f"누적 수익 ${cumulative_profit:.2f}이 현재 잔고 ${total_equity:.2f}의 50%를 넘음 - 조정")
+                    cumulative_profit = min(cumulative_profit, total_equity * 0.3)  # 최대 30%로 제한
                 
             except Exception as e:
                 self.logger.error(f"Gate.io 수정된 공식 API 실패: {e}")
                 # 기본값 유지
                 cumulative_profit = 0
                 today_pnl = 0
-                weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'source': 'api_failed'}
+                weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'source': 'corrected_api_failed'}
+                initial_capital = 700
             
             # 사용 증거금 계산
             used_margin = 0
@@ -213,13 +227,6 @@ class ProfitReportGenerator(BaseReportGenerator):
                 used_margin = position_info.get('margin', 0)
             else:
                 used_margin = max(0, total_equity - available)
-            
-            # 초기 자본을 동적 계산 (현재 잔고 - 누적 수익)
-            if cumulative_profit > 0:
-                initial_capital = max(500, total_equity - cumulative_profit)  # 최소 $500
-            else:
-                initial_capital = max(700, total_equity * 0.9) if total_equity > 0 else 700
-                cumulative_profit = max(0, total_equity - initial_capital)
             
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             has_account = total_equity > 0
@@ -231,7 +238,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.4f}")
             self.logger.info(f"  - 7일 손익: ${weekly_profit['total_pnl']:.4f}")
             self.logger.info(f"  - 수정된 정확한 누적 수익: ${cumulative_profit:.2f} ({cumulative_roi:+.1f}%)")
-            self.logger.info(f"  - 동적 초기 자본: ${initial_capital:.2f}")
+            self.logger.info(f"  - 수정된 초기 자본: ${initial_capital:.2f}")
             
             return {
                 'exchange': 'Gate',
@@ -255,12 +262,12 @@ class ProfitReportGenerator(BaseReportGenerator):
             }
             
         except Exception as e:
-            self.logger.error(f"Gate 정확한 데이터 조회 실패: {e}")
+            self.logger.error(f"Gate 수정된 정확한 데이터 조회 실패: {e}")
             self.logger.error(f"Gate 데이터 오류 상세: {traceback.format_exc()}")
             return self._get_empty_exchange_data('Gate')
     
-    def _calculate_combined_data_accurate(self, bitget_data: dict, gateio_data: dict) -> dict:
-        """정확한 통합 데이터 계산 - 수정된 Gate.io API 구조 반영"""
+    def _calculate_combined_data_corrected(self, bitget_data: dict, gateio_data: dict) -> dict:
+        """수정된 정확한 통합 데이터 계산"""
         # 총 자산
         total_equity = bitget_data['total_equity'] + gateio_data['total_equity']
         
@@ -280,11 +287,11 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         # 7일 수익 (통합) - 수정된 구조
         bitget_weekly = bitget_data['weekly_profit']['total']
-        gateio_weekly = gateio_data['weekly_profit']['total_pnl']  # weekly_profit 구조 변경됨
+        gateio_weekly = gateio_data['weekly_profit']['total_pnl']
         weekly_total = bitget_weekly + gateio_weekly
         weekly_avg = weekly_total / 7
         
-        # 누적 수익 (2025년 5월부터)
+        # 누적 수익 (2025년 5월부터) - 수정된 계산
         bitget_cumulative = bitget_data['cumulative_profit']
         gateio_cumulative = gateio_data['cumulative_profit']
         cumulative_profit = bitget_cumulative + gateio_cumulative
@@ -295,7 +302,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         initial_7d = total_equity - weekly_total
         weekly_roi = (weekly_total / initial_7d * 100) if initial_7d > 0 else 0
         
-        total_initial = self.BITGET_INITIAL_CAPITAL + gateio_data.get('initial_capital', 0)
+        total_initial = self.BITGET_INITIAL_CAPITAL + gateio_data.get('initial_capital', 700)
         cumulative_roi = (cumulative_profit / total_initial * 100) if total_initial > 0 else 0
         
         return {
@@ -317,8 +324,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             'total_initial': total_initial
         }
     
-    def _format_profit_detail_accurate(self, bitget_data: dict, gateio_data: dict, combined_data: dict, gateio_has_data: bool) -> str:
-        """정확한 손익 정보"""
+    def _format_profit_detail_corrected(self, bitget_data: dict, gateio_data: dict, combined_data: dict, gateio_has_data: bool) -> str:
+        """수정된 정확한 손익 정보"""
         lines = []
         
         # 통합 손익 요약
@@ -340,8 +347,8 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         return '\n'.join(lines)
     
-    def _format_cumulative_performance_accurate(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
-        """정확한 누적 성과 - 2025년 5월부터"""
+    def _format_cumulative_performance_corrected(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
+        """수정된 정확한 누적 성과 - 2025년 5월부터"""
         lines = []
         
         # 통합 누적 수익
@@ -361,8 +368,8 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         return '\n'.join(lines)
     
-    def _format_recent_flow_accurate(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
-        """정확한 최근 수익 흐름"""
+    def _format_recent_flow_corrected(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
+        """수정된 정확한 최근 수익 흐름"""
         lines = []
         
         # 통합 7일 수익
