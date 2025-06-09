@@ -8,7 +8,7 @@ import re
 logger = logging.getLogger(__name__)
 
 class ExceptionDetector:
-    """예외 상황 감지 및 알림 - 정확성 향상 + 실제 시장 반응 체크 + 가격 데이터 검증 강화"""
+    """예외 상황 감지 및 알림 - 비트코인 전용 강화 + 크리티컬 뉴스 필터링 강화"""
     
     def __init__(self, bitget_client=None, telegram_bot=None):
         self.bitget_client = bitget_client
@@ -58,7 +58,148 @@ class ExceptionDetector:
         self.max_price_errors = 5  # 최대 연속 오류 허용
         self.last_price_error_time = None
         
-        self.logger.info(f"예외 감지기 초기화 완료 - 가격 {self.PRICE_CHANGE_THRESHOLD}%, 거래량 {self.VOLUME_SPIKE_THRESHOLD}배, 가격 검증 강화")
+        # 🔥🔥 크리티컬 뉴스 필터링 강화
+        self.critical_keywords = {
+            'high_impact': [
+                'etf approved', 'etf approval', 'etf launches', 'etf rejected',
+                'fed rate', 'interest rate decision', 'fomc decision',
+                'bought bitcoin', 'purchased bitcoin', 'adds bitcoin', 'buys bitcoin',
+                'ban bitcoin', 'prohibited bitcoin', 'illegal bitcoin',
+                'hack', 'exploit', 'stolen bitcoin', 'exchange hack'
+            ],
+            'medium_impact': [
+                'regulation', 'legal framework', 'court decision',
+                'institutional adoption', 'bank adoption',
+                'treasury reserve', 'corporate strategy',
+                'trump tariffs', 'trade war', 'inflation data'
+            ],
+            'company_direct_investment': [
+                'microstrategy', 'tesla', 'gamestop', 'metaplanet'
+            ],
+            'low_impact_exclude': [  # 이런 키워드가 있으면 제외
+                'how to', 'tutorial', 'guide', 'opinion', 'prediction',
+                'analyst says', 'expert believes', 'could reach',
+                'technical analysis', 'chart analysis', 'price target',
+                'blog post', 'social media', 'tweet', 'reddit',
+                'milestone', 'search volume', 'google trends'
+            ]
+        }
+        
+        self.logger.info(f"예외 감지기 초기화 완료 - 가격 {self.PRICE_CHANGE_THRESHOLD}%, 거래량 {self.VOLUME_SPIKE_THRESHOLD}배, 크리티컬 뉴스 필터링 강화")
+    
+    def _is_critical_bitcoin_news(self, event: Dict) -> bool:
+        """🔥🔥 크리티컬 비트코인 뉴스 판별 - 매우 엄격한 기준"""
+        try:
+            title = event.get('title', '').lower()
+            description = event.get('description', '').lower()
+            content = f"{title} {description}"
+            
+            # 1. 비트코인 관련성 체크
+            if not any(word in content for word in ['bitcoin', 'btc', 'crypto', 'cryptocurrency']):
+                return False
+            
+            # 2. 제외 키워드 체크 (이런 내용들은 무조건 제외)
+            for exclude_keyword in self.critical_keywords['low_impact_exclude']:
+                if exclude_keyword in content:
+                    self.logger.info(f"제외 키워드 감지로 크리티컬 뉴스 제외: {exclude_keyword}")
+                    return False
+            
+            # 3. 높은 영향도 키워드 체크
+            high_impact_score = 0
+            for keyword in self.critical_keywords['high_impact']:
+                if keyword in content:
+                    high_impact_score += 3
+                    self.logger.info(f"고영향 키워드 감지: {keyword}")
+            
+            # 4. 중간 영향도 키워드 체크
+            medium_impact_score = 0
+            for keyword in self.critical_keywords['medium_impact']:
+                if keyword in content:
+                    medium_impact_score += 2
+                    self.logger.info(f"중영향 키워드 감지: {keyword}")
+            
+            # 5. 기업 직접 투자 체크
+            company_investment_score = 0
+            for company in self.critical_keywords['company_direct_investment']:
+                if company in content:
+                    if any(action in content for action in ['bought', 'purchased', 'adds', 'buys']):
+                        company_investment_score += 4
+                        self.logger.info(f"기업 직접 투자 감지: {company}")
+            
+            # 6. 구조화 상품 제외 (실제 BTC 수요 없음)
+            if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure', 'tracks']):
+                if not any(word in content for word in ['etf', 'direct purchase', 'treasury']):
+                    self.logger.info("구조화 상품으로 판단, 크리티컬 뉴스 제외")
+                    return False
+            
+            # 7. 총 점수 계산
+            total_score = high_impact_score + medium_impact_score + company_investment_score
+            
+            # 8. 임계값 판단
+            if total_score >= 6:  # 매우 높은 임계값
+                self.logger.info(f"크리티컬 뉴스 승인: 총점 {total_score}점")
+                return True
+            elif total_score >= 3 and high_impact_score > 0:  # 고영향 키워드가 있어야 함
+                self.logger.info(f"크리티컬 뉴스 승인: 총점 {total_score}점 (고영향 포함)")
+                return True
+            else:
+                self.logger.info(f"크리티컬 뉴스 기준 미달: 총점 {total_score}점")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"크리티컬 뉴스 판별 오류: {e}")
+            return False
+    
+    def _calculate_expected_price_impact(self, event: Dict) -> float:
+        """🔥🔥 예상 가격 영향도 계산 - 현실적 기준"""
+        try:
+            title = event.get('title', '').lower()
+            description = event.get('description', '').lower()
+            content = f"{title} {description}"
+            
+            # 기본 영향도
+            impact = 0.0
+            
+            # ETF 관련
+            if 'etf approved' in content or 'etf approval' in content:
+                impact = max(impact, 2.5)  # 2.5% 예상
+            elif 'etf rejected' in content or 'etf delay' in content:
+                impact = max(impact, 1.5)  # 1.5% 하락 예상
+            
+            # Fed 금리
+            if any(word in content for word in ['fed rate cut', 'rate cut', 'lower rates']):
+                impact = max(impact, 1.8)
+            elif any(word in content for word in ['fed rate hike', 'rate hike', 'higher rates']):
+                impact = max(impact, 1.2)
+            
+            # 기업 직접 투자
+            if any(company in content for company in ['microstrategy', 'tesla']) and \
+               any(action in content for action in ['bought', 'purchased', 'adds']):
+                # 투자 규모 확인
+                if any(amount in content for amount in ['billion', '1b', '$1b']):
+                    impact = max(impact, 1.5)
+                else:
+                    impact = max(impact, 0.8)
+            
+            # 규제/법적
+            if any(word in content for word in ['ban', 'prohibited', 'illegal']):
+                impact = max(impact, 2.0)
+            elif any(word in content for word in ['regulation approved', 'legal framework']):
+                impact = max(impact, 0.8)
+            
+            # 해킹/보안
+            if any(word in content for word in ['hack', 'stolen', 'exploit']):
+                impact = max(impact, 1.0)
+            
+            # 구조화 상품 (영향도 매우 낮음)
+            if any(word in content for word in ['structured', 'bonds', 'linked', 'exposure']):
+                impact = min(impact, 0.2)
+            
+            return impact
+            
+        except Exception as e:
+            self.logger.error(f"가격 영향도 계산 오류: {e}")
+            return 0.0
     
     def _validate_price_data(self, price_data: Dict) -> Optional[float]:
         """🔥🔥 가격 데이터 검증 및 정제 - 오류 방지 강화"""
@@ -132,223 +273,6 @@ class ExceptionDetector:
         except Exception as e:
             self.logger.error(f"가격 데이터 검증 중 오류: {e}")
             return self.last_valid_price  # 오류 시 마지막 유효 가격 반환
-    
-    async def check_news_market_reaction(self, news_hash: str, news_time: datetime, 
-                                       initial_price: float, initial_volume: float) -> Dict:
-        """뉴스 발표 후 실제 시장 반응 체크"""
-        try:
-            # 1-2시간 후 시장 반응 확인
-            check_time = datetime.now()
-            time_elapsed = (check_time - news_time).total_seconds() / 3600  # 시간 단위
-            
-            if time_elapsed < 1.0:  # 1시간 미만이면 아직 체크 안함
-                return {}
-            
-            if time_elapsed > 6.0:  # 6시간 이상이면 체크 종료
-                return {}
-            
-            # 현재 시장 데이터 조회
-            current_data = await self._get_current_market_data()
-            if not current_data:
-                return {}
-            
-            current_price = current_data['price']
-            current_volume = current_data['volume']
-            
-            # 가격 변동률 계산
-            price_change_pct = ((current_price - initial_price) / initial_price) * 100
-            
-            # 거래량 변동률 계산
-            volume_change_pct = ((current_volume - initial_volume) / initial_volume) * 100 if initial_volume > 0 else 0
-            
-            # 반응 분류
-            reaction_level = self._classify_market_reaction(price_change_pct, volume_change_pct, time_elapsed)
-            
-            reaction_data = {
-                'news_hash': news_hash,
-                'time_elapsed_hours': time_elapsed,
-                'initial_price': initial_price,
-                'current_price': current_price,
-                'price_change_pct': price_change_pct,
-                'initial_volume': initial_volume,
-                'current_volume': current_volume,
-                'volume_change_pct': volume_change_pct,
-                'reaction_level': reaction_level,
-                'check_time': check_time
-            }
-            
-            # 반응 데이터 저장
-            self.news_market_reactions[news_hash] = reaction_data
-            
-            self.logger.info(f"뉴스 시장 반응 체크: {time_elapsed:.1f}시간 후 - 가격 {price_change_pct:+.2f}%, 거래량 {volume_change_pct:+.1f}%, 반응: {reaction_level}")
-            
-            return reaction_data
-            
-        except Exception as e:
-            self.logger.error(f"뉴스 시장 반응 체크 실패: {e}")
-            return {}
-    
-    def _classify_market_reaction(self, price_change_pct: float, volume_change_pct: float, time_elapsed: float) -> str:
-        """시장 반응 분류"""
-        abs_price_change = abs(price_change_pct)
-        
-        # 시간대별 임계값 조정
-        if time_elapsed <= 2.0:  # 2시간 이내
-            significant_threshold = 1.0
-            strong_threshold = 2.5
-        elif time_elapsed <= 6.0:  # 6시간 이내
-            significant_threshold = 1.5
-            strong_threshold = 3.0
-        else:  # 6시간 이후
-            significant_threshold = 2.0
-            strong_threshold = 4.0
-        
-        # 반응 분류
-        if abs_price_change >= strong_threshold:
-            if volume_change_pct > 50:
-                return "강한 반응" if price_change_pct > 0 else "강한 매도"
-            else:
-                return "중간 반응" if price_change_pct > 0 else "중간 매도"
-        elif abs_price_change >= significant_threshold:
-            return "약한 반응" if price_change_pct > 0 else "약한 매도"
-        elif abs_price_change >= 0.5:
-            return "미미한 반응"
-        else:
-            return "반응 없음"
-    
-    async def _get_current_market_data(self) -> Optional[Dict]:
-        """현재 시장 데이터 조회 - 가격 검증 포함"""
-        try:
-            if not self.bitget_client:
-                return None
-            
-            ticker = await self.bitget_client.get_ticker('BTCUSDT')
-            if not ticker:
-                return None
-            
-            # 가격 데이터 검증
-            validated_price = self._validate_price_data(ticker)
-            if validated_price is None:
-                return None
-            
-            volume = float(ticker.get('baseVolume', 0))
-            change_24h = float(ticker.get('changeUtc', 0))
-            
-            return {
-                'price': validated_price,
-                'volume': volume,
-                'change_24h': change_24h
-            }
-            
-        except Exception as e:
-            self.logger.error(f"시장 데이터 조회 실패: {e}")
-            return None
-    
-    def _generate_exception_hash(self, anomaly: Dict) -> str:
-        """예외 상황의 고유 해시 생성 - 더 엄격하게"""
-        anomaly_type = anomaly.get('type', '')
-        
-        if anomaly_type == 'critical_news':
-            title = anomaly.get('title', '').lower()
-            # 회사명과 주요 키워드 추출
-            companies = []
-            for company in ['microstrategy', 'tesla', 'sberbank', 'blackrock', 'gamestop']:
-                if company in title:
-                    companies.append(company)
-            
-            # 액션 추출
-            actions = []
-            for action in ['bought', 'purchased', 'buys', 'adds', 'launches', 'approves']:
-                if action in title:
-                    actions.append(action)
-            
-            # 숫자 추출
-            numbers = re.findall(r'\d+(?:,\d+)*', title)
-            
-            # 고유 식별자 생성
-            unique_id = f"news_{'-'.join(companies)}_{'-'.join(actions)}_{'-'.join(numbers)}"
-            return hashlib.md5(unique_id.encode()).hexdigest()
-        
-        elif anomaly_type == 'price_anomaly':
-            change = anomaly.get('change_24h', 0)
-            direction = 'up' if change > 0 else 'down'
-            magnitude = int(abs(change * 100) / 1.0)
-            return hashlib.md5(f"price_{direction}_{magnitude}".encode()).hexdigest()
-        
-        elif anomaly_type == 'volume_anomaly':
-            volume = anomaly.get('volume_24h', 0)
-            scale = int(volume / 10000)
-            return hashlib.md5(f"volume_{scale}".encode()).hexdigest()
-        
-        elif anomaly_type == 'funding_rate_anomaly':
-            rate = anomaly.get('funding_rate', 0)
-            sign = 'positive' if rate > 0 else 'negative'
-            magnitude = int(abs(rate * 10000))
-            return hashlib.md5(f"funding_{sign}_{magnitude}".encode()).hexdigest()
-        
-        elif anomaly_type == 'short_term_volatility':
-            change = anomaly.get('change_percent', 0)
-            timeframe = anomaly.get('timeframe', '5min')
-            magnitude = int(abs(change * 100) / 0.5)
-            return hashlib.md5(f"short_vol_{timeframe}_{magnitude}".encode()).hexdigest()
-        
-        else:
-            content = f"{anomaly_type}_{anomaly.get('description', '')}_{anomaly.get('severity', '')}"
-            return hashlib.md5(content.encode()).hexdigest()
-    
-    def _is_similar_exception(self, anomaly1: Dict, anomaly2: Dict) -> bool:
-        """두 예외 상황이 유사한지 확인 - 더 엄격하게"""
-        if anomaly1.get('type') != anomaly2.get('type'):
-            return False
-        
-        if anomaly1.get('type') == 'critical_news':
-            title1 = anomaly1.get('title', '').lower()
-            title2 = anomaly2.get('title', '').lower()
-            
-            # 회사명 체크
-            companies1 = set()
-            companies2 = set()
-            for company in ['microstrategy', 'tesla', 'sberbank', 'blackrock', 'gamestop']:
-                if company in title1:
-                    companies1.add(company)
-                if company in title2:
-                    companies2.add(company)
-            
-            # 같은 회사의 뉴스인지 확인
-            if companies1 and companies2 and companies1 == companies2:
-                # 액션도 유사한지 확인
-                actions1 = set()
-                actions2 = set()
-                for action in ['bought', 'purchased', 'buys', 'adds', 'launches', 'approves']:
-                    if action in title1:
-                        actions1.add(action)
-                    if action in title2:
-                        actions2.add(action)
-                
-                if actions1 and actions2 and len(actions1 & actions2) > 0:
-                    return True
-            
-            # 단어 유사도 체크
-            clean1 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title1)
-            clean2 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title2)
-            
-            clean1 = re.sub(r'\s+', ' ', clean1).strip()
-            clean2 = re.sub(r'\s+', ' ', clean2).strip()
-            
-            words1 = set(clean1.split())
-            words2 = set(clean2.split())
-            
-            if not words1 or not words2:
-                return False
-            
-            intersection = len(words1 & words2)
-            union = len(words1 | words2)
-            
-            similarity = intersection / union if union > 0 else 0
-            
-            return similarity > 0.8  # 80% 이상 유사
-        
-        return False
     
     async def detect_all_anomalies(self) -> List[Dict]:
         """모든 이상 징후 감지"""
@@ -471,12 +395,12 @@ class ExceptionDetector:
             change_24h = float(ticker.get('changeUtc', 0))
             
             # 24시간 변동률이 임계값 초과
-            if abs(change_24h) >= self.PRICE_CHANGE_THRESHOLD:
+            if abs(change_24h) >= self.PRICE_CHANGE_THRESHOLD / 100:  # 백분율 변환
                 key = f"price_{int(current_price/1000)*1000}"
                 if not self._is_on_cooldown('price_volatility', key):
                     self._update_alert_time('price_volatility', key)
                     
-                    severity = 'critical' if abs(change_24h) >= 5.0 else 'high' if abs(change_24h) >= 3.0 else 'medium'
+                    severity = 'critical' if abs(change_24h) >= 0.05 else 'high' if abs(change_24h) >= 0.03 else 'medium'
                     
                     return {
                         'type': 'price_anomaly',
@@ -577,12 +501,21 @@ class ExceptionDetector:
             if not self.telegram_bot:
                 return False
             
-            # 뉴스 타입 비트코인 관련성 체크
+            # 🔥🔥 크리티컬 뉴스 필터링 강화
             if anomaly.get('type') == 'critical_news':
-                impact = anomaly.get('impact', '')
-                if '무관' in impact or '알트코인' in impact:
-                    self.logger.info(f"🔄 비트코인 무관 뉴스 알림 생략")
+                # 크리티컬 뉴스 여부 재검증
+                if not self._is_critical_bitcoin_news(anomaly):
+                    self.logger.info(f"🔄 크리티컬 뉴스 기준 미달로 전송 취소: {anomaly.get('title', '')[:50]}...")
                     return False
+                
+                # 예상 가격 영향도 계산
+                expected_impact = self._calculate_expected_price_impact(anomaly)
+                if expected_impact < 0.3:  # 0.3% 미만이면 제외
+                    self.logger.info(f"🔄 예상 가격 영향도 미달로 전송 취소: {expected_impact:.1f}%")
+                    return False
+                
+                # 영향도 정보 추가
+                anomaly['expected_impact'] = expected_impact
                 
                 # 뉴스 제목으로 중복 체크
                 title = anomaly.get('title', '')
@@ -650,10 +583,22 @@ class ExceptionDetector:
             anomaly_type = anomaly.get('type', 'unknown')
             
             if anomaly_type == 'critical_news':
+                expected_impact = anomaly.get('expected_impact', 0)
                 message = f"🚨 <b>비트코인 긴급 뉴스</b>\n\n"
                 message += f"📰 {anomaly.get('title_ko', anomaly.get('title', ''))}\n"
-                message += f"💡 {anomaly.get('impact', '')}\n"
-                message += f"📊 예상: {anomaly.get('expected_change', '')}"
+                
+                if expected_impact >= 2.0:
+                    message += f"💡 🚀 매우 강한 호재\n"
+                    message += f"📊 예상: 상승 {expected_impact:.1f}%"
+                elif expected_impact >= 1.0:
+                    message += f"💡 📈 강한 호재\n"
+                    message += f"📊 예상: 상승 {expected_impact:.1f}%"
+                elif expected_impact >= 0.5:
+                    message += f"💡 📈 호재\n"
+                    message += f"📊 예상: 상승 {expected_impact:.1f}%"
+                else:
+                    message += f"💡 📊 시장 관심\n"
+                    message += f"📊 예상: 약간 상승 {expected_impact:.1f}%"
                 
             elif anomaly_type == 'price_anomaly':
                 change_24h = anomaly.get('change_24h', 0) * 100
@@ -697,6 +642,112 @@ class ExceptionDetector:
         except Exception as e:
             self.logger.error(f"알림 전송 실패: {e}")
             return False
+    
+    def _generate_exception_hash(self, anomaly: Dict) -> str:
+        """예외 상황의 고유 해시 생성 - 더 엄격하게"""
+        anomaly_type = anomaly.get('type', '')
+        
+        if anomaly_type == 'critical_news':
+            title = anomaly.get('title', '').lower()
+            # 회사명과 주요 키워드 추출
+            companies = []
+            for company in ['microstrategy', 'tesla', 'sberbank', 'blackrock', 'gamestop']:
+                if company in title:
+                    companies.append(company)
+            
+            # 액션 추출
+            actions = []
+            for action in ['bought', 'purchased', 'buys', 'adds', 'launches', 'approves']:
+                if action in title:
+                    actions.append(action)
+            
+            # 숫자 추출
+            numbers = re.findall(r'\d+(?:,\d+)*', title)
+            
+            # 고유 식별자 생성
+            unique_id = f"news_{'-'.join(companies)}_{'-'.join(actions)}_{'-'.join(numbers)}"
+            return hashlib.md5(unique_id.encode()).hexdigest()
+        
+        elif anomaly_type == 'price_anomaly':
+            change = anomaly.get('change_24h', 0)
+            direction = 'up' if change > 0 else 'down'
+            magnitude = int(abs(change * 100) / 1.0)
+            return hashlib.md5(f"price_{direction}_{magnitude}".encode()).hexdigest()
+        
+        elif anomaly_type == 'volume_anomaly':
+            volume = anomaly.get('volume_24h', 0)
+            scale = int(volume / 10000)
+            return hashlib.md5(f"volume_{scale}".encode()).hexdigest()
+        
+        elif anomaly_type == 'funding_rate_anomaly':
+            rate = anomaly.get('funding_rate', 0)
+            sign = 'positive' if rate > 0 else 'negative'
+            magnitude = int(abs(rate * 10000))
+            return hashlib.md5(f"funding_{sign}_{magnitude}".encode()).hexdigest()
+        
+        elif anomaly_type == 'short_term_volatility':
+            change = anomaly.get('change_percent', 0)
+            timeframe = anomaly.get('timeframe', '5min')
+            magnitude = int(abs(change * 100) / 0.5)
+            return hashlib.md5(f"short_vol_{timeframe}_{magnitude}".encode()).hexdigest()
+        
+        else:
+            content = f"{anomaly_type}_{anomaly.get('description', '')}_{anomaly.get('severity', '')}"
+            return hashlib.md5(content.encode()).hexdigest()
+    
+    def _is_similar_exception(self, anomaly1: Dict, anomaly2: Dict) -> bool:
+        """두 예외 상황이 유사한지 확인 - 더 엄격하게"""
+        if anomaly1.get('type') != anomaly2.get('type'):
+            return False
+        
+        if anomaly1.get('type') == 'critical_news':
+            title1 = anomaly1.get('title', '').lower()
+            title2 = anomaly2.get('title', '').lower()
+            
+            # 회사명 체크
+            companies1 = set()
+            companies2 = set()
+            for company in ['microstrategy', 'tesla', 'sberbank', 'blackrock', 'gamestop']:
+                if company in title1:
+                    companies1.add(company)
+                if company in title2:
+                    companies2.add(company)
+            
+            # 같은 회사의 뉴스인지 확인
+            if companies1 and companies2 and companies1 == companies2:
+                # 액션도 유사한지 확인
+                actions1 = set()
+                actions2 = set()
+                for action in ['bought', 'purchased', 'buys', 'adds', 'launches', 'approves']:
+                    if action in title1:
+                        actions1.add(action)
+                    if action in title2:
+                        actions2.add(action)
+                
+                if actions1 and actions2 and len(actions1 & actions2) > 0:
+                    return True
+            
+            # 단어 유사도 체크
+            clean1 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title1)
+            clean2 = re.sub(r'[0-9$,.\-:;!?@#%^&*()\[\]{}]', '', title2)
+            
+            clean1 = re.sub(r'\s+', ' ', clean1).strip()
+            clean2 = re.sub(r'\s+', ' ', clean2).strip()
+            
+            words1 = set(clean1.split())
+            words2 = set(clean2.split())
+            
+            if not words1 or not words2:
+                return False
+            
+            intersection = len(words1 & words2)
+            union = len(words1 | words2)
+            
+            similarity = intersection / union if union > 0 else 0
+            
+            return similarity > 0.8  # 80% 이상 유사
+        
+        return False
     
     def _is_on_cooldown(self, alert_type: str, key: str) -> bool:
         """알림 쿨다운 체크"""
