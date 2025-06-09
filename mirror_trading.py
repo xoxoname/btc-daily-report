@@ -166,7 +166,7 @@ class MirrorTradingSystem:
         try:
             self.logger.debug("🔄 종합 예약 주문 동기화 시작 (개선된 버전)")
             
-            # 1. 비트겟의 모든 예약 주문 조회 (단순화된 방식)
+            # 🔥🔥🔥 수정: 올바른 메서드명 사용
             all_bitget_orders = await self.position_manager._get_all_current_plan_orders()
             
             # 2. 게이트 예약 주문 조회
@@ -328,7 +328,7 @@ class MirrorTradingSystem:
     async def _recheck_bitget_order_exists_simple(self, bitget_order_id: str) -> Dict:
         """🔥🔥🔥 간단한 비트겟 주문 존재 여부 재확인"""
         try:
-            # 현재 활성 예약 주문에서 찾기
+            # 🔥🔥🔥 수정: 올바른 메서드명 사용
             all_current_orders = await self.position_manager._get_all_current_plan_orders()
             
             for order in all_current_orders:
