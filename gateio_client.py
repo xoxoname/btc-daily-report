@@ -479,9 +479,9 @@ class GateioMirrorClient:
             }
     
     async def get_profit_history_since_may(self) -> Dict:
-        """🔥🔥 Gate.io 수익 내역 조회 - 수정된 정확한 account_book API 기반 누적 수익"""
+        """🔥🔥 Gate.io 수익 내역 조회 - 30일 단위로 분할 조회하는 정확한 방법"""
         try:
-            logger.info(f"🔍 Gate.io 수정된 누적 수익 조회 (정확한 account_book API 기반):")
+            logger.info(f"🔍 Gate.io 누적 수익 조회 (30일 단위 분할 조회):")
             
             # 현재 계정 정보
             account = await self.get_account_balance()
@@ -494,47 +494,76 @@ class GateioMirrorClient:
             weekly_profit = await self.get_weekly_profit()
             weekly_pnl = weekly_profit.get('total_pnl', 0)
             
-            # 🔥🔥 수정된 정확한 누적 수익을 account_book API에서 조회
+            # 🔥🔥 30일 단위로 분할해서 account_book API 조회
             cumulative_profit = 0.0
             initial_capital = 700  # 기본 초기 자본
             
             try:
-                logger.info("📊 수정된 account_book API에서 정확한 누적 수익 계산 (2025년 5월부터)")
+                logger.info("📊 30일 단위 분할 조회로 정확한 누적 수익 계산")
                 
-                # 2025년 5월 1일부터 현재까지
                 kst = pytz.timezone('Asia/Seoul')
                 now = datetime.now(kst)
                 start_date = datetime(2025, 5, 1, tzinfo=kst)
                 
-                start_timestamp_ms = int(start_date.astimezone(pytz.UTC).timestamp() * 1000)
-                end_timestamp_ms = int(now.astimezone(pytz.UTC).timestamp() * 1000)
+                # 현재 날짜에서 시작해서 역순으로 30일씩 조회
+                current_end = now
+                total_records_count = 0
                 
-                # account_book API로 전체 pnl 기록 조회 (더 큰 limit으로 전체 기록 조회)
-                pnl_records = await self.get_account_book(
-                    start_time=start_timestamp_ms,
-                    end_time=end_timestamp_ms,
-                    limit=1000,  # 충분히 큰 값
-                    type_filter='pnl'
-                )
+                while current_end > start_date:
+                    # 30일 이전 날짜 계산
+                    current_start = max(current_end - timedelta(days=29), start_date)
+                    
+                    start_timestamp_ms = int(current_start.astimezone(pytz.UTC).timestamp() * 1000)
+                    end_timestamp_ms = int(current_end.astimezone(pytz.UTC).timestamp() * 1000)
+                    
+                    logger.info(f"📅 기간 조회: {current_start.strftime('%Y-%m-%d')} ~ {current_end.strftime('%Y-%m-%d')}")
+                    
+                    try:
+                        # 30일 범위 내에서 pnl 기록 조회
+                        pnl_records = await self.get_account_book(
+                            start_time=start_timestamp_ms,
+                            end_time=end_timestamp_ms,
+                            limit=1000,
+                            type_filter='pnl'
+                        )
+                        
+                        if pnl_records:
+                            period_profit = 0.0
+                            for record in pnl_records:
+                                change = float(record.get('change', 0))
+                                record_time = record.get('time', 0)
+                                if record.get('type') == 'pnl' and change != 0:
+                                    cumulative_profit += change
+                                    period_profit += change
+                                    total_records_count += 1
+                            
+                            logger.info(f"  ✅ 해당 기간 pnl: ${period_profit:.4f} ({len(pnl_records)}건)")
+                        else:
+                            logger.info(f"  📝 해당 기간 pnl 기록 없음")
+                        
+                        # 다음 기간으로 이동 (1일 겹치지 않게)
+                        current_end = current_start - timedelta(seconds=1)
+                        
+                        # API 호출 간격 조절
+                        await asyncio.sleep(0.5)
+                        
+                    except Exception as period_error:
+                        logger.error(f"기간 {current_start.strftime('%Y-%m-%d')} ~ {current_end.strftime('%Y-%m-%d')} 조회 실패: {period_error}")
+                        
+                        # 400 오류(30일 초과)가 아닌 다른 오류면 중단
+                        if "time range can not exceed 30 days" not in str(period_error):
+                            break
+                        
+                        # 다음 기간으로 이동
+                        current_end = current_start - timedelta(seconds=1)
+                        continue
                 
-                if pnl_records:
-                    logger.info(f"2025년 5월부터 pnl 기록 수: {len(pnl_records)}개")
-                    
-                    for record in pnl_records:
-                        change = float(record.get('change', 0))
-                        record_time = record.get('time', 0)
-                        if record.get('type') == 'pnl' and change != 0:
-                            cumulative_profit += change
-                            logger.debug(f"누적 pnl 기록 ({record_time}): {change}")
-                    
-                    logger.info(f"✅ account_book에서 수정된 정확한 누적 수익: ${cumulative_profit:.4f}")
-                    
-                else:
-                    logger.info("2025년 5월부터 pnl 기록 없음")
-                    cumulative_profit = 0.0
+                logger.info(f"✅ 전체 기간 누적 수익 조회 완료:")
+                logger.info(f"  - 총 pnl 기록: {total_records_count}건")
+                logger.info(f"  - account_book 누적 수익: ${cumulative_profit:.4f}")
                 
             except Exception as e:
-                logger.error(f"수정된 account_book API 누적 손익 조회 실패: {e}")
+                logger.error(f"30일 분할 account_book API 누적 손익 조회 실패: {e}")
                 cumulative_profit = 0.0
             
             # 🔥🔥 수정된 누적 수익 검증 및 조정 로직
@@ -593,9 +622,9 @@ class GateioMirrorClient:
             # 수익률 계산
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             
-            logger.info(f"Gate.io 수정된 누적 수익 계산 완료 (정확한 account_book 기반):")
+            logger.info(f"Gate.io 30일 분할 조회 누적 수익 계산 완료:")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
-            logger.info(f"  - 수정된 정확한 누적 수익: ${cumulative_profit:.2f}")
+            logger.info(f"  - 정확한 누적 수익: ${cumulative_profit:.2f}")
             logger.info(f"  - 계산된 초기 자본: ${initial_capital:.2f}")
             logger.info(f"  - 수익률: {cumulative_roi:+.1f}%")
             logger.info(f"  - 오늘 실현손익: ${today_realized:.2f}")
@@ -606,14 +635,14 @@ class GateioMirrorClient:
                 'today_realized': today_realized,
                 'weekly': weekly_profit,
                 'current_balance': current_balance,
-                'actual_profit': cumulative_profit,  # 수정된 정확한 누적 수익 (account_book API 기반)
-                'initial_capital': initial_capital,  # 수정된 초기 자본 계산
+                'actual_profit': cumulative_profit,  # 정확한 누적 수익 (30일 분할 account_book API 기반)
+                'initial_capital': initial_capital,  # 재계산된 초기 자본
                 'cumulative_roi': cumulative_roi,
-                'source': 'corrected_accurate_account_book_calculation_with_validation'
+                'source': 'accurate_30day_split_account_book_calculation'
             }
             
         except Exception as e:
-            logger.error(f"Gate.io 수정된 수익 내역 조회 실패: {e}")
+            logger.error(f"Gate.io 30일 분할 누적 수익 조회 실패: {e}")
             return {
                 'total_pnl': 0,
                 'today_realized': 0,
@@ -622,7 +651,7 @@ class GateioMirrorClient:
                 'actual_profit': 0,
                 'initial_capital': 700,  # 기본값
                 'cumulative_roi': 0,
-                'source': 'error'
+                'source': 'error_30day_split'
             }
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
