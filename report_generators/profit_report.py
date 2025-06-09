@@ -197,28 +197,41 @@ class ProfitReportGenerator(BaseReportGenerator):
                 cumulative_profit = corrected_profit_history.get('actual_profit', 0)
                 initial_capital = corrected_profit_history.get('initial_capital', 700)
                 
+                # 🔥🔥 누적 수익 수정 로직 추가 - 7일 수익이 있는데 누적이 0인 경우 조정
+                if cumulative_profit == 0 and weekly_profit['total_pnl'] > 0:
+                    self.logger.warning(f"⚠️ 누적 수익이 0인데 7일 수익이 ${weekly_profit['total_pnl']:.2f} - 현재 계정 기반으로 추정")
+                    
+                    # 현재 잔고에서 초기 자본을 빼서 누적 수익 추정
+                    if total_equity > initial_capital:
+                        estimated_cumulative = total_equity - initial_capital
+                        cumulative_profit = max(estimated_cumulative, weekly_profit['total_pnl'])
+                        self.logger.info(f"🔧 추정된 누적 수익: ${cumulative_profit:.2f} (현재잔고 ${total_equity:.2f} - 초기자본 ${initial_capital:.2f})")
+                    else:
+                        # 최소한 7일 수익은 반영
+                        cumulative_profit = weekly_profit['total_pnl']
+                        self.logger.info(f"🔧 최소 7일 수익으로 설정: ${cumulative_profit:.2f}")
+                
+                # 🔥🔥 추가 검증: 누적 수익이 현재 잔고보다 큰 경우 조정
+                if cumulative_profit > total_equity and total_equity > 0:
+                    self.logger.warning(f"누적 수익 ${cumulative_profit:.2f}이 현재 잔고 ${total_equity:.2f}보다 큼 - 조정")
+                    cumulative_profit = max(0, total_equity - initial_capital)
+                
                 self.logger.info(f"✅ Gate.io 수정된 공식 API 성공 (실제 PnL만):")
                 self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.4f}")
                 self.logger.info(f"  - 7일 수익: ${weekly_profit['total_pnl']:.4f}")
                 self.logger.info(f"  - 수정된 정확한 누적 수익: ${cumulative_profit:.2f}")
                 self.logger.info(f"  - 수정된 초기 자본: ${initial_capital:.2f}")
                 
-                # 🔥🔥 추가 검증: 누적 수익이 7일 수익보다 작은 경우 조정
-                if cumulative_profit > 0 and weekly_profit['total_pnl'] > cumulative_profit:
-                    self.logger.warning(f"누적 수익 ${cumulative_profit:.2f}이 7일 수익 ${weekly_profit['total_pnl']:.2f}보다 작음 - 7일 수익으로 조정")
-                    cumulative_profit = weekly_profit['total_pnl']
-                
-                # 🔥🔥 추가 검증: 누적 수익이 현재 잔고의 50%를 넘는 경우 조정
-                if cumulative_profit > total_equity * 0.5 and total_equity > 0:
-                    self.logger.warning(f"누적 수익 ${cumulative_profit:.2f}이 현재 잔고 ${total_equity:.2f}의 50%를 넘음 - 조정")
-                    cumulative_profit = min(cumulative_profit, total_equity * 0.3)  # 최대 30%로 제한
-                
             except Exception as e:
                 self.logger.error(f"Gate.io 수정된 공식 API 실패: {e}")
-                # 기본값 유지
-                cumulative_profit = 0
-                today_pnl = 0
-                weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'source': 'corrected_api_failed'}
+                # 7일 수익이 있다면 최소한 그것은 누적으로 반영
+                if weekly_profit.get('total_pnl', 0) > 0:
+                    cumulative_profit = weekly_profit['total_pnl']
+                    self.logger.info(f"🔧 폴백: 7일 수익을 누적으로 사용 ${cumulative_profit:.2f}")
+                else:
+                    cumulative_profit = 0
+                    today_pnl = 0
+                    weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'source': 'corrected_api_failed'}
                 initial_capital = 700
             
             # 사용 증거금 계산
