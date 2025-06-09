@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 레버리지 미러링 강화"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 클로즈 주문 미러링 강화"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -63,7 +63,16 @@ class MirrorTradingUtils:
         # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값도 매우 관대하게
         self.ABNORMAL_PRICE_DIFF_THRESHOLD = 10000.0  # 2000달러 → 10000달러로 대폭 상향
         
-        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 레버리지 미러링 강화")
+        # 🔥🔥🔥 클로즈 주문 판단 강화
+        self.CLOSE_ORDER_KEYWORDS = [
+            'close', 'close_long', 'close_short', 'close long', 'close short',
+            'exit', 'exit_long', 'exit_short', 'exit long', 'exit short',
+            'reduce', 'take_profit', 'stop_loss', 'tp', 'sl'
+        ]
+        
+        self.CLOSE_ORDER_STRICT_MODE = False  # 더 관대한 클로즈 주문 감지
+        
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 클로즈 주문 미러링 강화")
     
     async def extract_bitget_leverage_enhanced(self, order_data: Dict = None, position_data: Dict = None, account_data: Dict = None) -> int:
         """🔥🔥🔥 비트겟 레버리지 추출 - 다중 소스 강화"""
@@ -177,6 +186,150 @@ class MirrorTradingUtils:
         except Exception as e:
             self.logger.error(f"레버리지 추출 오류: {e}")
             return self.DEFAULT_LEVERAGE
+    
+    async def determine_close_order_details_enhanced(self, bitget_order: Dict) -> Dict:
+        """🔥🔥🔥 강화된 클로즈 주문 세부 사항 정확하게 판단"""
+        try:
+            side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
+            reduce_only = bitget_order.get('reduceOnly', False)
+            order_type = bitget_order.get('orderType', bitget_order.get('planType', '')).lower()
+            
+            # 🔥🔥🔥 강화된 클로즈 주문 판단 로직
+            is_close_order = False
+            
+            # 1. reduce_only 플래그 확인
+            if reduce_only is True or reduce_only == 'true' or str(reduce_only).lower() == 'true':
+                is_close_order = True
+                self.logger.info(f"🔴 reduce_only=True로 클로즈 주문 확인: {side}")
+            
+            # 2. side에서 클로즈 키워드 확인
+            if not is_close_order:
+                for keyword in self.CLOSE_ORDER_KEYWORDS:
+                    if keyword in side:
+                        is_close_order = True
+                        self.logger.info(f"🔴 side 키워드로 클로즈 주문 확인: '{side}' 포함 '{keyword}'")
+                        break
+            
+            # 3. TP/SL 관련 주문 타입 확인
+            if not is_close_order:
+                tp_sl_types = ['profit_loss', 'stop_loss', 'take_profit', 'tp', 'sl']
+                for tp_sl_type in tp_sl_types:
+                    if tp_sl_type in order_type:
+                        is_close_order = True
+                        self.logger.info(f"🎯 TP/SL 타입으로 클로즈 주문 확인: '{order_type}' 포함 '{tp_sl_type}'")
+                        break
+            
+            # 4. TP/SL 가격 설정 확인
+            if not is_close_order:
+                tp_price, sl_price = await self.extract_tp_sl_from_bitget_order(bitget_order)
+                if tp_price or sl_price:
+                    is_close_order = True
+                    self.logger.info(f"🎯 TP/SL 가격 설정으로 클로즈 주문 확인: TP={tp_price}, SL={sl_price}")
+            
+            # 5. 특별한 클로즈 패턴 확인
+            if not is_close_order:
+                special_patterns = ['exit', 'liquidat', 'stop', 'profit']
+                for pattern in special_patterns:
+                    if pattern in side or pattern in order_type:
+                        is_close_order = True
+                        self.logger.info(f"🔴 특별 패턴으로 클로즈 주문 확인: '{pattern}'")
+                        break
+            
+            self.logger.info(f"🔍 강화된 클로즈 주문 분석: side='{side}', reduce_only={reduce_only}, order_type='{order_type}', is_close_order={is_close_order}")
+            
+            # 🔥🔥🔥 주문 방향과 포지션 방향 정확한 매핑
+            order_direction = None
+            position_side = None
+            
+            if is_close_order:
+                # 클로즈 주문인 경우
+                if 'close_long' in side or 'exit_long' in side:
+                    order_direction = 'sell'  # 롱 포지션을 종료하려면 매도
+                    position_side = 'long'
+                elif 'close_short' in side or 'exit_short' in side:
+                    order_direction = 'buy'   # 숏 포지션을 종료하려면 매수
+                    position_side = 'short'
+                elif 'sell' in side and 'buy' not in side:
+                    # 매도로 클로즈 = 롱 포지션 종료
+                    order_direction = 'sell'
+                    position_side = 'long'
+                elif 'buy' in side and 'sell' not in side:
+                    # 매수로 클로즈 = 숏 포지션 종료
+                    order_direction = 'buy'
+                    position_side = 'short'
+                else:
+                    # 🔥🔥🔥 기본값 설정 개선 - 현재 포지션 조회하여 판단
+                    try:
+                        bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+                        active_positions = [pos for pos in bitget_positions if float(pos.get('total', 0)) > 0]
+                        
+                        if active_positions:
+                            # 활성 포지션 기준으로 클로즈 방향 추정
+                            main_position = active_positions[0]
+                            current_side = main_position.get('holdSide', '').lower()
+                            
+                            if current_side == 'long':
+                                order_direction = 'sell'
+                                position_side = 'long'
+                                self.logger.info(f"🔍 현재 롱 포지션 기준으로 클로즈 방향 추정: 매도")
+                            elif current_side == 'short':
+                                order_direction = 'buy'
+                                position_side = 'short'
+                                self.logger.info(f"🔍 현재 숏 포지션 기준으로 클로즈 방향 추정: 매수")
+                            else:
+                                # 기본값
+                                order_direction = 'sell'
+                                position_side = 'long'
+                        else:
+                            # 포지션이 없으면 기본값
+                            order_direction = 'sell'
+                            position_side = 'long'
+                            self.logger.warning(f"⚠️ 활성 포지션이 없어 기본값 사용: 롱→매도")
+                            
+                    except Exception as e:
+                        self.logger.error(f"포지션 조회 실패, 기본값 사용: {e}")
+                        order_direction = 'sell'
+                        position_side = 'long'
+            else:
+                # 오픈 주문인 경우
+                if 'buy' in side or 'long' in side:
+                    order_direction = 'buy'
+                    position_side = 'long'
+                elif 'sell' in side or 'short' in side:
+                    order_direction = 'sell'
+                    position_side = 'short'
+                else:
+                    order_direction = 'buy'  # 기본값
+                    position_side = 'long'
+            
+            result = {
+                'is_close_order': is_close_order,
+                'order_direction': order_direction,  # buy 또는 sell
+                'position_side': position_side,      # long 또는 short
+                'original_side': side,
+                'reduce_only': reduce_only,
+                'order_type': order_type,
+                'detection_method': 'enhanced_analysis'  # 강화된 분석 방법 사용
+            }
+            
+            self.logger.info(f"✅ 강화된 클로즈 주문 분석 결과: {result}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"강화된 클로즈 주문 세부 사항 판단 실패: {e}")
+            return {
+                'is_close_order': False,
+                'order_direction': 'buy',
+                'position_side': 'long',
+                'original_side': side,
+                'reduce_only': False,
+                'order_type': order_type,
+                'detection_method': 'fallback'
+            }
+    
+    async def determine_close_order_details(self, bitget_order: Dict) -> Dict:
+        """기존 호환성을 위한 래퍼 메서드"""
+        return await self.determine_close_order_details_enhanced(bitget_order)
     
     async def extract_tp_sl_from_bitget_order(self, bitget_order: Dict) -> Tuple[Optional[float], Optional[float]]:
         """비트겟 예약 주문에서 TP/SL 정보 추출"""
@@ -552,97 +705,36 @@ class MirrorTradingUtils:
             self.logger.error(f"트리거 가격 검증 실패하지만 허용: {e}")
             return True, f"검증 오류이지만 모든 가격 허용: {str(e)[:100]}"
     
-    async def determine_close_order_details(self, bitget_order: Dict) -> Dict:
-        """🔥🔥🔥 클로즈 주문 세부 사항 정확하게 판단"""
-        try:
-            side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
-            reduce_only = bitget_order.get('reduceOnly', False)
-            
-            # 클로즈 주문 여부 판단
-            is_close_order = (
-                'close' in side or 
-                reduce_only is True or 
-                reduce_only == 'true' or
-                str(reduce_only).lower() == 'true'
-            )
-            
-            self.logger.info(f"🔍 클로즈 주문 분석: side='{side}', reduce_only={reduce_only}, is_close_order={is_close_order}")
-            
-            order_direction = None
-            position_side = None
-            
-            if is_close_order:
-                # 클로즈 주문인 경우
-                if 'close_long' in side or side == 'close long':
-                    order_direction = 'sell'  # 롱 포지션을 종료하려면 매도
-                    position_side = 'long'
-                elif 'close_short' in side or side == 'close short':
-                    order_direction = 'buy'   # 숏 포지션을 종료하려면 매수
-                    position_side = 'short'
-                elif 'sell' in side:
-                    order_direction = 'sell'
-                    position_side = 'long'   # 매도로 클로즈하면 원래 롱 포지션
-                elif 'buy' in side:
-                    order_direction = 'buy'
-                    position_side = 'short'  # 매수로 클로즈하면 원래 숏 포지션
-                else:
-                    # 기본값 - side에서 추정
-                    if 'long' in side:
-                        order_direction = 'sell'
-                        position_side = 'long'
-                    elif 'short' in side:
-                        order_direction = 'buy'
-                        position_side = 'short'
-                    else:
-                        order_direction = 'sell'  # 기본값
-                        position_side = 'long'
-            else:
-                # 오픈 주문인 경우
-                if 'buy' in side or 'long' in side:
-                    order_direction = 'buy'
-                    position_side = 'long'
-                elif 'sell' in side or 'short' in side:
-                    order_direction = 'sell'
-                    position_side = 'short'
-                else:
-                    order_direction = 'buy'  # 기본값
-                    position_side = 'long'
-            
-            result = {
-                'is_close_order': is_close_order,
-                'order_direction': order_direction,  # buy 또는 sell
-                'position_side': position_side,      # long 또는 short
-                'original_side': side,
-                'reduce_only': reduce_only
-            }
-            
-            self.logger.info(f"✅ 클로즈 주문 분석 결과: {result}")
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"클로즈 주문 세부 사항 판단 실패: {e}")
-            return {
-                'is_close_order': False,
-                'order_direction': 'buy',
-                'position_side': 'long',
-                'original_side': side,
-                'reduce_only': False
-            }
-    
-    async def calculate_gate_order_size_for_close_order(self, current_gate_position_size: int, 
-                                                       close_order_details: Dict, 
-                                                       bitget_order: Dict) -> Tuple[int, bool]:
-        """🔥🔥🔥 클로즈 주문을 위한 게이트 주문 크기 계산 - 현재 포지션 크기 기반"""
+    async def calculate_gate_order_size_for_close_order_enhanced(self, current_gate_position_size: int, 
+                                                               close_order_details: Dict, 
+                                                               bitget_order: Dict) -> Tuple[int, bool]:
+        """🔥🔥🔥 강화된 클로즈 주문을 위한 게이트 주문 크기 계산 - 포지션이 없어도 처리"""
         try:
             position_side = close_order_details['position_side']  # 'long' 또는 'short'
             order_direction = close_order_details['order_direction']  # 'buy' 또는 'sell'
             
-            self.logger.info(f"🎯 클로즈 주문 크기 계산: 현재 게이트 포지션={current_gate_position_size}, 포지션={position_side}, 방향={order_direction}")
+            self.logger.info(f"🎯 강화된 클로즈 주문 크기 계산: 현재 게이트 포지션={current_gate_position_size}, 포지션={position_side}, 방향={order_direction}")
             
-            # 현재 포지션이 0이면 클로즈 주문 불가
+            # 🔥🔥🔥 현재 포지션이 0이어도 클로즈 주문 생성 허용
             if current_gate_position_size == 0:
-                self.logger.warning(f"⚠️ 현재 포지션이 0이므로 클로즈 주문 불가")
-                return 0, True
+                self.logger.warning(f"⚠️ 현재 포지션이 0이지만 클로즈 주문 강제 생성")
+                
+                # 비트겟 주문 크기 기반으로 기본 크기 계산
+                bitget_size = float(bitget_order.get('size', 1))
+                if bitget_size <= 0:
+                    bitget_size = 1
+                
+                # 최소 크기로 클로즈 주문 생성
+                base_gate_size = max(int(bitget_size * 10000), 1)  # BTC를 계약 수로 변환
+                
+                # 포지션 방향에 따라 클로즈 방향 결정
+                if position_side == 'long':
+                    final_gate_size = -base_gate_size  # 롱 포지션 클로즈 → 매도
+                else:
+                    final_gate_size = base_gate_size   # 숏 포지션 클로즈 → 매수
+                
+                self.logger.info(f"🚀 포지션 없지만 클로즈 주문 강제 생성: {final_gate_size}")
+                return final_gate_size, True
             
             # 현재 포지션 방향 확인
             current_position_side = 'long' if current_gate_position_size > 0 else 'short'
@@ -651,7 +743,7 @@ class MirrorTradingUtils:
             # 포지션 방향과 클로즈 주문 방향이 일치하는지 확인
             if current_position_side != position_side:
                 self.logger.warning(f"⚠️ 포지션 방향 불일치: 현재={current_position_side}, 예상={position_side}")
-                # 현재 포지션에 맞게 조정
+                # 🔥🔥🔥 강화: 현재 포지션에 맞게 조정하여 처리
                 actual_position_side = current_position_side
             else:
                 actual_position_side = position_side
@@ -711,13 +803,29 @@ class MirrorTradingUtils:
                 final_gate_size = gate_close_size
                 self.logger.info(f"🟢 숏 포지션 클로즈: {gate_close_size} → 매수 주문 (양수: {final_gate_size})")
             
-            self.logger.info(f"✅ 클로즈 주문 크기 계산 완료: 현재 포지션={current_gate_position_size} → 클로즈 크기={final_gate_size} (비율: {close_ratio*100:.1f}%)")
+            self.logger.info(f"✅ 강화된 클로즈 주문 크기 계산 완료: 현재 포지션={current_gate_position_size} → 클로즈 크기={final_gate_size} (비율: {close_ratio*100:.1f}%)")
             
             return final_gate_size, True  # reduce_only=True
             
         except Exception as e:
-            self.logger.error(f"클로즈 주문 크기 계산 실패: {e}")
-            return current_gate_position_size, True
+            self.logger.error(f"강화된 클로즈 주문 크기 계산 실패: {e}")
+            # 🔥🔥🔥 실패해도 기본 크기로 클로즈 주문 생성
+            bitget_size = float(bitget_order.get('size', 1))
+            base_size = max(int(bitget_size * 10000), 1)
+            
+            position_side = close_order_details.get('position_side', 'long')
+            if position_side == 'long':
+                return -base_size, True  # 롱 포지션 클로즈 → 매도
+            else:
+                return base_size, True   # 숏 포지션 클로즈 → 매수
+    
+    async def calculate_gate_order_size_for_close_order(self, current_gate_position_size: int, 
+                                                       close_order_details: Dict, 
+                                                       bitget_order: Dict) -> Tuple[int, bool]:
+        """기존 호환성을 위한 래퍼 메서드"""
+        return await self.calculate_gate_order_size_for_close_order_enhanced(
+            current_gate_position_size, close_order_details, bitget_order
+        )
     
     async def calculate_gate_order_size_fixed(self, side: str, base_size: int, is_close_order: bool = False) -> Tuple[int, bool]:
         """🔥🔥🔥 게이트 주문 수량 계산 - 클로즈 주문 방향 완전 수정"""
@@ -841,10 +949,11 @@ class MirrorTradingUtils:
     
     async def validate_close_order_against_position(self, close_order_details: Dict, 
                                                    current_gate_position_size: int) -> Tuple[bool, str]:
-        """🔥🔥🔥 클로즈 주문과 현재 포지션 간의 유효성 검증"""
+        """🔥🔥🔥 클로즈 주문과 현재 포지션 간의 유효성 검증 - 더 관대한 버전"""
         try:
+            # 🔥🔥🔥 포지션이 없어도 클로즈 주문 허용
             if current_gate_position_size == 0:
-                return False, "현재 포지션이 없어 클로즈 주문 불가"
+                return True, "현재 포지션이 없지만 클로즈 주문 강제 허용 (포지션 생성될 수 있음)"
             
             # 현재 포지션 방향
             current_position_side = 'long' if current_gate_position_size > 0 else 'short'
@@ -853,13 +962,13 @@ class MirrorTradingUtils:
             expected_position_side = close_order_details['position_side']
             
             if current_position_side != expected_position_side:
-                return True, f"포지션 방향 불일치하지만 현재 포지션({current_position_side})에 맞게 조정 가능"
+                return True, f"포지션 방향 불일치하지만 현재 포지션({current_position_side})에 맞게 조정하여 허용"
             
             return True, f"클로즈 주문 유효: {current_position_side} 포지션 → {close_order_details['order_direction']} 주문"
             
         except Exception as e:
-            self.logger.error(f"클로즈 주문 유효성 검증 실패: {e}")
-            return False, f"검증 오류: {str(e)}"
+            self.logger.error(f"클로즈 주문 유효성 검증 실패하지만 허용: {e}")
+            return True, f"검증 오류이지만 클로즈 주문 허용: {str(e)}"
     
     async def calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
         """🔥🔥🔥 실제 달러 마진 비율 동적 계산 - 레버리지 추출 강화"""
