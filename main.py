@@ -122,6 +122,7 @@ class BitcoinPredictionSystem:
             'short_term_alerts': 0,
             'critical_news_processed': 0,
             'critical_news_filtered': 0,
+            'exception_reports_sent': 0,  # 🔥🔥 추가
             'last_reset': datetime.now().isoformat()
         }
         
@@ -216,7 +217,7 @@ class BitcoinPredictionSystem:
             self.indicator_system = AdvancedTradingIndicators()
             self.logger.info("✅ 지표 시스템 초기화 완료")
             
-            # 통합 리포트 생성기
+            # 🔥🔥 통합 리포트 생성기 (강화된 버전)
             self.report_manager = ReportGeneratorManager(
                 self.config,
                 self.data_collector,
@@ -489,16 +490,28 @@ class BitcoinPredictionSystem:
                 except Exception as e:
                     self.logger.error(f"ML 예측 기록 실패: {e}")
             
-            # 예외 리포트 생성 및 전송
-            report = await self.report_manager.generate_exception_report(event_data)
-            if report and len(report.strip()) > 10:  # 빈 리포트 방지
-                await self.telegram_bot.send_message(report, parse_mode='HTML')
-                self.logger.info(f"✅ 크리티컬 알림 전송: {event_data.get('title_ko', event_data.get('title', 'Unknown'))[:50]}...")
-            else:
-                self.logger.warning(f"❌ 빈 리포트 생성으로 전송 취소: {event_data.get('title', '')[:50]}...")
+            # 🔥🔥 예외 리포트 생성 및 전송 (강화된 버전)
+            try:
+                self.logger.info(f"🚨 예외 리포트 생성 시작: {event_data.get('title', '')[:50]}...")
+                
+                report = await self.report_manager.generate_exception_report(event_data)
+                
+                if report and len(report.strip()) > 50:  # 최소 50자 이상
+                    await self.telegram_bot.send_message(report, parse_mode='HTML')
+                    self.exception_stats['exception_reports_sent'] += 1
+                    self.logger.info(f"✅ 크리티컬 예외 리포트 전송 완료: {len(report)}자")
+                    self.logger.info(f"📊 제목: {event_data.get('title_ko', event_data.get('title', 'Unknown'))[:60]}...")
+                else:
+                    self.logger.warning(f"❌ 예외 리포트가 너무 짧거나 빈 내용: {len(report) if report else 0}자")
+                    self.logger.debug(f"리포트 내용: {report[:100] if report else 'None'}...")
+                    
+            except Exception as e:
+                self.logger.error(f"예외 리포트 생성/전송 실패: {e}")
+                self.logger.debug(f"예외 리포트 오류 상세: {traceback.format_exc()}")
             
         except Exception as e:
             self.logger.error(f"크리티컬 이벤트 처리 실패: {e}")
+            self.logger.debug(f"크리티컬 이벤트 처리 오류 상세: {traceback.format_exc()}")
     
     async def exception_stats_report(self):
         """예외 감지 통계 리포트 - 크리티컬 뉴스 필터링 통계 포함"""
@@ -514,6 +527,7 @@ class BitcoinPredictionSystem:
             total = self.exception_stats['total_detected']
             critical_processed = self.exception_stats['critical_news_processed']
             critical_filtered = self.exception_stats['critical_news_filtered']
+            reports_sent = self.exception_stats['exception_reports_sent']  # 🔥🔥 추가
             
             # 시간당 평균 계산
             hourly_avg = total / hours_since_reset if hours_since_reset > 0 else 0
@@ -521,6 +535,12 @@ class BitcoinPredictionSystem:
             # 필터링 효율성 계산
             total_critical_attempts = critical_processed + critical_filtered
             filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
+            
+            # 🔥🔥 리포트 전송 성공률 계산
+            report_success_rate = (reports_sent / max(critical_processed, 1) * 100)
+            
+            # 🔥🔥 리포트 매니저 통계도 포함
+            report_manager_stats = self.report_manager.get_exception_report_stats()
             
             report = f"""<b>📊 예외 감지 통계 리포트</b>
 🕐 {current_time.strftime('%Y-%m-%d %H:%M')}
@@ -536,6 +556,12 @@ class BitcoinPredictionSystem:
 - 필터 효율: <b>{filter_efficiency:.0f}%</b>
 - 총 시도: <b>{total_critical_attempts}건</b>
 
+<b>📄 예외 리포트 시스템:</b>
+- 전송 완료: <b>{reports_sent}건</b>
+- 전송 성공률: <b>{report_success_rate:.0f}%</b>
+- 리포트 생성 성공률: <b>{report_manager_stats['success_rate']:.0f}%</b>
+- 리포트 생성 시도: <b>{report_manager_stats['total_attempts']}건</b>
+
 <b>📋 카테고리별 감지:</b>
 - 🚨 중요 뉴스: <b>{self.exception_stats['news_alerts']}건</b> ({self.exception_stats['news_alerts']/max(total,1)*100:.0f}%)
 - 📊 가격 변동: <b>{self.exception_stats['price_alerts']}건</b> ({self.exception_stats['price_alerts']/max(total,1)*100:.0f}%)
@@ -548,6 +574,7 @@ class BitcoinPredictionSystem:
 - 감지 임계값: 높음 (정확성 우선)
 - 뉴스 필터링: 강화됨
 - 크리티컬 전용: 활성화
+- 리포트 생성: 정상 작동
 
 ━━━━━━━━━━━━━━━━━━━
 🔥 비트코인 전용 시스템 정상 작동 중"""
@@ -564,10 +591,14 @@ class BitcoinPredictionSystem:
                 'short_term_alerts': 0,
                 'critical_news_processed': 0,
                 'critical_news_filtered': 0,
+                'exception_reports_sent': 0,  # 🔥🔥 추가
                 'last_reset': current_time.isoformat()
             }
             
-            self.logger.info(f"예외 감지 통계 리포트 전송 완료 - 총 {total}건 (필터링 {filter_efficiency:.0f}%)")
+            # 리포트 매니저 통계도 리셋
+            self.report_manager.reset_exception_report_stats()
+            
+            self.logger.info(f"예외 감지 통계 리포트 전송 완료 - 총 {total}건 (필터링 {filter_efficiency:.0f}%, 리포트 {reports_sent}건)")
             
         except Exception as e:
             self.logger.error(f"예외 통계 리포트 생성 실패: {e}")
@@ -656,6 +687,9 @@ class BitcoinPredictionSystem:
             total_critical_attempts = critical_processed + critical_filtered
             filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
             
+            # 🔥🔥 리포트 매니저 통계
+            report_stats = self.report_manager.get_exception_report_stats()
+            
             stats_msg = f"""<b>📊 시스템 실시간 통계</b>
 🕐 {current_time.strftime('%Y-%m-%d %H:%M')}
 ━━━━━━━━━━━━━━━━━━━
@@ -675,6 +709,12 @@ class BitcoinPredictionSystem:
 - 필터됨: <b>{critical_filtered}건</b>
 - 필터 효율: <b>{filter_efficiency:.0f}%</b>
 - 정확도 우선 모드 활성화
+
+<b>📄 예외 리포트 시스템:</b>
+- 전송 완료: <b>{self.exception_stats['exception_reports_sent']}건</b>
+- 리포트 생성 시도: <b>{report_stats['total_attempts']}건</b>
+- 리포트 생성 성공: <b>{report_stats['successful_reports']}건</b>
+- 리포트 성공률: <b>{report_stats['success_rate']:.0f}%</b>
 
 <b>📋 세부 감지 현황:</b>
 - 🚨 중요 뉴스: <b>{self.exception_stats['news_alerts']}건</b>
@@ -1168,6 +1208,7 @@ class BitcoinPredictionSystem:
                 'short_term_alerts': self.exception_stats['short_term_alerts'],
                 'critical_news_processed': self.exception_stats['critical_news_processed'],
                 'critical_news_filtered': self.exception_stats['critical_news_filtered'],
+                'exception_reports_sent': self.exception_stats['exception_reports_sent'],
                 'last_reset': self.exception_stats['last_reset']
             }
             
@@ -1221,6 +1262,10 @@ class BitcoinPredictionSystem:
             critical_filtered = self.exception_stats['critical_news_filtered']
             total_critical_attempts = critical_processed + critical_filtered
             filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
+            reports_sent = self.exception_stats['exception_reports_sent']
+            
+            # 🔥🔥 리포트 매니저 통계
+            report_stats = self.report_manager.get_exception_report_stats()
             
             report = f"""<b>📊 일일 시스템 통계 리포트</b>
 📅 {datetime.now().strftime('%Y-%m-%d')}
@@ -1241,6 +1286,12 @@ class BitcoinPredictionSystem:
 - 필터됨: <b>{critical_filtered}건</b>
 - 필터 효율: <b>{filter_efficiency:.0f}%</b>
 - 정확도 우선 모드로 노이즈 제거
+
+<b>📄 예외 리포트 시스템 성과:</b>
+- 전송 완료: <b>{reports_sent}건</b>
+- 리포트 생성 시도: <b>{report_stats['total_attempts']}건</b>
+- 리포트 생성 성공: <b>{report_stats['successful_reports']}건</b>
+- 리포트 생성 성공률: <b>{report_stats['success_rate']:.0f}%</b>
 
 <b>📈 명령어 사용 통계:</b>
 - 리포트: {self.command_stats['report']}회
@@ -1319,8 +1370,12 @@ class BitcoinPredictionSystem:
                 'short_term_alerts': 0,
                 'critical_news_processed': 0,
                 'critical_news_filtered': 0,
+                'exception_reports_sent': 0,
                 'last_reset': datetime.now().isoformat()
             }
+            
+            # 리포트 매니저 통계 초기화
+            self.report_manager.reset_exception_report_stats()
             
         except Exception as e:
             self.logger.error(f"일일 통계 리포트 생성 실패: {e}")
@@ -1437,6 +1492,9 @@ class BitcoinPredictionSystem:
             total_critical_attempts = critical_processed + critical_filtered
             filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
             
+            # 🔥🔥 리포트 통계 추가
+            report_stats = self.report_manager.get_exception_report_stats()
+            
             welcome_message += f"""
 <b>📊 시스템 상태:</b>
 - 가동 시간: {hours}시간 {minutes}분
@@ -1444,10 +1502,12 @@ class BitcoinPredictionSystem:
 - 오늘 예외 감지: <b>{total_exceptions}건</b>
 - 마지막 알림: {minutes_since_alert}분 전
 - 크리티컬 뉴스 필터링: <b>{filter_efficiency:.0f}%</b> 효율
+- 예외 리포트 생성: <b>{report_stats['success_rate']:.0f}%</b> 성공률
 - 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
 
 📈 정확한 비트코인 분석을 제공합니다.
 🔥 크리티컬 뉴스만 엄선하여 전달합니다.
+📄 전문적인 예외 리포트를 자동 생성합니다.
 
 도움이 필요하시면 언제든 질문해주세요! 😊"""
             
@@ -1518,61 +1578,36 @@ class BitcoinPredictionSystem:
             
             self.logger.info(f"✅ 비트코인 예측 시스템 시작 완료 (모드: {mode_text})")
             
-            # 시작 메시지 전송 - 간소화
+            # 🔥🔥 시작 메시지 전송 - 예외 리포트 기능 강조
             startup_msg = f"""<b>🚀 비트코인 예측 시스템이 시작되었습니다!</b>
 
 <b>📊 운영 모드:</b> {mode_text}
 <b>🕐 시작 시각:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 <b>🔥 버전:</b> 3.0 - 비트코인 전용 (크리티컬 뉴스 전용)
-"""
-            
-            if self.mirror_mode:
-                startup_msg += """
-<b>🔄 미러 트레이딩 활성화:</b>
-- 비트겟 → 게이트 자동 복제
-- 총 자산 대비 동일 비율 적용
-- 예약 주문도 동일 비율 복제
-- 실시간 가격 조정
-"""
-            
-            if self.ml_mode:
-                startup_msg += f"""
-<b>🤖 ML 예측 시스템 활성화:</b>
-- 실시간 예측 및 검증
-- 자동 학습 및 개선
-"""
-            
-            startup_msg += f"""
+
+<b>🚨 예외 리포트 시스템:</b>
+- 크리티컬 뉴스 감지 → 즉시 리포트 전송
+- 가격 급변동 (±2%) → 자동 알림
+- 거래량 급증 (3배+) → 실시간 감지
+- 리포트 형식: 표준화된 전문 분석
+- 중복 방지: 4시간 기억
+- 전송 성공률: 98%+ 목표
+
 <b>⚡ 비트코인 전용 기능 (강화):</b>
 - 예외 감지: 5분마다
 - 급속 변동: 2분마다
 - 뉴스 수집: 15초마다 (RSS)
 - 크리티컬 뉴스만 전용 처리 ✨
-- 가격 임계값: {self.exception_detector.PRICE_CHANGE_THRESHOLD}%
-- 거래량 임계값: {self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
+- 예외 리포트 자동 생성/전송 🚨
 
 <b>🔥 크리티컬 뉴스 전용 시스템:</b>
 - ETF, Fed 금리, 기업 직접 투자만 엄선
 - 구조화 상품, 의견/예측 글 자동 제외
 - 비트코인 직접 영향 뉴스만 전달
 - 가격 영향도 0.3% 이상만 처리
-- 강제 알림 시스템 완전 제거
+- 강화된 예외 리포트 자동 생성
 
-<b>📌 활성 기능:</b>
-- 실시간 가격 모니터링
-- 비트코인 전용 뉴스 추적 (크리티컬만)
-- 기술적 분석
-- GPT 기반 예측
-- 자동 리포트 생성 (9시, 13시, 18시, 23시)"""
-
-            if self.mirror_mode:
-                startup_msg += """
-- 완전한 달러 비율 복제
-- 예약 주문 실시간 복제"""
-
-            startup_msg += """
-
-이제 정말 중요한 비트코인 뉴스만 받아보실 수 있습니다!
+이제 정말 중요한 비트코인 뉴스만 전문 리포트로 받아보실 수 있습니다!
 명령어를 입력하거나 자연어로 질문해보세요.
 예: '오늘 수익은?' 또는 /help"""
             
@@ -1625,7 +1660,11 @@ class BitcoinPredictionSystem:
                 total_exceptions = self.exception_stats['total_detected']
                 critical_processed = self.exception_stats['critical_news_processed']
                 critical_filtered = self.exception_stats['critical_news_filtered']
+                reports_sent = self.exception_stats['exception_reports_sent']
                 filter_efficiency = (critical_filtered / (critical_processed + critical_filtered) * 100) if (critical_processed + critical_filtered) > 0 else 0
+                
+                # 리포트 매니저 통계
+                report_stats = self.report_manager.get_exception_report_stats()
                 
                 shutdown_msg = f"""<b>🛑 시스템 종료 중...</b>
 
@@ -1633,6 +1672,7 @@ class BitcoinPredictionSystem:
 <b>📊 처리된 명령:</b> {sum(self.command_stats.values())}건
 <b>🚨 감지된 예외:</b> {total_exceptions}건
 <b>🔥 크리티컬 뉴스:</b> 처리 {critical_processed}건, 필터링 {critical_filtered}건
+<b>📄 예외 리포트:</b> 전송 {reports_sent}건, 성공률 {report_stats['success_rate']:.0f}%
 <b>📈 필터링 효율:</b> {filter_efficiency:.0f}% (노이즈 제거)
 <b>❌ 발생한 오류:</b> {self.command_stats['errors']}건"""
                 
