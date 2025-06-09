@@ -378,6 +378,10 @@ class MirrorPositionManager:
             self.logger.error(f"현재 예약 주문 조회 실패: {e}")
             return []
 
+    async def _get_all_current_plan_orders(self) -> List[Dict]:
+        """🔥🔥🔥 호환성을 위한 메서드 - Enhanced 버전 호출"""
+        return await self._get_all_current_plan_orders_enhanced()
+
     async def _validate_close_order_enhanced(self, order: Dict, close_details: Dict) -> str:
         """🔥🔥🔥 강화된 클로즈 주문 유효성 검증 - 더 관대한 모드"""
         try:
@@ -496,13 +500,12 @@ class MirrorPositionManager:
                 gate_size = 1
             
             # 🔥🔥🔥 Gate 미러링 클라이언트로 완벽한 미러링 주문 생성 - 클로즈 주문 강화
-            mirror_result = await self.gate_mirror.create_perfect_tp_sl_order_enhanced(
+            mirror_result = await self.gate_mirror.create_perfect_tp_sl_order(
                 bitget_order=bitget_order,
                 gate_size=gate_size,
                 gate_margin=gate_margin,
                 leverage=bitget_leverage,
-                current_gate_price=self.gate_current_price,
-                close_details=close_details  # 🔥🔥🔥 클로즈 상세정보 전달
+                current_gate_price=self.gate_current_price
             )
             
             if not mirror_result['success']:
@@ -594,6 +597,12 @@ class MirrorPositionManager:
                 'plan_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', 'unknown'))
             })
             return "failed"
+
+    async def _process_perfect_mirror_order(self, bitget_order: Dict) -> str:
+        """🔥🔥🔥 호환성을 위한 메서드 - Enhanced 버전 호출"""
+        # 클로즈 주문 상세 분석
+        close_details = await self.utils.determine_close_order_details_enhanced(bitget_order)
+        return await self._process_perfect_mirror_order_enhanced(bitget_order, close_details)
 
     # 나머지 메서드들은 기존과 동일하게 유지...
     async def _is_order_recently_processed_improved(self, order_id: str, order: Dict) -> bool:
