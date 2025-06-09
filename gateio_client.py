@@ -492,9 +492,11 @@ class GateioMirrorClient:
             
             # 7일 손익
             weekly_profit = await self.get_weekly_profit()
+            weekly_pnl = weekly_profit.get('total_pnl', 0)
             
             # 🔥🔥 수정된 정확한 누적 수익을 account_book API에서 조회
             cumulative_profit = 0.0
+            initial_capital = 700  # 기본 초기 자본
             
             try:
                 logger.info("📊 수정된 account_book API에서 정확한 누적 수익 계산 (2025년 5월부터)")
@@ -527,33 +529,66 @@ class GateioMirrorClient:
                     
                     logger.info(f"✅ account_book에서 수정된 정확한 누적 수익: ${cumulative_profit:.4f}")
                     
-                    # 🔥🔥 수정: 누적 수익이 마이너스이거나 비현실적으로 큰 경우 조정
-                    if cumulative_profit < 0:
-                        logger.warning(f"누적 수익이 마이너스: ${cumulative_profit:.4f} - 0으로 조정")
-                        cumulative_profit = 0.0
-                    elif cumulative_profit > current_balance:
-                        logger.warning(f"누적 수익이 현재 잔고보다 큼: ${cumulative_profit:.4f} > ${current_balance:.4f} - 현재 잔고에서 700 뺀 값으로 조정")
-                        cumulative_profit = max(0, current_balance - 700)  # 초기 자본 $700 가정
-                    
                 else:
-                    logger.info("2025년 5월부터 pnl 기록 없음 - 0으로 설정")
+                    logger.info("2025년 5월부터 pnl 기록 없음")
                     cumulative_profit = 0.0
                 
             except Exception as e:
                 logger.error(f"수정된 account_book API 누적 손익 조회 실패: {e}")
                 cumulative_profit = 0.0
             
-            # 🔥🔥 수정된 초기 자본 계산
-            # 현재 잔고가 있다면 적절한 초기 자본을 역산
-            if current_balance > 0 and cumulative_profit >= 0:
-                initial_capital = current_balance - cumulative_profit
-                # 초기 자본이 너무 작거나 음수인 경우 기본값 설정
-                if initial_capital <= 0:
-                    initial_capital = 700  # 기본 초기 자본
-                    cumulative_profit = max(0, current_balance - initial_capital)
-            else:
-                initial_capital = 700  # 기본 초기 자본
+            # 🔥🔥 수정된 누적 수익 검증 및 조정 로직
+            logger.info(f"🔧 누적 수익 검증 시작:")
+            logger.info(f"  - account_book 누적: ${cumulative_profit:.4f}")
+            logger.info(f"  - 7일 손익: ${weekly_pnl:.4f}")
+            logger.info(f"  - 현재 잔고: ${current_balance:.4f}")
+            
+            # 1. 누적 수익이 0이고 7일 수익이 있는 경우
+            if cumulative_profit == 0 and weekly_pnl > 0:
+                logger.warning(f"⚠️ 누적 수익이 0인데 7일 수익이 ${weekly_pnl:.4f} - 추정 로직 적용")
+                
+                # 현재 잔고에서 적절한 초기 자본을 추정
+                if current_balance > weekly_pnl:
+                    # 현재 잔고가 7일 수익보다 크면, 차액을 초기 자본으로 추정
+                    estimated_initial = current_balance - weekly_pnl
+                    if estimated_initial >= 500:  # 합리적인 초기 자본인 경우
+                        initial_capital = estimated_initial
+                        cumulative_profit = weekly_pnl
+                        logger.info(f"🔧 추정 1: 초기자본=${initial_capital:.2f}, 누적수익=${cumulative_profit:.2f}")
+                    else:
+                        # 초기 자본이 너무 작으면 기본값 사용하고 현재 잔고 - 700을 누적으로
+                        initial_capital = 700
+                        cumulative_profit = max(0, current_balance - initial_capital)
+                        logger.info(f"🔧 추정 2: 초기자본=${initial_capital:.2f}, 누적수익=${cumulative_profit:.2f}")
+                else:
+                    # 현재 잔고가 7일 수익보다 작거나 같으면 7일 수익을 누적으로
+                    cumulative_profit = weekly_pnl
+                    initial_capital = max(100, current_balance - cumulative_profit)
+                    logger.info(f"🔧 추정 3: 초기자본=${initial_capital:.2f}, 누적수익=${cumulative_profit:.2f}")
+            
+            # 2. 누적 수익이 마이너스인 경우 0으로 조정
+            elif cumulative_profit < 0:
+                logger.warning(f"누적 수익이 마이너스: ${cumulative_profit:.4f} - 0으로 조정")
                 cumulative_profit = 0.0
+                # 7일 수익이 있다면 그것을 누적으로
+                if weekly_pnl > 0:
+                    cumulative_profit = weekly_pnl
+                    logger.info(f"🔧 7일 수익을 누적으로 적용: ${cumulative_profit:.2f}")
+            
+            # 3. 누적 수익이 현재 잔고보다 큰 경우 조정
+            elif cumulative_profit > current_balance and current_balance > 0:
+                logger.warning(f"누적 수익이 현재 잔고보다 큼: ${cumulative_profit:.4f} > ${current_balance:.4f} - 조정")
+                cumulative_profit = max(0, current_balance - initial_capital)
+                if cumulative_profit == 0 and weekly_pnl > 0:
+                    cumulative_profit = weekly_pnl  # 최소한 7일 수익은 반영
+                logger.info(f"🔧 조정된 누적 수익: ${cumulative_profit:.2f}")
+            
+            # 4. 초기 자본 재계산 (누적 수익이 있는 경우)
+            if cumulative_profit > 0 and current_balance > cumulative_profit:
+                calculated_initial = current_balance - cumulative_profit
+                if calculated_initial > 0:
+                    initial_capital = calculated_initial
+                    logger.info(f"🔧 재계산된 초기 자본: ${initial_capital:.2f}")
             
             # 수익률 계산
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
@@ -564,7 +599,7 @@ class GateioMirrorClient:
             logger.info(f"  - 계산된 초기 자본: ${initial_capital:.2f}")
             logger.info(f"  - 수익률: {cumulative_roi:+.1f}%")
             logger.info(f"  - 오늘 실현손익: ${today_realized:.2f}")
-            logger.info(f"  - 7일 손익: ${weekly_profit.get('total_pnl', 0):.2f}")
+            logger.info(f"  - 7일 손익: ${weekly_pnl:.2f}")
             
             return {
                 'total_pnl': cumulative_profit,
@@ -574,7 +609,7 @@ class GateioMirrorClient:
                 'actual_profit': cumulative_profit,  # 수정된 정확한 누적 수익 (account_book API 기반)
                 'initial_capital': initial_capital,  # 수정된 초기 자본 계산
                 'cumulative_roi': cumulative_roi,
-                'source': 'corrected_accurate_account_book_calculation'
+                'source': 'corrected_accurate_account_book_calculation_with_validation'
             }
             
         except Exception as e:
