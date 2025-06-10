@@ -479,9 +479,9 @@ class GateioMirrorClient:
             }
     
     async def get_real_cumulative_profit_analysis(self) -> Dict:
-        """🔥🔥 진짜 누적 수익 분석 - 다각도 데이터 수집"""
+        """🔥🔥 진짜 누적 수익 분석 - 입금/출금 기반 정확한 계산"""
         try:
-            logger.info(f"🔍 Gate.io 진짜 누적 수익 분석 시작 (다각도 데이터 수집):")
+            logger.info(f"🔍 Gate.io 진짜 누적 수익 분석 시작 (입금/출금 기반 정확한 계산):")
             
             # 현재 계정 정보
             account = await self.get_account_balance()
@@ -489,19 +489,19 @@ class GateioMirrorClient:
             
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
             
-            # 🔥🔥 방법 1: 입금/출금 내역으로 실제 초기 자본 파악
+            # 🔥🔥 방법 1: 입금/출금 내역으로 실제 초기 자본 파악 (최대 90일)
             initial_deposits = 0.0
             withdrawals = 0.0
             
             try:
-                logger.info("📊 방법 1: 입금/출금 내역 분석")
+                logger.info("📊 방법 1: 입금/출금 내역 분석 (90일간)")
                 
-                # 최대 60일간 입금/출금 내역 조회
+                # 최대 90일간 입금/출금 내역 조회
                 kst = pytz.timezone('Asia/Seoul')
                 now = datetime.now(kst)
-                sixty_days_ago = now - timedelta(days=60)
+                ninety_days_ago = now - timedelta(days=90)
                 
-                start_timestamp_ms = int(sixty_days_ago.astimezone(pytz.UTC).timestamp() * 1000)
+                start_timestamp_ms = int(ninety_days_ago.astimezone(pytz.UTC).timestamp() * 1000)
                 end_timestamp_ms = int(now.astimezone(pytz.UTC).timestamp() * 1000)
                 
                 # 입금 기록 (fund 타입)
@@ -520,165 +520,71 @@ class GateioMirrorClient:
                         elif change < 0:  # 출금
                             withdrawals += abs(change)
                     
-                    logger.info(f"  - 60일간 입금: ${initial_deposits:.2f}")
-                    logger.info(f"  - 60일간 출금: ${withdrawals:.2f}")
+                    logger.info(f"  - 90일간 입금: ${initial_deposits:.2f}")
+                    logger.info(f"  - 90일간 출금: ${withdrawals:.2f}")
                     logger.info(f"  - 순입금: ${initial_deposits - withdrawals:.2f}")
                 
             except Exception as e:
                 logger.error(f"입금/출금 내역 조회 실패: {e}")
             
-            # 🔥🔥 방법 2: 거래 수수료 누적으로 거래량 추정
-            total_fees = 0.0
-            trade_count = 0
+            # 🔥🔥 방법 2: 실제 누적 수익 계산 - 입금/출금 기반
+            cumulative_profit = 0.0
+            initial_capital = 750  # 기본값
+            calculation_method = "balance_based_default"
             
-            try:
-                logger.info("📊 방법 2: 거래 수수료 누적 분석")
-                
-                # 수수료 기록 (fee 타입)
-                fee_records = await self.get_account_book(
-                    start_time=start_timestamp_ms,
-                    end_time=end_timestamp_ms,
-                    limit=1000,
-                    type_filter='fee'
-                )
-                
-                if fee_records:
-                    for record in fee_records:
-                        change = float(record.get('change', 0))
-                        if change < 0:  # 수수료는 마이너스
-                            total_fees += abs(change)
-                            trade_count += 1
-                    
-                    logger.info(f"  - 60일간 총 수수료: ${total_fees:.4f}")
-                    logger.info(f"  - 거래 횟수: {trade_count}회")
-                    
-                    # 수수료 기준 거래량 추정 (0.075% 기준)
-                    estimated_volume = total_fees / 0.00075 if total_fees > 0 else 0
-                    logger.info(f"  - 추정 거래량: ${estimated_volume:.2f}")
-                
-            except Exception as e:
-                logger.error(f"수수료 내역 조회 실패: {e}")
-            
-            # 🔥🔥 방법 3: 30일간 상세 pnl 분석
-            detailed_pnl = 0.0
-            pnl_days = 0
-            daily_pnl = {}
-            
-            try:
-                logger.info("📊 방법 3: 30일간 상세 pnl 분석")
-                
-                thirty_days_ago = now - timedelta(days=30)
-                start_timestamp_ms = int(thirty_days_ago.astimezone(pytz.UTC).timestamp() * 1000)
-                
-                # 30일간 pnl 기록 상세 조회
-                pnl_records = await self.get_account_book(
-                    start_time=start_timestamp_ms,
-                    end_time=end_timestamp_ms,
-                    limit=1000,
-                    type_filter='pnl'
-                )
-                
-                if pnl_records:
-                    for record in pnl_records:
-                        change = float(record.get('change', 0))
-                        record_time = record.get('time', 0)
-                        
-                        if change != 0:
-                            detailed_pnl += change
-                            
-                            # 일별 pnl 계산
-                            if record_time:
-                                try:
-                                    dt = datetime.fromtimestamp(int(record_time), tz=kst)
-                                    date_key = dt.strftime('%Y-%m-%d')
-                                    
-                                    if date_key not in daily_pnl:
-                                        daily_pnl[date_key] = 0
-                                        pnl_days += 1
-                                    
-                                    daily_pnl[date_key] += change
-                                except:
-                                    pass
-                    
-                    logger.info(f"  - 30일간 상세 pnl: ${detailed_pnl:.4f}")
-                    logger.info(f"  - 거래 활동 일수: {pnl_days}일")
-                    
-                    # 최근 5일 pnl 트렌드
-                    recent_days = sorted(daily_pnl.keys())[-5:]
-                    recent_pnl = sum(daily_pnl[day] for day in recent_days)
-                    logger.info(f"  - 최근 5일 pnl: ${recent_pnl:.4f}")
-                
-            except Exception as e:
-                logger.error(f"상세 pnl 분석 실패: {e}")
-            
-            # 🔥🔥 최종 누적 수익 계산 - 다각도 검증
-            logger.info("🔧 최종 누적 수익 계산:")
-            
-            # 실제 초기 자본 결정
-            actual_initial_capital = 750  # 기본값
-            
+            # 입금 내역이 있는 경우 - 가장 정확한 방법
             if initial_deposits > 0:
-                # 입금 내역이 있으면 그것을 초기 자본으로
-                actual_initial_capital = initial_deposits - withdrawals
-                calculation_method = "deposit_based"
-                logger.info(f"  - 입금 기반 초기 자본: ${actual_initial_capital:.2f}")
+                # 순 투자금 = 입금 - 출금
+                net_investment = initial_deposits - withdrawals
+                
+                # 누적 수익 = 현재 잔고 - 순 투자금
+                cumulative_profit = current_balance - net_investment
+                initial_capital = net_investment
+                calculation_method = "deposit_withdrawal_based"
+                
+                logger.info(f"✅ 입금/출금 기반 정확한 계산:")
+                logger.info(f"  - 순 투자금: ${net_investment:.2f}")
+                logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
+            
+            # 입금 내역이 없는 경우 - 잔고 기반 추정
             else:
-                # 입금 내역이 없으면 거래량/수수료 기반 추정
-                if total_fees > 1:  # 수수료가 $1 이상이면 활발한 거래
-                    # 수수료가 많다면 더 큰 초기 자본 추정
-                    if total_fees > 5:
-                        actual_initial_capital = 1000
-                    elif total_fees > 2:
-                        actual_initial_capital = 800
-                    else:
-                        actual_initial_capital = 600
-                    calculation_method = "fee_based_estimation"
-                    logger.info(f"  - 수수료 기반 추정 초기 자본: ${actual_initial_capital:.2f}")
+                logger.info("📊 방법 2: 잔고 기반 추정 (입금 내역 없음)")
+                
+                # 기본 초기 자본으로 계산
+                if current_balance > 0:
+                    # 추정 초기 자본 (보수적)
+                    estimated_initial = 750
+                    cumulative_profit = current_balance - estimated_initial
+                    initial_capital = estimated_initial
+                    calculation_method = "balance_minus_estimated_initial"
+                    
+                    logger.info(f"  - 추정 초기 자본: ${estimated_initial:.2f}")
+                    logger.info(f"  - 추정 누적 수익: ${cumulative_profit:.2f}")
                 else:
-                    # 거래량이 적으면 기본값
-                    calculation_method = "default_estimation"
-                    logger.info(f"  - 기본 추정 초기 자본: ${actual_initial_capital:.2f}")
-            
-            # 최종 누적 수익 계산
-            final_cumulative_profit = current_balance - actual_initial_capital
-            
-            # 30일 pnl과 비교하여 검증
-            if abs(detailed_pnl) > 10 and abs(final_cumulative_profit - detailed_pnl) > 50:
-                logger.warning("누적 수익과 30일 pnl 차이가 큼 - 30일 pnl 기반으로 조정")
-                
-                # 30일 pnl을 기준으로 누적 수익 추정
-                estimated_full_cumulative = detailed_pnl * (60 / 30)  # 2배로 추정
-                
-                if abs(estimated_full_cumulative) > abs(final_cumulative_profit):
-                    final_cumulative_profit = estimated_full_cumulative
-                    actual_initial_capital = current_balance - final_cumulative_profit
-                    calculation_method += "_30day_adjusted"
-                    logger.info(f"  - 30일 pnl 조정 누적 수익: ${final_cumulative_profit:.2f}")
+                    # 잔고가 0인 경우
+                    cumulative_profit = 0
+                    initial_capital = 750
+                    calculation_method = "zero_balance"
             
             # 수익률 계산
-            roi = (final_cumulative_profit / actual_initial_capital * 100) if actual_initial_capital > 0 else 0
+            cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             
-            logger.info(f"✅ Gate.io 진짜 누적 수익 분석 완료:")
+            logger.info(f"✅ Gate.io 최종 누적 수익 분석 완료:")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
-            logger.info(f"  - 실제 초기 자본: ${actual_initial_capital:.2f}")
-            logger.info(f"  - 진짜 누적 수익: ${final_cumulative_profit:.2f}")
-            logger.info(f"  - 수익률: {roi:+.1f}%")
+            logger.info(f"  - 실제 초기 자본: ${initial_capital:.2f}")
+            logger.info(f"  - 진짜 누적 수익: ${cumulative_profit:.2f}")
+            logger.info(f"  - 수익률: {cumulative_roi:+.1f}%")
             logger.info(f"  - 계산 방법: {calculation_method}")
-            logger.info(f"  - 총 수수료: ${total_fees:.4f}")
-            logger.info(f"  - 거래 활동일: {pnl_days}일")
             
             return {
-                'actual_profit': final_cumulative_profit,
-                'initial_capital': actual_initial_capital,
+                'actual_profit': cumulative_profit,
+                'initial_capital': initial_capital,
                 'current_balance': current_balance,
-                'roi': roi,
+                'roi': cumulative_roi,
                 'calculation_method': calculation_method,
                 'total_deposits': initial_deposits,
                 'total_withdrawals': withdrawals,
-                'total_fees': total_fees,
-                'trade_count': trade_count,
-                'detailed_30day_pnl': detailed_pnl,
-                'active_trading_days': pnl_days,
+                'net_investment': initial_deposits - withdrawals,
                 'confidence': 'high' if initial_deposits > 0 else 'medium'
             }
             
@@ -694,53 +600,58 @@ class GateioMirrorClient:
             }
     
     async def get_profit_history_since_may(self) -> Dict:
-        """🔥🔥 Gate.io 정확한 누적 수익 조회 - 진짜 분석 기반"""
+        """🔥🔥 Gate.io 수정된 정확한 누적 수익 조회 - 7일 수익과 구분"""
         try:
-            logger.info(f"🔍 Gate.io 정확한 누적 수익 조회 (진짜 분석 기반):")
+            logger.info(f"🔍 Gate.io 수정된 정확한 누적 수익 조회 (7일 수익과 명확히 구분):")
             
             # 오늘 실현 손익
             today_realized = await self.get_today_realized_pnl()
             
-            # 7일 손익
+            # 7일 손익 (별도 계산)
             weekly_profit = await self.get_weekly_profit()
             
-            # 🔥🔥 진짜 누적 수익 분석 실행
-            real_analysis = await self.get_real_cumulative_profit_analysis()
+            # 🔥🔥 누적 수익 분석 (7일 수익과 완전히 별개로 계산)
+            cumulative_analysis = await self.get_real_cumulative_profit_analysis()
             
-            cumulative_profit = real_analysis.get('actual_profit', 0)
-            initial_capital = real_analysis.get('initial_capital', 750)
-            current_balance = real_analysis.get('current_balance', 0)
-            cumulative_roi = real_analysis.get('roi', 0)
-            calculation_method = real_analysis.get('calculation_method', 'unknown')
-            confidence = real_analysis.get('confidence', 'low')
+            cumulative_profit = cumulative_analysis.get('actual_profit', 0)
+            initial_capital = cumulative_analysis.get('initial_capital', 750)
+            current_balance = cumulative_analysis.get('current_balance', 0)
+            cumulative_roi = cumulative_analysis.get('roi', 0)
+            calculation_method = cumulative_analysis.get('calculation_method', 'unknown')
+            confidence = cumulative_analysis.get('confidence', 'low')
             
-            logger.info(f"Gate.io 정확한 누적 수익 최종 결과:")
+            # 🔥🔥 검증: 7일 수익과 누적 수익이 다른지 확인
+            weekly_pnl = weekly_profit.get('total_pnl', 0)
+            diff_7d_vs_cumulative = abs(cumulative_profit - weekly_pnl)
+            
+            logger.info(f"Gate.io 수정된 정확한 누적 수익 최종 결과:")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
-            logger.info(f"  - 7일 수익: ${weekly_profit.get('total_pnl', 0):.2f}")
-            logger.info(f"  - 진짜 누적 수익: ${cumulative_profit:.2f}")
+            logger.info(f"  - 7일 수익: ${weekly_pnl:.2f}")
+            logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
             logger.info(f"  - 실제 초기 자본: ${initial_capital:.2f}")
             logger.info(f"  - 수익률: {cumulative_roi:+.1f}%")
             logger.info(f"  - 계산 방법: {calculation_method}")
             logger.info(f"  - 신뢰도: {confidence}")
-            logger.info(f"  - 7일과의 차이: ${abs(cumulative_profit - weekly_profit.get('total_pnl', 0)):.2f}")
+            logger.info(f"  - 7일 vs 누적 차이: ${diff_7d_vs_cumulative:.2f} ({'정상' if diff_7d_vs_cumulative > 10 else '의심스러움'})")
             
             return {
                 'total_pnl': cumulative_profit,
                 'today_realized': today_realized,
                 'weekly': weekly_profit,
                 'current_balance': current_balance,
-                'actual_profit': cumulative_profit,  # 진짜 분석 기반 누적 수익
+                'actual_profit': cumulative_profit,  # 진짜 누적 수익 (7일과 완전히 구분됨)
                 'initial_capital': initial_capital,  # 실제 초기 자본
                 'cumulative_roi': cumulative_roi,
-                'source': f'real_analysis_{calculation_method}',
+                'source': f'corrected_analysis_{calculation_method}',
                 'calculation_method': calculation_method,
                 'confidence': confidence,
-                'weekly_vs_cumulative_diff': abs(cumulative_profit - weekly_profit.get('total_pnl', 0)),
-                'analysis_details': real_analysis
+                'weekly_vs_cumulative_diff': diff_7d_vs_cumulative,
+                'analysis_details': cumulative_analysis,
+                'is_7day_and_cumulative_different': diff_7d_vs_cumulative > 10  # 검증 플래그
             }
             
         except Exception as e:
-            logger.error(f"Gate.io 정확한 누적 수익 조회 실패: {e}")
+            logger.error(f"Gate.io 수정된 정확한 누적 수익 조회 실패: {e}")
             return {
                 'total_pnl': 0,
                 'today_realized': 0,
@@ -749,7 +660,7 @@ class GateioMirrorClient:
                 'actual_profit': 0,
                 'initial_capital': 750,
                 'cumulative_roi': 0,
-                'source': 'error_real_analysis',
+                'source': 'error_corrected_analysis',
                 'confidence': 'low'
             }
     
