@@ -97,7 +97,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             return "❌ 수익 현황 조회 중 오류가 발생했습니다."
     
     async def _get_gateio_data_corrected_calculation(self) -> dict:
-        """🔥🔥 Gate.io 수정된 정확한 데이터 조회 - 실제 PnL 기록 기반"""
+        """🔥🔥 Gate.io 수정된 정확한 데이터 조회 - 실제 PnL 기록 기반 + 누적 손익 수정"""
         try:
             # Gate.io 클라이언트가 없는 경우
             if not self.gateio_client:
@@ -197,37 +197,77 @@ class ProfitReportGenerator(BaseReportGenerator):
                 cumulative_profit = corrected_profit_history.get('actual_profit', 0)
                 initial_capital = corrected_profit_history.get('initial_capital', 700)
                 
-                # 🔥🔥 누적 수익 수정 로직 추가 - 7일 수익이 있는데 누적이 0인 경우 조정
-                if cumulative_profit == 0 and weekly_profit['total_pnl'] > 0:
-                    self.logger.warning(f"⚠️ 누적 수익이 0인데 7일 수익이 ${weekly_profit['total_pnl']:.2f} - 현재 계정 기반으로 추정")
+                # 🔥🔥 누적 수익 수정 로직 강화 - 더 정확한 계산
+                self.logger.info(f"🔧 Gate.io 누적 수익 검증 및 수정:")
+                self.logger.info(f"  - API에서 가져온 누적 수익: ${cumulative_profit:.2f}")
+                self.logger.info(f"  - 7일 수익: ${weekly_profit['total_pnl']:.2f}")
+                self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.2f}")
+                self.logger.info(f"  - 현재 잔고: ${total_equity:.2f}")
+                self.logger.info(f"  - 초기 자본: ${initial_capital:.2f}")
+                
+                # 🔥🔥 Case 1: 누적 수익이 0이지만 실제 손실이 있는 경우
+                if cumulative_profit == 0:
+                    self.logger.warning(f"⚠️ 누적 수익이 0 - 수정 로직 적용")
                     
-                    # 현재 잔고에서 초기 자본을 빼서 누적 수익 추정
-                    if total_equity > initial_capital:
-                        estimated_cumulative = total_equity - initial_capital
-                        cumulative_profit = max(estimated_cumulative, weekly_profit['total_pnl'])
-                        self.logger.info(f"🔧 추정된 누적 수익: ${cumulative_profit:.2f} (현재잔고 ${total_equity:.2f} - 초기자본 ${initial_capital:.2f})")
+                    # 현재 잔고에서 초기 자본을 빼서 실제 손익 계산
+                    actual_profit_from_balance = total_equity - initial_capital
+                    
+                    self.logger.info(f"  - 잔고 기반 계산: ${total_equity:.2f} - ${initial_capital:.2f} = ${actual_profit_from_balance:.2f}")
+                    
+                    # 7일 수익이 음수이고 현재 잔고가 초기 자본보다 적다면
+                    if weekly_profit['total_pnl'] < 0 and total_equity < initial_capital:
+                        cumulative_profit = actual_profit_from_balance
+                        self.logger.info(f"🔧 수정 1: 잔고 기반 손실 반영 ${cumulative_profit:.2f}")
+                    
+                    # 7일 수익이 있다면 최소한 그것은 반영
+                    elif weekly_profit['total_pnl'] != 0:
+                        # 잔고 기반 계산과 7일 수익 중 더 합리적인 것 선택
+                        if abs(actual_profit_from_balance) > abs(weekly_profit['total_pnl']):
+                            cumulative_profit = actual_profit_from_balance
+                            self.logger.info(f"🔧 수정 2: 잔고 기반 선택 ${cumulative_profit:.2f}")
+                        else:
+                            cumulative_profit = weekly_profit['total_pnl']
+                            self.logger.info(f"🔧 수정 3: 7일 수익 기반 선택 ${cumulative_profit:.2f}")
+                    
+                    # 그 외의 경우 잔고 기반 계산 사용
                     else:
-                        # 최소한 7일 수익은 반영
-                        cumulative_profit = weekly_profit['total_pnl']
-                        self.logger.info(f"🔧 최소 7일 수익으로 설정: ${cumulative_profit:.2f}")
+                        cumulative_profit = actual_profit_from_balance
+                        self.logger.info(f"🔧 수정 4: 기본 잔고 기반 ${cumulative_profit:.2f}")
                 
-                # 🔥🔥 추가 검증: 누적 수익이 현재 잔고보다 큰 경우 조정
-                if cumulative_profit > total_equity and total_equity > 0:
-                    self.logger.warning(f"누적 수익 ${cumulative_profit:.2f}이 현재 잔고 ${total_equity:.2f}보다 큼 - 조정")
-                    cumulative_profit = max(0, total_equity - initial_capital)
+                # 🔥🔥 Case 2: 누적 수익이 현재 잔고와 너무 차이가 나는 경우
+                elif abs(cumulative_profit - (total_equity - initial_capital)) > 100:
+                    self.logger.warning(f"누적 수익과 잔고 차이가 큼 - 잔고 기준으로 조정")
+                    old_cumulative = cumulative_profit
+                    cumulative_profit = total_equity - initial_capital
+                    self.logger.info(f"🔧 수정 5: ${old_cumulative:.2f} → ${cumulative_profit:.2f}")
                 
-                self.logger.info(f"✅ Gate.io 수정된 공식 API 성공 (실제 PnL만):")
+                # 🔥🔥 Case 3: 초기 자본 재검증
+                if cumulative_profit != 0 and total_equity > 0:
+                    # 누적 수익이 있다면 초기 자본을 역산으로 재계산
+                    recalculated_initial = total_equity - cumulative_profit
+                    if 500 <= recalculated_initial <= 1000:  # 합리적인 범위 내라면
+                        initial_capital = recalculated_initial
+                        self.logger.info(f"🔧 수정 6: 초기 자본 재계산 ${initial_capital:.2f}")
+                
+                self.logger.info(f"✅ Gate.io 최종 수정된 수익 데이터:")
                 self.logger.info(f"  - 오늘 실현손익: ${today_pnl:.4f}")
                 self.logger.info(f"  - 7일 수익: ${weekly_profit['total_pnl']:.4f}")
-                self.logger.info(f"  - 수정된 정확한 누적 수익: ${cumulative_profit:.2f}")
-                self.logger.info(f"  - 수정된 초기 자본: ${initial_capital:.2f}")
+                self.logger.info(f"  - 최종 누적 수익: ${cumulative_profit:.2f}")
+                self.logger.info(f"  - 최종 초기 자본: ${initial_capital:.2f}")
                 
             except Exception as e:
                 self.logger.error(f"Gate.io 수정된 공식 API 실패: {e}")
-                # 7일 수익이 있다면 최소한 그것은 누적으로 반영
-                if weekly_profit.get('total_pnl', 0) > 0:
-                    cumulative_profit = weekly_profit['total_pnl']
-                    self.logger.info(f"🔧 폴백: 7일 수익을 누적으로 사용 ${cumulative_profit:.2f}")
+                # 🔥🔥 폴백 로직도 개선
+                if total_equity > 0:
+                    # 현재 잔고가 있다면 최소한 잔고 기반으로 계산
+                    cumulative_profit = total_equity - initial_capital
+                    self.logger.info(f"🔧 폴백: 잔고 기반 계산 ${cumulative_profit:.2f}")
+                    
+                    # 7일 수익이 있다면 그것과 비교
+                    if weekly_profit.get('total_pnl', 0) != 0:
+                        if abs(weekly_profit['total_pnl']) > abs(cumulative_profit):
+                            cumulative_profit = weekly_profit['total_pnl']
+                            self.logger.info(f"🔧 폴백: 7일 수익 우선 ${cumulative_profit:.2f}")
                 else:
                     cumulative_profit = 0
                     today_pnl = 0
