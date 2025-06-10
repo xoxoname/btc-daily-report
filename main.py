@@ -1156,7 +1156,7 @@ class BitcoinPredictionSystem:
             self.logger.error(f"미러 건강 체크 실패: {e}")
     
     async def system_health_check(self):
-        """시스템 건강 상태 체크"""
+        """🔥🔥 시스템 건강 상태 체크 - 마지막 알림 시간 체크 완화"""
         try:
             self.logger.info("시스템 건강 상태 체크 시작")
             
@@ -1221,24 +1221,42 @@ class BitcoinPredictionSystem:
             # 명령어 통계
             health_status['command_stats'] = self.command_stats.copy()
             
-            # 🔥🔥 마지막 알림 시간 체크
+            # 🔥🔥 마지막 알림 시간 체크 - 임계값을 24시간으로 완화
             time_since_last_alert = datetime.now() - self.last_successful_alert
             health_status['minutes_since_last_alert'] = int(time_since_last_alert.total_seconds() / 60)
             
-            # 문제가 있으면 알림
-            if health_status['errors'] or health_status['minutes_since_last_alert'] > 120:
+            # 🔥🔥 경고 조건 수정: 시스템 오류가 있을 때만 또는 24시간 이상 알림이 없을 때만
+            should_alert = False
+            alert_reasons = []
+            
+            if health_status['errors']:
+                should_alert = True
+                alert_reasons.extend(health_status['errors'])
+            
+            # 마지막 알림 시간 체크를 24시간(1440분)으로 완화
+            if health_status['minutes_since_last_alert'] > 1440:  # 120분 → 1440분 (24시간)
+                should_alert = True
+                alert_reasons.append(f"마지막 알림: {health_status['minutes_since_last_alert']}분 전 (24시간 초과)")
+            
+            # 메모리 사용량이 500MB를 초과하는 경우
+            if health_status['memory_mb'] > 500:
+                should_alert = True
+                alert_reasons.append(f"높은 메모리 사용: {health_status['memory_mb']:.1f} MB")
+            
+            # 경고 조건에 맞을 때만 알림 전송
+            if should_alert:
                 error_msg = "<b>⚠️ 시스템 건강 체크 경고</b>\n"
                 
-                if health_status['errors']:
-                    for error in health_status['errors']:
-                        error_msg += f"• {error}\n"
+                for reason in alert_reasons:
+                    error_msg += f"• {reason}\n"
                 
-                if health_status['minutes_since_last_alert'] > 120:
-                    error_msg += f"• 마지막 알림: {health_status['minutes_since_last_alert']}분 전\n"
-                
-                error_msg += f"\n메모리 사용: {health_status['memory_mb']:.1f} MB"
+                error_msg += f"\n<b>시스템 정보:</b>"
+                error_msg += f"\n• 메모리 사용: {health_status['memory_mb']:.1f} MB"
+                error_msg += f"\n• 가동 시간: {health_status['uptime']}"
+                error_msg += f"\n• 정상 서비스: {len([s for s in health_status['services'].values() if s == 'OK'])}개"
                 
                 await self.telegram_bot.send_message(error_msg, parse_mode='HTML')
+                self.logger.warning(f"시스템 건강 체크 경고 전송: {len(alert_reasons)}개 이슈")
             
             # 로그 기록
             self.logger.info(f"시스템 건강 체크 완료: {json.dumps(health_status, indent=2)}")
@@ -1351,6 +1369,7 @@ class BitcoinPredictionSystem:
 - 가격 임계값: {self.exception_detector.PRICE_CHANGE_THRESHOLD}%
 - 거래량 임계값: {self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
 - 뉴스 필터링: 강화됨 (크리티컬 전용)
+- 건강 체크: 시스템 오류 시에만 알림
 
 ━━━━━━━━━━━━━━━━━━━
 ⚡ 비트코인 전용 시스템이 완벽히 작동했습니다!"""
@@ -1446,7 +1465,7 @@ class BitcoinPredictionSystem:
 - 예외 감지: 5분마다
 - 급속 변동: 2분마다
 - 뉴스 수집: 15초마다 (RSS)
-- 시스템 체크: 30분마다"""
+- 시스템 체크: 30분마다 (오류 시에만 알림)"""
             
             if self.ml_mode:
                 welcome_message += "\n• ML 예측 검증: 30분마다"
@@ -1504,10 +1523,12 @@ class BitcoinPredictionSystem:
 - 크리티컬 뉴스 필터링: <b>{filter_efficiency:.0f}%</b> 효율
 - 예외 리포트 생성: <b>{report_stats['success_rate']:.0f}%</b> 성공률
 - 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
+- 건강 체크: 시스템 오류 시에만 알림 (개선됨)
 
 📈 정확한 비트코인 분석을 제공합니다.
 🔥 크리티컬 뉴스만 엄선하여 전달합니다.
 📄 전문적인 예외 리포트를 자동 생성합니다.
+🔕 불필요한 알림은 최소화했습니다.
 
 도움이 필요하시면 언제든 질문해주세요! 😊"""
             
@@ -1583,7 +1604,7 @@ class BitcoinPredictionSystem:
 
 <b>📊 운영 모드:</b> {mode_text}
 <b>🕐 시작 시각:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-<b>🔥 버전:</b> 3.0 - 비트코인 전용 (크리티컬 뉴스 전용)
+<b>🔥 버전:</b> 3.1 - 건강 체크 최적화
 
 <b>🚨 예외 리포트 시스템:</b>
 - 크리티컬 뉴스 감지 → 즉시 리포트 전송
@@ -1600,6 +1621,12 @@ class BitcoinPredictionSystem:
 - 크리티컬 뉴스만 전용 처리 ✨
 - 예외 리포트 자동 생성/전송 🚨
 
+<b>🔧 시스템 알림 최적화:</b>
+- 건강 체크: 시스템 오류 시에만 알림
+- 마지막 알림 체크: 24시간으로 완화
+- 불필요한 경고 메시지 제거
+- 메모리/서비스 상태만 모니터링
+
 <b>🔥 크리티컬 뉴스 전용 시스템:</b>
 - ETF, Fed 금리, 기업 직접 투자만 엄선
 - 구조화 상품, 의견/예측 글 자동 제외
@@ -1608,6 +1635,7 @@ class BitcoinPredictionSystem:
 - 강화된 예외 리포트 자동 생성
 
 이제 정말 중요한 비트코인 뉴스만 전문 리포트로 받아보실 수 있습니다!
+불필요한 시스템 경고는 대폭 줄였습니다.
 명령어를 입력하거나 자연어로 질문해보세요.
 예: '오늘 수익은?' 또는 /help"""
             
@@ -1674,7 +1702,8 @@ class BitcoinPredictionSystem:
 <b>🔥 크리티컬 뉴스:</b> 처리 {critical_processed}건, 필터링 {critical_filtered}건
 <b>📄 예외 리포트:</b> 전송 {reports_sent}건, 성공률 {report_stats['success_rate']:.0f}%
 <b>📈 필터링 효율:</b> {filter_efficiency:.0f}% (노이즈 제거)
-<b>❌ 발생한 오류:</b> {self.command_stats['errors']}건"""
+<b>❌ 발생한 오류:</b> {self.command_stats['errors']}건
+<b>🔧 시스템 최적화:</b> 불필요한 알림 제거 완료"""
                 
                 if self.ml_mode and self.ml_predictor:
                     stats = self.ml_predictor.get_stats()
@@ -1737,7 +1766,7 @@ async def main():
     """메인 함수"""
     try:
         print("\n" + "=" * 50)
-        print("🚀 비트코인 예측 시스템 v3.0 - 크리티컬 뉴스 전용")
+        print("🚀 비트코인 예측 시스템 v3.1 - 건강 체크 최적화")
         print("=" * 50 + "\n")
         
         system = BitcoinPredictionSystem()
