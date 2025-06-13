@@ -859,22 +859,31 @@ class BitgetClient:
             return 0.0
     
     async def get_7day_position_pnl(self) -> Dict:
-        """🔥🔥 정확한 7일 Position PnL 조회 (6월 6일 00:00 ~ 6월 13일 현재)"""
+        """🔥🔥 정확한 7일 Position PnL 조회 - 비트겟 API 7일 제한 준수"""
         try:
             kst = pytz.timezone('Asia/Seoul')
-            
-            # 🔥🔥 정확한 7일 기간 설정: 6월 6일 00:00 ~ 6월 13일 현재
-            june_6_start = datetime(2025, 6, 6, 0, 0, 0, tzinfo=kst)
             current_time = datetime.now(kst)
             
-            logger.info(f"🔍 정확한 7일 Position PnL 계산 ({june_6_start.strftime('%Y-%m-%d %H:%M')} ~ {current_time.strftime('%Y-%m-%d %H:%M')})")
+            # 🔥🔥 비트겟 API 7일 제한 준수: 현재에서 정확히 7일 전
+            seven_days_ago = current_time - timedelta(days=7)
+            
+            logger.info(f"🔍 비트겟 7일 Position PnL 계산 (API 7일 제한 준수):")
+            logger.info(f"  - 시작: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} KST")
+            logger.info(f"  - 종료: {current_time.strftime('%Y-%m-%d %H:%M')} KST")
             
             # UTC로 변환
-            start_time_utc = june_6_start.astimezone(pytz.UTC)
+            start_time_utc = seven_days_ago.astimezone(pytz.UTC)
             end_time_utc = current_time.astimezone(pytz.UTC)
             
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
+            
+            # 🔥🔥 7일 제한 확인 (안전장치)
+            duration_days = (end_timestamp - start_timestamp) / (1000 * 60 * 60 * 24)
+            if duration_days > 7.1:  # 0.1일 여유
+                logger.warning(f"기간이 7일을 초과함: {duration_days:.1f}일, 7일로 조정")
+                start_timestamp = end_timestamp - (7 * 24 * 60 * 60 * 1000)
+                duration_days = 7.0
             
             # Position PnL 기준 계산
             result = await self.get_position_pnl_based_profit(
@@ -883,15 +892,11 @@ class BitgetClient:
                 self.config.symbol
             )
             
-            # 7일로 나누어 일평균 계산
-            total_days = (current_time - june_6_start).total_seconds() / 86400
-            actual_days = max(total_days, 1)  # 최소 1일
-            
             position_pnl = result.get('position_pnl', 0.0)
-            daily_average = position_pnl / actual_days
+            daily_average = position_pnl / duration_days if duration_days > 0 else 0
             
-            logger.info(f"✅ 정확한 7일 Position PnL 계산 완료:")
-            logger.info(f"  - 기간: {actual_days:.1f}일")
+            logger.info(f"✅ 비트겟 7일 Position PnL 계산 완료 (API 제한 준수):")
+            logger.info(f"  - 실제 기간: {duration_days:.1f}일")
             logger.info(f"  - Position PnL: ${position_pnl:.4f}")
             logger.info(f"  - 일평균: ${daily_average:.4f}")
             
@@ -900,16 +905,17 @@ class BitgetClient:
                 'daily_pnl': {},                     # 일별 분석은 별도 구현 필요시
                 'average_daily': daily_average,
                 'trade_count': result.get('trade_count', 0),
-                'actual_days': actual_days,
+                'actual_days': duration_days,
                 'trading_fees': result.get('trading_fees', 0),
                 'funding_fees': result.get('funding_fees', 0),
                 'net_profit': result.get('net_profit', 0),
-                'source': 'position_pnl_based_accurate_7days_fixed_period',
+                'source': 'bitget_7days_api_limit_compliant',
                 'confidence': 'high'
             }
             
         except Exception as e:
-            logger.error(f"정확한 7일 Position PnL 조회 실패: {e}")
+            logger.error(f"비트겟 7일 Position PnL 조회 실패: {e}")
+            logger.error(f"상세 오류: {traceback.format_exc()}")
             
             return {
                 'total_pnl': 0,
