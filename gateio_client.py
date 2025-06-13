@@ -335,26 +335,55 @@ class GateioMirrorClient:
             return []
     
     async def get_account_book(self, start_time: int = None, end_time: int = None, limit: int = 100, type_filter: str = None) -> List[Dict]:
-        """🔥🔥 계정 변동 내역 조회 - Gate.io API v4 공식 문서 완전 준수"""
+        """🔥🔥 계정 변동 내역 조회 - Gate.io API v4 공식 문서 완전 준수 + 30일 제한 해결"""
         try:
             endpoint = "/api/v4/futures/usdt/account_book"
             params = {
                 'limit': str(min(limit, 1000))  # Gate.io 최대 1000
             }
             
-            # Gate.io API는 초 단위 타임스탬프 사용
-            if start_time:
-                params['from'] = str(int(start_time / 1000))  # 밀리초를 초로 변환
-            if end_time:
-                params['to'] = str(int(end_time / 1000))  # 밀리초를 초로 변환
+            # 🔥🔥 30일 제한 해결: 기간이 30일을 초과하지 않도록 제한
+            if start_time and end_time:
+                start_timestamp_sec = int(start_time / 1000)
+                end_timestamp_sec = int(end_time / 1000)
+                
+                # 30일 = 30 * 24 * 60 * 60 = 2,592,000초
+                max_duration = 30 * 24 * 60 * 60
+                
+                if (end_timestamp_sec - start_timestamp_sec) > max_duration:
+                    logger.warning(f"🔧 Gate.io API 30일 제한으로 조회 기간 단축")
+                    logger.info(f"  - 원래 기간: {(end_timestamp_sec - start_timestamp_sec) / 86400:.1f}일")
+                    
+                    # 현재 시점에서 최대 30일 이전까지만 조회
+                    start_timestamp_sec = end_timestamp_sec - max_duration
+                    logger.info(f"  - 수정된 기간: {(end_timestamp_sec - start_timestamp_sec) / 86400:.1f}일")
+                
+                params['from'] = str(start_timestamp_sec)
+                params['to'] = str(end_timestamp_sec)
+            elif start_time:
+                # 시작 시간만 있는 경우
+                start_timestamp_sec = int(start_time / 1000)
+                current_time = int(time.time())
+                
+                if (current_time - start_timestamp_sec) > (30 * 24 * 60 * 60):
+                    logger.warning(f"🔧 Gate.io API 30일 제한으로 시작 시간 조정")
+                    start_timestamp_sec = current_time - (30 * 24 * 60 * 60)
+                
+                params['from'] = str(start_timestamp_sec)
+            elif end_time:
+                # 종료 시간만 있는 경우
+                end_timestamp_sec = int(end_time / 1000)
+                params['to'] = str(end_timestamp_sec)
+            
             if type_filter:
                 params['type'] = type_filter  # 'pnl', 'fee', 'fund', 'dnw', 'refr'
             
-            logger.debug(f"Gate.io 계정 변동 내역 조회: type={type_filter}, 기간: {params.get('from')} ~ {params.get('to')}")
+            logger.debug(f"Gate.io 계정 변동 내역 조회 (30일 제한 적용): type={type_filter}, 기간: {params.get('from')} ~ {params.get('to')}")
             response = await self._request('GET', endpoint, params=params)
             
             if isinstance(response, list):
-                logger.info(f"✅ Gate.io 계정 변동 내역 조회 성공: {len(response)}건 (type: {type_filter})")
+                actual_days = ((int(params.get('to', time.time())) - int(params.get('from', time.time() - 86400))) / 86400) if params.get('from') and params.get('to') else 0
+                logger.info(f"✅ Gate.io 계정 변동 내역 조회 성공: {len(response)}건 (type: {type_filter}, 기간: {actual_days:.1f}일)")
                 return response
             else:
                 logger.warning(f"Gate.io 계정 변동 내역 응답 형식 예상치 못함: {type(response)}")
@@ -365,7 +394,7 @@ class GateioMirrorClient:
             return []
     
     async def get_today_realized_pnl(self) -> float:
-        """🔥🔥 오늘 실현 손익 조회 - 정확한 account_book API 기반"""
+        """오늘 실현 손익 조회 - 정확한 account_book API 기반"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
@@ -414,24 +443,25 @@ class GateioMirrorClient:
             return 0.0
     
     async def get_weekly_profit(self) -> Dict:
-        """🔥🔥 7일 손익 조회 - 정확한 account_book API 기반"""
+        """🔥🔥 7일 손익 조회 - 정확한 account_book API 기반 + 30일 제한 준수"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
             seven_days_ago = now - timedelta(days=7)
             
-            logger.info(f"🔍 Gate.io 7일 손익 조회 (account_book API 기반):")
+            logger.info(f"🔍 Gate.io 7일 손익 조회 (account_book API 기반, 30일 제한 준수):")
             logger.info(f"  - 기간: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} ~ {now.strftime('%Y-%m-%d %H:%M')}")
             
-            # 🔥🔥 정확한 방법: account_book API에서 7일간 pnl 타입 조회
+            # 🔥🔥 정확한 방법: account_book API에서 7일간 pnl 타입 조회 (30일 제한 준수)
             weekly_pnl = 0.0
             
             try:
-                logger.info("📊 account_book API에서 7일간 pnl 타입 조회 (가장 정확)")
+                logger.info("📊 account_book API에서 7일간 pnl 타입 조회 (30일 제한 준수)")
                 
                 start_timestamp_ms = int(seven_days_ago.astimezone(pytz.UTC).timestamp() * 1000)
                 end_timestamp_ms = int(now.astimezone(pytz.UTC).timestamp() * 1000)
                 
+                # 7일은 30일 제한 이내이므로 문제없이 조회 가능
                 pnl_records = await self.get_account_book(
                     start_time=start_timestamp_ms,
                     end_time=end_timestamp_ms,
@@ -451,7 +481,7 @@ class GateioMirrorClient:
                     return {
                         'total_pnl': weekly_pnl,
                         'average_daily': weekly_pnl / 7,
-                        'source': 'account_book_pnl_official',
+                        'source': 'account_book_pnl_official_7days_compliant',
                         'confidence': 'high'
                     }
                 else:
@@ -479,9 +509,9 @@ class GateioMirrorClient:
             }
     
     async def get_real_cumulative_profit_analysis(self) -> Dict:
-        """🔥🔥 진짜 누적 수익 분석 - 입금/출금 기반 정확한 계산"""
+        """🔥🔥 진짜 누적 수익 분석 - 입금/출금 기반 정확한 계산 + 30일 제한 준수"""
         try:
-            logger.info(f"🔍 Gate.io 진짜 누적 수익 분석 시작 (입금/출금 기반 정확한 계산):")
+            logger.info(f"🔍 Gate.io 진짜 누적 수익 분석 시작 (입금/출금 기반 정확한 계산, 30일 제한 준수):")
             
             # 현재 계정 정보
             account = await self.get_account_balance()
@@ -489,22 +519,22 @@ class GateioMirrorClient:
             
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
             
-            # 🔥🔥 방법 1: 입금/출금 내역으로 실제 초기 자본 파악 (최대 90일)
+            # 🔥🔥 방법 1: 입금/출금 내역으로 실제 초기 자본 파악 (최대 30일 - API 제한 준수)
             initial_deposits = 0.0
             withdrawals = 0.0
             
             try:
-                logger.info("📊 방법 1: 입금/출금 내역 분석 (90일간)")
+                logger.info("📊 방법 1: 입금/출금 내역 분석 (30일간 - API 제한 준수)")
                 
-                # 최대 90일간 입금/출금 내역 조회
+                # 최대 30일간 입금/출금 내역 조회 (Gate.io API 제한 준수)
                 kst = pytz.timezone('Asia/Seoul')
                 now = datetime.now(kst)
-                ninety_days_ago = now - timedelta(days=90)
+                thirty_days_ago = now - timedelta(days=30)  # 90일 → 30일로 변경
                 
-                start_timestamp_ms = int(ninety_days_ago.astimezone(pytz.UTC).timestamp() * 1000)
+                start_timestamp_ms = int(thirty_days_ago.astimezone(pytz.UTC).timestamp() * 1000)
                 end_timestamp_ms = int(now.astimezone(pytz.UTC).timestamp() * 1000)
                 
-                # 입금 기록 (fund 타입)
+                # 입금 기록 (fund 타입) - 30일 제한 준수
                 fund_records = await self.get_account_book(
                     start_time=start_timestamp_ms,
                     end_time=end_timestamp_ms,
@@ -520,31 +550,44 @@ class GateioMirrorClient:
                         elif change < 0:  # 출금
                             withdrawals += abs(change)
                     
-                    logger.info(f"  - 90일간 입금: ${initial_deposits:.2f}")
-                    logger.info(f"  - 90일간 출금: ${withdrawals:.2f}")
+                    logger.info(f"  - 30일간 입금: ${initial_deposits:.2f} (API 제한으로 30일만 조회)")
+                    logger.info(f"  - 30일간 출금: ${withdrawals:.2f}")
                     logger.info(f"  - 순입금: ${initial_deposits - withdrawals:.2f}")
                 
             except Exception as e:
                 logger.error(f"입금/출금 내역 조회 실패: {e}")
             
-            # 🔥🔥 방법 2: 실제 누적 수익 계산 - 입금/출금 기반
+            # 🔥🔥 방법 2: 실제 누적 수익 계산 - 입금/출금 기반 (30일 제한 고려)
             cumulative_profit = 0.0
             initial_capital = 750  # 기본값
             calculation_method = "balance_based_default"
             
-            # 입금 내역이 있는 경우 - 가장 정확한 방법
+            # 입금 내역이 있는 경우 - 가장 정확한 방법 (단, 30일만 조회 가능)
             if initial_deposits > 0:
-                # 순 투자금 = 입금 - 출금
-                net_investment = initial_deposits - withdrawals
+                # 순 투자금 = 입금 - 출금 (30일간만)
+                net_investment_30d = initial_deposits - withdrawals
                 
-                # 누적 수익 = 현재 잔고 - 순 투자금
-                cumulative_profit = current_balance - net_investment
-                initial_capital = net_investment
-                calculation_method = "deposit_withdrawal_based"
-                
-                logger.info(f"✅ 입금/출금 기반 정확한 계산:")
-                logger.info(f"  - 순 투자금: ${net_investment:.2f}")
-                logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
+                # 🔥🔥 중요: 30일 이전의 자산이 있을 가능성 고려
+                if current_balance > net_investment_30d:
+                    # 30일 이전에 이미 자산이 있었던 것으로 추정
+                    estimated_initial_balance = 750  # 추정 초기 자본
+                    cumulative_profit = current_balance - estimated_initial_balance
+                    initial_capital = estimated_initial_balance
+                    calculation_method = "30day_deposits_plus_estimated_initial"
+                    
+                    logger.info(f"✅ 30일 입금/출금 + 추정 초기 자본 기반 계산:")
+                    logger.info(f"  - 30일간 순 투자금: ${net_investment_30d:.2f}")
+                    logger.info(f"  - 추정 초기 자본: ${estimated_initial_balance:.2f}")
+                    logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
+                else:
+                    # 30일간 순 투자금만으로 계산
+                    cumulative_profit = current_balance - net_investment_30d
+                    initial_capital = net_investment_30d
+                    calculation_method = "30day_deposit_withdrawal_only"
+                    
+                    logger.info(f"✅ 30일 입금/출금 기반 계산:")
+                    logger.info(f"  - 순 투자금: ${net_investment_30d:.2f}")
+                    logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
             
             # 입금 내역이 없는 경우 - 잔고 기반 추정
             else:
@@ -569,12 +612,13 @@ class GateioMirrorClient:
             # 수익률 계산
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             
-            logger.info(f"✅ Gate.io 최종 누적 수익 분석 완료:")
+            logger.info(f"✅ Gate.io 최종 누적 수익 분석 완료 (30일 제한 준수):")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
             logger.info(f"  - 실제 초기 자본: ${initial_capital:.2f}")
             logger.info(f"  - 진짜 누적 수익: ${cumulative_profit:.2f}")
             logger.info(f"  - 수익률: {cumulative_roi:+.1f}%")
             logger.info(f"  - 계산 방법: {calculation_method}")
+            logger.info(f"  - API 제한: 30일 이전 데이터 조회 불가")
             
             return {
                 'actual_profit': cumulative_profit,
@@ -585,7 +629,8 @@ class GateioMirrorClient:
                 'total_deposits': initial_deposits,
                 'total_withdrawals': withdrawals,
                 'net_investment': initial_deposits - withdrawals,
-                'confidence': 'high' if initial_deposits > 0 else 'medium'
+                'confidence': 'high' if initial_deposits > 0 else 'medium',
+                'api_limitation': '30day_max_lookback'  # API 제한 표시
             }
             
         except Exception as e:
@@ -596,21 +641,22 @@ class GateioMirrorClient:
                 'current_balance': 0,
                 'roi': 0,
                 'calculation_method': 'error',
-                'confidence': 'low'
+                'confidence': 'low',
+                'api_limitation': '30day_max_lookback'
             }
     
     async def get_profit_history_since_may(self) -> Dict:
-        """🔥🔥 Gate.io 수정된 정확한 누적 수익 조회 - 7일 수익과 구분"""
+        """🔥🔥 Gate.io 수정된 정확한 누적 수익 조회 - 7일 수익과 구분 + 30일 API 제한 준수"""
         try:
-            logger.info(f"🔍 Gate.io 수정된 정확한 누적 수익 조회 (7일 수익과 명확히 구분):")
+            logger.info(f"🔍 Gate.io 수정된 정확한 누적 수익 조회 (7일 수익과 명확히 구분, 30일 API 제한 준수):")
             
             # 오늘 실현 손익
             today_realized = await self.get_today_realized_pnl()
             
-            # 7일 손익 (별도 계산)
+            # 7일 손익 (별도 계산 - 30일 제한 이내)
             weekly_profit = await self.get_weekly_profit()
             
-            # 🔥🔥 누적 수익 분석 (7일 수익과 완전히 별개로 계산)
+            # 🔥🔥 누적 수익 분석 (7일 수익과 완전히 별개로 계산 - 30일 제한 고려)
             cumulative_analysis = await self.get_real_cumulative_profit_analysis()
             
             cumulative_profit = cumulative_analysis.get('actual_profit', 0)
@@ -624,7 +670,10 @@ class GateioMirrorClient:
             weekly_pnl = weekly_profit.get('total_pnl', 0)
             diff_7d_vs_cumulative = abs(cumulative_profit - weekly_pnl)
             
-            logger.info(f"Gate.io 수정된 정확한 누적 수익 최종 결과:")
+            # 🔥🔥 30일 API 제한으로 인한 주의사항
+            api_limitation_note = "Gate.io API는 30일 이전 데이터 조회 불가"
+            
+            logger.info(f"Gate.io 수정된 정확한 누적 수익 최종 결과 (30일 제한 준수):")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
             logger.info(f"  - 7일 수익: ${weekly_pnl:.2f}")
             logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
@@ -633,6 +682,7 @@ class GateioMirrorClient:
             logger.info(f"  - 계산 방법: {calculation_method}")
             logger.info(f"  - 신뢰도: {confidence}")
             logger.info(f"  - 7일 vs 누적 차이: ${diff_7d_vs_cumulative:.2f} ({'정상' if diff_7d_vs_cumulative > 10 else '의심스러움'})")
+            logger.info(f"  - API 제한: {api_limitation_note}")
             
             return {
                 'total_pnl': cumulative_profit,
@@ -642,12 +692,13 @@ class GateioMirrorClient:
                 'actual_profit': cumulative_profit,  # 진짜 누적 수익 (7일과 완전히 구분됨)
                 'initial_capital': initial_capital,  # 실제 초기 자본
                 'cumulative_roi': cumulative_roi,
-                'source': f'corrected_analysis_{calculation_method}',
+                'source': f'corrected_analysis_{calculation_method}_30day_compliant',
                 'calculation_method': calculation_method,
                 'confidence': confidence,
                 'weekly_vs_cumulative_diff': diff_7d_vs_cumulative,
                 'analysis_details': cumulative_analysis,
-                'is_7day_and_cumulative_different': diff_7d_vs_cumulative > 10  # 검증 플래그
+                'is_7day_and_cumulative_different': diff_7d_vs_cumulative > 10,  # 검증 플래그
+                'api_limitation': api_limitation_note
             }
             
         except Exception as e:
@@ -660,8 +711,9 @@ class GateioMirrorClient:
                 'actual_profit': 0,
                 'initial_capital': 750,
                 'cumulative_roi': 0,
-                'source': 'error_corrected_analysis',
-                'confidence': 'low'
+                'source': 'error_corrected_analysis_30day_compliant',
+                'confidence': 'low',
+                'api_limitation': 'Gate.io API 30일 제한'
             }
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
