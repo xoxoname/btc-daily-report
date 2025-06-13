@@ -672,6 +672,255 @@ class BitgetClient:
         logger.warning("모든 거래 내역 엔드포인트 실패")
         return []
     
+    async def get_position_pnl_based_profit(self, start_time: int, end_time: int, symbol: str = None) -> Dict:
+        """🔥🔥 Position PnL 기준 정확한 손익 계산 - 수수료 분리"""
+        try:
+            symbol = symbol or self.config.symbol
+            
+            logger.info(f"🔍 Position PnL 기준 정확한 손익 계산 시작...")
+            logger.info(f"  - 심볼: {symbol}")
+            logger.info(f"  - 시작: {datetime.fromtimestamp(start_time/1000)}")
+            logger.info(f"  - 종료: {datetime.fromtimestamp(end_time/1000)}")
+            
+            # 거래 내역 조회
+            fills = await self.get_trade_fills(
+                symbol=symbol,
+                start_time=start_time,
+                end_time=end_time,
+                limit=500
+            )
+            
+            logger.info(f"거래 내역 조회 결과: {len(fills)}건")
+            
+            if not fills:
+                return {
+                    'position_pnl': 0.0,
+                    'trading_fees': 0.0,
+                    'funding_fees': 0.0,
+                    'net_profit': 0.0,
+                    'trade_count': 0,
+                    'source': 'no_fills_found'
+                }
+            
+            # 🔥🔥 Position PnL과 수수료 분리 계산
+            total_position_pnl = 0.0
+            total_trading_fees = 0.0
+            total_funding_fees = 0.0
+            trade_count = 0
+            
+            for fill in fills:
+                try:
+                    # 🔥🔥 Position PnL 추출 (실제 포지션 손익 - 수수료 제외)
+                    position_pnl = 0.0
+                    
+                    # Position PnL 관련 필드들 (우선순위 순)
+                    pnl_fields = [
+                        'positionPnl',      # 실제 포지션 손익
+                        'realizedPnl',      # 실현 손익
+                        'closedPnl',        # 청산 손익
+                        'pnl'               # 일반 손익
+                    ]
+                    
+                    for field in pnl_fields:
+                        if field in fill and fill[field] is not None:
+                            try:
+                                position_pnl = float(fill[field])
+                                if position_pnl != 0:
+                                    logger.debug(f"Position PnL 추출: {field} = {position_pnl}")
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # profit 필드는 마지막 백업 (수수료 포함될 수 있음)
+                    if position_pnl == 0 and 'profit' in fill:
+                        try:
+                            position_pnl = float(fill.get('profit', 0))
+                            logger.debug(f"백업 profit 필드 사용: {position_pnl}")
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    # 🔥🔥 거래 수수료 추출 (Trading Fee)
+                    trading_fee = 0.0
+                    
+                    # 거래 수수료 필드들
+                    fee_fields = [
+                        'tradingFee',       # 거래 수수료
+                        'fee',              # 일반 수수료
+                        'totalFee',         # 총 수수료
+                        'commissionFee'     # 커미션 수수료
+                    ]
+                    
+                    for field in fee_fields:
+                        if field in fill and fill[field] is not None:
+                            try:
+                                fee_value = float(fill[field])
+                                if fee_value != 0:
+                                    trading_fee = abs(fee_value)  # 수수료는 항상 양수
+                                    logger.debug(f"거래 수수료 추출: {field} = {trading_fee}")
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # 🔥🔥 펀딩비 추출 (Funding Fee)
+                    funding_fee = 0.0
+                    
+                    # 펀딩비 필드들
+                    funding_fields = [
+                        'fundingFee',       # 펀딩 수수료
+                        'funding',          # 펀딩비
+                        'fundFee'           # 펀드 수수료
+                    ]
+                    
+                    for field in funding_fields:
+                        if field in fill and fill[field] is not None:
+                            try:
+                                funding_value = float(fill[field])
+                                if funding_value != 0:
+                                    funding_fee = funding_value  # 펀딩비는 양수/음수 모두 가능
+                                    logger.debug(f"펀딩비 추출: {field} = {funding_fee}")
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # 통계 누적
+                    if position_pnl != 0 or trading_fee != 0 or funding_fee != 0:
+                        total_position_pnl += position_pnl
+                        total_trading_fees += trading_fee
+                        total_funding_fees += funding_fee
+                        trade_count += 1
+                        
+                        logger.debug(f"거래 처리: PnL={position_pnl:.4f}, 거래수수료={trading_fee:.4f}, 펀딩비={funding_fee:.4f}")
+                
+                except Exception as fill_error:
+                    logger.debug(f"거래 내역 처리 오류: {fill_error}")
+                    continue
+            
+            # 🔥🔥 최종 계산
+            net_profit = total_position_pnl + total_funding_fees - total_trading_fees
+            
+            logger.info(f"✅ Position PnL 기준 정확한 손익 계산 완료:")
+            logger.info(f"  - Position PnL: ${total_position_pnl:.4f} (수수료 제외 실제 포지션 손익)")
+            logger.info(f"  - 거래 수수료: -${total_trading_fees:.4f} (오픈/클로징 수수료)")
+            logger.info(f"  - 펀딩비: {total_funding_fees:+.4f} (펀딩 수수료)")
+            logger.info(f"  - 순 수익: ${net_profit:.4f} (Position PnL + 펀딩비 - 거래수수료)")
+            logger.info(f"  - 거래 건수: {trade_count}건")
+            
+            return {
+                'position_pnl': total_position_pnl,        # 실제 포지션 손익 (수수료 제외)
+                'trading_fees': total_trading_fees,        # 거래 수수료 (오픈/클로징)
+                'funding_fees': total_funding_fees,        # 펀딩비
+                'net_profit': net_profit,                  # 순 수익
+                'trade_count': trade_count,
+                'source': 'position_pnl_based_accurate',
+                'confidence': 'high'
+            }
+            
+        except Exception as e:
+            logger.error(f"Position PnL 기준 손익 계산 실패: {e}")
+            logger.error(f"상세 오류: {traceback.format_exc()}")
+            
+            return {
+                'position_pnl': 0.0,
+                'trading_fees': 0.0,
+                'funding_fees': 0.0,
+                'net_profit': 0.0,
+                'trade_count': 0,
+                'source': 'error',
+                'confidence': 'low'
+            }
+    
+    async def get_today_position_pnl(self) -> float:
+        """🔥🔥 오늘 Position PnL 기준 실현손익 조회"""
+        try:
+            kst = pytz.timezone('Asia/Seoul')
+            now = datetime.now(kst)
+            
+            # 오늘 0시 (KST)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # UTC로 변환하여 타임스탬프 생성
+            start_time_utc = today_start.astimezone(pytz.UTC)
+            end_time_utc = now.astimezone(pytz.UTC)
+            
+            start_timestamp = int(start_time_utc.timestamp() * 1000)
+            end_timestamp = int(end_time_utc.timestamp() * 1000)
+            
+            # Position PnL 기준 계산
+            result = await self.get_position_pnl_based_profit(
+                start_timestamp, 
+                end_timestamp, 
+                self.config.symbol
+            )
+            
+            return result.get('position_pnl', 0.0)  # 수수료 제외한 실제 Position PnL
+            
+        except Exception as e:
+            logger.error(f"오늘 Position PnL 조회 실패: {e}")
+            return 0.0
+    
+    async def get_7day_position_pnl(self) -> Dict:
+        """🔥🔥 정확한 7일 Position PnL 조회 (6월 6일 00:00 ~ 6월 13일 현재)"""
+        try:
+            kst = pytz.timezone('Asia/Seoul')
+            
+            # 🔥🔥 정확한 7일 기간 설정: 6월 6일 00:00 ~ 6월 13일 현재
+            june_6_start = datetime(2025, 6, 6, 0, 0, 0, tzinfo=kst)
+            current_time = datetime.now(kst)
+            
+            logger.info(f"🔍 정확한 7일 Position PnL 계산 ({june_6_start.strftime('%Y-%m-%d %H:%M')} ~ {current_time.strftime('%Y-%m-%d %H:%M')})")
+            
+            # UTC로 변환
+            start_time_utc = june_6_start.astimezone(pytz.UTC)
+            end_time_utc = current_time.astimezone(pytz.UTC)
+            
+            start_timestamp = int(start_time_utc.timestamp() * 1000)
+            end_timestamp = int(end_time_utc.timestamp() * 1000)
+            
+            # Position PnL 기준 계산
+            result = await self.get_position_pnl_based_profit(
+                start_timestamp, 
+                end_timestamp, 
+                self.config.symbol
+            )
+            
+            # 7일로 나누어 일평균 계산
+            total_days = (current_time - june_6_start).total_seconds() / 86400
+            actual_days = max(total_days, 1)  # 최소 1일
+            
+            position_pnl = result.get('position_pnl', 0.0)
+            daily_average = position_pnl / actual_days
+            
+            logger.info(f"✅ 정확한 7일 Position PnL 계산 완료:")
+            logger.info(f"  - 기간: {actual_days:.1f}일")
+            logger.info(f"  - Position PnL: ${position_pnl:.4f}")
+            logger.info(f"  - 일평균: ${daily_average:.4f}")
+            
+            return {
+                'total_pnl': position_pnl,           # 수수료 제외한 실제 Position PnL
+                'daily_pnl': {},                     # 일별 분석은 별도 구현 필요시
+                'average_daily': daily_average,
+                'trade_count': result.get('trade_count', 0),
+                'actual_days': actual_days,
+                'trading_fees': result.get('trading_fees', 0),
+                'funding_fees': result.get('funding_fees', 0),
+                'net_profit': result.get('net_profit', 0),
+                'source': 'position_pnl_based_accurate_7days_fixed_period',
+                'confidence': 'high'
+            }
+            
+        except Exception as e:
+            logger.error(f"정확한 7일 Position PnL 조회 실패: {e}")
+            
+            return {
+                'total_pnl': 0,
+                'daily_pnl': {},
+                'average_daily': 0,
+                'trade_count': 0,
+                'actual_days': 7,
+                'source': 'error',
+                'confidence': 'low'
+            }
+    
     async def get_orders(self, symbol: str = None, status: str = None, limit: int = 100) -> List[Dict]:
         """주문 조회 (V2 API) - 예약 주문 포함"""
         symbol = symbol or self.config.symbol
