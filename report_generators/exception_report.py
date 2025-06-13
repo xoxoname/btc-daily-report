@@ -18,7 +18,7 @@ except ImportError:
     ML_AVAILABLE = False
 
 class ExceptionReportGenerator(BaseReportGenerator):
-    """예외 상황 리포트 전담 생성기 - 실제 뉴스 분석 + 정확한 형식"""
+    """예외 상황 리포트 전담 생성기 - 실제 뉴스 분석 + 정확한 형식 + 통계 추가"""
     
     def __init__(self, config, data_collector, indicator_system, bitget_client=None):
         super().__init__(config, data_collector, indicator_system, bitget_client)
@@ -37,6 +37,15 @@ class ExceptionReportGenerator(BaseReportGenerator):
         self.news_data_file = 'news_initial_data.json'
         self.processed_reports = set()  # 처리된 리포트 해시
         self.processed_reports_file = 'processed_reports.json'
+        
+        # 🔥🔥 리포트 생성 통계
+        self.report_stats = {
+            'total_attempts': 0,
+            'successful_reports': 0,
+            'failed_reports': 0,
+            'success_rate': 0.0,
+            'last_reset': datetime.now()
+        }
         
         # 기존 데이터 로드
         self._load_news_data()
@@ -143,6 +152,42 @@ class ExceptionReportGenerator(BaseReportGenerator):
             'sberbank', '스베르방크', 'jpmorgan', 'goldman sachs'
         ]
     
+    def get_exception_report_stats(self) -> Dict:
+        """🔥🔥 리포트 생성 통계 반환"""
+        return {
+            'total_attempts': self.report_stats['total_attempts'],
+            'successful_reports': self.report_stats['successful_reports'],
+            'failed_reports': self.report_stats['failed_reports'],
+            'success_rate': self.report_stats['success_rate'],
+            'last_reset': self.report_stats['last_reset'].isoformat() if isinstance(self.report_stats['last_reset'], datetime) else self.report_stats['last_reset']
+        }
+    
+    def reset_exception_report_stats(self):
+        """🔥🔥 리포트 생성 통계 리셋"""
+        self.report_stats = {
+            'total_attempts': 0,
+            'successful_reports': 0,
+            'failed_reports': 0,
+            'success_rate': 0.0,
+            'last_reset': datetime.now()
+        }
+        self.logger.info("예외 리포트 생성 통계 리셋 완료")
+    
+    def _update_report_stats(self, success: bool):
+        """🔥🔥 리포트 생성 통계 업데이트"""
+        self.report_stats['total_attempts'] += 1
+        
+        if success:
+            self.report_stats['successful_reports'] += 1
+        else:
+            self.report_stats['failed_reports'] += 1
+        
+        # 성공률 업데이트
+        if self.report_stats['total_attempts'] > 0:
+            self.report_stats['success_rate'] = (
+                self.report_stats['successful_reports'] / self.report_stats['total_attempts'] * 100
+            )
+    
     def _load_news_data(self):
         """뉴스 초기 데이터 로드"""
         try:
@@ -192,8 +237,8 @@ class ExceptionReportGenerator(BaseReportGenerator):
                 with open(self.processed_reports_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
-                # 시간 기반 필터링 (6시간 이내만 유지)
-                cutoff_time = datetime.now() - timedelta(hours=6)
+                # 시간 기반 필터링 (3시간 이내만 유지 - 더 관대하게)
+                cutoff_time = datetime.now() - timedelta(hours=3)
                 
                 valid_reports = []
                 for item in data:
@@ -205,7 +250,7 @@ class ExceptionReportGenerator(BaseReportGenerator):
                         continue
                 
                 self.processed_reports = set(valid_reports)
-                self.logger.info(f"처리된 리포트 해시 로드: {len(self.processed_reports)}개")
+                self.logger.info(f"처리된 리포트 해시 로드: {len(self.processed_reports)}개 (3시간 내)")
         except Exception as e:
             self.logger.error(f"처리된 리포트 로드 실패: {e}")
             self.processed_reports = set()
@@ -228,13 +273,13 @@ class ExceptionReportGenerator(BaseReportGenerator):
             self.logger.error(f"처리된 리포트 저장 실패: {e}")
     
     def _generate_report_hash(self, event: Dict) -> str:
-        """리포트 고유 해시 생성"""
+        """리포트 고유 해시 생성 - 더 관대하게"""
         if event.get('type') == 'critical_news':
             title = event.get('title', '')
-            published_at = event.get('published_at', '')
+            # 시간은 제외하고 제목과 소스만으로 해시 생성 (더 관대한 중복 체크)
+            source = event.get('source', '')
             
-            # 제목과 발행시간을 조합한 해시
-            content = f"{title}_{published_at}"
+            content = f"{title}_{source}"
             return hashlib.md5(content.encode()).hexdigest()
         else:
             # 다른 타입의 이벤트
@@ -242,20 +287,43 @@ class ExceptionReportGenerator(BaseReportGenerator):
             return hashlib.md5(content.encode()).hexdigest()
     
     def _is_duplicate_report(self, event: Dict) -> bool:
-        """중복 리포트 체크"""
+        """중복 리포트 체크 - 더 관대하게"""
         report_hash = self._generate_report_hash(event)
         
+        # 🔥🔥 3시간 이내 중복만 체크 (더 관대하게)
+        current_time = datetime.now()
+        cutoff_time = current_time - timedelta(hours=3)
+        
+        # 오래된 해시 정리
+        if os.path.exists(self.processed_reports_file):
+            try:
+                with open(self.processed_reports_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                valid_reports = set()
+                for item in data:
+                    try:
+                        report_time = datetime.fromisoformat(item['time'])
+                        if report_time > cutoff_time:
+                            valid_reports.add(item['hash'])
+                    except:
+                        continue
+                
+                self.processed_reports = valid_reports
+            except:
+                pass
+        
         if report_hash in self.processed_reports:
-            self.logger.info(f"중복 리포트 감지 - 전송 생략: {event.get('title', '')[:50]}...")
+            self.logger.info(f"중복 리포트 감지 (3시간 내) - 전송 생략: {event.get('title', '')[:50]}...")
             return True
         
         # 새로운 리포트로 기록
         self.processed_reports.add(report_hash)
         
-        # 크기 제한 (최대 1000개)
-        if len(self.processed_reports) > 1000:
+        # 크기 제한 (최대 500개)
+        if len(self.processed_reports) > 500:
             # 오래된 것부터 제거 (단순하게 일부 제거)
-            self.processed_reports = set(list(self.processed_reports)[-500:])
+            self.processed_reports = set(list(self.processed_reports)[-250:])
         
         # 파일에 저장
         self._save_processed_reports()
@@ -767,102 +835,107 @@ class ExceptionReportGenerator(BaseReportGenerator):
             return "**유사 사례 없음**\n신규 패턴으로 신중한 접근 필요"
     
     async def generate_report(self, event: Dict) -> str:
-        """🚨 정확한 형식의 긴급 예외 리포트 생성"""
+        """🚨 정확한 형식의 긴급 예외 리포트 생성 - 통계 추가"""
         
-        # 🔥🔥 중복 리포트 체크
-        if self._is_duplicate_report(event):
-            return ""  # 빈 문자열 반환하여 전송하지 않음
+        # 🔥🔥 통계 업데이트
+        self._update_report_stats(False)  # 일단 실패로 시작
         
-        current_time = self._get_current_time_kst()
-        event_type = event.get('type', 'unknown')
-        
-        if event_type == 'critical_news':
-            # 뉴스 정보 추출
-            title = event.get('title', '')
-            title_ko = event.get('title_ko', title)
-            description = event.get('description', '')
-            published_at = event.get('published_at', '')
+        try:
+            # 🔥🔥 중복 리포트 체크 (더 관대하게)
+            if self._is_duplicate_report(event):
+                self.logger.info("중복 리포트로 전송 생략")
+                return ""  # 빈 문자열 반환하여 전송하지 않음
             
-            # 회사명 추출
-            company = self._extract_company_from_news(event)
+            current_time = self._get_current_time_kst()
+            event_type = event.get('type', 'unknown')
             
-            # 뉴스 타입 분류
-            news_type = self._classify_news_type(event)
-            
-            # 🔥🔥 정확한 감지 시간 표시 (KST)
-            current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
-            detection_time = current_kst.strftime('%H:%M')
-            
-            # 발행 시간 처리
-            news_pub_time = None
-            if published_at:
-                try:
-                    if 'T' in published_at:
-                        pub_time = datetime.fromisoformat(published_at.replace('Z', ''))
-                    else:
-                        from dateutil import parser
-                        pub_time = parser.parse(published_at)
-                    
-                    if pub_time.tzinfo is None:
-                        pub_time = pytz.UTC.localize(pub_time)
-                    
-                    news_pub_time = pub_time.astimezone(pytz.timezone('Asia/Seoul'))
-                    
-                    # 발행 시간과 현재 시간의 차이 계산
-                    time_diff = current_kst - news_pub_time
-                    minutes_diff = int(time_diff.total_seconds() / 60)
-                    
-                    if minutes_diff < 5:
-                        detection_time = f"{detection_time} (즉시 감지)"
-                    elif minutes_diff < 60:
-                        detection_time = f"{detection_time} ({minutes_diff}분 전 발행)"
-                    else:
-                        hours_diff = int(minutes_diff / 60)
-                        if hours_diff < 24:
-                            detection_time = f"{detection_time} ({hours_diff}시간 전 발행)"
+            if event_type == 'critical_news':
+                # 뉴스 정보 추출
+                title = event.get('title', '')
+                title_ko = event.get('title_ko', title)
+                description = event.get('description', '')
+                published_at = event.get('published_at', '')
+                
+                # 회사명 추출
+                company = self._extract_company_from_news(event)
+                
+                # 뉴스 타입 분류
+                news_type = self._classify_news_type(event)
+                
+                # 🔥🔥 정확한 감지 시간 표시 (KST)
+                current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+                detection_time = current_kst.strftime('%H:%M')
+                
+                # 발행 시간 처리
+                news_pub_time = None
+                if published_at:
+                    try:
+                        if 'T' in published_at:
+                            pub_time = datetime.fromisoformat(published_at.replace('Z', ''))
                         else:
-                            days_diff = int(hours_diff / 24)
-                            detection_time = f"{detection_time} ({days_diff}일 전 발행)"
+                            from dateutil import parser
+                            pub_time = parser.parse(published_at)
                         
-                except:
+                        if pub_time.tzinfo is None:
+                            pub_time = pytz.UTC.localize(pub_time)
+                        
+                        news_pub_time = pub_time.astimezone(pytz.timezone('Asia/Seoul'))
+                        
+                        # 발행 시간과 현재 시간의 차이 계산
+                        time_diff = current_kst - news_pub_time
+                        minutes_diff = int(time_diff.total_seconds() / 60)
+                        
+                        if minutes_diff < 5:
+                            detection_time = f"{detection_time} (즉시 감지)"
+                        elif minutes_diff < 60:
+                            detection_time = f"{detection_time} ({minutes_diff}분 전 발행)"
+                        else:
+                            hours_diff = int(minutes_diff / 60)
+                            if hours_diff < 24:
+                                detection_time = f"{detection_time} ({hours_diff}시간 전 발행)"
+                            else:
+                                days_diff = int(hours_diff / 24)
+                                detection_time = f"{detection_time} ({days_diff}일 전 발행)"
+                            
+                    except:
+                        detection_time = f"{detection_time} (즉시 감지)"
+                else:
                     detection_time = f"{detection_time} (즉시 감지)"
-            else:
-                detection_time = f"{detection_time} (즉시 감지)"
-            
-            # 실제 뉴스 내용 기반 요약 생성
-            realistic_summary = self._generate_realistic_summary(event, news_type, company)
-            
-            # 예상 변동 계산
-            expected_change = self._calculate_expected_change(news_type, event)
-            
-            # 영향도 평가
-            impact_assessment = self._get_impact_assessment(news_type, expected_change)
-            
-            # 현재 시장 상황 조회
-            market_status = await self._get_current_market_status(news_pub_time)
-            
-            # 전략 추천
-            strategy_recommendation = self._get_strategy_recommendation(news_type, expected_change)
-            
-            # 반응 시점 계산
-            pattern_info = self.news_reaction_patterns.get(news_type, self.news_reaction_patterns['regulation_positive'])
-            if news_type in ['etf_approval', 'etf_rejection', 'fed_rate_decision']:
-                reaction_time = "즉시-30분"
-            elif news_type == 'corporate_purchase_direct':
-                reaction_time = "30분-2시간"
-            elif news_type == 'corporate_structured_product':
-                reaction_time = "1-4시간 (미미)"
-            else:
-                reaction_time = "1-6시간"
-            
-            # 영향 지속 시간
-            duration = pattern_info.get('duration', '6-12시간')
-            
-            # 과거 사례 분석
-            past_case = self._get_past_case_analysis(news_type)
-            
-            # 🔥🔥 요청한 정확한 형식으로 리포트 생성
-            report = f"""🚨 **비트코인 긴급 뉴스 감지**
+                
+                # 실제 뉴스 내용 기반 요약 생성
+                realistic_summary = self._generate_realistic_summary(event, news_type, company)
+                
+                # 예상 변동 계산
+                expected_change = self._calculate_expected_change(news_type, event)
+                
+                # 영향도 평가
+                impact_assessment = self._get_impact_assessment(news_type, expected_change)
+                
+                # 현재 시장 상황 조회
+                market_status = await self._get_current_market_status(news_pub_time)
+                
+                # 전략 추천
+                strategy_recommendation = self._get_strategy_recommendation(news_type, expected_change)
+                
+                # 반응 시점 계산
+                pattern_info = self.news_reaction_patterns.get(news_type, self.news_reaction_patterns['regulation_positive'])
+                if news_type in ['etf_approval', 'etf_rejection', 'fed_rate_decision']:
+                    reaction_time = "즉시-30분"
+                elif news_type == 'corporate_purchase_direct':
+                    reaction_time = "30분-2시간"
+                elif news_type == 'corporate_structured_product':
+                    reaction_time = "1-4시간 (미미)"
+                else:
+                    reaction_time = "1-6시간"
+                
+                # 영향 지속 시간
+                duration = pattern_info.get('duration', '6-12시간')
+                
+                # 과거 사례 분석
+                past_case = self._get_past_case_analysis(news_type)
+                
+                # 🔥🔥 요청한 정확한 형식으로 리포트 생성
+                report = f"""🚨 **비트코인 긴급 뉴스 감지**
 ━━━━━━━━━━━━━━━━━━━
 🕐 {current_kst.strftime('%Y-%m-%d %H:%M')} KST
 
@@ -884,40 +957,40 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 **📚 과거 유사 사례:**
 {past_case}"""
-            
-        elif event_type == 'price_anomaly':
-            # 가격 이상 징후
-            change = event.get('change_24h', 0)
-            current_price = event.get('current_price', 0)
-            current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
-            
-            if abs(change) >= 0.05:  # 5% 이상
-                severity = "급변동"
-                emoji = "🚨"
-            elif abs(change) >= 0.03:  # 3% 이상
-                severity = "주의"
-                emoji = "⚠️"
-            else:
-                severity = "변동"
-                emoji = "📊"
-            
-            direction = "상승" if change > 0 else "하락"
-            
-            # 추천 전략
-            if change > 0.03:
-                recommendation = "과열 주의"
-                strategy = "- 분할 익절 고려\n- 추격 매수 자제\n- 조정 대기"
-                duration = "2-6시간"
-            elif change < -0.03:
-                recommendation = "반등 대기"
-                strategy = "- 분할 매수 준비\n- 지지선 확인\n- 패닉 셀링 자제"
-                duration = "4-12시간"
-            else:
-                recommendation = "추세 관찰"
-                strategy = "- 거래량 확인\n- 지표 점검\n- 신중한 접근"
-                duration = "1-3시간"
-            
-            report = f"""🚨 **BTC 가격 {severity}**
+                
+            elif event_type == 'price_anomaly':
+                # 가격 이상 징후
+                change = event.get('change_24h', 0)
+                current_price = event.get('current_price', 0)
+                current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+                
+                if abs(change) >= 0.05:  # 5% 이상
+                    severity = "급변동"
+                    emoji = "🚨"
+                elif abs(change) >= 0.03:  # 3% 이상
+                    severity = "주의"
+                    emoji = "⚠️"
+                else:
+                    severity = "변동"
+                    emoji = "📊"
+                
+                direction = "상승" if change > 0 else "하락"
+                
+                # 추천 전략
+                if change > 0.03:
+                    recommendation = "과열 주의"
+                    strategy = "- 분할 익절 고려\n- 추격 매수 자제\n- 조정 대기"
+                    duration = "2-6시간"
+                elif change < -0.03:
+                    recommendation = "반등 대기"
+                    strategy = "- 분할 매수 준비\n- 지지선 확인\n- 패닉 셀링 자제"
+                    duration = "4-12시간"
+                else:
+                    recommendation = "추세 관찰"
+                    strategy = "- 거래량 확인\n- 지표 점검\n- 신중한 접근"
+                    duration = "1-3시간"
+                
+                report = f"""🚨 **BTC 가격 {severity}**
 ━━━━━━━━━━━━━━━
 
 {emoji} **{abs(change*100):.1f}% {direction}**
@@ -935,33 +1008,33 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 ━━━━━━━━━━━━━━━
 ⏰ {current_kst.strftime('%Y-%m-%d %H:%M')}"""
-            
-        elif event_type == 'volume_anomaly':
-            # 거래량 이상
-            ratio = event.get('ratio', 0)
-            volume = event.get('volume_24h', 0)
-            current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
-            
-            if ratio >= 5:
-                severity = "폭증"
-                emoji = "🔥"
-                recommendation = "중요 변동 예상"
-                strategy = "- 뉴스 확인 필수\n- 포지션 점검\n- 높은 변동성 대비"
-                duration = "6-24시간"
-            elif ratio >= 3:
-                severity = "급증"
-                emoji = "📈"
-                recommendation = "추세 전환 가능"
-                strategy = "- 방향성 확인\n- 분할 진입\n- 거래량 지속성 확인"
-                duration = "4-12시간"
-            else:
-                severity = "증가"
-                emoji = "📊"
-                recommendation = "관심 필요"
-                strategy = "- 시장 모니터링\n- 소량 테스트\n- 추가 신호 대기"
-                duration = "2-6시간"
-            
-            report = f"""🚨 **BTC 거래량 {severity}**
+                
+            elif event_type == 'volume_anomaly':
+                # 거래량 이상
+                ratio = event.get('ratio', 0)
+                volume = event.get('volume_24h', 0)
+                current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+                
+                if ratio >= 5:
+                    severity = "폭증"
+                    emoji = "🔥"
+                    recommendation = "중요 변동 예상"
+                    strategy = "- 뉴스 확인 필수\n- 포지션 점검\n- 높은 변동성 대비"
+                    duration = "6-24시간"
+                elif ratio >= 3:
+                    severity = "급증"
+                    emoji = "📈"
+                    recommendation = "추세 전환 가능"
+                    strategy = "- 방향성 확인\n- 분할 진입\n- 거래량 지속성 확인"
+                    duration = "4-12시간"
+                else:
+                    severity = "증가"
+                    emoji = "📊"
+                    recommendation = "관심 필요"
+                    strategy = "- 시장 모니터링\n- 소량 테스트\n- 추가 신호 대기"
+                    duration = "2-6시간"
+                
+                report = f"""🚨 **BTC 거래량 {severity}**
 ━━━━━━━━━━━━━━━
 
 {emoji} 평균 대비 **{ratio:.1f}배**
@@ -979,13 +1052,13 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 ━━━━━━━━━━━━━━━
 ⏰ {current_kst.strftime('%Y-%m-%d %H:%M')}"""
-            
-        else:
-            # 기타 이벤트
-            description = event.get('description', '이상 신호 감지')
-            current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
-            
-            report = f"""🚨 **BTC 이상 신호**
+                
+            else:
+                # 기타 이벤트
+                description = event.get('description', '이상 신호 감지')
+                current_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+                
+                report = f"""🚨 **BTC 이상 신호**
 ━━━━━━━━━━━━━━━
 
 ⚠️ **{description}**
@@ -1002,5 +1075,14 @@ class ExceptionReportGenerator(BaseReportGenerator):
 
 ━━━━━━━━━━━━━━━
 ⏰ {current_kst.strftime('%Y-%m-%d %H:%M')}"""
-        
-        return report
+            
+            # 성공 시 통계 업데이트
+            self._update_report_stats(True)
+            self.logger.info(f"예외 리포트 생성 성공: {len(report)}자")
+            
+            return report
+            
+        except Exception as e:
+            # 실패 시 통계는 이미 업데이트됨
+            self.logger.error(f"예외 리포트 생성 실패: {e}")
+            return ""
