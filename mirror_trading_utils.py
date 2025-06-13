@@ -63,11 +63,18 @@ class MirrorTradingUtils:
         # 🔥🔥🔥 비정상적인 시세 차이 감지 임계값도 매우 관대하게
         self.ABNORMAL_PRICE_DIFF_THRESHOLD = 10000.0  # 2000달러 → 10000달러로 대폭 상향
         
-        # 🔥🔥🔥 클로즈 주문 판단 강화
+        # 🔥🔥🔥 클로즈 주문 판단 강화 - 수정된 키워드
         self.CLOSE_ORDER_KEYWORDS = [
             'close', 'close_long', 'close_short', 'close long', 'close short',
             'exit', 'exit_long', 'exit_short', 'exit long', 'exit short',
-            'reduce', 'take_profit', 'stop_loss', 'tp', 'sl'
+            'reduce'  # TP/SL 관련 키워드는 제거 - 오분류 방지
+        ]
+        
+        # 🔥🔥🔥 TP/SL 전용 주문 타입 (클로즈 주문으로 분류)
+        self.TP_SL_ONLY_ORDER_TYPES = [
+            'profit_loss',  # 비트겟의 TP/SL 전용 주문 타입
+            'stop_loss_only',
+            'take_profit_only'
         ]
         
         self.CLOSE_ORDER_STRICT_MODE = False  # 더 관대한 클로즈 주문 감지
@@ -188,54 +195,70 @@ class MirrorTradingUtils:
             return self.DEFAULT_LEVERAGE
     
     async def determine_close_order_details_enhanced(self, bitget_order: Dict) -> Dict:
-        """🔥🔥🔥 강화된 클로즈 주문 세부 사항 정확하게 판단"""
+        """🔥🔥🔥 강화된 클로즈 주문 세부 사항 정확하게 판단 - TP 설정된 오픈 주문 오분류 방지"""
         try:
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
             reduce_only = bitget_order.get('reduceOnly', False)
             order_type = bitget_order.get('orderType', bitget_order.get('planType', '')).lower()
             
-            # 🔥🔥🔥 강화된 클로즈 주문 판단 로직
-            is_close_order = False
+            self.logger.info(f"🔍 주문 분석 시작: side='{side}', reduce_only={reduce_only}, order_type='{order_type}'")
             
-            # 1. reduce_only 플래그 확인
+            # 🔥🔥🔥 강화된 클로즈 주문 판단 로직 - 우선순위 기반
+            is_close_order = False
+            detection_method = "none"
+            
+            # 🔥 1순위: reduce_only 플래그 확인 (가장 확실한 방법)
             if reduce_only is True or reduce_only == 'true' or str(reduce_only).lower() == 'true':
                 is_close_order = True
-                self.logger.info(f"🔴 reduce_only=True로 클로즈 주문 확인: {side}")
+                detection_method = "reduce_only_flag"
+                self.logger.info(f"🔴 1순위: reduce_only=True로 클로즈 주문 확인")
             
-            # 2. side에서 클로즈 키워드 확인
-            if not is_close_order:
+            # 🔥 2순위: 명시적인 클로즈 키워드 확인
+            elif not is_close_order:
                 for keyword in self.CLOSE_ORDER_KEYWORDS:
                     if keyword in side:
                         is_close_order = True
-                        self.logger.info(f"🔴 side 키워드로 클로즈 주문 확인: '{side}' 포함 '{keyword}'")
+                        detection_method = f"side_keyword_{keyword}"
+                        self.logger.info(f"🔴 2순위: side 키워드로 클로즈 주문 확인: '{side}' 포함 '{keyword}'")
                         break
             
-            # 3. TP/SL 관련 주문 타입 확인
-            if not is_close_order:
-                tp_sl_types = ['profit_loss', 'stop_loss', 'take_profit', 'tp', 'sl']
-                for tp_sl_type in tp_sl_types:
+            # 🔥 3순위: TP/SL 전용 주문 타입 확인 (기존 포지션에 대한 TP/SL만 설정)
+            elif not is_close_order:
+                for tp_sl_type in self.TP_SL_ONLY_ORDER_TYPES:
                     if tp_sl_type in order_type:
                         is_close_order = True
-                        self.logger.info(f"🎯 TP/SL 타입으로 클로즈 주문 확인: '{order_type}' 포함 '{tp_sl_type}'")
+                        detection_method = f"tp_sl_only_type_{tp_sl_type}"
+                        self.logger.info(f"🎯 3순위: TP/SL 전용 타입으로 클로즈 주문 확인: '{order_type}' 포함 '{tp_sl_type}'")
                         break
             
-            # 4. TP/SL 가격 설정 확인
+            # 🔥🔥🔥 4순위: TP/SL이 설정된 것은 오픈 주문으로 유지 - 오분류 방지
             if not is_close_order:
+                # TP/SL 가격 확인
                 tp_price, sl_price = await self.extract_tp_sl_from_bitget_order(bitget_order)
+                
                 if tp_price or sl_price:
-                    is_close_order = True
-                    self.logger.info(f"🎯 TP/SL 가격 설정으로 클로즈 주문 확인: TP={tp_price}, SL={sl_price}")
+                    # 🔥🔥🔥 중요: TP/SL이 설정되어 있어도 오픈 주문으로 처리
+                    is_close_order = False
+                    detection_method = "tp_sl_set_but_open_order"
+                    self.logger.info(f"🟢 4순위: TP/SL 설정된 오픈 주문으로 판단 (TP={tp_price}, SL={sl_price})")
+                    self.logger.info(f"       → 새로운 포지션 생성 + TP/SL 함께 설정하는 주문")
             
-            # 5. 특별한 클로즈 패턴 확인
+            # 🔥 5순위: 특별한 클로즈 패턴 확인 (매우 보수적으로)
             if not is_close_order:
-                special_patterns = ['exit', 'liquidat', 'stop', 'profit']
+                special_patterns = ['exit', 'liquidat']  # 'stop', 'profit' 제거 - 오분류 방지
                 for pattern in special_patterns:
                     if pattern in side or pattern in order_type:
                         is_close_order = True
-                        self.logger.info(f"🔴 특별 패턴으로 클로즈 주문 확인: '{pattern}'")
+                        detection_method = f"special_pattern_{pattern}"
+                        self.logger.info(f"🔴 5순위: 특별 패턴으로 클로즈 주문 확인: '{pattern}'")
                         break
             
-            self.logger.info(f"🔍 강화된 클로즈 주문 분석: side='{side}', reduce_only={reduce_only}, order_type='{order_type}', is_close_order={is_close_order}")
+            # 🔥🔥🔥 최종 확인: 오픈 주문으로 기본 처리
+            if not is_close_order:
+                detection_method = "default_open_order"
+                self.logger.info(f"🟢 최종: 오픈 주문으로 판단 (새로운 포지션 생성 주문)")
+            
+            self.logger.info(f"✅ 강화된 클로즈 주문 분석 결과: is_close_order={is_close_order}, method={detection_method}")
             
             # 🔥🔥🔥 주문 방향과 포지션 방향 정확한 매핑
             order_direction = None
@@ -291,7 +314,7 @@ class MirrorTradingUtils:
                         order_direction = 'sell'
                         position_side = 'long'
             else:
-                # 오픈 주문인 경우
+                # 🔥🔥🔥 오픈 주문인 경우 (TP/SL 설정된 오픈 주문 포함)
                 if 'buy' in side or 'long' in side:
                     order_direction = 'buy'
                     position_side = 'long'
@@ -309,7 +332,7 @@ class MirrorTradingUtils:
                 'original_side': side,
                 'reduce_only': reduce_only,
                 'order_type': order_type,
-                'detection_method': 'enhanced_analysis'  # 강화된 분석 방법 사용
+                'detection_method': detection_method  # 강화된 분석 방법 사용
             }
             
             self.logger.info(f"✅ 강화된 클로즈 주문 분석 결과: {result}")
@@ -321,9 +344,9 @@ class MirrorTradingUtils:
                 'is_close_order': False,
                 'order_direction': 'buy',
                 'position_side': 'long',
-                'original_side': side,
+                'original_side': side if 'side' in locals() else '',
                 'reduce_only': False,
-                'order_type': order_type,
+                'order_type': order_type if 'order_type' in locals() else '',
                 'detection_method': 'fallback'
             }
     
