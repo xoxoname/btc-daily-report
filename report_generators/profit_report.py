@@ -244,16 +244,28 @@ class ProfitReportGenerator(BaseReportGenerator):
                 # 🔥🔥 오늘 Position PnL 조회 - 개선된 거래 내역 파싱
                 today_position_pnl = await self.gateio_client.get_today_position_pnl()
                 
+                # 🔥🔥 비현실적인 값 안전장치 (절댓값 1만 달러 이상은 0으로 처리)
+                if abs(today_position_pnl) > 10000:
+                    self.logger.warning(f"Gate.io 오늘 PnL 비현실적 값 감지, 0으로 처리: {today_position_pnl}")
+                    today_position_pnl = 0.0
+                
                 # 🔥🔥 7일 Position PnL 조회 - 개선된 거래 내역 파싱
                 weekly_result = await self.gateio_client.get_7day_position_pnl()
+                weekly_pnl_value = weekly_result.get('total_pnl', 0)
+                
+                # 🔥🔥 비현실적인 값 안전장치 (절댓값 1만 달러 이상은 0으로 처리)
+                if abs(weekly_pnl_value) > 10000:
+                    self.logger.warning(f"Gate.io 7일 PnL 비현실적 값 감지, 0으로 처리: {weekly_pnl_value}")
+                    weekly_pnl_value = 0.0
+                
                 weekly_profit = {
-                    'total_pnl': weekly_result.get('total_pnl', 0),
+                    'total_pnl': weekly_pnl_value,
                     'average_daily': weekly_result.get('average_daily', 0),
                     'actual_days': weekly_result.get('actual_days', 7),
                     'trading_fees': weekly_result.get('trading_fees', 0),
                     'funding_fees': weekly_result.get('funding_fees', 0),
                     'net_profit': weekly_result.get('net_profit', 0),
-                    'source': weekly_result.get('source', 'gate_position_pnl_based_improved')
+                    'source': weekly_result.get('source', 'gate_position_pnl_based_improved_filtered')
                 }
                 
                 # 🔥🔥 누적 수익 계산 (잔고 기반 추정)
@@ -263,7 +275,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                     cumulative_profit = total_equity - estimated_initial
                     initial_capital = estimated_initial
                     
-                    self.logger.info(f"✅ Gate.io Position PnL 기준 손익 계산 완료 (개선된 파싱):")
+                    self.logger.info(f"✅ Gate.io Position PnL 기준 손익 계산 완료 (개선된 파싱 + 안전장치):")
                     self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
                     self.logger.info(f"  - 7일 Position PnL: ${weekly_profit['total_pnl']:.4f}")
                     self.logger.info(f"  - 누적 수익 (추정): ${cumulative_profit:.2f}")
@@ -272,6 +284,9 @@ class ProfitReportGenerator(BaseReportGenerator):
                 
             except Exception as e:
                 self.logger.error(f"Gate.io Position PnL 기반 손익 API 실패: {e}")
+                # 오류 발생시 안전하게 0으로 처리
+                today_position_pnl = 0.0
+                weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'actual_days': 7, 'trading_fees': 0, 'funding_fees': 0, 'net_profit': 0, 'source': 'error_safe_fallback'}
             
             # 사용 증거금 계산
             used_margin = 0
@@ -333,6 +348,12 @@ class ProfitReportGenerator(BaseReportGenerator):
         gateio_unrealized = gateio_data['account_info'].get('unrealized_pnl', 0)
         
         today_position_pnl = bitget_data['today_pnl'] + gateio_data['today_pnl']  # Position PnL 기준
+        
+        # 🔥🔥 최종 안전장치: 비현실적인 값 필터링
+        if abs(today_position_pnl) > 100000:  # 10만 달러 이상은 명백한 오류
+            self.logger.error(f"통합 계산에서 비현실적인 금일 PnL 감지, 비트겟만 사용: {today_position_pnl}")
+            today_position_pnl = bitget_data['today_pnl']  # Gate.io 값 무시하고 Bitget만 사용
+        
         today_unrealized = bitget_unrealized + gateio_unrealized
         today_total = today_position_pnl + today_unrealized
         
@@ -340,6 +361,11 @@ class ProfitReportGenerator(BaseReportGenerator):
         bitget_weekly = bitget_data['weekly_profit']['total']
         gateio_weekly = gateio_data['weekly_profit']['total_pnl']
         weekly_total = bitget_weekly + gateio_weekly  # Position PnL 기준
+        
+        # 🔥🔥 최종 안전장치: 비현실적인 값 필터링
+        if abs(weekly_total) > 100000:  # 10만 달러 이상은 명백한 오류
+            self.logger.error(f"통합 계산에서 비현실적인 7일 PnL 감지, 비트겟만 사용: {weekly_total}")
+            weekly_total = bitget_weekly  # Gate.io 값 무시하고 Bitget만 사용
         
         # 실제 일수 계산
         actual_days = max(
@@ -478,7 +504,11 @@ class ProfitReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     def _format_currency_html(self, amount: float, include_krw: bool = True) -> str:
-        """HTML용 통화 포맷팅"""
+        """HTML용 통화 포맷팅 - 안전장치 포함"""
+        # 🔥🔥 비현실적인 값 안전장치
+        if abs(amount) > 1000000:  # 100만 달러 이상은 오류로 간주
+            return "$0.00"
+        
         if amount > 0:
             usd_text = f"+${amount:.2f}"
         elif amount < 0:
@@ -495,7 +525,11 @@ class ProfitReportGenerator(BaseReportGenerator):
         return usd_text
     
     def _format_currency_compact(self, amount: float, roi: float) -> str:
-        """컴팩트한 통화+수익률 포맷"""
+        """컴팩트한 통화+수익률 포맷 - 안전장치 포함"""
+        # 🔥🔥 비현실적인 값 안전장치
+        if abs(amount) > 1000000:  # 100만 달러 이상은 오류로 간주
+            return "+$0.00 (+0만원/+0.0%)"
+        
         if amount >= 0:
             sign = "+"
             krw = int(amount * 1350 / 10000)
@@ -506,7 +540,11 @@ class ProfitReportGenerator(BaseReportGenerator):
             return f"{sign}${abs(amount):.2f} ({sign}{krw}만원/{sign}{abs(roi):.1f}%)"
     
     def _format_currency_compact_daily(self, amount: float) -> str:
-        """일평균용 컴팩트 포맷"""
+        """일평균용 컴팩트 포맷 - 안전장치 포함"""
+        # 🔥🔥 비현실적인 값 안전장치
+        if abs(amount) > 100000:  # 10만 달러 이상은 오류로 간주
+            return "+$0.00 (+0만원/일)"
+        
         if amount >= 0:
             sign = "+"
             krw = int(amount * 1350 / 10000)
