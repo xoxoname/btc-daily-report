@@ -47,20 +47,61 @@ class GateioMirrorClient:
             logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료")
     
     async def initialize(self):
-        """클라이언트 초기화 및 연결 테스트"""
+        """클라이언트 초기화 및 연결 테스트 - 강화된 버전"""
         self._initialize_session()
         
         # API 키 검증을 위한 간단한 호출
         try:
-            logger.info("Gate.io API 연결 테스트 시작...")
+            logger.info("🔍 Gate.io API 연결 테스트 시작...")
+            
+            # 1단계: 계정 잔고 조회 테스트
             test_result = await self.get_account_balance()
-            if test_result is not None:
+            if test_result is not None and len(test_result) > 0:
                 self.api_healthy = True
                 self.last_successful_call = datetime.now()
-                logger.info("✅ Gate.io API 연결 테스트 성공")
+                logger.info("✅ Gate.io 계정 조회 성공")
+                
+                # 2단계: 거래 내역 조회 테스트 (최근 7일)
+                try:
+                    now = datetime.now()
+                    seven_days_ago = now - timedelta(days=7)
+                    start_ts = int(seven_days_ago.timestamp() * 1000)
+                    end_ts = int(now.timestamp() * 1000)
+                    
+                    trades = await self.get_my_trades(
+                        contract="BTC_USDT",
+                        start_time=start_ts,
+                        end_time=end_ts,
+                        limit=10
+                    )
+                    
+                    logger.info(f"✅ Gate.io 거래 내역 조회 테스트: {len(trades)}건")
+                    
+                    if len(trades) > 0:
+                        logger.info("✅ Gate.io에서 거래 내역 발견")
+                    else:
+                        logger.info("ℹ️ Gate.io에서 최근 7일간 거래 내역 없음")
+                        
+                except Exception as trade_error:
+                    logger.warning(f"⚠️ Gate.io 거래 내역 조회 테스트 실패: {trade_error}")
+                
+                # 3단계: 계정 변동 내역 조회 테스트
+                try:
+                    account_book = await self.get_account_book(
+                        start_time=start_ts,
+                        end_time=end_ts,
+                        limit=10
+                    )
+                    
+                    logger.info(f"✅ Gate.io 계정 변동 내역 조회 테스트: {len(account_book)}건")
+                    
+                except Exception as book_error:
+                    logger.warning(f"⚠️ Gate.io 계정 변동 내역 조회 테스트 실패: {book_error}")
+                
             else:
                 logger.warning("⚠️ Gate.io API 연결 테스트 실패 (빈 응답)")
                 self.api_healthy = False
+                
         except Exception as e:
             logger.error(f"❌ Gate.io API 연결 테스트 실패: {e}")
             self.api_healthy = False
@@ -369,9 +410,22 @@ class GateioMirrorClient:
             trade_count = 0
             
             # 로깅을 위한 샘플 거래 정보
-            logger.info(f"🔍 Gate.io 거래 샘플 분석 (첫 3건):")
+            logger.info(f"🔍 Gate.io 거래 내역 상세 분석:")
+            logger.info(f"  - 총 거래 건수: {len(trades)}")
+            
+            # 모든 거래 키 분석
+            all_keys = set()
+            for trade in trades:
+                if isinstance(trade, dict):
+                    all_keys.update(trade.keys())
+            
+            logger.info(f"  - 거래 내역 필드들: {sorted(list(all_keys))}")
+            
+            # 첫 몇 건 상세 분석
             for i, trade in enumerate(trades[:3]):
-                logger.info(f"  거래 {i+1}: {trade}")
+                logger.info(f"  거래 {i+1} 상세:")
+                for key, value in trade.items():
+                    logger.info(f"    {key}: {value} (타입: {type(value).__name__})")
             
             for trade in trades:
                 try:
@@ -404,6 +458,11 @@ class GateioMirrorClient:
                                         continue
                                 else:
                                     position_pnl = float(raw_value)
+                                
+                                # 🔥🔥 비현실적인 값 필터링 완화 (절댓값 50,000 달러 이상만 오류로 간주)
+                                if abs(position_pnl) > 50000:
+                                    logger.warning(f"Gate.io 비현실적인 PnL 값 무시: {field} = {position_pnl}")
+                                    continue
                                 
                                 if position_pnl != 0:
                                     logger.debug(f"Gate.io Position PnL 추출: {field} = {position_pnl}")
@@ -446,6 +505,12 @@ class GateioMirrorClient:
                         if field in trade and trade[field] is not None:
                             try:
                                 fee_value = float(trade[field])
+                                
+                                # 🔥🔥 비현실적인 수수료 값 필터링 (절댓값 100 달러 이상은 오류로 간주)
+                                if abs(fee_value) > 100:
+                                    logger.warning(f"Gate.io 비현실적인 수수료 값 무시: {field} = {fee_value}")
+                                    continue
+                                
                                 if fee_value != 0:
                                     trading_fee = abs(fee_value)  # 수수료는 항상 양수
                                     logger.debug(f"Gate.io 거래 수수료 추출: {field} = {trading_fee}")
@@ -457,8 +522,16 @@ class GateioMirrorClient:
                     # Gate.io는 거래 내역에 펀딩비가 포함되지 않으므로 0으로 설정
                     funding_fee = 0.0
                     
-                    # 통계 누적
+                    # 통계 누적 - 비현실적인 값 최종 검증
                     if position_pnl != 0 or trading_fee != 0:
+                        # 🔥🔥 최종 안전장치: 비현실적인 값은 누적하지 않음
+                        if abs(position_pnl) > 10000:
+                            logger.warning(f"Gate.io 거래 처리 건너뜀 - 비현실적인 PnL: {position_pnl}")
+                            continue
+                        if trading_fee > 100:
+                            logger.warning(f"Gate.io 거래 처리 건너뜀 - 비현실적인 수수료: {trading_fee}")
+                            continue
+                        
                         total_position_pnl += position_pnl
                         total_trading_fees += trading_fee
                         total_funding_fees += funding_fee
@@ -504,7 +577,7 @@ class GateioMirrorClient:
             }
     
     async def get_today_position_pnl(self) -> float:
-        """🔥🔥 오늘 Position PnL 기준 실현손익 조회"""
+        """🔥🔥 오늘 Position PnL 기준 실현손익 조회 - 다중 방법 시도"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
@@ -519,17 +592,50 @@ class GateioMirrorClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            # Position PnL 기준 계산
-            result = await self.get_position_pnl_based_profit(start_timestamp, end_timestamp)
+            logger.info(f"🔍 Gate.io 오늘 PnL 조회 시작 (다중 방법):")
             
-            return result.get('position_pnl', 0.0)  # 수수료 제외한 실제 Position PnL
+            # 🔥🔥 방법 1: 거래 내역 기반 Position PnL 계산
+            result = await self.get_position_pnl_based_profit(start_timestamp, end_timestamp)
+            position_pnl = result.get('position_pnl', 0.0)
+            
+            if position_pnl != 0.0:
+                logger.info(f"✅ 방법 1 성공 - 거래 내역 기반: ${position_pnl:.4f}")
+                return position_pnl
+            
+            # 🔥🔥 방법 2: 계정 변동 내역 기반 PnL 추출
+            try:
+                logger.info("🔍 방법 2 시도: 계정 변동 내역 기반")
+                account_book = await self.get_account_book(
+                    start_time=start_timestamp,
+                    end_time=end_timestamp,
+                    limit=100,
+                    type_filter='pnl'  # PnL 타입만 조회
+                )
+                
+                pnl_from_book = 0.0
+                for record in account_book:
+                    change = float(record.get('change', 0))
+                    if change != 0:
+                        pnl_from_book += change
+                        logger.debug(f"계정 변동: {change}")
+                
+                if pnl_from_book != 0.0:
+                    logger.info(f"✅ 방법 2 성공 - 계정 변동 내역: ${pnl_from_book:.4f}")
+                    return pnl_from_book
+                
+            except Exception as e:
+                logger.debug(f"방법 2 실패: {e}")
+            
+            # 🔥🔥 방법 3: 잔고 변화 추정 (임시)
+            logger.info("⚠️ 거래 내역 및 계정 변동 내역 없음, 0 반환")
+            return 0.0
             
         except Exception as e:
             logger.error(f"Gate.io 오늘 Position PnL 조회 실패: {e}")
             return 0.0
     
     async def get_7day_position_pnl(self) -> Dict:
-        """🔥🔥 Gate.io 7일 Position PnL 조회 - 현재에서 정확히 7일 전"""
+        """🔥🔥 Gate.io 7일 Position PnL 조회 - 다중 방법 시도"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             current_time = datetime.now(kst)
@@ -537,7 +643,7 @@ class GateioMirrorClient:
             # 🔥🔥 현재에서 정확히 7일 전
             seven_days_ago = current_time - timedelta(days=7)
             
-            logger.info(f"🔍 Gate.io 7일 Position PnL 계산:")
+            logger.info(f"🔍 Gate.io 7일 Position PnL 계산 (다중 방법):")
             logger.info(f"  - 시작: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} KST")
             logger.info(f"  - 종료: {current_time.strftime('%Y-%m-%d %H:%M')} KST")
             
@@ -548,14 +654,44 @@ class GateioMirrorClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            # Position PnL 기준 계산
+            # 🔥🔥 방법 1: 거래 내역 기반 Position PnL 계산
             result = await self.get_position_pnl_based_profit(start_timestamp, end_timestamp)
+            position_pnl = result.get('position_pnl', 0.0)
+            trade_count = result.get('trade_count', 0)
+            
+            if position_pnl != 0.0 or trade_count > 0:
+                logger.info(f"✅ 방법 1 성공 - 거래 내역 기반: ${position_pnl:.4f} ({trade_count}건)")
+            else:
+                # 🔥🔥 방법 2: 계정 변동 내역 기반 PnL 추출
+                try:
+                    logger.info("🔍 방법 2 시도: 계정 변동 내역 기반")
+                    account_book = await self.get_account_book(
+                        start_time=start_timestamp,
+                        end_time=end_timestamp,
+                        limit=500,
+                        type_filter='pnl'  # PnL 타입만 조회
+                    )
+                    
+                    pnl_from_book = 0.0
+                    for record in account_book:
+                        change = float(record.get('change', 0))
+                        if change != 0:
+                            pnl_from_book += change
+                            logger.debug(f"7일 계정 변동: {change}")
+                    
+                    if pnl_from_book != 0.0:
+                        position_pnl = pnl_from_book
+                        logger.info(f"✅ 방법 2 성공 - 계정 변동 내역: ${position_pnl:.4f}")
+                    else:
+                        logger.info("⚠️ 거래 내역 및 계정 변동 내역 없음")
+                    
+                except Exception as e:
+                    logger.debug(f"방법 2 실패: {e}")
             
             # 7일로 나누어 일평균 계산
             total_days = (current_time - seven_days_ago).total_seconds() / 86400
             actual_days = max(total_days, 1)  # 최소 1일
             
-            position_pnl = result.get('position_pnl', 0.0)
             daily_average = position_pnl / actual_days
             
             logger.info(f"✅ Gate.io 7일 Position PnL 계산 완료:")
@@ -567,13 +703,13 @@ class GateioMirrorClient:
                 'total_pnl': position_pnl,           # 수수료 제외한 실제 Position PnL
                 'daily_pnl': {},                     # 일별 분석은 별도 구현 필요시
                 'average_daily': daily_average,
-                'trade_count': result.get('trade_count', 0),
+                'trade_count': trade_count,
                 'actual_days': actual_days,
                 'trading_fees': result.get('trading_fees', 0),
                 'funding_fees': result.get('funding_fees', 0),
-                'net_profit': result.get('net_profit', 0),
-                'source': 'gate_7days_position_pnl_accurate',
-                'confidence': 'high'
+                'net_profit': result.get('net_profit', position_pnl),
+                'source': 'gate_7days_position_pnl_multi_method',
+                'confidence': 'high' if position_pnl != 0.0 else 'medium'
             }
             
         except Exception as e:
