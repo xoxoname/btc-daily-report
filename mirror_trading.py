@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 from typing import Dict, List, Optional, Set, Tuple
@@ -19,11 +20,11 @@ class MirrorTradingSystem:
         self.telegram = telegram_bot
         self.logger = logging.getLogger('mirror_trading')
         
-        # 🔥🔥🔥 환경변수 처리 개선 - O/X 지원 및 복제 비율 추가
-        raw_mirror_mode = getattr(config, 'MIRROR_TRADING_MODE', 'O')
+        # 🔥🔥🔥 환경변수 처리 개선 - O/X 지원 및 복제 비율 추가 (직접 환경변수 읽기)
+        raw_mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'O')
         self.mirror_trading_enabled = self._parse_mirror_trading_mode(raw_mirror_mode)
         
-        raw_ratio_multiplier = getattr(config, 'MIRROR_RATIO_MULTIPLIER', '1.0')
+        raw_ratio_multiplier = os.getenv('MIRROR_RATIO_MULTIPLIER', '1.0')
         self.mirror_ratio_multiplier = self._parse_mirror_ratio_multiplier(raw_ratio_multiplier)
         
         # 환경변수 로깅
