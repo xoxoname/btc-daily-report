@@ -1136,4 +1136,80 @@ class MirrorTradingSystem:
         try:
             # 기본 클라이언트로 계정 조회
             bitget_account = await self.bitget.get_account_info()
-            bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('
+            bitget_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
+            
+            gate_account = await self.gate_mirror.get_account_balance()
+            gate_equity = float(gate_account.get('total', 0))
+            
+            # 시세 차이 정보
+            valid_price_diff = self._get_valid_price_difference()
+            
+            if valid_price_diff is not None:
+                price_status = "정상" if valid_price_diff <= self.price_sync_threshold else "범위 초과"
+                price_info = f"""📈 시세 상태:
+• 비트겟: ${self.bitget_current_price:,.2f}
+• 게이트: ${self.gate_current_price:,.2f}
+• 차이: ${valid_price_diff:.2f} ({price_status})
+• 🔥 처리: 시세 차이와 무관하게 즉시 처리"""
+            else:
+                price_info = f"""📈 시세 상태:
+• 시세 조회 중 문제 발생
+• 시스템이 자동으로 복구 중
+• 🔥 처리: 시세 조회 실패와 무관하게 정상 처리"""
+            
+            # 복제 비율 설정 정보
+            ratio_description = self.utils.get_ratio_multiplier_description(self.mirror_ratio_multiplier)
+            
+            await self.telegram.send_message(
+                f"🔄 미러 트레이딩 시스템 시작 (체결/취소 구분 강화)\n\n"
+                f"💰 계정 잔고:\n"
+                f"• 비트겟: ${bitget_equity:,.2f}\n"
+                f"• 게이트: ${gate_equity:,.2f}\n\n"
+                f"{price_info}\n\n"
+                f"🔄 복제 비율 설정:\n"
+                f"• 현재 복제 비율: {self.mirror_ratio_multiplier}x\n"
+                f"• 설명: {ratio_description}\n"
+                f"• 미러링 모드: {'활성화' if self.mirror_trading_enabled else '비활성화'}\n\n"
+                f"📊 현재 상태:\n"
+                f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
+                f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
+                f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
+                f"⚡ 개선된 핵심 기능:\n"
+                f"• 🎯 완벽한 TP/SL 미러링\n"
+                f"• 🔄 45초마다 안전한 자동 동기화\n"
+                f"• 🛡️ 강화된 중복 복제 방지\n"
+                f"• 🗑️ 확실한 고아 주문만 정리\n"
+                f"• 📊 모든 예약 주문 감지 (TP/SL 포함)\n"
+                f"• 🔥 시세 차이와 무관하게 즉시 처리\n"
+                f"• 🛡️ 의심스러운 주문은 안전상 보존\n"
+                f"• ⚡ 2차 진입 클로즈 숏 예약 완벽 감지\n"
+                f"• 📋 예약 주문 체결/취소 정확한 구분\n"
+                f"• 🚀 클로징 롱/숏 강제 미러링\n"
+                f"• 📈 복제 비율 {self.mirror_ratio_multiplier}x 적용\n"
+                f"• 🔄 렌더 재구동 시 예약 주문 자동 미러링\n\n"
+                f"🚀 체결/취소 구분 + 클로징 처리 강화된 시스템이 시작되었습니다."
+            )
+            
+        except Exception as e:
+            self.logger.error(f"계정 상태 조회 실패: {e}")
+
+    async def stop(self):
+        """미러 트레이딩 중지"""
+        self.monitoring = False
+        
+        try:
+            # 포지션 매니저 중지
+            await self.position_manager.stop()
+            
+            # Bitget 미러링 클라이언트 종료
+            await self.bitget_mirror.close()
+            
+            # Gate.io 미러링 클라이언트 종료
+            await self.gate_mirror.close()
+            
+            final_report = await self._create_daily_report()
+            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료\n\n{final_report}")
+        except:
+            pass
+        
+        self.logger.info("미러 트레이딩 시스템 중지")
