@@ -9,7 +9,7 @@ from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 logger = logging.getLogger(__name__)
 
 class MirrorPositionManager:
-    """포지션 및 주문 관리 클래스 - 클로즈 주문 미러링 개선 버전"""
+    """포지션 및 주문 관리 클래스 - 예약 주문 취소 처리 개선 버전"""
     
     def __init__(self, config, bitget_client, gate_client, gate_mirror_client, telegram_bot, utils):
         self.config = config
@@ -19,6 +19,10 @@ class MirrorPositionManager:
         self.telegram = telegram_bot
         self.utils = utils
         self.logger = logging.getLogger('mirror_position_manager')
+        
+        # 🔥🔥🔥 환경변수 처리 개선 - O/X 지원
+        self.mirror_trading_enabled = self._parse_mirror_trading_mode(getattr(config, 'MIRROR_TRADING_MODE', 'O'))
+        self.mirror_ratio_multiplier = float(getattr(config, 'MIRROR_RATIO_MULTIPLIER', '1.0'))
         
         # 미러링 상태 관리
         self.mirrored_positions: Dict[str, PositionInfo] = {}
@@ -32,7 +36,7 @@ class MirrorPositionManager:
         # 주문 체결 추적
         self.processed_orders: Set[str] = set()
         
-        # 🔥🔥🔥 예약 주문 추적 관리 - 클로즈 주문 강화 버전
+        # 🔥🔥🔥 예약 주문 추적 관리 - 취소 처리 강화 버전
         self.mirrored_plan_orders: Dict[str, Dict] = {}
         self.processed_plan_orders: Set[str] = set()
         self.startup_plan_orders: Set[str] = set()
@@ -48,9 +52,11 @@ class MirrorPositionManager:
         self.order_hash_timestamps: Dict[str, datetime] = {}
         self.hash_cleanup_interval = 180  # 300초 → 180초로 단축
         
-        # 예약 주문 취소 감지 시스템
+        # 🔥🔥🔥 예약 주문 취소 감지 시스템 - 개선된 버전
         self.last_plan_order_ids: Set[str] = set()
         self.plan_order_snapshot: Dict[str, Dict] = {}
+        self.cancel_retry_count: Dict[str, int] = {}  # 취소 재시도 카운터
+        self.max_cancel_retries = 3  # 최대 취소 재시도 횟수
         
         # 시세 차이 관리
         self.bitget_current_price: float = 0.0
@@ -110,7 +116,7 @@ class MirrorPositionManager:
             'startup_plan_mirrors': 0,
             'close_order_mirrors': 0,
             'close_order_skipped': 0,
-            'close_order_forced': 0,  # 🔥🔥🔥 강제 미러링된 클로즈 주문
+            'close_order_forced': 0,
             'duplicate_orders_prevented': 0,
             'perfect_mirrors': 0,
             'partial_mirrors': 0,
@@ -120,10 +126,28 @@ class MirrorPositionManager:
             'position_closed_cleanups': 0,
             'sync_corrections': 0,
             'sync_deletions': 0,
+            'cancel_failures': 0,  # 🔥🔥🔥 취소 실패 통계 추가
+            'cancel_successes': 0,  # 🔥🔥🔥 취소 성공 통계 추가
             'errors': []
         }
         
-        self.logger.info("🔥 미러 포지션 매니저 초기화 완료 - 클로즈 주문 미러링 강화 버전")
+        self.logger.info(f"🔥 미러 포지션 매니저 초기화 완료 - 미러링 모드: {'활성화' if self.mirror_trading_enabled else '비활성화'}, 복제 비율: {self.mirror_ratio_multiplier}x")
+
+    def _parse_mirror_trading_mode(self, mode_str: str) -> bool:
+        """🔥🔥🔥 미러링 모드 파싱 - O/X 지원"""
+        if isinstance(mode_str, bool):
+            return mode_str
+        
+        mode_str = str(mode_str).upper().strip()
+        
+        # O, X 지원
+        if mode_str in ['O', 'ON', 'OPEN', 'TRUE', '1', 'Y', 'YES']:
+            return True
+        elif mode_str in ['X', 'OFF', 'CLOSE', 'FALSE', '0', 'N', 'NO']:
+            return False
+        else:
+            self.logger.warning(f"알 수 없는 미러링 모드: {mode_str}, 기본값(O) 사용")
+            return True
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -134,7 +158,12 @@ class MirrorPositionManager:
     async def initialize(self):
         """포지션 매니저 초기화"""
         try:
-            self.logger.info("🔥 포지션 매니저 초기화 시작 - 클로즈 주문 강화")
+            self.logger.info("🔥 포지션 매니저 초기화 시작 - 예약 주문 취소 처리 강화")
+            
+            # 미러링 비활성화 확인
+            if not self.mirror_trading_enabled:
+                self.logger.warning("⚠️ 미러링 모드가 비활성화되어 있습니다 (MIRROR_TRADING_MODE=X)")
+                return
             
             # Gate 미러링 클라이언트 초기화
             await self.gate_mirror.initialize()
@@ -163,8 +192,12 @@ class MirrorPositionManager:
             raise
 
     async def monitor_plan_orders_cycle(self):
-        """🔥🔥🔥 예약 주문 모니터링 사이클 - 클로즈 주문 강화 버전"""
+        """🔥🔥🔥 예약 주문 모니터링 사이클 - 취소 처리 강화 버전"""
         try:
+            if not self.mirror_trading_enabled:
+                await asyncio.sleep(1.0)
+                return
+                
             if not self.startup_plan_orders_processed:
                 await asyncio.sleep(0.1)
                 return
@@ -201,18 +234,44 @@ class MirrorPositionManager:
                         'status': 'active'
                     }
             
-            # 취소된 예약 주문 감지 및 처리
+            # 🔥🔥🔥 취소된 예약 주문 감지 및 강화된 처리
             canceled_order_ids = self.last_plan_order_ids - current_order_ids
             
             if canceled_order_ids:
-                self.logger.info(f"{len(canceled_order_ids)}개의 예약 주문 취소 감지")
+                self.logger.info(f"🚫 {len(canceled_order_ids)}개의 예약 주문 취소 감지 - 강화된 처리 시작")
+                
+                cancel_success_count = 0
+                cancel_fail_count = 0
                 
                 for canceled_order_id in canceled_order_ids:
-                    await self._handle_plan_order_cancel(canceled_order_id)
+                    try:
+                        success = await self._handle_plan_order_cancel_enhanced(canceled_order_id)
+                        if success:
+                            cancel_success_count += 1
+                            self.daily_stats['cancel_successes'] += 1
+                        else:
+                            cancel_fail_count += 1
+                            self.daily_stats['cancel_failures'] += 1
+                            
+                    except Exception as e:
+                        self.logger.error(f"예약 주문 취소 처리 중 예외: {canceled_order_id} - {e}")
+                        cancel_fail_count += 1
+                        self.daily_stats['cancel_failures'] += 1
                 
                 self.daily_stats['plan_order_cancels'] += len(canceled_order_ids)
+                
+                # 🔥🔥🔥 취소 결과 알림
+                if cancel_success_count > 0 or cancel_fail_count > 0:
+                    await self.telegram.send_message(
+                        f"🚫 예약 주문 취소 동기화 결과\n"
+                        f"감지된 취소: {len(canceled_order_ids)}건\n"
+                        f"✅ 성공: {cancel_success_count}건\n"
+                        f"❌ 실패: {cancel_fail_count}건\n"
+                        f"📊 현재 시세 차이: ${price_diff_abs:.2f}\n\n"
+                        f"{'🎯 모든 취소가 성공적으로 동기화되었습니다!' if cancel_fail_count == 0 else '⚠️ 일부 취소 실패가 있습니다. 수동 확인을 권장합니다.'}"
+                    )
             
-            # 🔥🔥🔥 새로운 예약 주문 감지 - 클로즈 주문 강화
+            # 🔥🔥🔥 새로운 예약 주문 감지 - 복제 비율 적용
             new_orders_count = 0
             new_close_orders_count = 0
             perfect_mirrors = 0
@@ -253,13 +312,13 @@ class MirrorPositionManager:
                         self.processed_plan_orders.add(order_id)
                         continue
                     
-                    # 🔥🔥🔥 새로운 예약 주문 처리 - 클로즈 주문 강화
+                    # 🔥🔥🔥 새로운 예약 주문 처리 - 복제 비율 적용
                     try:
-                        # 클로즈 주문 상세 분석 - 🔥🔥🔥 수정: TP 설정된 오픈 주문을 클로즈로 오분류하지 않도록
+                        # 클로즈 주문 상세 분석
                         close_details = await self.utils.determine_close_order_details_enhanced(order)
                         is_close_order = close_details['is_close_order']
                         
-                        self.logger.info(f"🎯 새로운 예약 주문 감지: {order_id} (클로즈: {is_close_order})")
+                        self.logger.info(f"🎯 새로운 예약 주문 감지: {order_id} (클로즈: {is_close_order}, 복제비율: {self.mirror_ratio_multiplier}x)")
                         self.logger.debug(f"   주문 상세: side={order.get('side')}, reduceOnly={order.get('reduceOnly')}")
                         
                         # 🔥🔥🔥 클로즈 주문인 경우 강화된 검증
@@ -278,10 +337,10 @@ class MirrorPositionManager:
                                 self.daily_stats['close_order_skipped'] += 1
                                 continue
                         
-                        # 🔥🔥🔥 수정: 완벽한 미러링 처리 - 반환값 개선
-                        result = await self._process_perfect_mirror_order_enhanced(order, close_details)
+                        # 🔥🔥🔥 복제 비율 적용된 완벽한 미러링 처리
+                        result = await self._process_perfect_mirror_order_with_ratio(order, close_details, self.mirror_ratio_multiplier)
                         
-                        # 🔥🔥🔥 수정: 모든 성공 케이스 처리
+                        # 🔥🔥🔥 모든 성공 케이스 처리
                         success_results = ["perfect_success", "partial_success", "force_success"]
                         
                         if result in success_results:
@@ -299,7 +358,7 @@ class MirrorPositionManager:
                                 new_close_orders_count += 1
                                 self.daily_stats['close_order_mirrors'] += 1
                                 
-                            self.logger.info(f"✅ 예약 주문 복제 성공: {order_id} (결과: {result})")
+                            self.logger.info(f"✅ 예약 주문 복제 성공: {order_id} (결과: {result}, 비율: {self.mirror_ratio_multiplier}x)")
                             
                         elif result == "skipped" and is_close_order:
                             self.daily_stats['close_order_skipped'] += 1
@@ -325,23 +384,25 @@ class MirrorPositionManager:
                             f"오류: {str(e)[:200]}"
                         )
             
-            # 🔥🔥🔥 성공적인 미러링 결과 알림 - 수정된 버전
+            # 🔥🔥🔥 성공적인 미러링 결과 알림 - 복제 비율 정보 포함
             if new_orders_count > 0:
+                ratio_info = f" (복제비율: {self.mirror_ratio_multiplier}x)" if self.mirror_ratio_multiplier != 1.0 else ""
+                
                 if forced_close_mirrors > 0:
                     await self.telegram.send_message(
-                        f"🚀 클로즈 주문 강제 미러링 성공\n"
+                        f"🚀 클로즈 주문 강제 미러링 성공{ratio_info}\n"
                         f"강제 미러링: {forced_close_mirrors}개\n"
                         f"완벽 복제: {perfect_mirrors}개\n"
                         f"클로즈 주문: {new_close_orders_count}개\n"
                         f"전체 신규: {new_orders_count}개\n\n"
-                        f"🔥 클로즈 주문은 포지션 유무와 관계없이 미러링됩니다"
+                        f"🔥 클로즈 주문은 포지션 유무와 관계없이 미러링됩니다{ratio_info}"
                     )
                 elif perfect_mirrors > 0:
                     await self.telegram.send_message(
-                        f"✅ 완벽한 TP/SL 미러링 성공\n"
+                        f"✅ 완벽한 TP/SL 미러링 성공{ratio_info}\n"
                         f"완벽 복제: {perfect_mirrors}개\n"
                         f"클로즈 주문: {new_close_orders_count}개\n"
-                        f"전체 신규: {new_orders_count}개"
+                        f"전체 신규: {new_orders_count}개{ratio_info}"
                     )
             
             # 현재 상태를 다음 비교를 위해 저장
@@ -356,6 +417,336 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
 
+    async def _handle_plan_order_cancel_enhanced(self, bitget_order_id: str) -> bool:
+        """🔥🔥🔥 강화된 예약 주문 취소 처리"""
+        try:
+            self.logger.info(f"🚫 강화된 예약 주문 취소 처리 시작: {bitget_order_id}")
+            
+            # 미러링된 주문인지 확인
+            if bitget_order_id not in self.mirrored_plan_orders:
+                self.logger.info(f"미러링되지 않은 주문이므로 취소 처리 스킵: {bitget_order_id}")
+                return True  # 미러링되지 않은 것은 성공으로 간주
+            
+            mirror_info = self.mirrored_plan_orders[bitget_order_id]
+            gate_order_id = mirror_info.get('gate_order_id')
+            
+            if not gate_order_id:
+                self.logger.warning(f"게이트 주문 ID가 없음: {bitget_order_id}")
+                # 미러링 기록에서 제거
+                del self.mirrored_plan_orders[bitget_order_id]
+                return True
+            
+            # 🔥🔥🔥 재시도 카운터 확인
+            retry_count = self.cancel_retry_count.get(bitget_order_id, 0)
+            
+            if retry_count >= self.max_cancel_retries:
+                self.logger.error(f"최대 재시도 횟수 초과: {bitget_order_id} (재시도: {retry_count}회)")
+                # 강제로 미러링 기록에서 제거
+                await self._force_remove_mirror_record(bitget_order_id, gate_order_id)
+                return False
+            
+            # 🔥🔥🔥 게이트에서 주문 취소 시도 - 단순화된 로직
+            try:
+                self.logger.info(f"🎯 게이트 주문 취소 시도: {gate_order_id} (재시도: {retry_count + 1}/{self.max_cancel_retries})")
+                
+                # 직접 취소 시도
+                cancel_result = await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                
+                # 취소 성공
+                self.logger.info(f"✅ 게이트 주문 취소 성공: {gate_order_id}")
+                
+                # 1초 대기 후 취소 확인
+                await asyncio.sleep(1.0)
+                
+                # 취소 확인
+                gate_orders = await self.gate_mirror.get_price_triggered_orders("BTC_USDT", "open")
+                gate_order_exists = any(order.get('id') == gate_order_id for order in gate_orders)
+                
+                if gate_order_exists:
+                    # 아직 존재하면 재시도
+                    self.cancel_retry_count[bitget_order_id] = retry_count + 1
+                    self.logger.warning(f"⚠️ 게이트 주문이 아직 존재함, 재시도 예정: {gate_order_id}")
+                    return False
+                else:
+                    # 취소 확인됨
+                    success = True
+                    
+            except Exception as cancel_error:
+                error_msg = str(cancel_error).lower()
+                
+                # 🔥🔥🔥 이미 존재하지 않는 주문인 경우 성공으로 처리
+                if any(keyword in error_msg for keyword in [
+                    "not found", "order not exist", "invalid order", 
+                    "order does not exist", "auto_order_not_found",
+                    "order_not_found", "not_found", "已取消", "cancelled"
+                ]):
+                    success = True
+                    self.logger.info(f"✅ 게이트 주문이 이미 처리됨: {gate_order_id}")
+                else:
+                    # 다른 오류인 경우 재시도
+                    success = False
+                    self.cancel_retry_count[bitget_order_id] = retry_count + 1
+                    self.logger.error(f"❌ 게이트 주문 취소 실패: {gate_order_id} - {cancel_error}")
+            
+            # 🔥🔥🔥 결과 처리
+            if success:
+                # 성공한 경우 모든 기록 정리
+                await self._cleanup_mirror_records(bitget_order_id, gate_order_id)
+                
+                await self.telegram.send_message(
+                    f"🚫✅ 예약 주문 취소 동기화 완료\n"
+                    f"비트겟 ID: {bitget_order_id}\n"
+                    f"게이트 ID: {gate_order_id}\n"
+                    f"재시도 횟수: {retry_count + 1}회"
+                )
+                
+                self.logger.info(f"🎯 예약 주문 취소 동기화 성공: {bitget_order_id} → {gate_order_id}")
+                return True
+            else:
+                # 실패한 경우 다음 사이클에서 재시도
+                self.logger.warning(f"⚠️ 예약 주문 취소 재시도 예정: {bitget_order_id} (다음 사이클)")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"강화된 예약 주문 취소 처리 중 예외 발생: {bitget_order_id} - {e}")
+            
+            # 예외 발생 시 재시도 카운터 증가
+            retry_count = self.cancel_retry_count.get(bitget_order_id, 0)
+            self.cancel_retry_count[bitget_order_id] = retry_count + 1
+            
+            return False
+
+    async def _force_remove_mirror_record(self, bitget_order_id: str, gate_order_id: str):
+        """강제로 미러링 기록 제거"""
+        try:
+            self.logger.warning(f"🗑️ 강제 미러링 기록 제거: {bitget_order_id} → {gate_order_id}")
+            
+            # 미러링 기록에서 제거
+            if bitget_order_id in self.mirrored_plan_orders:
+                del self.mirrored_plan_orders[bitget_order_id]
+            
+            # 주문 매핑에서 제거
+            if bitget_order_id in self.bitget_to_gate_order_mapping:
+                del self.bitget_to_gate_order_mapping[bitget_order_id]
+            if gate_order_id in self.gate_to_bitget_order_mapping:
+                del self.gate_to_bitget_order_mapping[gate_order_id]
+            
+            # 재시도 카운터에서 제거
+            if bitget_order_id in self.cancel_retry_count:
+                del self.cancel_retry_count[bitget_order_id]
+            
+            await self.telegram.send_message(
+                f"🗑️ 강제 미러링 기록 정리\n"
+                f"비트겟 ID: {bitget_order_id}\n"
+                f"게이트 ID: {gate_order_id}\n"
+                f"사유: 최대 재시도 횟수 초과\n"
+                f"⚠️ 게이트에서 수동 확인을 권장합니다"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"강제 미러링 기록 제거 실패: {e}")
+
+    async def _cleanup_mirror_records(self, bitget_order_id: str, gate_order_id: str):
+        """미러링 기록 정리"""
+        try:
+            # 미러링 기록에서 제거
+            if bitget_order_id in self.mirrored_plan_orders:
+                del self.mirrored_plan_orders[bitget_order_id]
+            
+            # 주문 매핑에서 제거
+            if bitget_order_id in self.bitget_to_gate_order_mapping:
+                del self.bitget_to_gate_order_mapping[bitget_order_id]
+            if gate_order_id in self.gate_to_bitget_order_mapping:
+                del self.gate_to_bitget_order_mapping[gate_order_id]
+            
+            # 재시도 카운터에서 제거
+            if bitget_order_id in self.cancel_retry_count:
+                del self.cancel_retry_count[bitget_order_id]
+            
+            self.logger.debug(f"🧹 미러링 기록 정리 완료: {bitget_order_id}")
+            
+        except Exception as e:
+            self.logger.error(f"미러링 기록 정리 실패: {e}")
+
+    async def _process_perfect_mirror_order_with_ratio(self, bitget_order: Dict, close_details: Dict, ratio_multiplier: float) -> str:
+        """🔥🔥🔥 복제 비율이 적용된 완벽한 미러링 주문 처리"""
+        try:
+            order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
+            is_close_order = close_details['is_close_order']
+            order_direction = close_details['order_direction']
+            position_side = close_details['position_side']
+            
+            self.logger.info(f"🎯 복제 비율 적용 미러링 시작: {order_id} (비율: {ratio_multiplier}x)")
+            self.logger.info(f"   클로즈 주문: {is_close_order}")
+            self.logger.info(f"   주문 방향: {order_direction} (포지션: {position_side})")
+            
+            # 트리거 가격 추출
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if bitget_order.get(price_field):
+                    trigger_price = float(bitget_order.get(price_field))
+                    break
+            
+            if trigger_price == 0:
+                self.logger.error(f"❌ 트리거 가격을 찾을 수 없음: {order_id}")
+                return "failed"
+            
+            # 크기 정보 추출
+            size = float(bitget_order.get('size', 0))
+            if size == 0:
+                self.logger.error(f"❌ 주문 크기가 0: {order_id}")
+                return "failed"
+            
+            # 🔥🔥🔥 복제 비율 적용된 마진 비율 계산
+            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio_with_multiplier(
+                size, trigger_price, bitget_order, ratio_multiplier
+            )
+            
+            if not margin_ratio_result['success']:
+                self.logger.error(f"❌ 마진 비율 계산 실패: {order_id} - {margin_ratio_result.get('error')}")
+                return "failed"
+            
+            margin_ratio = margin_ratio_result['margin_ratio']
+            bitget_leverage = margin_ratio_result['leverage']
+            
+            # 레버리지 설정
+            try:
+                await self.gate_mirror.set_leverage("BTC_USDT", bitget_leverage)
+            except Exception as e:
+                self.logger.error(f"레버리지 설정 실패하지만 계속 진행: {e}")
+            
+            # 게이트 계정 정보
+            gate_account = await self.gate_mirror.get_account_balance()
+            gate_total_equity = float(gate_account.get('total', 0))
+            gate_available = float(gate_account.get('available', 0))
+            
+            # 🔥🔥🔥 복제 비율 적용된 게이트 마진 계산
+            gate_margin = gate_total_equity * margin_ratio
+            
+            if gate_margin > gate_available:
+                gate_margin = gate_available * 0.95
+            
+            if gate_margin < self.MIN_MARGIN:
+                self.logger.error(f"❌ 게이트 마진 부족: {gate_margin} < {self.MIN_MARGIN}")
+                return "failed"
+            
+            # 게이트 계약 수 계산
+            gate_notional_value = gate_margin * bitget_leverage
+            gate_size = int(gate_notional_value / (trigger_price * 0.0001))
+            
+            if gate_size == 0:
+                gate_size = 1
+            
+            # Gate 미러링 클라이언트로 완벽한 미러링 주문 생성
+            mirror_result = await self.gate_mirror.create_perfect_tp_sl_order(
+                bitget_order=bitget_order,
+                gate_size=gate_size,
+                gate_margin=gate_margin,
+                leverage=bitget_leverage,
+                current_gate_price=self.gate_current_price
+            )
+            
+            if not mirror_result['success']:
+                self.daily_stats['failed_mirrors'] += 1
+                self.logger.error(f"❌ Gate.io 주문 생성 실패: {order_id}")
+                return "failed"
+            
+            gate_order_id = mirror_result['gate_order_id']
+            
+            # 주문 ID 매핑 기록
+            if order_id and gate_order_id:
+                self.bitget_to_gate_order_mapping[order_id] = gate_order_id
+                self.gate_to_bitget_order_mapping[gate_order_id] = order_id
+                self.logger.info(f"주문 매핑 기록: {order_id} ↔ {gate_order_id}")
+            
+            # 미러링 성공 기록
+            self.mirrored_plan_orders[order_id] = {
+                'gate_order_id': gate_order_id,
+                'bitget_order': bitget_order,
+                'gate_order': mirror_result['gate_order'],
+                'created_at': datetime.now().isoformat(),
+                'margin': gate_margin,
+                'size': gate_size,
+                'margin_ratio': margin_ratio,
+                'leverage': bitget_leverage,
+                'trigger_price': trigger_price,
+                'has_tp_sl': mirror_result.get('has_tp_sl', False),
+                'tp_price': mirror_result.get('tp_price'),
+                'sl_price': mirror_result.get('sl_price'),
+                'actual_tp_price': mirror_result.get('actual_tp_price'),
+                'actual_sl_price': mirror_result.get('actual_sl_price'),
+                'is_close_order': mirror_result.get('is_close_order', False),
+                'reduce_only': mirror_result.get('reduce_only', False),
+                'perfect_mirror': mirror_result.get('perfect_mirror', False),
+                'close_details': close_details,
+                'forced_close': mirror_result.get('forced_close', False),
+                'ratio_multiplier': ratio_multiplier  # 🔥🔥🔥 복제 비율 기록
+            }
+            
+            self.daily_stats['plan_order_mirrors'] += 1
+            
+            # TP/SL 통계 업데이트
+            if mirror_result.get('has_tp_sl', False):
+                self.daily_stats['tp_sl_success'] += 1
+            elif mirror_result.get('tp_price') or mirror_result.get('sl_price'):
+                self.daily_stats['tp_sl_failed'] += 1
+            
+            # 🔥🔥🔥 성공 메시지 - 복제 비율 정보 포함
+            order_type = "클로즈 주문" if mirror_result.get('is_close_order') else "예약 주문"
+            perfect_status = "완벽" if mirror_result.get('perfect_mirror') else "부분"
+            forced_status = " (강제 미러링)" if mirror_result.get('forced_close') else ""
+            ratio_status = f" (복제비율: {ratio_multiplier}x)" if ratio_multiplier != 1.0 else ""
+            
+            close_info = ""
+            if is_close_order:
+                close_info = f"\n🔴 클로즈 주문: {order_direction} (원래 포지션: {position_side}){forced_status}"
+            
+            tp_sl_info = ""
+            if mirror_result.get('has_tp_sl'):
+                tp_sl_info = f"\n\n🎯 TP/SL 완벽 미러링:"
+                if mirror_result.get('actual_tp_price'):
+                    tp_sl_info += f"\n✅ TP: ${mirror_result['actual_tp_price']}"
+                if mirror_result.get('actual_sl_price'):
+                    tp_sl_info += f"\n✅ SL: ${mirror_result['actual_sl_price']}"
+            elif mirror_result.get('tp_price') or mirror_result.get('sl_price'):
+                tp_sl_info = f"\n\n⚠️ TP/SL 설정 실패:"
+                if mirror_result.get('tp_price'):
+                    tp_sl_info += f"\n❌ TP 요청: ${mirror_result['tp_price']:.2f}"
+                if mirror_result.get('sl_price'):
+                    tp_sl_info += f"\n❌ SL 요청: ${mirror_result['sl_price']:.2f}"
+            
+            await self.telegram.send_message(
+                f"✅ {order_type} {perfect_status} 미러링 성공{forced_status}{ratio_status}\n"
+                f"비트겟 ID: {order_id}\n"
+                f"게이트 ID: {gate_order_id}\n"
+                f"트리거가: ${trigger_price:,.2f}\n"
+                f"게이트 수량: {gate_size}{close_info}\n"
+                f"시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}\n\n"
+                f"💰 마진 비율 복제 (x{ratio_multiplier}):\n"
+                f"마진 비율: {margin_ratio*100:.2f}%\n"
+                f"게이트 투입 마진: ${gate_margin:,.2f}\n"
+                f"레버리지: {bitget_leverage}x{tp_sl_info}"
+            )
+            
+            # 반환값 개선
+            if mirror_result.get('forced_close'):
+                return "force_success"
+            elif mirror_result.get('perfect_mirror'):
+                return "perfect_success"
+            else:
+                return "partial_success"
+            
+        except Exception as e:
+            self.logger.error(f"복제 비율 적용 미러링 주문 처리 중 오류: {e}")
+            self.daily_stats['errors'].append({
+                'time': datetime.now().isoformat(),
+                'error': str(e),
+                'plan_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', 'unknown'))
+            })
+            return "failed"
+
+    # === 기존 메서드들 그대로 유지 ===
+    
     async def _get_all_current_plan_orders_enhanced(self) -> List[Dict]:
         """🔥🔥🔥 모든 현재 예약 주문 조회 - 클로즈 주문 강화"""
         try:
@@ -394,10 +785,6 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"현재 예약 주문 조회 실패: {e}")
             return []
-
-    async def _get_all_current_plan_orders(self) -> List[Dict]:
-        """🔥🔥🔥 호환성을 위한 메서드 - Enhanced 버전 호출"""
-        return await self._get_all_current_plan_orders_enhanced()
 
     async def _validate_close_order_enhanced(self, order: Dict, close_details: Dict) -> str:
         """🔥🔥🔥 강화된 클로즈 주문 유효성 검증 - 더 관대한 모드"""
@@ -451,188 +838,8 @@ class MirrorPositionManager:
             self.logger.error(f"강화된 클로즈 주문 유효성 검증 실패하지만 강제 미러링: {e}")
             return "force_mirror"
 
-    async def _process_perfect_mirror_order_enhanced(self, bitget_order: Dict, close_details: Dict) -> str:
-        """🔥🔥🔥 완벽한 미러링 주문 처리 - 클로즈 주문 강화 및 반환값 개선"""
-        try:
-            order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
-            is_close_order = close_details['is_close_order']
-            order_direction = close_details['order_direction']
-            position_side = close_details['position_side']
-            
-            self.logger.info(f"🎯 완벽한 미러링 시작 (강화버전): {order_id}")
-            self.logger.info(f"   클로즈 주문: {is_close_order}")
-            self.logger.info(f"   주문 방향: {order_direction} (포지션: {position_side})")
-            
-            # 트리거 가격 추출
-            trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if bitget_order.get(price_field):
-                    trigger_price = float(bitget_order.get(price_field))
-                    break
-            
-            if trigger_price == 0:
-                self.logger.error(f"❌ 트리거 가격을 찾을 수 없음: {order_id}")
-                return "failed"
-            
-            # 크기 정보 추출
-            size = float(bitget_order.get('size', 0))
-            if size == 0:
-                self.logger.error(f"❌ 주문 크기가 0: {order_id}")
-                return "failed"
-            
-            # 실제 달러 마진 비율 계산
-            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
-                size, trigger_price, bitget_order
-            )
-            
-            if not margin_ratio_result['success']:
-                self.logger.error(f"❌ 마진 비율 계산 실패: {order_id} - {margin_ratio_result.get('error')}")
-                return "failed"
-            
-            margin_ratio = margin_ratio_result['margin_ratio']
-            bitget_leverage = margin_ratio_result['leverage']
-            
-            # 레버리지 설정
-            try:
-                await self.gate_mirror.set_leverage("BTC_USDT", bitget_leverage)
-            except Exception as e:
-                self.logger.error(f"레버리지 설정 실패하지만 계속 진행: {e}")
-            
-            # 게이트 계정 정보
-            gate_account = await self.gate_mirror.get_account_balance()
-            gate_total_equity = float(gate_account.get('total', 0))
-            gate_available = float(gate_account.get('available', 0))
-            
-            # 게이트에서 동일한 마진 비율로 투입할 실제 달러 금액 계산
-            gate_margin = gate_total_equity * margin_ratio
-            
-            if gate_margin > gate_available:
-                gate_margin = gate_available * 0.95
-            
-            if gate_margin < self.MIN_MARGIN:
-                self.logger.error(f"❌ 게이트 마진 부족: {gate_margin} < {self.MIN_MARGIN}")
-                return "failed"
-            
-            # 게이트 계약 수 계산
-            gate_notional_value = gate_margin * bitget_leverage
-            gate_size = int(gate_notional_value / (trigger_price * 0.0001))
-            
-            if gate_size == 0:
-                gate_size = 1
-            
-            # 🔥🔥🔥 Gate 미러링 클라이언트로 완벽한 미러링 주문 생성 - 클로즈 주문 강화
-            mirror_result = await self.gate_mirror.create_perfect_tp_sl_order(
-                bitget_order=bitget_order,
-                gate_size=gate_size,
-                gate_margin=gate_margin,
-                leverage=bitget_leverage,
-                current_gate_price=self.gate_current_price
-            )
-            
-            if not mirror_result['success']:
-                self.daily_stats['failed_mirrors'] += 1
-                self.logger.error(f"❌ Gate.io 주문 생성 실패: {order_id}")
-                return "failed"
-            
-            gate_order_id = mirror_result['gate_order_id']
-            
-            # 주문 ID 매핑 기록
-            if order_id and gate_order_id:
-                self.bitget_to_gate_order_mapping[order_id] = gate_order_id
-                self.gate_to_bitget_order_mapping[gate_order_id] = order_id
-                self.logger.info(f"주문 매핑 기록: {order_id} ↔ {gate_order_id}")
-            
-            # 미러링 성공 기록
-            self.mirrored_plan_orders[order_id] = {
-                'gate_order_id': gate_order_id,
-                'bitget_order': bitget_order,
-                'gate_order': mirror_result['gate_order'],
-                'created_at': datetime.now().isoformat(),
-                'margin': gate_margin,
-                'size': gate_size,
-                'margin_ratio': margin_ratio,
-                'leverage': bitget_leverage,
-                'trigger_price': trigger_price,
-                'has_tp_sl': mirror_result.get('has_tp_sl', False),
-                'tp_price': mirror_result.get('tp_price'),
-                'sl_price': mirror_result.get('sl_price'),
-                'actual_tp_price': mirror_result.get('actual_tp_price'),
-                'actual_sl_price': mirror_result.get('actual_sl_price'),
-                'is_close_order': mirror_result.get('is_close_order', False),
-                'reduce_only': mirror_result.get('reduce_only', False),
-                'perfect_mirror': mirror_result.get('perfect_mirror', False),
-                'close_details': close_details,
-                'forced_close': mirror_result.get('forced_close', False)  # 🔥🔥🔥 강제 클로즈 여부
-            }
-            
-            self.daily_stats['plan_order_mirrors'] += 1
-            
-            # TP/SL 통계 업데이트
-            if mirror_result.get('has_tp_sl', False):
-                self.daily_stats['tp_sl_success'] += 1
-            elif mirror_result.get('tp_price') or mirror_result.get('sl_price'):
-                self.daily_stats['tp_sl_failed'] += 1
-            
-            # 🔥🔥🔥 성공 메시지 - 클로즈 주문 강화
-            order_type = "클로즈 주문" if mirror_result.get('is_close_order') else "예약 주문"
-            perfect_status = "완벽" if mirror_result.get('perfect_mirror') else "부분"
-            forced_status = " (강제 미러링)" if mirror_result.get('forced_close') else ""
-            
-            close_info = ""
-            if is_close_order:
-                close_info = f"\n🔴 클로즈 주문: {order_direction} (원래 포지션: {position_side}){forced_status}"
-            
-            tp_sl_info = ""
-            if mirror_result.get('has_tp_sl'):
-                tp_sl_info = f"\n\n🎯 TP/SL 완벽 미러링:"
-                if mirror_result.get('actual_tp_price'):
-                    tp_sl_info += f"\n✅ TP: ${mirror_result['actual_tp_price']}"
-                if mirror_result.get('actual_sl_price'):
-                    tp_sl_info += f"\n✅ SL: ${mirror_result['actual_sl_price']}"
-            elif mirror_result.get('tp_price') or mirror_result.get('sl_price'):
-                tp_sl_info = f"\n\n⚠️ TP/SL 설정 실패:"
-                if mirror_result.get('tp_price'):
-                    tp_sl_info += f"\n❌ TP 요청: ${mirror_result['tp_price']:.2f}"
-                if mirror_result.get('sl_price'):
-                    tp_sl_info += f"\n❌ SL 요청: ${mirror_result['sl_price']:.2f}"
-            
-            await self.telegram.send_message(
-                f"✅ {order_type} {perfect_status} 미러링 성공{forced_status}\n"
-                f"비트겟 ID: {order_id}\n"
-                f"게이트 ID: {gate_order_id}\n"
-                f"트리거가: ${trigger_price:,.2f}\n"
-                f"게이트 수량: {gate_size}{close_info}\n"
-                f"시세 차이: ${abs(self.bitget_current_price - self.gate_current_price):.2f}\n\n"
-                f"💰 마진 비율 복제:\n"
-                f"마진 비율: {margin_ratio*100:.2f}%\n"
-                f"게이트 투입 마진: ${gate_margin:,.2f}\n"
-                f"레버리지: {bitget_leverage}x{tp_sl_info}"
-            )
-            
-            # 🔥🔥🔥 수정: 반환값 개선 - 강제 미러링 케이스 추가
-            if mirror_result.get('forced_close'):
-                return "force_success"
-            elif mirror_result.get('perfect_mirror'):
-                return "perfect_success"
-            else:
-                return "partial_success"
-            
-        except Exception as e:
-            self.logger.error(f"완벽한 미러링 주문 처리 중 오류: {e}")
-            self.daily_stats['errors'].append({
-                'time': datetime.now().isoformat(),
-                'error': str(e),
-                'plan_order_id': bitget_order.get('orderId', bitget_order.get('planOrderId', 'unknown'))
-            })
-            return "failed"
-
-    async def _process_perfect_mirror_order(self, bitget_order: Dict) -> str:
-        """🔥🔥🔥 호환성을 위한 메서드 - Enhanced 버전 호출"""
-        # 클로즈 주문 상세 분석
-        close_details = await self.utils.determine_close_order_details_enhanced(bitget_order)
-        return await self._process_perfect_mirror_order_enhanced(bitget_order, close_details)
-
-    # 나머지 메서드들은 기존과 동일하게 유지...
+    # === 나머지 기존 메서드들은 동일하게 유지 ===
+    
     async def _is_order_recently_processed_improved(self, order_id: str, order: Dict) -> bool:
         """🔥🔥🔥 개선된 최근 처리 주문 확인 - 완화된 버전"""
         try:
@@ -782,6 +989,15 @@ class MirrorPositionManager:
             for order_id in expired_gate_orders:
                 del self.gate_existing_orders_detailed[order_id]
                 
+            # 🔥🔥🔥 취소 재시도 카운터도 정리 (1시간 후 만료)
+            expired_cancel_retries = []
+            for order_id in list(self.cancel_retry_count.keys()):
+                if order_id not in self.mirrored_plan_orders:
+                    expired_cancel_retries.append(order_id)
+            
+            for order_id in expired_cancel_retries:
+                del self.cancel_retry_count[order_id]
+                
         except Exception as e:
             self.logger.error(f"타임스탬프 정리 실패: {e}")
 
@@ -890,85 +1106,7 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"포지션 없음 시 클로즈 주문 정리 실패: {e}")
 
-    async def _handle_plan_order_cancel(self, bitget_order_id: str):
-        """예약 주문 취소 처리"""
-        try:
-            self.logger.info(f"🚫 예약 주문 취소 처리 시작: {bitget_order_id}")
-            
-            # 미러링된 주문인지 확인
-            if bitget_order_id not in self.mirrored_plan_orders:
-                self.logger.info(f"미러링되지 않은 주문이므로 취소 처리 스킵: {bitget_order_id}")
-                return
-            
-            mirror_info = self.mirrored_plan_orders[bitget_order_id]
-            gate_order_id = mirror_info.get('gate_order_id')
-            
-            if not gate_order_id:
-                self.logger.warning(f"게이트 주문 ID가 없음: {bitget_order_id}")
-                del self.mirrored_plan_orders[bitget_order_id]
-                return
-            
-            # 게이트에서 주문 상태 먼저 확인
-            try:
-                gate_orders = await self.gate_mirror.get_price_triggered_orders("BTC_USDT", "open")
-                gate_order_exists = any(order.get('id') == gate_order_id for order in gate_orders)
-                
-                if not gate_order_exists:
-                    self.logger.info(f"게이트 주문이 이미 없음 (체결되었거나 취소됨): {gate_order_id}")
-                    success = True
-                else:
-                    # 게이트에서 예약 주문 취소
-                    await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                    success = True
-                    
-            except Exception as cancel_error:
-                error_msg = str(cancel_error).lower()
-                
-                if any(keyword in error_msg for keyword in [
-                    "not found", "order not exist", "invalid order", 
-                    "order does not exist", "auto_order_not_found",
-                    "order_not_found", "not_found"
-                ]):
-                    success = True
-                    self.logger.info(f"게이트 주문이 이미 처리됨: {gate_order_id}")
-                else:
-                    success = False
-                    self.logger.error(f"게이트 주문 취소 실패: {cancel_error}")
-            
-            # 결과 처리
-            if success:
-                await self.telegram.send_message(
-                    f"🚫✅ 예약 주문 취소 동기화 완료\n"
-                    f"비트겟 ID: {bitget_order_id}\n"
-                    f"게이트 ID: {gate_order_id}"
-                )
-            else:
-                await self.telegram.send_message(
-                    f"❌ 예약 주문 취소 실패\n"
-                    f"비트겟 ID: {bitget_order_id}\n"
-                    f"게이트 ID: {gate_order_id}\n"
-                    f"재시도가 필요할 수 있습니다."
-                )
-            
-            # 미러링 기록에서 제거
-            if bitget_order_id in self.mirrored_plan_orders:
-                del self.mirrored_plan_orders[bitget_order_id]
-            
-            # 주문 매핑에서 제거
-            if bitget_order_id in self.bitget_to_gate_order_mapping:
-                gate_id = self.bitget_to_gate_order_mapping[bitget_order_id]
-                del self.bitget_to_gate_order_mapping[bitget_order_id]
-                if gate_id in self.gate_to_bitget_order_mapping:
-                    del self.gate_to_bitget_order_mapping[gate_id]
-                
-        except Exception as e:
-            self.logger.error(f"예약 주문 취소 처리 중 예외 발생: {e}")
-            
-            # 오류 발생 시에도 미러링 기록에서 제거
-            if bitget_order_id in self.mirrored_plan_orders:
-                del self.mirrored_plan_orders[bitget_order_id]
-
-    # === 초기화 헬퍼 메서드들 (기존과 동일) ===
+    # === 기존 초기화 및 포지션 처리 메서드들 그대로 유지 ===
     
     async def _check_existing_gate_positions(self):
         """렌더 재구동 시 기존 게이트 포지션 확인"""
@@ -1020,7 +1158,7 @@ class MirrorPositionManager:
                         price_key = f"BTC_USDT_{trigger_price:.2f}"
                         self.mirrored_trigger_prices.add(price_key)
                         
-                        # 🔥🔥🔥 단순화된 해시 생성
+                        # 단순화된 해시 생성
                         order_hash = await self._generate_primary_order_hash_from_details(order_details)
                         
                         if order_hash:
@@ -1149,7 +1287,7 @@ class MirrorPositionManager:
                 self.logger.info("시작 시 복제할 예약 주문이 없음")
                 return
             
-            self.logger.info(f"시작 시 {len(self.startup_plan_orders)}개 예약 주문 복제 시작")
+            self.logger.info(f"시작 시 {len(self.startup_plan_orders)}개 예약 주문 복제 시작 (복제비율: {self.mirror_ratio_multiplier}x)")
             
             mirrored_count = 0
             skipped_count = 0
@@ -1175,14 +1313,14 @@ class MirrorPositionManager:
                             skipped_count += 1
                             continue
                         
-                        # 완벽한 미러링 시도
-                        result = await self._process_perfect_mirror_order_enhanced(order_data, close_details)
+                        # 🔥🔥🔥 복제 비율 적용된 완벽한 미러링 시도
+                        result = await self._process_perfect_mirror_order_with_ratio(order_data, close_details, self.mirror_ratio_multiplier)
                         
                         success_results = ["perfect_success", "partial_success", "force_success"]
                         if result in success_results:
                             mirrored_count += 1
                             self.daily_stats['startup_plan_mirrors'] += 1
-                            self.logger.info(f"시작 시 {'클로즈 ' if is_close_order else ''}예약 주문 복제 성공: {order_id}")
+                            self.logger.info(f"시작 시 {'클로즈 ' if is_close_order else ''}예약 주문 복제 성공: {order_id} (비율: {self.mirror_ratio_multiplier}x)")
                         else:
                             failed_count += 1
                             self.logger.warning(f"시작 시 {'클로즈 ' if is_close_order else ''}예약 주문 복제 실패: {order_id}")
@@ -1194,30 +1332,35 @@ class MirrorPositionManager:
                 # 처리된 주문으로 표시
                 self.processed_plan_orders.add(order_id)
             
-            # 시작 시 복제 완료 알림 - 클로즈 주문 정보 포함
+            # 시작 시 복제 완료 알림 - 복제 비율 정보 포함
             if mirrored_count > 0:
+                ratio_info = f" (복제비율: {self.mirror_ratio_multiplier}x)" if self.mirror_ratio_multiplier != 1.0 else ""
+                
                 await self.telegram.send_message(
-                    f"🔄 시작 시 예약 주문 복제 완료 (클로즈 주문 강화)\n"
+                    f"🔄 시작 시 예약 주문 복제 완료{ratio_info}\n"
                     f"성공: {mirrored_count}개\n"
                     f"클로즈 주문: {close_order_count}개\n"
                     f"스킵: {skipped_count}개\n"
                     f"실패: {failed_count}개\n"
-                    f"총 {len(self.startup_plan_orders)}개 중 {mirrored_count}개 복제\n"
+                    f"총 {len(self.startup_plan_orders)}개 중 {mirrored_count}개 복제{ratio_info}\n"
                     f"🔥 클로즈 주문도 완벽하게 미러링됩니다"
                 )
             
             self.startup_plan_orders_processed = True
-            self.logger.info(f"시작 시 예약 주문 복제 완료: 성공 {mirrored_count}개 (클로즈 {close_order_count}개), 스킵 {skipped_count}개, 실패 {failed_count}개")
+            self.logger.info(f"시작 시 예약 주문 복제 완료: 성공 {mirrored_count}개 (클로즈 {close_order_count}개), 스킵 {skipped_count}개, 실패 {failed_count}개 (복제비율: {self.mirror_ratio_multiplier}x)")
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
             self.startup_plan_orders_processed = True
 
-    # === 기존 메서드들 (포지션 처리 등) 동일하게 유지 ===
+    # === 기존 포지션 처리 메서드들 그대로 유지 ===
 
     async def process_filled_order(self, order: Dict):
         """체결된 주문으로부터 미러링 실행"""
         try:
+            if not self.mirror_trading_enabled:
+                return
+                
             order_id = order.get('orderId', order.get('id', ''))
             side = order.get('side', '').lower()
             size = float(order.get('size', 0))
@@ -1257,8 +1400,9 @@ class MirrorPositionManager:
                 else:
                     self.logger.warning(f"시세 차이 지속하지만 미러링 진행: {order_id}")
             
-            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio(
-                size, fill_price, order
+            # 🔥🔥🔥 복제 비율 적용된 마진 비율 계산
+            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio_with_multiplier(
+                size, fill_price, order, self.mirror_ratio_multiplier
             )
             
             if not margin_ratio_result['success']:
@@ -1284,8 +1428,10 @@ class MirrorPositionManager:
                 self.daily_stats['successful_mirrors'] += 1
                 self.daily_stats['order_mirrors'] += 1
                 
+                ratio_info = f" (복제비율: {self.mirror_ratio_multiplier}x)" if self.mirror_ratio_multiplier != 1.0 else ""
+                
                 await self.telegram.send_message(
-                    f"⚡ 실시간 주문 체결 미러링 성공\n"
+                    f"⚡ 실시간 주문 체결 미러링 성공{ratio_info}\n"
                     f"주문 ID: {order_id}\n"
                     f"방향: {position_side}\n"
                     f"체결가: ${fill_price:,.2f}\n"
@@ -1312,6 +1458,9 @@ class MirrorPositionManager:
     async def process_position(self, bitget_pos: Dict):
         """포지션 처리"""
         try:
+            if not self.mirror_trading_enabled:
+                return
+                
             pos_id = self.utils.generate_position_id(bitget_pos)
             
             if pos_id in self.startup_positions:
@@ -1335,8 +1484,10 @@ class MirrorPositionManager:
                         self.daily_stats['position_mirrors'] += 1
                         
                         leverage = bitget_pos.get('leverage', 'N/A')
+                        ratio_info = f" (복제비율: {self.mirror_ratio_multiplier}x)" if self.mirror_ratio_multiplier != 1.0 else ""
+                        
                         await self.telegram.send_message(
-                            f"✅ 포지션 기반 미러링 성공\n"
+                            f"✅ 포지션 기반 미러링 성공{ratio_info}\n"
                             f"방향: {bitget_pos.get('holdSide', '')}\n"
                             f"진입가: ${float(bitget_pos.get('openPriceAvg', 0)):,.2f}\n"
                             f"레버리지: {leverage}x"
@@ -1361,6 +1512,9 @@ class MirrorPositionManager:
     async def handle_position_close(self, pos_id: str):
         """포지션 종료 처리"""
         try:
+            if not self.mirror_trading_enabled:
+                return
+                
             result = await self.gate_mirror.close_position("BTC_USDT")
             
             # 상태 정리
