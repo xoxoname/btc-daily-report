@@ -32,7 +32,7 @@ class MirrorResult:
     timestamp: datetime = field(default_factory=datetime.now)
 
 class MirrorTradingUtils:
-    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 복제 비율 조정 기능 추가"""
+    """🔥🔥🔥 미러 트레이딩 유틸리티 클래스 - 복제 비율 조정 기능 강화"""
     
     def __init__(self, config, bitget_client, gate_client):
         self.config = config
@@ -52,10 +52,34 @@ class MirrorTradingUtils:
         self.MIN_LEVERAGE = 1
         self.leverage_cache = {}  # 레버리지 캐시
         
-        # 🔥🔥🔥 복제 비율 조정 설정
+        # 🔥🔥🔥 복제 비율 조정 설정 - 강화된 버전
         self.DEFAULT_RATIO_MULTIPLIER = 1.0  # 기본 복제 비율 1배
         self.MAX_RATIO_MULTIPLIER = 10.0     # 최대 복제 비율 10배
         self.MIN_RATIO_MULTIPLIER = 0.1      # 최소 복제 비율 0.1배
+        
+        # 🔥🔥🔥 복제 비율 설명 템플릿
+        self.RATIO_DESCRIPTIONS = {
+            0.1: "원본의 10% 크기로 대폭 축소",
+            0.2: "원본의 20% 크기로 축소",
+            0.3: "원본의 30% 크기로 축소",
+            0.4: "원본의 40% 크기로 축소",
+            0.5: "원본의 절반 크기로 축소",
+            0.6: "원본의 60% 크기로 축소",
+            0.7: "원본의 70% 크기로 축소",
+            0.8: "원본의 80% 크기로 축소",
+            0.9: "원본의 90% 크기로 축소",
+            1.0: "원본 비율 그대로 복제",
+            1.1: "원본의 1.1배로 10% 확대",
+            1.2: "원본의 1.2배로 20% 확대",
+            1.3: "원본의 1.3배로 30% 확대",
+            1.4: "원본의 1.4배로 40% 확대",
+            1.5: "원본의 1.5배로 50% 확대",
+            2.0: "원본의 2배로 확대",
+            2.5: "원본의 2.5배로 확대",
+            3.0: "원본의 3배로 확대",
+            5.0: "원본의 5배로 확대",
+            10.0: "원본의 10배로 최대 확대"
+        }
         
         # 🔥🔥🔥 트리거 가격 검증 완전히 제거 - 모든 가격 허용
         self.TRIGGER_PRICE_MIN_DIFF_PERCENT = 0.0
@@ -84,11 +108,11 @@ class MirrorTradingUtils:
         
         self.CLOSE_ORDER_STRICT_MODE = False  # 더 관대한 클로즈 주문 감지
         
-        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 복제 비율 조정 기능 추가")
+        self.logger.info("🔥🔥🔥 미러 트레이딩 유틸리티 초기화 완료 - 복제 비율 조정 기능 강화")
     
     async def calculate_dynamic_margin_ratio_with_multiplier(self, size: float, trigger_price: float, 
                                                            bitget_order: Dict, ratio_multiplier: float = 1.0) -> Dict:
-        """🔥🔥🔥 복제 비율이 적용된 실제 달러 마진 비율 동적 계산"""
+        """🔥🔥🔥 복제 비율이 적용된 실제 달러 마진 비율 동적 계산 - 강화된 버전"""
         try:
             # 유효성 검증
             if size is None or trigger_price is None:
@@ -97,10 +121,11 @@ class MirrorTradingUtils:
                     'error': 'size 또는 trigger_price가 None입니다.'
                 }
             
-            # 복제 비율 유효성 검증
-            if ratio_multiplier < self.MIN_RATIO_MULTIPLIER or ratio_multiplier > self.MAX_RATIO_MULTIPLIER:
-                self.logger.warning(f"복제 비율 범위 초과 ({ratio_multiplier}x), 기본값 사용: {self.DEFAULT_RATIO_MULTIPLIER}x")
-                ratio_multiplier = self.DEFAULT_RATIO_MULTIPLIER
+            # 🔥🔥🔥 복제 비율 유효성 검증 및 정규화
+            validated_ratio = self.validate_ratio_multiplier(ratio_multiplier)
+            if validated_ratio != ratio_multiplier:
+                self.logger.warning(f"복제 비율 조정됨: {ratio_multiplier} → {validated_ratio}")
+                ratio_multiplier = validated_ratio
             
             self.logger.info(f"💰 복제 비율 적용 마진 계산: 기본 크기={size}, 복제 비율={ratio_multiplier}x")
             
@@ -135,21 +160,25 @@ class MirrorTradingUtils:
             # 🔥🔥🔥 복제 비율 적용 - 마진 비율에 multiplier 적용
             adjusted_margin_ratio = base_margin_ratio * ratio_multiplier
             
-            # 마진 비율 유효성 검증 (복제 비율 적용 후)
-            if adjusted_margin_ratio <= 0 or adjusted_margin_ratio > 1:
+            # 🔥🔥🔥 마진 비율 유효성 검증 및 안전 조치 (복제 비율 적용 후)
+            if adjusted_margin_ratio <= 0:
+                return {
+                    'success': False,
+                    'error': f'복제 비율 적용 후 마진 비율이 0 이하: {adjusted_margin_ratio:.4f}'
+                }
+            elif adjusted_margin_ratio > 1:
                 # 1을 초과하는 경우 가용 자금의 95%로 제한
-                if adjusted_margin_ratio > 1:
-                    adjusted_margin_ratio = 0.95
-                    self.logger.warning(f"복제 비율 적용 후 마진 비율이 100% 초과하여 95%로 제한: {ratio_multiplier}x")
-                else:
-                    return {
-                        'success': False,
-                        'error': f'복제 비율 적용 후 마진 비율이 유효하지 않음: {adjusted_margin_ratio:.4f}'
-                    }
+                original_ratio = adjusted_margin_ratio
+                adjusted_margin_ratio = 0.95
+                self.logger.warning(f"복제 비율 적용 후 마진 비율이 100% 초과하여 95%로 제한: {original_ratio:.4f} → {adjusted_margin_ratio:.4f}")
+                self.logger.warning(f"요청된 복제 비율 {ratio_multiplier}x가 너무 높습니다. 안전상 95%로 제한합니다.")
             
             # 🔥🔥🔥 조정된 마진으로 필요한 수치들 재계산
             adjusted_required_margin = bitget_total_equity * adjusted_margin_ratio
             adjusted_notional_value = adjusted_required_margin * extracted_leverage
+            
+            # 🔥🔥🔥 복제 비율 효과 분석
+            ratio_effect = self.analyze_ratio_multiplier_effect(ratio_multiplier, base_margin_ratio, adjusted_margin_ratio)
             
             result = {
                 'success': True,
@@ -161,14 +190,17 @@ class MirrorTradingUtils:
                 'ratio_multiplier': ratio_multiplier,  # 적용된 복제 비율
                 'base_margin_ratio': base_margin_ratio,  # 원본 마진 비율 (참고용)
                 'base_required_margin': bitget_required_margin,  # 원본 마진 (참고용)
-                'base_notional_value': bitget_notional_value  # 원본 거래 규모 (참고용)
+                'base_notional_value': bitget_notional_value,  # 원본 거래 규모 (참고용)
+                'ratio_effect': ratio_effect,  # 복제 비율 효과 분석
+                'ratio_description': self.get_ratio_multiplier_description(ratio_multiplier)  # 복제 비율 설명
             }
             
             self.logger.info(f"💰 복제 비율 적용 마진 계산 성공:")
             self.logger.info(f"   - 원본 마진 비율: {base_margin_ratio*100:.3f}%")
-            self.logger.info(f"   - 복제 비율: {ratio_multiplier}x")
+            self.logger.info(f"   - 복제 비율: {ratio_multiplier}x ({ratio_effect['description']})")
             self.logger.info(f"   - 최종 마진 비율: {adjusted_margin_ratio*100:.3f}%")
             self.logger.info(f"   - 레버리지: {extracted_leverage}x")
+            self.logger.info(f"   - 효과: {ratio_effect['impact']}")
             
             return result
             
@@ -182,6 +214,115 @@ class MirrorTradingUtils:
     async def calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
         """🔥🔥🔥 기존 메서드 호환성 유지 - 복제 비율 1.0 적용"""
         return await self.calculate_dynamic_margin_ratio_with_multiplier(size, trigger_price, bitget_order, 1.0)
+    
+    def validate_ratio_multiplier(self, ratio_multiplier: float) -> float:
+        """🔥🔥🔥 복제 비율 유효성 검증 - 강화된 버전"""
+        try:
+            if ratio_multiplier is None:
+                self.logger.warning("복제 비율이 None, 기본값 사용: 1.0")
+                return self.DEFAULT_RATIO_MULTIPLIER
+            
+            ratio_multiplier = float(ratio_multiplier)
+            
+            if ratio_multiplier < self.MIN_RATIO_MULTIPLIER:
+                self.logger.warning(f"복제 비율이 최소값보다 작음 ({ratio_multiplier}), 최소값 사용: {self.MIN_RATIO_MULTIPLIER}")
+                return self.MIN_RATIO_MULTIPLIER
+            
+            if ratio_multiplier > self.MAX_RATIO_MULTIPLIER:
+                self.logger.warning(f"복제 비율이 최대값보다 큼 ({ratio_multiplier}), 최대값 사용: {self.MAX_RATIO_MULTIPLIER}")
+                return self.MAX_RATIO_MULTIPLIER
+            
+            # 🔥🔥🔥 권장 범위 확인 (경고만 출력)
+            if ratio_multiplier > 5.0:
+                self.logger.warning(f"복제 비율이 매우 높습니다 ({ratio_multiplier}x). 리스크 관리에 주의하세요.")
+            elif ratio_multiplier < 0.5:
+                self.logger.info(f"복제 비율이 낮습니다 ({ratio_multiplier}x). 보수적인 설정입니다.")
+            
+            return ratio_multiplier
+            
+        except (ValueError, TypeError):
+            self.logger.error(f"복제 비율 변환 실패 ({ratio_multiplier}), 기본값 사용: {self.DEFAULT_RATIO_MULTIPLIER}")
+            return self.DEFAULT_RATIO_MULTIPLIER
+    
+    def get_ratio_multiplier_description(self, ratio_multiplier: float) -> str:
+        """🔥🔥🔥 복제 비율 설명 텍스트 생성 - 상세한 버전"""
+        try:
+            # 정확한 매칭 확인
+            if ratio_multiplier in self.RATIO_DESCRIPTIONS:
+                return self.RATIO_DESCRIPTIONS[ratio_multiplier]
+            
+            # 가장 가까운 값 찾기
+            closest_ratio = min(self.RATIO_DESCRIPTIONS.keys(), 
+                               key=lambda x: abs(x - ratio_multiplier))
+            
+            if abs(closest_ratio - ratio_multiplier) < 0.05:  # 0.05 이내면 동일하게 처리
+                return self.RATIO_DESCRIPTIONS[closest_ratio]
+            
+            # 사용자 정의 비율 설명 생성
+            if ratio_multiplier == 1.0:
+                return "원본 비율 그대로"
+            elif ratio_multiplier < 1.0:
+                percentage = ratio_multiplier * 100
+                return f"원본의 {percentage:.1f}% 크기로 축소"
+            else:
+                return f"원본의 {ratio_multiplier:.1f}배 크기로 확대"
+                
+        except Exception as e:
+            self.logger.error(f"복제 비율 설명 생성 실패: {e}")
+            return "비율 정보 없음"
+    
+    def analyze_ratio_multiplier_effect(self, ratio_multiplier: float, base_ratio: float, adjusted_ratio: float) -> Dict:
+        """🔥🔥🔥 복제 비율 효과 분석"""
+        try:
+            effect_analysis = {
+                'multiplier': ratio_multiplier,
+                'base_percentage': base_ratio * 100,
+                'adjusted_percentage': adjusted_ratio * 100,
+                'absolute_increase': (adjusted_ratio - base_ratio) * 100,
+                'relative_increase_percent': ((adjusted_ratio / base_ratio) - 1) * 100 if base_ratio > 0 else 0,
+                'description': self.get_ratio_multiplier_description(ratio_multiplier),
+                'impact': '',
+                'risk_level': '',
+                'recommendation': ''
+            }
+            
+            # 🔥🔥🔥 영향도 분석
+            if ratio_multiplier == 1.0:
+                effect_analysis['impact'] = "원본과 동일한 리스크"
+                effect_analysis['risk_level'] = "기본"
+                effect_analysis['recommendation'] = "표준 미러링"
+            elif ratio_multiplier < 0.5:
+                effect_analysis['impact'] = f"리스크 대폭 감소 ({effect_analysis['relative_increase_percent']:.1f}%)"
+                effect_analysis['risk_level'] = "매우 낮음"
+                effect_analysis['recommendation'] = "매우 보수적 - 테스트나 안전 운영에 적합"
+            elif ratio_multiplier < 1.0:
+                effect_analysis['impact'] = f"리스크 감소 ({effect_analysis['relative_increase_percent']:.1f}%)"
+                effect_analysis['risk_level'] = "낮음"
+                effect_analysis['recommendation'] = "보수적 - 안정적인 운영"
+            elif ratio_multiplier <= 1.5:
+                effect_analysis['impact'] = f"리스크 소폭 증가 (+{effect_analysis['relative_increase_percent']:.1f}%)"
+                effect_analysis['risk_level'] = "보통"
+                effect_analysis['recommendation'] = "적극적 - 수익 확대 시도"
+            elif ratio_multiplier <= 3.0:
+                effect_analysis['impact'] = f"리스크 상당 증가 (+{effect_analysis['relative_increase_percent']:.1f}%)"
+                effect_analysis['risk_level'] = "높음"
+                effect_analysis['recommendation'] = "공격적 - 리스크 관리 필수"
+            else:
+                effect_analysis['impact'] = f"리스크 대폭 증가 (+{effect_analysis['relative_increase_percent']:.1f}%)"
+                effect_analysis['risk_level'] = "매우 높음"
+                effect_analysis['recommendation'] = "매우 공격적 - 극도로 신중한 관리 필요"
+            
+            return effect_analysis
+            
+        except Exception as e:
+            self.logger.error(f"복제 비율 효과 분석 실패: {e}")
+            return {
+                'multiplier': ratio_multiplier,
+                'description': "분석 실패",
+                'impact': "알 수 없음",
+                'risk_level': "불명",
+                'recommendation': "신중한 검토 필요"
+            }
     
     async def extract_bitget_leverage_enhanced(self, order_data: Dict = None, position_data: Dict = None, account_data: Dict = None) -> int:
         """🔥🔥🔥 비트겟 레버리지 추출 - 다중 소스 강화"""
@@ -295,41 +436,6 @@ class MirrorTradingUtils:
         except Exception as e:
             self.logger.error(f"레버리지 추출 오류: {e}")
             return self.DEFAULT_LEVERAGE
-    
-    def validate_ratio_multiplier(self, ratio_multiplier: float) -> float:
-        """🔥🔥🔥 복제 비율 유효성 검증"""
-        try:
-            if ratio_multiplier is None:
-                return self.DEFAULT_RATIO_MULTIPLIER
-            
-            ratio_multiplier = float(ratio_multiplier)
-            
-            if ratio_multiplier < self.MIN_RATIO_MULTIPLIER:
-                self.logger.warning(f"복제 비율이 최소값보다 작음 ({ratio_multiplier}), 최소값 사용: {self.MIN_RATIO_MULTIPLIER}")
-                return self.MIN_RATIO_MULTIPLIER
-            
-            if ratio_multiplier > self.MAX_RATIO_MULTIPLIER:
-                self.logger.warning(f"복제 비율이 최대값보다 큼 ({ratio_multiplier}), 최대값 사용: {self.MAX_RATIO_MULTIPLIER}")
-                return self.MAX_RATIO_MULTIPLIER
-            
-            return ratio_multiplier
-            
-        except (ValueError, TypeError):
-            self.logger.error(f"복제 비율 변환 실패 ({ratio_multiplier}), 기본값 사용: {self.DEFAULT_RATIO_MULTIPLIER}")
-            return self.DEFAULT_RATIO_MULTIPLIER
-    
-    def get_ratio_multiplier_description(self, ratio_multiplier: float) -> str:
-        """🔥🔥🔥 복제 비율 설명 텍스트 생성"""
-        try:
-            if ratio_multiplier == 1.0:
-                return "원본 비율 그대로"
-            elif ratio_multiplier < 1.0:
-                percentage = ratio_multiplier * 100
-                return f"원본의 {percentage:.0f}% 크기로 축소"
-            else:
-                return f"원본의 {ratio_multiplier:.1f}배 크기로 확대"
-        except:
-            return "비율 정보 없음"
     
     async def determine_close_order_details_enhanced(self, bitget_order: Dict) -> Dict:
         """🔥🔥🔥 강화된 클로즈 주문 세부 사항 정확하게 판단 - TP 설정된 오픈 주문 오분류 방지"""
