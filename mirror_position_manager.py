@@ -21,8 +21,15 @@ class MirrorPositionManager:
         self.logger = logging.getLogger('mirror_position_manager')
         
         # 🔥🔥🔥 환경변수 처리 개선 - O/X 지원
-        self.mirror_trading_enabled = self._parse_mirror_trading_mode(getattr(config, 'MIRROR_TRADING_MODE', 'O'))
-        self.mirror_ratio_multiplier = float(getattr(config, 'MIRROR_RATIO_MULTIPLIER', '1.0'))
+        raw_mirror_mode = getattr(config, 'MIRROR_TRADING_MODE', 'O')
+        self.mirror_trading_enabled = self._parse_mirror_trading_mode(raw_mirror_mode)
+        
+        raw_ratio_multiplier = getattr(config, 'MIRROR_RATIO_MULTIPLIER', '1.0')
+        self.mirror_ratio_multiplier = self._parse_mirror_ratio_multiplier(raw_ratio_multiplier)
+        
+        # 환경변수 로깅
+        self.logger.info(f"🔥 포지션 매니저 환경변수: 미러링모드='{raw_mirror_mode}' → {'활성화' if self.mirror_trading_enabled else '비활성화'}")
+        self.logger.info(f"🔥 포지션 매니저 복제 비율: '{raw_ratio_multiplier}' → {self.mirror_ratio_multiplier}x")
         
         # 미러링 상태 관리
         self.mirrored_positions: Dict[str, PositionInfo] = {}
@@ -134,20 +141,62 @@ class MirrorPositionManager:
         self.logger.info(f"🔥 미러 포지션 매니저 초기화 완료 - 미러링 모드: {'활성화' if self.mirror_trading_enabled else '비활성화'}, 복제 비율: {self.mirror_ratio_multiplier}x")
 
     def _parse_mirror_trading_mode(self, mode_str: str) -> bool:
-        """🔥🔥🔥 미러링 모드 파싱 - O/X 지원"""
+        """🔥🔥🔥 미러링 모드 파싱 - O/X 정확한 구분"""
         if isinstance(mode_str, bool):
             return mode_str
         
-        mode_str = str(mode_str).upper().strip()
+        # 문자열로 변환하되 원본 보존
+        mode_str_original = str(mode_str).strip()
+        mode_str_upper = mode_str_original.upper()
         
-        # O, X 지원
-        if mode_str in ['O', 'ON', 'OPEN', 'TRUE', '1', 'Y', 'YES']:
+        self.logger.info(f"🔍 포지션 매니저 미러링 모드 파싱: 원본='{mode_str_original}', 대문자='{mode_str_upper}'")
+        
+        # 🔥🔥🔥 영어 O, X 우선 처리 (숫자 0과 구분)
+        if mode_str_upper == 'O':
+            self.logger.info("✅ 포지션 매니저: 영어 대문자 O 감지 → 활성화")
             return True
-        elif mode_str in ['X', 'OFF', 'CLOSE', 'FALSE', '0', 'N', 'NO']:
+        elif mode_str_upper == 'X':
+            self.logger.info("✅ 포지션 매니저: 영어 대문자 X 감지 → 비활성화")
             return False
-        else:
-            self.logger.warning(f"알 수 없는 미러링 모드: {mode_str}, 기본값(O) 사용")
+        
+        # 기타 활성화 키워드
+        elif mode_str_upper in ['ON', 'OPEN', 'TRUE', 'Y', 'YES']:
+            self.logger.info(f"✅ 포지션 매니저 활성화 키워드 감지: '{mode_str_upper}' → 활성화")
             return True
+        
+        # 기타 비활성화 키워드 (숫자 0 포함)
+        elif mode_str_upper in ['OFF', 'CLOSE', 'FALSE', 'N', 'NO'] or mode_str_original == '0':
+            self.logger.info(f"✅ 포지션 매니저 비활성화 키워드 감지: '{mode_str_upper}' → 비활성화")
+            return False
+        
+        # 숫자 1은 활성화
+        elif mode_str_original == '1':
+            self.logger.info("✅ 포지션 매니저: 숫자 1 감지 → 활성화")
+            return True
+        
+        else:
+            self.logger.warning(f"⚠️ 포지션 매니저: 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(활성화) 사용")
+            return True
+
+    def _parse_mirror_ratio_multiplier(self, ratio_str: str) -> float:
+        """🔥🔥🔥 복제 비율 파싱"""
+        try:
+            ratio_value = float(ratio_str)
+            
+            # 유효 범위 검증 (0.1 ~ 10.0)
+            if ratio_value < 0.1:
+                self.logger.warning(f"포지션 매니저: 복제 비율이 너무 작음 ({ratio_value}), 최소값 사용: 0.1")
+                return 0.1
+            elif ratio_value > 10.0:
+                self.logger.warning(f"포지션 매니저: 복제 비율이 너무 큼 ({ratio_value}), 최대값 사용: 10.0")
+                return 10.0
+            else:
+                self.logger.info(f"✅ 포지션 매니저: 복제 비율 설정: {ratio_value}x")
+                return ratio_value
+                
+        except (ValueError, TypeError):
+            self.logger.error(f"포지션 매니저: 복제 비율 변환 실패: {ratio_str}, 기본값(1.0) 사용")
+            return 1.0
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
