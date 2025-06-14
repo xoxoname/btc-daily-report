@@ -20,8 +20,15 @@ class MirrorTradingSystem:
         self.logger = logging.getLogger('mirror_trading')
         
         # 🔥🔥🔥 환경변수 처리 개선 - O/X 지원 및 복제 비율 추가
-        self.mirror_trading_enabled = self._parse_mirror_trading_mode(getattr(config, 'MIRROR_TRADING_MODE', 'O'))
-        self.mirror_ratio_multiplier = self._parse_mirror_ratio_multiplier(getattr(config, 'MIRROR_RATIO_MULTIPLIER', '1'))
+        raw_mirror_mode = getattr(config, 'MIRROR_TRADING_MODE', 'O')
+        self.mirror_trading_enabled = self._parse_mirror_trading_mode(raw_mirror_mode)
+        
+        raw_ratio_multiplier = getattr(config, 'MIRROR_RATIO_MULTIPLIER', '1.0')
+        self.mirror_ratio_multiplier = self._parse_mirror_ratio_multiplier(raw_ratio_multiplier)
+        
+        # 환경변수 로깅
+        self.logger.info(f"🔥 환경변수 원본값: MIRROR_TRADING_MODE='{raw_mirror_mode}', MIRROR_RATIO_MULTIPLIER='{raw_ratio_multiplier}'")
+        self.logger.info(f"🔥 파싱 결과: 미러링={'활성화' if self.mirror_trading_enabled else '비활성화'}, 복제비율={self.mirror_ratio_multiplier}x")
         
         # Bitget 미러링 전용 클라이언트 import
         try:
@@ -105,19 +112,41 @@ class MirrorTradingSystem:
         self.logger.info(f"   - 예약 주문 취소 처리: 강화됨")
 
     def _parse_mirror_trading_mode(self, mode_str: str) -> bool:
-        """🔥🔥🔥 미러링 모드 파싱 - O/X 지원"""
+        """🔥🔥🔥 미러링 모드 파싱 - O/X 정확한 구분"""
         if isinstance(mode_str, bool):
             return mode_str
         
-        mode_str = str(mode_str).upper().strip()
+        # 문자열로 변환하되 원본 보존
+        mode_str_original = str(mode_str).strip()
+        mode_str_upper = mode_str_original.upper()
         
-        # O, X 지원
-        if mode_str in ['O', 'ON', 'OPEN', 'TRUE', '1', 'Y', 'YES']:
+        self.logger.info(f"🔍 미러링 모드 파싱: 원본='{mode_str_original}', 대문자='{mode_str_upper}'")
+        
+        # 🔥🔥🔥 영어 O, X 우선 처리 (숫자 0과 구분)
+        if mode_str_upper == 'O':
+            self.logger.info("✅ 영어 대문자 O 감지 → 활성화")
             return True
-        elif mode_str in ['X', 'OFF', 'CLOSE', 'FALSE', '0', 'N', 'NO']:
+        elif mode_str_upper == 'X':
+            self.logger.info("✅ 영어 대문자 X 감지 → 비활성화")
             return False
+        
+        # 기타 활성화 키워드
+        elif mode_str_upper in ['ON', 'OPEN', 'TRUE', 'Y', 'YES']:
+            self.logger.info(f"✅ 활성화 키워드 감지: '{mode_str_upper}' → 활성화")
+            return True
+        
+        # 기타 비활성화 키워드 (숫자 0 포함)
+        elif mode_str_upper in ['OFF', 'CLOSE', 'FALSE', 'N', 'NO'] or mode_str_original == '0':
+            self.logger.info(f"✅ 비활성화 키워드 감지: '{mode_str_upper}' → 비활성화")
+            return False
+        
+        # 숫자 1은 활성화
+        elif mode_str_original == '1':
+            self.logger.info("✅ 숫자 1 감지 → 활성화")
+            return True
+        
         else:
-            self.logger.warning(f"알 수 없는 미러링 모드: {mode_str}, 기본값(O) 사용")
+            self.logger.warning(f"⚠️ 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(활성화) 사용")
             return True
 
     def _parse_mirror_ratio_multiplier(self, ratio_str: str) -> float:
@@ -133,6 +162,7 @@ class MirrorTradingSystem:
                 self.logger.warning(f"복제 비율이 너무 큼 ({ratio_value}), 최대값 사용: 10.0")
                 return 10.0
             else:
+                self.logger.info(f"✅ 복제 비율 설정: {ratio_value}x")
                 return ratio_value
                 
         except (ValueError, TypeError):
@@ -506,33 +536,6 @@ class MirrorTradingSystem:
                             
                     except Exception as e:
                         self.logger.error(f"고아 주문 처리 실패: {orphaned['gate_order_id']} - {e}")
-            
-            # 🔥🔥🔥 3. 안전한 주문들 상태 리포트 (1시간에 한 번만)
-            if safe_orders and not hasattr(self, '_last_safe_orders_report'):
-                self._last_safe_orders_report = datetime.now()
-                
-                self.logger.info(f"🛡️ 안전상 보존되는 게이트 주문 {len(safe_orders)}개")
-                for safe_order in safe_orders[:3]:
-                    self.logger.info(f"   - {safe_order['gate_order_id']}: {safe_order['reason']}")
-            
-            elif safe_orders and hasattr(self, '_last_safe_orders_report'):
-                if (datetime.now() - self._last_safe_orders_report).total_seconds() > 3600:
-                    self._last_safe_orders_report = datetime.now()
-                    
-                    safe_report = f"🛡️ 보존된 게이트 예약 주문 현황\n"
-                    safe_report += f"개수: {len(safe_orders)}개\n"
-                    safe_report += f"상태: 안전상 자동 삭제하지 않음\n\n"
-                    
-                    for i, safe_order in enumerate(safe_orders[:3], 1):
-                        safe_report += f"{i}. {safe_order['gate_order_id']}\n"
-                        safe_report += f"   이유: {safe_order['reason']}\n"
-                    
-                    if len(safe_orders) > 3:
-                        safe_report += f"   ... 및 {len(safe_orders) - 3}개 더\n"
-                    
-                    safe_report += f"\n✅ 비트겟 예약 주문이 있는 한 자동 삭제되지 않습니다"
-                    
-                    await self.telegram.send_message(safe_report)
             
             # 동기화 결과 알림 (3개 이상 문제가 해결되었을 때만)
             if fixed_count >= 3:
