@@ -2063,4 +2063,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\n치명적 오류: {e}")
         logging.error(f"프로그램 실행 실패: {e}")
-        logging.debug(traceback.format_exc())ㅍ
+        logging.debug(traceback.format_exc())
