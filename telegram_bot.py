@@ -1,5 +1,5 @@
 import logging
-from telegram import Bot, Update
+from telegram import Bot, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import asyncio
 from typing import Callable
@@ -11,7 +11,11 @@ class TelegramBot:
         self.logger = logging.getLogger('telegram_bot')
         self.bot = None
         self.application = None
+        self.mirror_trading_system = None  # 🔥🔥🔥 미러 트레이딩 시스템 참조
         self._initialize_bot()
+        
+        # 🔥🔥🔥 배율 설정 관련 상태 관리
+        self.pending_ratio_confirmations = {}  # user_id: {'ratio': float, 'timestamp': datetime}
         
     def _initialize_bot(self):
         """봇 초기화"""
@@ -32,6 +36,11 @@ class TelegramBot:
         except Exception as e:
             self.logger.error(f"텔레그램 봇 초기화 실패: {str(e)}")
             raise
+    
+    def set_mirror_trading_system(self, mirror_system):
+        """🔥🔥🔥 미러 트레이딩 시스템 참조 설정"""
+        self.mirror_trading_system = mirror_system
+        self.logger.info("미러 트레이딩 시스템 참조 설정 완료")
     
     def add_handler(self, command: str, handler_func: Callable):
         """명령 핸들러 추가"""
@@ -89,6 +98,267 @@ class TelegramBot:
                 
         except Exception as e:
             self.logger.error(f"텔레그램 봇 정지 실패: {str(e)}")
+    
+    async def handle_ratio_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """🔥🔥🔥 /ratio 명령어 처리 - 복제 비율 실시간 조정"""
+        try:
+            user_id = update.effective_user.id
+            chat_id = update.effective_chat.id
+            
+            # 미러 트레이딩 시스템 참조 확인
+            if not self.mirror_trading_system:
+                await update.message.reply_text(
+                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.\n"
+                    "시스템 관리자에게 문의하세요."
+                )
+                return
+            
+            # 현재 배율 정보 조회
+            current_info = await self.mirror_trading_system.get_current_ratio_info()
+            current_ratio = current_info['current_ratio']
+            description = current_info['description']
+            
+            # 파라미터 확인
+            if context.args:
+                # 배율 변경 시도
+                try:
+                    new_ratio_str = context.args[0]
+                    
+                    # 숫자 유효성 검증
+                    try:
+                        new_ratio = float(new_ratio_str)
+                    except ValueError:
+                        await update.message.reply_text(
+                            f"❌ 올바르지 않은 숫자 형식: '{new_ratio_str}'\n"
+                            f"예시: /ratio 1.5"
+                        )
+                        return
+                    
+                    # 범위 확인 (사전 검증)
+                    if new_ratio < 0.1 or new_ratio > 10.0:
+                        await update.message.reply_text(
+                            f"❌ 배율 범위 초과: {new_ratio}\n"
+                            f"허용 범위: 0.1 ~ 10.0\n"
+                            f"현재 설정: {current_ratio}x"
+                        )
+                        return
+                    
+                    # 동일한 배율인지 확인
+                    if abs(new_ratio - current_ratio) < 0.01:
+                        await update.message.reply_text(
+                            f"💡 이미 해당 배율로 설정되어 있습니다.\n"
+                            f"현재 배율: {current_ratio}x\n"
+                            f"요청 배율: {new_ratio}x"
+                        )
+                        return
+                    
+                    # 🔥🔥🔥 확인 절차 - 대기 상태 저장
+                    from datetime import datetime, timedelta
+                    
+                    self.pending_ratio_confirmations[user_id] = {
+                        'ratio': new_ratio,
+                        'timestamp': datetime.now(),
+                        'chat_id': chat_id
+                    }
+                    
+                    # 새 배율 효과 미리 분석
+                    new_description = self.mirror_trading_system.utils.get_ratio_multiplier_description(new_ratio)
+                    effect_analysis = self.mirror_trading_system.utils.analyze_ratio_multiplier_effect(
+                        new_ratio, 0.1, 0.1 * new_ratio
+                    )
+                    
+                    # 확인 키보드 생성
+                    keyboard = [
+                        [KeyboardButton("✅ 예, 적용합니다"), KeyboardButton("❌ 아니오, 취소")]
+                    ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                    
+                    await update.message.reply_text(
+                        f"🔄 복제 비율 변경 확인\n\n"
+                        f"📊 현재 설정:\n"
+                        f"• 배율: {current_ratio}x\n"
+                        f"• 설명: {description}\n\n"
+                        f"🎯 새로운 설정:\n"
+                        f"• 배율: {new_ratio}x\n"
+                        f"• 설명: {new_description}\n"
+                        f"• 리스크: {effect_analysis['risk_level']}\n"
+                        f"• 영향: {effect_analysis['impact']}\n"
+                        f"• 권장사항: {effect_analysis['recommendation']}\n\n"
+                        f"💡 이 배율로 설정하시겠습니까?\n"
+                        f"새로운 예약 주문부터 즉시 적용됩니다.",
+                        reply_markup=reply_markup
+                    )
+                    
+                    # 1분 후 자동 만료 스케줄링
+                    async def cleanup_confirmation():
+                        await asyncio.sleep(60)
+                        if user_id in self.pending_ratio_confirmations:
+                            del self.pending_ratio_confirmations[user_id]
+                    
+                    asyncio.create_task(cleanup_confirmation())
+                    
+                except Exception as e:
+                    await update.message.reply_text(
+                        f"❌ 배율 변경 처리 중 오류 발생\n"
+                        f"오류: {str(e)[:200]}\n"
+                        f"현재 배율 유지: {current_ratio}x"
+                    )
+                    
+            else:
+                # 현재 배율 정보만 표시
+                await update.message.reply_text(
+                    f"📊 현재 복제 비율 설정\n\n"
+                    f"🎯 배율: {current_ratio}x\n"
+                    f"📝 설명: {description}\n"
+                    f"🔄 적용 상태: {'기본 비율' if current_ratio == 1.0 else '사용자 지정'}\n\n"
+                    f"💡 사용법:\n"
+                    f"• 현재 상태 확인: /ratio\n"
+                    f"• 배율 변경: /ratio [숫자]\n"
+                    f"• 예시: /ratio 1.5 (1.5배로 확대)\n"
+                    f"• 예시: /ratio 0.5 (절반으로 축소)\n"
+                    f"• 허용 범위: 0.1 ~ 10.0\n\n"
+                    f"🔥 변경 시 새로운 예약 주문부터 즉시 적용됩니다."
+                )
+                
+        except Exception as e:
+            self.logger.error(f"배율 명령어 처리 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 배율 명령어 처리 실패\n"
+                f"오류: {str(e)[:200]}"
+            )
+    
+    async def handle_ratio_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """🔥🔥🔥 배율 설정 확인 처리"""
+        try:
+            user_id = update.effective_user.id
+            message_text = update.message.text.strip()
+            
+            # 대기 중인 확인이 있는지 확인
+            if user_id not in self.pending_ratio_confirmations:
+                return False  # 이 메시지는 배율 확인과 관련 없음
+            
+            pending_info = self.pending_ratio_confirmations[user_id]
+            new_ratio = pending_info['ratio']
+            
+            # 만료 확인 (1분 제한)
+            from datetime import datetime, timedelta
+            if datetime.now() - pending_info['timestamp'] > timedelta(minutes=1):
+                del self.pending_ratio_confirmations[user_id]
+                await update.message.reply_text(
+                    "⏰ 배율 설정 확인 시간이 만료되었습니다.\n"
+                    "/ratio 명령어를 다시 사용해 주세요."
+                )
+                return True
+            
+            # 확인 응답 처리
+            if "✅" in message_text or "예" in message_text:
+                # 배율 적용
+                try:
+                    if not self.mirror_trading_system:
+                        await update.message.reply_text(
+                            "❌ 미러 트레이딩 시스템이 연결되지 않았습니다."
+                        )
+                        return True
+                    
+                    # 실제 배율 변경 실행
+                    result = await self.mirror_trading_system.set_ratio_multiplier(new_ratio)
+                    
+                    if result['success']:
+                        old_ratio = result['old_ratio']
+                        new_ratio = result['new_ratio']
+                        description = result['description']
+                        effect = result['effect']
+                        
+                        await update.message.reply_text(
+                            f"✅ 복제 비율 변경 완료!\n\n"
+                            f"📊 변경 사항:\n"
+                            f"• 이전: {old_ratio}x → 새로운: {new_ratio}x\n"
+                            f"• 설명: {description}\n"
+                            f"• 리스크 레벨: {effect['risk_level']}\n"
+                            f"• 영향: {effect['impact']}\n\n"
+                            f"🔥 새로운 예약 주문부터 즉시 적용됩니다!\n"
+                            f"⚡ 기존 활성 주문은 영향받지 않습니다."
+                        )
+                        
+                        self.logger.info(f"텔레그램으로 복제 비율 변경: {old_ratio}x → {new_ratio}x (사용자: {user_id})")
+                        
+                    else:
+                        await update.message.reply_text(
+                            f"❌ 배율 변경 실패\n"
+                            f"오류: {result.get('error', '알 수 없는 오류')}\n"
+                            f"현재 배율 유지: {result.get('current_ratio', '불명')}x"
+                        )
+                        
+                except Exception as e:
+                    await update.message.reply_text(
+                        f"❌ 배율 적용 중 오류 발생\n"
+                        f"오류: {str(e)[:200]}"
+                    )
+                    
+            elif "❌" in message_text or "아니" in message_text:
+                # 취소
+                await update.message.reply_text(
+                    f"🚫 배율 변경이 취소되었습니다.\n"
+                    f"현재 배율 유지: {self.mirror_trading_system.mirror_ratio_multiplier if self.mirror_trading_system else '불명'}x"
+                )
+                
+            else:
+                # 잘못된 응답
+                await update.message.reply_text(
+                    f"❓ 올바른 응답을 선택해 주세요.\n"
+                    f"✅ 예, 적용합니다 또는 ❌ 아니오, 취소"
+                )
+                return True  # 다시 대기
+            
+            # 확인 상태 정리
+            del self.pending_ratio_confirmations[user_id]
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"배율 확인 처리 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 배율 확인 처리 실패\n"
+                f"오류: {str(e)[:200]}"
+            )
+            return True
+    
+    async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """도움말 명령어 처리"""
+        try:
+            help_text = """🤖 미러 트레이딩 봇 도움말
+
+📊 주요 명령어:
+• /ratio - 현재 복제 비율 확인
+• /ratio [숫자] - 복제 비율 변경
+• /help - 이 도움말 표시
+
+🎯 복제 비율 사용법:
+• /ratio 1.0 - 원본 비율 그대로 (기본값)
+• /ratio 0.5 - 원본의 절반 크기로 축소
+• /ratio 2.0 - 원본의 2배 크기로 확대
+• /ratio 0.1 - 원본의 10%로 대폭 축소
+• /ratio 5.0 - 원본의 5배로 확대
+
+📋 허용 범위: 0.1 ~ 10.0배
+
+⚡ 실시간 적용:
+• 변경 즉시 새로운 예약 주문에 적용
+• 기존 활성 주문은 영향받지 않음
+• 확인 절차로 안전하게 변경
+
+🔥 리스크 관리:
+• 0.5배 이하: 보수적 (리스크 감소)
+• 1.0배: 표준 (원본과 동일)
+• 1.5배 이상: 적극적 (리스크 증가)
+• 3.0배 이상: 공격적 (높은 리스크)
+
+💡 시스템이 24시간 안전하게 작동합니다."""
+            
+            await update.message.reply_text(help_text)
+            
+        except Exception as e:
+            self.logger.error(f"도움말 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 도움말 표시 실패")
     
     def _clean_html_message(self, text: str) -> str:
         """🔥🔥 HTML 메시지 정리 및 검증"""
