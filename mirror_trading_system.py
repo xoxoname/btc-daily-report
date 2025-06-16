@@ -274,6 +274,61 @@ class MirrorTradingSystem:
         else:
             return f"원본의 {ratio:.1f}배 크기로 확대"
 
+    async def get_current_ratio_info(self) -> Dict:
+        """🔥🔥🔥 현재 복제 비율 정보 조회 - 텔레그램 봇용"""
+        try:
+            # 최근 변경 기록
+            recent_changes = self.ratio_change_history[-5:] if self.ratio_change_history else []
+            
+            # 오늘 변경 횟수
+            today = datetime.now().date()
+            today_changes = [
+                change for change in self.ratio_change_history
+                if datetime.fromisoformat(change['timestamp']).date() == today
+            ]
+            
+            # 최근 변경 시간
+            last_change_time = None
+            if self.ratio_change_history:
+                last_change = self.ratio_change_history[-1]
+                last_change_time = last_change['timestamp']
+                last_change_user = last_change['user']
+            else:
+                last_change_user = "없음"
+            
+            return {
+                'current_ratio': self.mirror_ratio_multiplier,
+                'description': self._get_ratio_description(self.mirror_ratio_multiplier),
+                'enabled': self.ratio_adjustment_enabled,
+                'total_changes': len(self.ratio_change_history),
+                'today_changes': len(today_changes),
+                'last_change_time': last_change_time,
+                'last_change_user': last_change_user,
+                'recent_changes': recent_changes,
+                'min_ratio': 0.1,
+                'max_ratio': 10.0,
+                'mirror_enabled': self.mirror_trading_enabled,
+                'system_running': self.is_running
+            }
+            
+        except Exception as e:
+            self.logger.error(f"현재 복제 비율 정보 조회 실패: {e}")
+            return {
+                'current_ratio': self.mirror_ratio_multiplier,
+                'description': "정보 조회 실패",
+                'enabled': False,
+                'total_changes': 0,
+                'today_changes': 0,
+                'last_change_time': None,
+                'last_change_user': "오류",
+                'recent_changes': [],
+                'min_ratio': 0.1,
+                'max_ratio': 10.0,
+                'mirror_enabled': False,
+                'system_running': False,
+                'error': str(e)
+            }
+
     async def get_current_status(self) -> Dict:
         """현재 미러 트레이딩 상태 조회"""
         try:
