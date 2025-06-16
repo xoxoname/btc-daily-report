@@ -21,10 +21,10 @@ from data_collector import RealTimeDataCollector
 from trading_indicators import AdvancedTradingIndicators
 from report_generators import ReportGeneratorManager
 
-# 🔥🔥🔥 미러 트레이딩 관련 임포트 - 수정된 부분
+# 미러 트레이딩 관련 임포트 - 수정된 부분
 try:
-    from mirror_trading import GateioMirrorClient as GateClient
-    from mirror_trading_system import MirrorTradingSystem
+    from gateio_client import GateioMirrorClient as GateClient
+    from mirror_trading import MirrorTradingSystem
     MIRROR_TRADING_AVAILABLE = True
     print("✅ 미러 트레이딩 모듈 import 성공")
 except ImportError as e:
@@ -1021,43 +1021,80 @@ class BitcoinPredictionSystem:
             await update.message.reply_text("🔄 미러 트레이딩 상태를 조회중입니다...", parse_mode='HTML')
             
             # 미러링 상태 정보
-            status = await self.mirror_trading.get_current_status()
+            active_mirrors = len(self.mirror_trading.mirrored_positions)
+            failed_count = len(self.mirror_trading.failed_mirrors)
+            current_ratio = self.mirror_trading.mirror_ratio_multiplier  # 🔥🔥🔥 현재 배율
+            
+            # 계정 정보
+            bitget_account = await self.bitget_client.get_account_info()
+            gate_account = await self.gate_client.get_account_balance()
+            
+            bitget_equity = float(bitget_account.get('accountEquity', 0))
+            gate_equity = float(gate_account.get('total', 0))
+            
+            # 포지션 정보
+            bitget_positions = await self.bitget_client.get_positions(self.config.symbol)
+            gate_positions = await self.gate_client.get_positions("BTC_USDT")
+            
+            bitget_pos_count = sum(1 for pos in bitget_positions if float(pos.get('total', 0)) > 0)
+            gate_pos_count = sum(1 for pos in gate_positions if pos.get('size', 0) != 0)
+            
+            # 성공률 계산
+            success_rate = 0
+            if self.mirror_trading.daily_stats['total_mirrored'] > 0:
+                success_rate = (self.mirror_trading.daily_stats['successful_mirrors'] / 
+                              self.mirror_trading.daily_stats['total_mirrored']) * 100
             
             status_msg = f"""🔄 <b>미러 트레이딩 상태</b>
 
 <b>💰 계정 잔고:</b>
-- 비트겟: ${status['accounts']['bitget_equity']:,.2f}
-- 게이트: ${status['accounts']['gate_equity']:,.2f}
-- 잔고 비율: {status['accounts']['equity_ratio']:.1f}%
+- 비트겟: ${bitget_equity:,.2f}
+- 게이트: ${gate_equity:,.2f}
+- 잔고 비율: {(gate_equity/bitget_equity*100):.1f}%
 
 <b>🔄 복제 설정:</b>
-- 복제 비율: <b>{status['current_ratio']}x</b> (텔레그램 조정 가능)
-- 모드: {'활성화' if status['mirror_enabled'] else '비활성화'}
+- 복제 비율: <b>{current_ratio}x</b> (텔레그램 조정 가능)
+- 모드: {'활성화' if self.mirror_mode else '비활성화'}
 - 조정 방법: /ratio 명령어 사용
 
 <b>📊 포지션 현황:</b>
-- 비트겟: {status['positions']['bitget_count']}개
-- 게이트: {status['positions']['gate_count']}개
-- 동기화: {'✅' if status['positions']['is_synced'] else '❌'}
+- 비트겟: {bitget_pos_count}개
+- 게이트: {gate_pos_count}개
+- 활성 미러: {active_mirrors}개
 
 <b>📈 오늘 통계:</b>
-- 시도: {status['daily_stats']['total_mirrored']}회
-- 성공: {status['daily_stats']['successful_mirrors']}회
-- 실패: {status['daily_stats']['failed_mirrors']}회
-- 예약 주문 미러링: {status['daily_stats']['plan_order_mirrors']}회
-- 예약 주문 취소: {status['daily_stats']['plan_order_cancels']}회
-- 부분청산: {status['daily_stats']['partial_closes']}회
-- 전체청산: {status['daily_stats']['full_closes']}회
-- 총 거래량: ${status['daily_stats']['total_volume']:,.2f}
+- 시도: {self.mirror_trading.daily_stats['total_mirrored']}회
+- 성공: {self.mirror_trading.daily_stats['successful_mirrors']}회
+- 실패: {self.mirror_trading.daily_stats['failed_mirrors']}회
+- 성공률: {success_rate:.1f}%
+- 예약 주문 미러링: {self.mirror_trading.daily_stats['plan_order_mirrors']}회
+- 예약 주문 취소: {self.mirror_trading.daily_stats['plan_order_cancels']}회
+- 부분청산: {self.mirror_trading.daily_stats['partial_closes']}회
+- 전체청산: {self.mirror_trading.daily_stats['full_closes']}회
+- 총 거래량: ${self.mirror_trading.daily_stats['total_volume']:,.2f}
 
 <b>🎯 복제 비율 효과:</b>
-- 원본 비율의 {status['current_ratio']}배로 복제
-- 예: 비트겟 10% 투입 시 게이트 {status['current_ratio']*10:.1f}% 투입
+- 원본 비율의 {current_ratio}배로 복제
+- 예: 비트겟 10% 투입 시 게이트 {current_ratio*10:.1f}% 투입
 - 실시간 조정: /ratio [숫자] 또는 '배율 조정' 입력
 - 허용 범위: 0.1 ~ 10.0배
 
-✅ 시스템 정상 작동 중
-🔄 복제 비율: 텔레그램으로 실시간 조정 가능"""
+<b>⚠️ 최근 오류:</b>
+- 실패 기록: {failed_count}건"""
+            
+            # 최근 실패 내역 추가
+            if failed_count > 0 and self.mirror_trading.failed_mirrors:
+                recent_fail = self.mirror_trading.failed_mirrors[-1]
+                status_msg += f"\n• 마지막 실패: {recent_fail.error[:50]}..."
+            
+            status_msg += "\n\n✅ 시스템 정상 작동 중"
+            
+            # 시스템 가동 시간
+            uptime = datetime.now() - self.startup_time
+            hours = int(uptime.total_seconds() // 3600)
+            minutes = int((uptime.total_seconds() % 3600) // 60)
+            status_msg += f"\n⏱️ 가동 시간: {hours}시간 {minutes}분"
+            status_msg += f"\n🔄 복제 비율: 텔레그램으로 실시간 조정 가능"
             
             await update.message.reply_text(status_msg, parse_mode='HTML')
             
@@ -1326,15 +1363,10 @@ class BitcoinPredictionSystem:
     async def _check_mirror_health(self):
         """미러 트레이딩 건강 상태 체크"""
         try:
-            if not self.mirror_trading:
-                return
-                
-            status = await self.mirror_trading.get_current_status()
-            
             # 실패율 체크
-            if status['daily_stats']['total_mirrored'] > 10:
-                fail_rate = (status['daily_stats']['failed_mirrors'] / 
-                           status['daily_stats']['total_mirrored'])
+            if self.mirror_trading.daily_stats['total_mirrored'] > 10:
+                fail_rate = (self.mirror_trading.daily_stats['failed_mirrors'] / 
+                           self.mirror_trading.daily_stats['total_mirrored'])
                 
                 if fail_rate > 0.3:  # 30% 이상 실패
                     await self.telegram_bot.send_message(
@@ -1522,7 +1554,6 @@ class BitcoinPredictionSystem:
 - 일정 확인: {self.command_stats['schedule']}회"""
 
             if self.mirror_mode:
-                daily_stats = self.mirror_trading.daily_stats if self.mirror_trading else {}
                 report += f"\n• 미러 상태: {self.command_stats['mirror']}회"
                 report += f"\n• 배율 조정: {self.command_stats['ratio']}회"
             
@@ -1553,18 +1584,18 @@ class BitcoinPredictionSystem:
             
             # 미러 트레이딩 통계 추가
             if self.mirror_mode and self.mirror_trading:
-                daily_stats = self.mirror_trading.daily_stats
+                mirror_stats = self.mirror_trading.daily_stats
                 report += f"""
 
 <b>🔄 미러 트레이딩 통계:</b>
-- 총 시도: {daily_stats['total_mirrored']}회
-- 성공: {daily_stats['successful_mirrors']}회
-- 실패: {daily_stats['failed_mirrors']}회
-- 예약 주문 미러링: {daily_stats['plan_order_mirrors']}회
-- 예약 주문 취소: {daily_stats['plan_order_cancels']}회
-- 부분 청산: {daily_stats['partial_closes']}회
-- 전체 청산: {daily_stats['full_closes']}회
-- 총 거래량: ${daily_stats['total_volume']:,.2f}
+- 총 시도: {mirror_stats['total_mirrored']}회
+- 성공: {mirror_stats['successful_mirrors']}회
+- 실패: {mirror_stats['failed_mirrors']}회
+- 예약 주문 미러링: {mirror_stats['plan_order_mirrors']}회
+- 예약 주문 취소: {mirror_stats['plan_order_cancels']}회
+- 부분 청산: {mirror_stats['partial_closes']}회
+- 전체 청산: {mirror_stats['full_closes']}회
+- 총 거래량: ${mirror_stats['total_volume']:,.2f}
 - 배율 조정: {self.command_stats['ratio']}회"""
             
             report += f"""
