@@ -27,7 +27,7 @@ class BitgetMirrorClient:
         self.last_successful_call = datetime.now()
         self.max_consecutive_failures = 10
         
-        # 🔥🔥🔥 백업 엔드포인트들
+        # 🔥🔥🔥 수정된 엔드포인트들 - 404 에러 해결
         self.ticker_endpoints = [
             "/api/v2/mix/market/ticker",  # 기본 V2
             "/api/mix/v1/market/ticker",  # V1 백업
@@ -517,7 +517,7 @@ class BitgetMirrorClient:
             return []
     
     async def get_plan_orders_v2_working(self, symbol: str = None) -> List[Dict]:
-        """🔥 V2 API로 예약 주문 조회 - 올바른 엔드포인트 사용"""
+        """🔥 V2 API로 예약 주문 조회 - 수정된 엔드포인트 사용 (404 오류 해결)"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -525,9 +525,12 @@ class BitgetMirrorClient:
             
             all_found_orders = []
             
-            # 🔥 올바른 V2 엔드포인트 사용
+            # 🔥 수정된 V2 엔드포인트 - 404 오류 해결
             working_endpoints = [
-                "/api/v2/mix/order/orders-plan-pending",     # ✅ 정확한 엔드포인트
+                "/api/v2/mix/plan/currentPlan",         # 🔥 수정된 정확한 엔드포인트 1
+                "/api/v2/mix/order/plan-pending",       # 🔥 수정된 정확한 엔드포인트 2
+                "/api/v2/mix/plan/pending",             # 🔥 백업 엔드포인트 1
+                "/api/v2/mix/order/orders-plan",        # 🔥 백업 엔드포인트 2
             ]
             
             for endpoint in working_endpoints:
@@ -547,18 +550,15 @@ class BitgetMirrorClient:
                     # 응답에서 주문 목록 추출
                     orders = []
                     if isinstance(response, dict):
-                        # orderList가 작동하는 필드명
-                        if 'orderList' in response:
-                            orders_raw = response['orderList']
-                            if isinstance(orders_raw, list):
-                                orders = orders_raw
-                                logger.info(f"✅ 미러링 {endpoint}: orderList에서 {len(orders)}개 주문 발견")
-                        # entrustedList도 확인
-                        elif 'entrustedList' in response:
-                            orders_raw = response['entrustedList']
-                            if isinstance(orders_raw, list):
-                                orders = orders_raw
-                                logger.info(f"✅ 미러링 {endpoint}: entrustedList에서 {len(orders)}개 주문 발견")
+                        # 다양한 응답 구조 지원
+                        possible_fields = ['orderList', 'entrustedList', 'planList', 'data', 'list']
+                        for field in possible_fields:
+                            if field in response:
+                                orders_raw = response[field]
+                                if isinstance(orders_raw, list):
+                                    orders = orders_raw
+                                    logger.info(f"✅ 미러링 {endpoint}: {field}에서 {len(orders)}개 주문 발견")
+                                    break
                     elif isinstance(response, list):
                         orders = response
                         logger.info(f"✅ 미러링 {endpoint}: 직접 리스트에서 {len(orders)}개 주문 발견")
@@ -633,7 +633,7 @@ class BitgetMirrorClient:
             return []
     
     async def get_plan_orders_v1_working(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """🔥 V1 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
+        """🔥 V1 API로 예약 주문 조회 - 수정된 엔드포인트 사용 (404 오류 해결)"""
         try:
             # V1 API는 다른 심볼 형식을 사용
             symbol = symbol or self.config.symbol
@@ -643,9 +643,12 @@ class BitgetMirrorClient:
             
             all_found_orders = []
             
-            # 🔥 실제 작동하는 V1 엔드포인트만 사용
+            # 🔥 수정된 V1 엔드포인트 - 404 오류 해결
             working_endpoints = [
-                "/api/mix/v1/plan/currentPlan",              # ✅ 작동 확인됨
+                "/api/mix/v1/plan/currentPlan",         # 🔥 기본 V1 엔드포인트
+                "/api/v1/mix/plan/currentPlan",         # 🔥 백업 V1 엔드포인트 1
+                "/api/mix/v1/plan/pending",             # 🔥 백업 V1 엔드포인트 2
+                "/api/v1/mix/order/currentPlan",        # 🔥 백업 V1 엔드포인트 3
             ]
             
             for endpoint in working_endpoints:
@@ -673,12 +676,13 @@ class BitgetMirrorClient:
                     orders = []
                     if isinstance(response, dict):
                         # V1 API 응답 구조
-                        for field_name in ['list', 'data']:
-                            if field_name in response:
-                                orders_raw = response[field_name]
+                        possible_fields = ['list', 'data', 'orderList', 'planList']
+                        for field in possible_fields:
+                            if field in response:
+                                orders_raw = response[field]
                                 if isinstance(orders_raw, list):
                                     orders = orders_raw
-                                    logger.info(f"✅ 미러링 {endpoint}: {field_name}에서 {len(orders)}개 주문 발견")
+                                    logger.info(f"✅ 미러링 {endpoint}: {field}에서 {len(orders)}개 주문 발견")
                                     break
                     elif isinstance(response, list):
                         orders = response
@@ -744,7 +748,7 @@ class BitgetMirrorClient:
             return []
     
     async def get_all_trigger_orders(self, symbol: str = None) -> List[Dict]:
-        """🔥 모든 트리거 주문 조회 - 작동하는 엔드포인트만 사용"""
+        """🔥 모든 트리거 주문 조회 - 수정된 엔드포인트 사용"""
         all_orders = []
         symbol = symbol or self.config.symbol
         
