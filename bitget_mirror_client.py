@@ -517,7 +517,7 @@ class BitgetMirrorClient:
             return []
     
     async def get_plan_orders_v2_working(self, symbol: str = None) -> List[Dict]:
-        """🔥 V2 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
+        """🔥 V2 API로 예약 주문 조회 - 올바른 엔드포인트 사용"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -525,9 +525,9 @@ class BitgetMirrorClient:
             
             all_found_orders = []
             
-            # 🔥 실제 작동하는 V2 엔드포인트만 사용
+            # 🔥 올바른 V2 엔드포인트 사용
             working_endpoints = [
-                "/api/v2/mix/order/orders-pending",          # ✅ 작동 확인됨
+                "/api/v2/mix/order/orders-plan-pending",     # ✅ 정확한 엔드포인트
             ]
             
             for endpoint in working_endpoints:
@@ -547,8 +547,14 @@ class BitgetMirrorClient:
                     # 응답에서 주문 목록 추출
                     orders = []
                     if isinstance(response, dict):
-                        # entrustedList가 작동하는 필드명
-                        if 'entrustedList' in response:
+                        # orderList가 작동하는 필드명
+                        if 'orderList' in response:
+                            orders_raw = response['orderList']
+                            if isinstance(orders_raw, list):
+                                orders = orders_raw
+                                logger.info(f"✅ 미러링 {endpoint}: orderList에서 {len(orders)}개 주문 발견")
+                        # entrustedList도 확인
+                        elif 'entrustedList' in response:
                             orders_raw = response['entrustedList']
                             if isinstance(orders_raw, list):
                                 orders = orders_raw
@@ -639,7 +645,7 @@ class BitgetMirrorClient:
             
             # 🔥 실제 작동하는 V1 엔드포인트만 사용
             working_endpoints = [
-                "/api/mix/v1/plan/currentPlan",              # ✅ 작동 확인됨 (비어있을 뿐)
+                "/api/mix/v1/plan/currentPlan",              # ✅ 작동 확인됨
             ]
             
             for endpoint in working_endpoints:
