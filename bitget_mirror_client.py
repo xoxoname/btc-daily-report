@@ -37,11 +37,6 @@ class BitgetMirrorClient:
         # API 키 검증 상태
         self.api_keys_validated = False
         
-        # 🔥🔥🔥 진입금/마진 추적 시스템 - 복제 비율 고려
-        self.position_entry_margins = {}  # 포지션별 실제 진입 마진 추적
-        self.order_margin_ratios = {}     # 주문별 마진 비율 추적
-        self.ratio_multiplier_cache = {}  # 복제 비율별 마진 매핑
-        
     def _initialize_session(self):
         """세션 초기화"""
         if not self.session:
@@ -66,37 +61,7 @@ class BitgetMirrorClient:
         # 🔥🔥🔥 API 키 유효성 검증
         await self._validate_api_keys()
         
-        # 🔥🔥🔥 기존 포지션 진입 마진 추적 초기화
-        await self._initialize_position_margin_tracking()
-        
         logger.info("Bitget 미러링 클라이언트 초기화 완료")
-    
-    async def _initialize_position_margin_tracking(self):
-        """🔥🔥🔥 기존 포지션의 진입 마진 추적 초기화"""
-        try:
-            positions = await self.get_positions("BTCUSDT")
-            
-            for position in positions:
-                if float(position.get('total', 0)) > 0:
-                    pos_side = position.get('holdSide', '').lower()
-                    pos_size = float(position.get('total', 0))
-                    entry_price = float(position.get('openPriceAvg', 0))
-                    margin_size = float(position.get('marginSize', 0))
-                    
-                    # 포지션별 실제 진입 마진 기록
-                    pos_key = f"{pos_side}_{entry_price:.2f}"
-                    self.position_entry_margins[pos_key] = {
-                        'margin_size': margin_size,
-                        'position_size': pos_size,
-                        'entry_price': entry_price,
-                        'side': pos_side,
-                        'created_at': datetime.now().isoformat()
-                    }
-                    
-                    logger.info(f"📊 기존 포지션 마진 추적: {pos_key} - 마진: ${margin_size:.2f}")
-            
-        except Exception as e:
-            logger.error(f"포지션 마진 추적 초기화 실패: {e}")
     
     async def _validate_api_keys(self):
         """🔥🔥🔥 API 키 유효성 검증"""
@@ -457,44 +422,11 @@ class BitgetMirrorClient:
                     logger.info(f"미러링 포지션 청산가 필드 확인:")
                     logger.info(f"  - liquidationPrice: {pos.get('liquidationPrice')}")
                     logger.info(f"  - markPrice: {pos.get('markPrice')}")
-                    
-                    # 🔥🔥🔥 포지션 마진 추적 업데이트
-                    await self._update_position_margin_tracking(pos)
             
             return active_positions
         except Exception as e:
             logger.error(f"미러링 포지션 조회 실패: {e}")
             raise
-    
-    async def _update_position_margin_tracking(self, position: Dict):
-        """🔥🔥🔥 포지션 마진 추적 업데이트"""
-        try:
-            pos_side = position.get('holdSide', '').lower()
-            pos_size = float(position.get('total', 0))
-            entry_price = float(position.get('openPriceAvg', 0))
-            margin_size = float(position.get('marginSize', 0))
-            
-            if pos_size > 0 and entry_price > 0:
-                pos_key = f"{pos_side}_{entry_price:.2f}"
-                
-                # 기존 추적 정보가 있으면 업데이트, 없으면 생성
-                if pos_key in self.position_entry_margins:
-                    self.position_entry_margins[pos_key]['margin_size'] = margin_size
-                    self.position_entry_margins[pos_key]['position_size'] = pos_size
-                    self.position_entry_margins[pos_key]['updated_at'] = datetime.now().isoformat()
-                else:
-                    self.position_entry_margins[pos_key] = {
-                        'margin_size': margin_size,
-                        'position_size': pos_size,
-                        'entry_price': entry_price,
-                        'side': pos_side,
-                        'created_at': datetime.now().isoformat()
-                    }
-                
-                logger.debug(f"📊 포지션 마진 추적 업데이트: {pos_key} - 마진: ${margin_size:.2f}")
-                
-        except Exception as e:
-            logger.error(f"포지션 마진 추적 업데이트 실패: {e}")
     
     async def get_account_info(self) -> Dict:
         """계정 정보 조회 (V2 API)"""
@@ -543,39 +475,12 @@ class BitgetMirrorClient:
                 if reduce_only == 'false' or reduce_only is False:
                     new_position_orders.append(order)
                     logger.info(f"미러링 신규 진입 주문 감지: {order.get('orderId')} - {order.get('side')} {order.get('size')}")
-                    
-                    # 🔥🔥🔥 체결된 주문의 마진 정보 추적
-                    await self._track_filled_order_margin(order)
             
             return new_position_orders
             
         except Exception as e:
             logger.error(f"미러링 최근 체결 주문 조회 실패: {e}")
             return []
-    
-    async def _track_filled_order_margin(self, filled_order: Dict):
-        """🔥🔥🔥 체결된 주문의 마진 정보 추적"""
-        try:
-            order_id = filled_order.get('orderId', filled_order.get('id', ''))
-            side = filled_order.get('side', '').lower()
-            size = float(filled_order.get('size', 0))
-            price = float(filled_order.get('price', filled_order.get('priceAvg', 0)))
-            
-            if order_id and size > 0 and price > 0:
-                # 주문별 마진 비율 기록
-                self.order_margin_ratios[order_id] = {
-                    'side': side,
-                    'size': size,
-                    'price': price,
-                    'filled_at': datetime.now().isoformat(),
-                    'estimated_margin': size * price,  # 추정 마진
-                    'leverage': filled_order.get('leverage', 30)  # 기본 30배
-                }
-                
-                logger.debug(f"📊 체결 주문 마진 추적: {order_id} - {side} {size}@${price:.2f}")
-                
-        except Exception as e:
-            logger.error(f"체결 주문 마진 추적 실패: {e}")
     
     async def get_order_history(self, symbol: str = None, status: str = 'filled', 
                               start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
@@ -656,7 +561,7 @@ class BitgetMirrorClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 마진 정보 추적
+                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -677,9 +582,6 @@ class BitgetMirrorClient:
                                 logger.info(f"      🎯 TP 설정 발견: {tp_price}")
                             if sl_price:
                                 logger.info(f"      🛡️ SL 설정 발견: {sl_price}")
-                            
-                            # 🔥🔥🔥 예약 주문 마진 추정 및 추적
-                            await self._track_pending_order_margin(order)
                             
                             # 🔥🔥🔥 모든 필드 확인하여 TP/SL 관련 필드 찾기
                             tp_sl_fields = {}
@@ -723,92 +625,6 @@ class BitgetMirrorClient:
         except Exception as e:
             logger.error(f"미러링 V2 예약 주문 조회 실패: {e}")
             return []
-    
-    async def _track_pending_order_margin(self, pending_order: Dict):
-        """🔥🔥🔥 예약 주문의 마진 정보 추적"""
-        try:
-            order_id = pending_order.get('orderId', pending_order.get('planOrderId', pending_order.get('id', '')))
-            side = pending_order.get('side', pending_order.get('tradeSide', '')).lower()
-            size = float(pending_order.get('size', pending_order.get('volume', 0)))
-            trigger_price = float(pending_order.get('triggerPrice', pending_order.get('executePrice', pending_order.get('price', 0))))
-            
-            if order_id and size > 0 and trigger_price > 0:
-                # 예약 주문 마진 정보 추적
-                leverage = int(float(pending_order.get('leverage', 30)))
-                estimated_margin = (size * trigger_price) / leverage
-                
-                self.order_margin_ratios[order_id] = {
-                    'side': side,
-                    'size': size,
-                    'trigger_price': trigger_price,
-                    'leverage': leverage,
-                    'estimated_margin': estimated_margin,
-                    'order_type': 'pending',
-                    'created_at': datetime.now().isoformat(),
-                    'tp_price': pending_order.get('presetStopSurplusPrice', pending_order.get('stopSurplusPrice')),
-                    'sl_price': pending_order.get('presetStopLossPrice', pending_order.get('stopLossPrice'))
-                }
-                
-                logger.debug(f"📊 예약 주문 마진 추적: {order_id} - {side} {size}@${trigger_price:.2f} (추정 마진: ${estimated_margin:.2f})")
-                
-        except Exception as e:
-            logger.error(f"예약 주문 마진 추적 실패: {e}")
-    
-    async def calculate_margin_ratio_for_ratio_multiplier(self, order_id: str, ratio_multiplier: float) -> Optional[Dict]:
-        """🔥🔥🔥 복제 비율에 따른 마진 비율 계산"""
-        try:
-            if order_id not in self.order_margin_ratios:
-                logger.warning(f"주문 마진 정보를 찾을 수 없음: {order_id}")
-                return None
-            
-            order_margin_info = self.order_margin_ratios[order_id]
-            estimated_margin = order_margin_info['estimated_margin']
-            
-            # 현재 계정 정보 조회
-            account_info = await self.get_account_info()
-            total_equity = float(account_info.get('accountEquity', account_info.get('usdtEquity', 0)))
-            
-            if total_equity <= 0:
-                logger.warning(f"총 자산이 0 이하: {total_equity}")
-                return None
-            
-            # 기본 마진 비율 계산
-            base_margin_ratio = estimated_margin / total_equity
-            
-            # 복제 비율 적용
-            adjusted_margin_ratio = base_margin_ratio * ratio_multiplier
-            
-            # 복제 비율별 캐시 저장
-            cache_key = f"{order_id}_{ratio_multiplier}"
-            self.ratio_multiplier_cache[cache_key] = {
-                'base_margin_ratio': base_margin_ratio,
-                'adjusted_margin_ratio': adjusted_margin_ratio,
-                'ratio_multiplier': ratio_multiplier,
-                'total_equity': total_equity,
-                'estimated_margin': estimated_margin,
-                'calculated_at': datetime.now().isoformat()
-            }
-            
-            result = {
-                'order_id': order_id,
-                'base_margin_ratio': base_margin_ratio,
-                'adjusted_margin_ratio': adjusted_margin_ratio,
-                'ratio_multiplier': ratio_multiplier,
-                'total_equity': total_equity,
-                'estimated_margin': estimated_margin,
-                'adjusted_margin': estimated_margin * ratio_multiplier
-            }
-            
-            logger.info(f"💰 복제 비율 마진 계산: {order_id}")
-            logger.info(f"   - 기본 마진 비율: {base_margin_ratio*100:.3f}%")
-            logger.info(f"   - 복제 비율: {ratio_multiplier}x")
-            logger.info(f"   - 조정된 마진 비율: {adjusted_margin_ratio*100:.3f}%")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"복제 비율 마진 계산 실패: {order_id} - {e}")
-            return None
     
     async def get_plan_orders_v1_working(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
         """🔥 V1 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
@@ -866,7 +682,7 @@ class BitgetMirrorClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 마진 정보 추적
+                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -887,9 +703,6 @@ class BitgetMirrorClient:
                                 logger.info(f"      🎯 V1 TP 설정 발견: {tp_price}")
                             if sl_price:
                                 logger.info(f"      🛡️ V1 SL 설정 발견: {sl_price}")
-                            
-                            # 🔥🔥🔥 V1 예약 주문 마진 추적
-                            await self._track_pending_order_margin(order)
                         
                         # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
                         break
@@ -1023,7 +836,7 @@ class BitgetMirrorClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 개선된 분류 + TP 정보 강화 + 마진 추적"""
+        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 개선된 분류 + TP 정보 강화 (수정된 f-string)"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -1179,150 +992,6 @@ class BitgetMirrorClient:
             logger.debug(f"미러링 SL 가격 추출 오류: {e}")
             return None
     
-    async def analyze_position_partial_matching(self, ratio_multiplier: float = 1.0) -> Dict:
-        """🔥🔥🔥 포지션과 예약 주문 간의 부분 진입/익절 매칭 분석"""
-        try:
-            logger.info(f"🔍 부분 진입/익절 매칭 분석 시작 (복제비율: {ratio_multiplier}x)")
-            
-            # 현재 포지션 조회
-            current_positions = await self.get_positions("BTCUSDT")
-            active_positions = [pos for pos in current_positions if float(pos.get('total', 0)) > 0]
-            
-            # 현재 예약 주문 조회
-            all_plan_orders_data = await self.get_all_plan_orders_with_tp_sl("BTCUSDT")
-            plan_orders = all_plan_orders_data.get('plan_orders', [])
-            tp_sl_orders = all_plan_orders_data.get('tp_sl_orders', [])
-            
-            analysis_result = {
-                'total_active_positions': len(active_positions),
-                'total_plan_orders': len(plan_orders),
-                'total_tp_sl_orders': len(tp_sl_orders),
-                'position_analysis': [],
-                'unmatched_close_orders': [],
-                'potential_issues': [],
-                'ratio_multiplier': ratio_multiplier
-            }
-            
-            # 각 포지션별 분석
-            for position in active_positions:
-                pos_side = position.get('holdSide', '').lower()
-                pos_size = float(position.get('total', 0))
-                entry_price = float(position.get('openPriceAvg', 0))
-                margin_size = float(position.get('marginSize', 0))
-                
-                pos_analysis = {
-                    'position_side': pos_side,
-                    'position_size': pos_size,
-                    'entry_price': entry_price,
-                    'margin_size': margin_size,
-                    'related_close_orders': [],
-                    'expected_close_size': 0.0,
-                    'total_close_size': 0.0,
-                    'close_ratio': 0.0,
-                    'is_properly_matched': False
-                }
-                
-                # 해당 포지션과 관련된 클로즈 주문들 찾기
-                for order in tp_sl_orders + plan_orders:
-                    order_side = order.get('side', order.get('tradeSide', '')).lower()
-                    reduce_only = order.get('reduceOnly', False)
-                    order_size = float(order.get('size', order.get('volume', 0)))
-                    
-                    # 클로즈 주문 판별 로직
-                    is_related_close = False
-                    
-                    if reduce_only or 'close' in order_side:
-                        # reduce_only이거나 close 키워드가 있는 경우
-                        if ((pos_side == 'long' and ('close_long' in order_side or ('sell' in order_side and 'close' in order_side))) or
-                            (pos_side == 'short' and ('close_short' in order_side or ('buy' in order_side and 'close' in order_side)))):
-                            is_related_close = True
-                    
-                    if is_related_close:
-                        pos_analysis['related_close_orders'].append({
-                            'order_id': order.get('orderId', order.get('planOrderId', '')),
-                            'order_side': order_side,
-                            'order_size': order_size,
-                            'trigger_price': order.get('triggerPrice', order.get('executePrice', 0)),
-                            'reduce_only': reduce_only
-                        })
-                        pos_analysis['total_close_size'] += order_size
-                
-                # 부분 익절 비율 계산
-                if pos_size > 0:
-                    pos_analysis['close_ratio'] = pos_analysis['total_close_size'] / pos_size
-                    pos_analysis['is_properly_matched'] = (0.8 <= pos_analysis['close_ratio'] <= 1.2)  # 80~120% 허용
-                
-                analysis_result['position_analysis'].append(pos_analysis)
-                
-                logger.info(f"📊 포지션 분석: {pos_side} {pos_size} - 클로즈 주문 {len(pos_analysis['related_close_orders'])}개 (비율: {pos_analysis['close_ratio']*100:.1f}%)")
-            
-            # 매칭되지 않은 클로즈 주문 찾기
-            all_close_orders = tp_sl_orders + [o for o in plan_orders if o.get('reduceOnly') or 'close' in o.get('side', '').lower()]
-            
-            for close_order in all_close_orders:
-                order_id = close_order.get('orderId', close_order.get('planOrderId', ''))
-                order_side = close_order.get('side', close_order.get('tradeSide', '')).lower()
-                
-                # 해당 클로즈 주문이 어떤 포지션과도 매칭되지 않는지 확인
-                is_matched = False
-                for pos_analysis in analysis_result['position_analysis']:
-                    for related_order in pos_analysis['related_close_orders']:
-                        if related_order['order_id'] == order_id:
-                            is_matched = True
-                            break
-                    if is_matched:
-                        break
-                
-                if not is_matched:
-                    analysis_result['unmatched_close_orders'].append({
-                        'order_id': order_id,
-                        'order_side': order_side,
-                        'order_size': float(close_order.get('size', close_order.get('volume', 0))),
-                        'trigger_price': close_order.get('triggerPrice', close_order.get('executePrice', 0)),
-                        'issue': 'no_matching_position'
-                    })
-                    
-                    logger.warning(f"⚠️ 매칭되지 않은 클로즈 주문 발견: {order_id} - {order_side}")
-            
-            # 잠재적 문제 식별
-            for pos_analysis in analysis_result['position_analysis']:
-                if not pos_analysis['is_properly_matched']:
-                    analysis_result['potential_issues'].append({
-                        'type': 'improper_close_ratio',
-                        'position_side': pos_analysis['position_side'],
-                        'position_size': pos_analysis['position_size'],
-                        'close_ratio': pos_analysis['close_ratio'],
-                        'description': f"{pos_analysis['position_side']} 포지션의 클로즈 주문 비율이 비정상적: {pos_analysis['close_ratio']*100:.1f}%"
-                    })
-            
-            if analysis_result['unmatched_close_orders']:
-                analysis_result['potential_issues'].append({
-                    'type': 'unmatched_close_orders',
-                    'count': len(analysis_result['unmatched_close_orders']),
-                    'description': f"{len(analysis_result['unmatched_close_orders'])}개의 클로즈 주문이 포지션과 매칭되지 않음"
-                })
-            
-            logger.info(f"✅ 부분 진입/익절 매칭 분석 완료:")
-            logger.info(f"   - 활성 포지션: {analysis_result['total_active_positions']}개")
-            logger.info(f"   - 예약 주문: {analysis_result['total_plan_orders']}개")
-            logger.info(f"   - TP/SL 주문: {analysis_result['total_tp_sl_orders']}개")
-            logger.info(f"   - 매칭되지 않은 클로즈 주문: {len(analysis_result['unmatched_close_orders'])}개")
-            logger.info(f"   - 잠재적 문제: {len(analysis_result['potential_issues'])}개")
-            
-            return analysis_result
-            
-        except Exception as e:
-            logger.error(f"부분 진입/익절 매칭 분석 실패: {e}")
-            return {
-                'total_active_positions': 0,
-                'total_plan_orders': 0,
-                'total_tp_sl_orders': 0,
-                'position_analysis': [],
-                'unmatched_close_orders': [],
-                'potential_issues': [{'type': 'analysis_error', 'description': f'분석 실패: {str(e)}'}],
-                'ratio_multiplier': ratio_multiplier
-            }
-    
     async def get_api_connection_status(self) -> Dict:
         """🔥🔥🔥 API 연결 상태 조회"""
         return {
@@ -1330,10 +999,7 @@ class BitgetMirrorClient:
             'consecutive_failures': self.consecutive_failures,
             'last_successful_call': self.last_successful_call.isoformat(),
             'api_keys_validated': self.api_keys_validated,
-            'max_failures_threshold': self.max_consecutive_failures,
-            'position_margin_tracking_count': len(self.position_entry_margins),
-            'order_margin_tracking_count': len(self.order_margin_ratios),
-            'ratio_multiplier_cache_count': len(self.ratio_multiplier_cache)
+            'max_failures_threshold': self.max_consecutive_failures
         }
     
     async def reset_connection_status(self):
