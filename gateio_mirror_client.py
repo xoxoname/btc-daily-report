@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제 + 레버리지 미러링 강화 + 복제 비율 고려"""
+    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제 + 레버리지 미러링 강화"""
     
     def __init__(self, config):
         self.config = config
@@ -31,23 +31,6 @@ class GateioMirrorClient:
         self.MAX_LEVERAGE = 100
         self.MIN_LEVERAGE = 1
         self.current_leverage_cache = {}  # 계약별 현재 레버리지 캐시
-        
-        # 🔥🔥🔥 복제 비율 고려한 주문 생성 강화
-        self.ratio_multiplier_cache = {}  # 복제 비율별 주문 캐시
-        self.margin_ratio_tracking = {}   # 마진 비율 추적
-        self.size_adjustment_history = {}  # 크기 조정 내역
-        
-        # 🔥🔥🔥 주문 생성 실패 시 재시도 설정
-        self.order_creation_retries = 3
-        self.order_creation_delay = 1.0
-        self.leverage_sync_enabled = True
-        
-        # 🔥🔥🔥 복제 비율별 허용 오차 설정
-        self.ratio_tolerance = {
-            'margin': 0.15,    # 마진 차이 15% 허용
-            'size': 0.20,      # 크기 차이 20% 허용
-            'leverage': 5      # 레버리지 차이 5배 허용
-        }
         
     def _initialize_session(self):
         """세션 초기화"""
@@ -405,9 +388,9 @@ class GateioMirrorClient:
             logger.error(f"레버리지 미러링 실패: {e}")
             return False
     
-    async def create_perfect_tp_sl_order_with_ratio(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
-                                                   leverage: int, current_gate_price: float, ratio_multiplier: float = 1.0) -> Dict:
-        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 레버리지 미러링 포함 + 복제 비율 고려 강화"""
+    async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
+                                       leverage: int, current_gate_price: float) -> Dict:
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 레버리지 미러링 포함"""
         try:
             # 🔥🔥🔥 1단계: 레버리지 미러링
             leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
@@ -427,23 +410,6 @@ class GateioMirrorClient:
             
             if trigger_price <= 0:
                 raise Exception("유효한 트리거 가격을 찾을 수 없습니다")
-            
-            # 🔥🔥🔥 복제 비율 고려한 크기 조정
-            adjusted_gate_size = int(gate_size * ratio_multiplier)
-            adjusted_gate_margin = gate_margin * ratio_multiplier
-            
-            # 크기 조정 내역 기록
-            self.size_adjustment_history[order_id] = {
-                'original_size': gate_size,
-                'adjusted_size': adjusted_gate_size,
-                'ratio_multiplier': ratio_multiplier,
-                'original_margin': gate_margin,
-                'adjusted_margin': adjusted_gate_margin,
-                'adjustment_time': datetime.now().isoformat()
-            }
-            
-            logger.info(f"🔄 복제 비율 적용 크기 조정: {gate_size} → {adjusted_gate_size} (비율: {ratio_multiplier}x)")
-            logger.info(f"🔄 복제 비율 적용 마진 조정: ${gate_margin:.2f} → ${adjusted_gate_margin:.2f}")
             
             # 🔥 TP/SL 정보 정확하게 추출
             tp_price = None
@@ -475,56 +441,54 @@ class GateioMirrorClient:
                     except:
                         continue
             
-            # 🔥🔥🔥 클로즈 주문 여부 및 방향 판단 수정 + 복제 비율 고려
+            # 🔥🔥🔥 클로즈 주문 여부 및 방향 판단 수정
             reduce_only = bitget_order.get('reduceOnly', False)
             is_close_order = ('close' in side or reduce_only is True or reduce_only == 'true')
             
-            # 🔥🔥🔥 클로즈 주문 방향 수정 로직 + 복제 비율 적용
+            # 🔥🔥🔥 클로즈 주문 방향 수정 로직
             if is_close_order:
                 # 클로즈 주문: reduce_only=True
-                final_size = adjusted_gate_size  # 복제 비율 적용된 크기 사용
+                final_size = gate_size
                 reduce_only_flag = True
                 
                 # 🔥🔥🔥 클로즈 주문 방향 매핑 수정
                 if 'close_long' in side or side == 'close long':
                     # 롱 포지션 종료 → 매도 (음수)
-                    final_size = -abs(adjusted_gate_size)
-                    logger.info(f"🔴 클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size}, 복제비율: {ratio_multiplier}x)")
+                    final_size = -abs(gate_size)
+                    logger.info(f"🔴 클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
                     
                 elif 'close_short' in side or side == 'close short':
                     # 숏 포지션 종료 → 매수 (양수)
-                    final_size = abs(adjusted_gate_size)
-                    logger.info(f"🟢 클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size}, 복제비율: {ratio_multiplier}x)")
+                    final_size = abs(gate_size)
+                    logger.info(f"🟢 클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
                     
                 else:
                     # 일반적인 매도/매수 기반 판단 (클로즈 주문)
                     if 'sell' in side or 'short' in side:
-                        final_size = -abs(adjusted_gate_size)
-                        logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size}, 복제비율: {ratio_multiplier}x)")
+                        final_size = -abs(gate_size)
+                        logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
                     else:
-                        final_size = abs(adjusted_gate_size)
-                        logger.info(f"🟢 클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size}, 복제비율: {ratio_multiplier}x)")
+                        final_size = abs(gate_size)
+                        logger.info(f"🟢 클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
                 
             else:
-                # 오픈 주문: 방향 고려 + 복제 비율 적용
+                # 오픈 주문: 방향 고려
                 reduce_only_flag = False
                 if 'short' in side or 'sell' in side:
-                    final_size = -abs(adjusted_gate_size)
-                    logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {final_size}, 복제비율: {ratio_multiplier}x)")
+                    final_size = -abs(gate_size)
+                    logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {final_size})")
                 else:
-                    final_size = abs(adjusted_gate_size)
-                    logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {final_size}, 복제비율: {ratio_multiplier}x)")
+                    final_size = abs(gate_size)
+                    logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {final_size})")
             
             # Gate.io 트리거 타입 결정
             gate_trigger_type = "ge" if trigger_price > current_gate_price else "le"
             
-            logger.info(f"🔍 완벽 미러링 주문 생성 (복제비율 {ratio_multiplier}x):")
+            logger.info(f"🔍 완벽 미러링 주문 생성:")
             logger.info(f"   - 비트겟 ID: {order_id}")
             logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
             logger.info(f"   - 트리거가: ${trigger_price:.2f}")
             logger.info(f"   - 레버리지: {leverage}x {'✅ 미러링됨' if leverage_success else '⚠️ 미러링 실패'}")
-            logger.info(f"   - 원본 크기: {gate_size} → 조정된 크기: {final_size}")
-            logger.info(f"   - 원본 마진: ${gate_margin:.2f} → 조정된 마진: ${adjusted_gate_margin:.2f}")
             
             # TP/SL 표시 수정
             tp_display = f"${tp_price:.2f}" if tp_price is not None else "없음"
@@ -532,131 +496,81 @@ class GateioMirrorClient:
             
             logger.info(f"   - TP: {tp_display}")
             logger.info(f"   - SL: {sl_display}")
-            logger.info(f"   - 게이트 최종 사이즈: {final_size}")
+            logger.info(f"   - 게이트 사이즈: {final_size}")
             
-            # 🔥🔥🔥 복제 비율 고려 주문 생성 재시도 로직
-            gate_order = None
-            creation_success = False
-            
-            for attempt in range(self.order_creation_retries):
-                try:
-                    # 🔥 TP/SL 포함 통합 주문 생성
-                    if tp_price or sl_price:
-                        logger.info(f"🎯 TP/SL 포함 통합 주문 생성 (시도 {attempt + 1}/{self.order_creation_retries})")
-                        
-                        gate_order = await self.create_conditional_order_with_tp_sl_ratio_aware(
-                            trigger_price=trigger_price,
-                            order_size=final_size,
-                            tp_price=tp_price,
-                            sl_price=sl_price,
-                            reduce_only=reduce_only_flag,
-                            trigger_type=gate_trigger_type,
-                            ratio_multiplier=ratio_multiplier
-                        )
-                        
-                    else:
-                        # TP/SL 없는 일반 주문
-                        logger.info(f"📝 일반 예약 주문 생성 (TP/SL 없음, 시도 {attempt + 1}/{self.order_creation_retries})")
-                        
-                        gate_order = await self.create_price_triggered_order_ratio_aware(
-                            trigger_price=trigger_price,
-                            order_size=final_size,
-                            reduce_only=reduce_only_flag,
-                            trigger_type=gate_trigger_type,
-                            ratio_multiplier=ratio_multiplier
-                        )
-                    
-                    if gate_order and gate_order.get('id'):
-                        creation_success = True
-                        break
-                    else:
-                        logger.warning(f"주문 생성 응답 이상: {gate_order}")
-                        if attempt < self.order_creation_retries - 1:
-                            await asyncio.sleep(self.order_creation_delay * (attempt + 1))
-                            continue
-                        
-                except Exception as creation_error:
-                    logger.error(f"주문 생성 시도 {attempt + 1} 실패: {creation_error}")
-                    if attempt < self.order_creation_retries - 1:
-                        await asyncio.sleep(self.order_creation_delay * (attempt + 1))
-                        continue
-                    else:
-                        raise creation_error
-            
-            if not creation_success or not gate_order:
-                raise Exception("모든 주문 생성 시도 실패")
-            
-            # TP/SL 설정 확인
-            actual_tp = gate_order.get('stop_profit_price', '')
-            actual_sl = gate_order.get('stop_loss_price', '')
-            has_tp_sl = bool(actual_tp or actual_sl)
-            
-            # 🔥🔥🔥 복제 비율 추적 정보 저장
-            order_tracking_key = f"{order_id}_{ratio_multiplier}"
-            self.ratio_multiplier_cache[order_tracking_key] = {
-                'bitget_order_id': order_id,
-                'gate_order_id': gate_order.get('id'),
-                'ratio_multiplier': ratio_multiplier,
-                'original_size': gate_size,
-                'adjusted_size': final_size,
-                'original_margin': gate_margin,
-                'adjusted_margin': adjusted_gate_margin,
-                'leverage': leverage,
-                'leverage_mirrored': leverage_success,
-                'creation_time': datetime.now().isoformat(),
-                'tp_price': tp_price,
-                'sl_price': sl_price,
-                'has_tp_sl': has_tp_sl
-            }
-            
-            return {
-                'success': True,
-                'gate_order_id': gate_order.get('id'),
-                'gate_order': gate_order,
-                'has_tp_sl': has_tp_sl,
-                'tp_price': tp_price,
-                'sl_price': sl_price,
-                'actual_tp_price': actual_tp,
-                'actual_sl_price': actual_sl,
-                'is_close_order': is_close_order,
-                'reduce_only': reduce_only_flag,
-                'perfect_mirror': has_tp_sl,
-                'leverage_mirrored': leverage_success,
-                'leverage': leverage,
-                'ratio_multiplier': ratio_multiplier,  # 🔥🔥🔥 복제 비율 정보 추가
-                'original_size': gate_size,            # 원본 크기
-                'adjusted_size': final_size,           # 조정된 크기
-                'size_adjustment_applied': ratio_multiplier != 1.0,  # 크기 조정 여부
-                'margin_adjustment_applied': ratio_multiplier != 1.0  # 마진 조정 여부
-            }
+            # 🔥 TP/SL 포함 통합 주문 생성
+            if tp_price or sl_price:
+                logger.info(f"🎯 TP/SL 포함 통합 주문 생성")
+                
+                gate_order = await self.create_conditional_order_with_tp_sl(
+                    trigger_price=trigger_price,
+                    order_size=final_size,
+                    tp_price=tp_price,
+                    sl_price=sl_price,
+                    reduce_only=reduce_only_flag,
+                    trigger_type=gate_trigger_type
+                )
+                
+                # TP/SL 설정 확인
+                actual_tp = gate_order.get('stop_profit_price', '')
+                actual_sl = gate_order.get('stop_loss_price', '')
+                has_tp_sl = bool(actual_tp or actual_sl)
+                
+                return {
+                    'success': True,
+                    'gate_order_id': gate_order.get('id'),
+                    'gate_order': gate_order,
+                    'has_tp_sl': has_tp_sl,
+                    'tp_price': tp_price,
+                    'sl_price': sl_price,
+                    'actual_tp_price': actual_tp,
+                    'actual_sl_price': actual_sl,
+                    'is_close_order': is_close_order,
+                    'reduce_only': reduce_only_flag,
+                    'perfect_mirror': has_tp_sl,
+                    'leverage_mirrored': leverage_success,
+                    'leverage': leverage
+                }
+                
+            else:
+                # TP/SL 없는 일반 주문
+                logger.info(f"📝 일반 예약 주문 생성 (TP/SL 없음)")
+                
+                gate_order = await self.create_price_triggered_order(
+                    trigger_price=trigger_price,
+                    order_size=final_size,
+                    reduce_only=reduce_only_flag,
+                    trigger_type=gate_trigger_type
+                )
+                
+                return {
+                    'success': True,
+                    'gate_order_id': gate_order.get('id'),
+                    'gate_order': gate_order,
+                    'has_tp_sl': False,
+                    'is_close_order': is_close_order,
+                    'reduce_only': reduce_only_flag,
+                    'perfect_mirror': True,  # TP/SL이 없으면 완벽
+                    'leverage_mirrored': leverage_success,
+                    'leverage': leverage
+                }
             
         except Exception as e:
-            logger.error(f"완벽한 TP/SL 미러링 주문 생성 실패 (복제비율 {ratio_multiplier}x): {e}")
+            logger.error(f"완벽한 TP/SL 미러링 주문 생성 실패: {e}")
             return {
                 'success': False,
                 'error': str(e),
                 'has_tp_sl': False,
                 'perfect_mirror': False,
-                'leverage_mirrored': False,
-                'ratio_multiplier': ratio_multiplier,
-                'size_adjustment_applied': False,
-                'margin_adjustment_applied': False
+                'leverage_mirrored': False
             }
     
-    async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
-                                       leverage: int, current_gate_price: float) -> Dict:
-        """🔥🔥🔥 기존 호환성을 위한 래퍼 메서드 - 복제 비율 1.0 적용"""
-        return await self.create_perfect_tp_sl_order_with_ratio(
-            bitget_order, gate_size, gate_margin, leverage, current_gate_price, 1.0
-        )
-    
-    async def create_conditional_order_with_tp_sl_ratio_aware(self, trigger_price: float, order_size: int,
-                                                            tp_price: Optional[float] = None,
-                                                            sl_price: Optional[float] = None,
-                                                            reduce_only: bool = False,
-                                                            trigger_type: str = "ge",
-                                                            ratio_multiplier: float = 1.0) -> Dict:
-        """🔥🔥🔥 TP/SL 포함 조건부 주문 생성 - Gate.io 공식 API + 복제 비율 고려"""
+    async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
+                                                tp_price: Optional[float] = None,
+                                                sl_price: Optional[float] = None,
+                                                reduce_only: bool = False,
+                                                trigger_type: str = "ge") -> Dict:
+        """🔥 TP/SL 포함 조건부 주문 생성 - Gate.io 공식 API"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
@@ -684,43 +598,30 @@ class GateioMirrorClient:
                 }
             }
             
-            # 🔥🔥🔥 TP/SL 설정 (Gate.io 공식 필드) + 복제 비율 고려
+            # 🔥 TP/SL 설정 (Gate.io 공식 필드)
             if tp_price and tp_price > 0:
-                # 복제 비율을 고려한 TP 가격 조정은 하지 않음 (가격은 그대로 유지)
                 data["stop_profit_price"] = str(tp_price)
-                logger.info(f"🎯 TP 설정: ${tp_price:.2f} (복제비율 {ratio_multiplier}x, 가격 유지)")
+                logger.info(f"🎯 TP 설정: ${tp_price:.2f}")
             
             if sl_price and sl_price > 0:
-                # 복제 비율을 고려한 SL 가격 조정은 하지 않음 (가격은 그대로 유지)
                 data["stop_loss_price"] = str(sl_price)
-                logger.info(f"🛡️ SL 설정: ${sl_price:.2f} (복제비율 {ratio_multiplier}x, 가격 유지)")
+                logger.info(f"🛡️ SL 설정: ${sl_price:.2f}")
             
-            logger.info(f"Gate.io TP/SL 통합 주문 데이터 (복제비율 {ratio_multiplier}x): {json.dumps(data, indent=2)}")
+            logger.info(f"Gate.io TP/SL 통합 주문 데이터: {json.dumps(data, indent=2)}")
             
             response = await self._request('POST', endpoint, data=data)
             
-            logger.info(f"✅ Gate.io TP/SL 통합 주문 생성 성공 (복제비율 {ratio_multiplier}x): {response.get('id')}")
+            logger.info(f"✅ Gate.io TP/SL 통합 주문 생성 성공: {response.get('id')}")
             
             return response
             
         except Exception as e:
-            logger.error(f"TP/SL 포함 조건부 주문 생성 실패 (복제비율 {ratio_multiplier}x): {e}")
+            logger.error(f"TP/SL 포함 조건부 주문 생성 실패: {e}")
             raise
     
-    async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
-                                                tp_price: Optional[float] = None,
-                                                sl_price: Optional[float] = None,
-                                                reduce_only: bool = False,
-                                                trigger_type: str = "ge") -> Dict:
-        """🔥🔥🔥 기존 호환성을 위한 래퍼 메서드"""
-        return await self.create_conditional_order_with_tp_sl_ratio_aware(
-            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type, 1.0
-        )
-    
-    async def create_price_triggered_order_ratio_aware(self, trigger_price: float, order_size: int,
-                                                      reduce_only: bool = False, trigger_type: str = "ge",
-                                                      ratio_multiplier: float = 1.0) -> Dict:
-        """일반 가격 트리거 주문 생성 - 복제 비율 고려"""
+    async def create_price_triggered_order(self, trigger_price: float, order_size: int,
+                                         reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        """일반 가격 트리거 주문 생성"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
@@ -746,24 +647,12 @@ class GateioMirrorClient:
                 }
             }
             
-            logger.info(f"Gate.io 일반 트리거 주문 생성 (복제비율 {ratio_multiplier}x): 크기={order_size}, 트리거=${trigger_price:.2f}")
-            
             response = await self._request('POST', endpoint, data=data)
-            
-            logger.info(f"✅ Gate.io 일반 트리거 주문 생성 성공 (복제비율 {ratio_multiplier}x): {response.get('id')}")
-            
             return response
             
         except Exception as e:
-            logger.error(f"가격 트리거 주문 생성 실패 (복제비율 {ratio_multiplier}x): {e}")
+            logger.error(f"가격 트리거 주문 생성 실패: {e}")
             raise
-    
-    async def create_price_triggered_order(self, trigger_price: float, order_size: int,
-                                         reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """기존 호환성을 위한 래퍼 메서드"""
-        return await self.create_price_triggered_order_ratio_aware(
-            trigger_price, order_size, reduce_only, trigger_type, 1.0
-        )
     
     async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
         """가격 트리거 주문 조회"""
@@ -793,10 +682,9 @@ class GateioMirrorClient:
             logger.error(f"가격 트리거 주문 취소 실패: {order_id} - {e}")
             raise
     
-    async def place_order_with_ratio(self, contract: str, size: int, price: Optional[float] = None,
-                                   reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0,
-                                   ratio_multiplier: float = 1.0) -> Dict:
-        """🔥🔥🔥 시장가/지정가 주문 생성 - 레버리지 체크 포함 + 복제 비율 고려"""
+    async def place_order(self, contract: str, size: int, price: Optional[float] = None,
+                         reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
+        """🔥🔥🔥 시장가/지정가 주문 생성 - 레버리지 체크 포함"""
         try:
             # 주문 전 현재 레버리지 확인 및 기본값 설정
             current_leverage = await self.get_current_leverage(contract)
@@ -804,14 +692,11 @@ class GateioMirrorClient:
                 logger.info(f"레버리지가 낮음 ({current_leverage}x), 기본값으로 설정: {self.DEFAULT_LEVERAGE}x")
                 await self.set_leverage(contract, self.DEFAULT_LEVERAGE)
             
-            # 🔥🔥🔥 복제 비율 적용
-            adjusted_size = int(size * ratio_multiplier)
-            
             endpoint = "/api/v4/futures/usdt/orders"
             
             data = {
                 "contract": contract,
-                "size": adjusted_size  # 복제 비율 적용된 크기 사용
+                "size": size
             }
             
             if price is not None:
@@ -824,24 +709,17 @@ class GateioMirrorClient:
             if iceberg > 0:
                 data["iceberg"] = iceberg
             
-            logger.info(f"Gate.io 주문 생성 (복제비율 {ratio_multiplier}x): 원본 크기={size}, 조정된 크기={adjusted_size}")
-            
             response = await self._request('POST', endpoint, data=data)
             
-            logger.info(f"✅ Gate.io 주문 생성 성공 (복제비율 {ratio_multiplier}x): {response.get('id')} (레버리지: {current_leverage}x)")
+            logger.info(f"✅ Gate.io 주문 생성 성공: {response.get('id')} (레버리지: {current_leverage}x)")
             return response
             
         except Exception as e:
-            logger.error(f"Gate.io 주문 생성 실패 (복제비율 {ratio_multiplier}x): {e}")
+            logger.error(f"Gate.io 주문 생성 실패: {e}")
             raise
     
-    async def place_order(self, contract: str, size: int, price: Optional[float] = None,
-                         reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """🔥🔥🔥 기존 호환성을 위한 래퍼 메서드"""
-        return await self.place_order_with_ratio(contract, size, price, reduce_only, tif, iceberg, 1.0)
-    
-    async def close_position_with_ratio(self, contract: str, size: Optional[int] = None, ratio_multiplier: float = 1.0) -> Dict:
-        """포지션 종료 - 복제 비율 고려"""
+    async def close_position(self, contract: str, size: Optional[int] = None) -> Dict:
+        """포지션 종료"""
         try:
             positions = await self.get_positions(contract)
             
@@ -854,107 +732,23 @@ class GateioMirrorClient:
             if size is None:
                 close_size = -position_size
             else:
-                # 🔥🔥🔥 복제 비율 적용
-                adjusted_size = int(size * ratio_multiplier)
                 if position_size > 0:
-                    close_size = -min(abs(adjusted_size), position_size)
+                    close_size = -min(abs(size), position_size)
                 else:
-                    close_size = min(abs(adjusted_size), abs(position_size))
+                    close_size = min(abs(size), abs(position_size))
             
-            logger.info(f"포지션 종료 (복제비율 {ratio_multiplier}x): 원본 크기={size}, 조정된 클로즈 크기={close_size}")
-            
-            result = await self.place_order_with_ratio(
+            result = await self.place_order(
                 contract=contract,
                 size=close_size,
                 price=None,
-                reduce_only=True,
-                ratio_multiplier=1.0  # 이미 크기가 조정되었으므로 1.0 사용
+                reduce_only=True
             )
             
             return result
             
         except Exception as e:
-            logger.error(f"포지션 종료 실패 (복제비율 {ratio_multiplier}x): {e}")
+            logger.error(f"포지션 종료 실패: {e}")
             raise
-    
-    async def close_position(self, contract: str, size: Optional[int] = None) -> Dict:
-        """기존 호환성을 위한 래퍼 메서드"""
-        return await self.close_position_with_ratio(contract, size, 1.0)
-    
-    async def get_ratio_multiplier_analysis(self, order_id: str = None) -> Dict:
-        """🔥🔥🔥 복제 비율 분석 정보 조회"""
-        try:
-            if order_id:
-                # 특정 주문의 복제 비율 정보 조회
-                for key, info in self.ratio_multiplier_cache.items():
-                    if info.get('bitget_order_id') == order_id or info.get('gate_order_id') == order_id:
-                        return {
-                            'found': True,
-                            'order_info': info,
-                            'cache_key': key
-                        }
-                
-                return {'found': False, 'order_id': order_id}
-            else:
-                # 전체 복제 비율 캐시 정보 조회
-                return {
-                    'total_cached_orders': len(self.ratio_multiplier_cache),
-                    'size_adjustments': len(self.size_adjustment_history),
-                    'margin_tracking': len(self.margin_ratio_tracking),
-                    'cache_sample': list(self.ratio_multiplier_cache.keys())[:5]  # 샘플 5개
-                }
-                
-        except Exception as e:
-            logger.error(f"복제 비율 분석 정보 조회 실패: {e}")
-            return {'error': str(e)}
-    
-    async def cleanup_ratio_multiplier_cache(self, max_age_hours: int = 24):
-        """🔥🔥🔥 복제 비율 캐시 정리"""
-        try:
-            current_time = datetime.now()
-            expired_keys = []
-            
-            for key, info in self.ratio_multiplier_cache.items():
-                creation_time_str = info.get('creation_time', '')
-                if creation_time_str:
-                    try:
-                        creation_time = datetime.fromisoformat(creation_time_str)
-                        age_hours = (current_time - creation_time).total_seconds() / 3600
-                        
-                        if age_hours > max_age_hours:
-                            expired_keys.append(key)
-                    except:
-                        expired_keys.append(key)
-                else:
-                    expired_keys.append(key)
-            
-            for key in expired_keys:
-                del self.ratio_multiplier_cache[key]
-            
-            # 크기 조정 내역도 정리
-            expired_adjustments = []
-            for order_id, adjustment in self.size_adjustment_history.items():
-                adjustment_time_str = adjustment.get('adjustment_time', '')
-                if adjustment_time_str:
-                    try:
-                        adjustment_time = datetime.fromisoformat(adjustment_time_str)
-                        age_hours = (current_time - adjustment_time).total_seconds() / 3600
-                        
-                        if age_hours > max_age_hours:
-                            expired_adjustments.append(order_id)
-                    except:
-                        expired_adjustments.append(order_id)
-                else:
-                    expired_adjustments.append(order_id)
-            
-            for order_id in expired_adjustments:
-                del self.size_adjustment_history[order_id]
-            
-            if expired_keys or expired_adjustments:
-                logger.info(f"🧹 복제 비율 캐시 정리: 캐시 {len(expired_keys)}개, 조정 내역 {len(expired_adjustments)}개 제거")
-                
-        except Exception as e:
-            logger.error(f"복제 비율 캐시 정리 실패: {e}")
     
     async def close(self):
         """세션 종료"""
