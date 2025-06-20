@@ -755,4 +755,3 @@ class GateioMirrorClient:
         if self.session:
             await self.session.close()
             logger.info("Gate.io 미러링 클라이언트 세션 종료")
-            
