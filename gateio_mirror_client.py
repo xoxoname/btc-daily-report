@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - TP/SL 완벽 복제 + 레버리지 미러링 강화"""
+    """Gate.io 미러링 전용 클라이언트 - API 파라미터 형식 수정 + 복제 비율 적용 강화"""
     
     def __init__(self, config):
         self.config = config
@@ -26,11 +26,11 @@ class GateioMirrorClient:
         self.TP_SL_TIMEOUT = 10
         self.MAX_TP_SL_RETRIES = 3
         
-        # 🔥🔥🔥 레버리지 설정 강화
-        self.DEFAULT_LEVERAGE = 30  # 기본 레버리지 30배로 설정
+        # 레버리지 설정 강화
+        self.DEFAULT_LEVERAGE = 30
         self.MAX_LEVERAGE = 100
         self.MIN_LEVERAGE = 1
-        self.current_leverage_cache = {}  # 계약별 현재 레버리지 캐시
+        self.current_leverage_cache = {}
         
     def _initialize_session(self):
         """세션 초기화"""
@@ -49,7 +49,7 @@ class GateioMirrorClient:
             logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료")
     
     async def initialize(self):
-        """🔥🔥🔥 클라이언트 초기화 - 기본 레버리지 30배 설정"""
+        """클라이언트 초기화 - 기본 레버리지 30배 설정"""
         self._initialize_session()
         
         # 기본 레버리지를 30배로 설정
@@ -209,12 +209,12 @@ class GateioMirrorClient:
             return []
     
     async def get_current_leverage(self, contract: str) -> int:
-        """🔥🔥🔥 현재 레버리지 조회"""
+        """현재 레버리지 조회"""
         try:
             # 캐시에서 먼저 확인
             if contract in self.current_leverage_cache:
                 cached_time, cached_leverage = self.current_leverage_cache[contract]
-                if (datetime.now() - cached_time).total_seconds() < 60:  # 1분간 캐시 유효
+                if (datetime.now() - cached_time).total_seconds() < 60:
                     return cached_leverage
             
             # 포지션 정보에서 레버리지 확인
@@ -242,7 +242,7 @@ class GateioMirrorClient:
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
                           retry_count: int = 5) -> Dict:
-        """🔥🔥🔥 레버리지 설정 - 비트겟 미러링 강화"""
+        """레버리지 설정 - 비트겟 미러링 강화"""
         
         # 레버리지 유효성 검증
         if leverage < self.MIN_LEVERAGE or leverage > self.MAX_LEVERAGE:
@@ -260,7 +260,7 @@ class GateioMirrorClient:
                 
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
                 
-                # 🔥🔥🔥 Gate.io API v4 정확한 형식
+                # Gate.io API v4 정확한 형식
                 params = {
                     "leverage": str(leverage)
                 }
@@ -305,7 +305,6 @@ class GateioMirrorClient:
                     await asyncio.sleep(2.0)
                     continue
                 else:
-                    # 🔥🔥🔥 레버리지 설정 실패해도 계속 진행 (경고만 출력)
                     logger.warning(f"레버리지 설정 최종 실패하지만 계속 진행: {contract} - {leverage}x")
                     return {"warning": "leverage_setting_failed", "requested_leverage": leverage}
         
@@ -314,7 +313,7 @@ class GateioMirrorClient:
         return {"warning": "all_leverage_attempts_failed", "requested_leverage": leverage}
     
     async def _verify_leverage_setting(self, contract: str, expected_leverage: int, max_attempts: int = 3) -> bool:
-        """🔥🔥🔥 레버리지 설정 확인 - 강화된 검증"""
+        """레버리지 설정 확인 - 강화된 검증"""
         for attempt in range(max_attempts):
             try:
                 await asyncio.sleep(0.5 * (attempt + 1))
@@ -363,7 +362,7 @@ class GateioMirrorClient:
         return False
     
     async def mirror_bitget_leverage(self, bitget_leverage: int, contract: str = "BTC_USDT") -> bool:
-        """🔥🔥🔥 비트겟 레버리지를 게이트에 미러링"""
+        """비트겟 레버리지를 게이트에 미러링"""
         try:
             logger.info(f"🔄 레버리지 미러링 시작: 비트겟 {bitget_leverage}x → 게이트 {contract}")
             
@@ -390,9 +389,9 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - 레버리지 미러링 포함"""
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - API 파라미터 형식 수정"""
         try:
-            # 🔥🔥🔥 1단계: 레버리지 미러링
+            # 레버리지 미러링
             leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
             if not leverage_success:
                 logger.warning("⚠️ 레버리지 미러링 실패하지만 주문 계속 진행")
@@ -411,7 +410,7 @@ class GateioMirrorClient:
             if trigger_price <= 0:
                 raise Exception("유효한 트리거 가격을 찾을 수 없습니다")
             
-            # 🔥 TP/SL 정보 정확하게 추출
+            # TP/SL 정보 정확하게 추출
             tp_price = None
             sl_price = None
             
@@ -441,17 +440,17 @@ class GateioMirrorClient:
                     except:
                         continue
             
-            # 🔥🔥🔥 클로즈 주문 여부 및 방향 판단 수정
+            # 클로즈 주문 여부 및 방향 판단 수정
             reduce_only = bitget_order.get('reduceOnly', False)
             is_close_order = ('close' in side or reduce_only is True or reduce_only == 'true')
             
-            # 🔥🔥🔥 클로즈 주문 방향 수정 로직
+            # 클로즈 주문 방향 수정 로직
             if is_close_order:
                 # 클로즈 주문: reduce_only=True
                 final_size = gate_size
                 reduce_only_flag = True
                 
-                # 🔥🔥🔥 클로즈 주문 방향 매핑 수정
+                # 클로즈 주문 방향 매핑 수정
                 if 'close_long' in side or side == 'close long':
                     # 롱 포지션 종료 → 매도 (음수)
                     final_size = -abs(gate_size)
@@ -498,11 +497,11 @@ class GateioMirrorClient:
             logger.info(f"   - SL: {sl_display}")
             logger.info(f"   - 게이트 사이즈: {final_size}")
             
-            # 🔥 TP/SL 포함 통합 주문 생성
+            # TP/SL 포함 통합 주문 생성
             if tp_price or sl_price:
                 logger.info(f"🎯 TP/SL 포함 통합 주문 생성")
                 
-                gate_order = await self.create_conditional_order_with_tp_sl(
+                gate_order = await self.create_conditional_order_with_tp_sl_fixed(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     tp_price=tp_price,
@@ -536,7 +535,7 @@ class GateioMirrorClient:
                 # TP/SL 없는 일반 주문
                 logger.info(f"📝 일반 예약 주문 생성 (TP/SL 없음)")
                 
-                gate_order = await self.create_price_triggered_order(
+                gate_order = await self.create_price_triggered_order_fixed(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     reduce_only=reduce_only_flag,
@@ -565,49 +564,45 @@ class GateioMirrorClient:
                 'leverage_mirrored': False
             }
     
-    async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
-                                                tp_price: Optional[float] = None,
-                                                sl_price: Optional[float] = None,
-                                                reduce_only: bool = False,
-                                                trigger_type: str = "ge") -> Dict:
-        """🔥 TP/SL 포함 조건부 주문 생성 - Gate.io 공식 API"""
+    async def create_conditional_order_with_tp_sl_fixed(self, trigger_price: float, order_size: int,
+                                                      tp_price: Optional[float] = None,
+                                                      sl_price: Optional[float] = None,
+                                                      reduce_only: bool = False,
+                                                      trigger_type: str = "ge") -> Dict:
+        """🔥🔥🔥 수정된 TP/SL 포함 조건부 주문 생성 - API 파라미터 형식 수정"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 기본 주문 데이터
-            initial_data = {
-                "type": "market",  # 시장가 주문
-                "contract": "BTC_USDT",
-                "size": order_size,
-                "price": str(trigger_price)  # Gate.io는 시장가에도 price 필수
-            }
-            
-            if reduce_only:
-                initial_data["reduce_only"] = True
-            
-            # 트리거 rule 설정 (Gate.io 공식 문서)
-            rule_value = 1 if trigger_type == "ge" else 2
-            
+            # 🔥🔥🔥 수정된 데이터 구조 - Gate.io API v4 정확한 형식
             data = {
-                "initial": initial_data,
+                "initial": {
+                    "contract": "BTC_USDT",
+                    "size": order_size,  # int 그대로 전달
+                    "price": "0",        # 시장가이므로 0으로 설정
+                    "tif": "ioc"         # immediate or cancel
+                },
                 "trigger": {
-                    "strategy_type": 0,  # 가격 기반 트리거
-                    "price_type": 0,     # 마크 가격 기준
-                    "price": str(trigger_price),
-                    "rule": rule_value   # 1: >=, 2: <=
+                    "strategy_type": 0,   # 가격 기반 트리거
+                    "price_type": 0,      # 마크 가격 기준
+                    "price": str(trigger_price),  # 문자열로 변환
+                    "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
                 }
             }
             
-            # 🔥 TP/SL 설정 (Gate.io 공식 필드)
+            # reduce_only 설정
+            if reduce_only:
+                data["initial"]["reduce_only"] = True
+            
+            # 🔥🔥🔥 TP/SL 설정 - 올바른 필드명 사용
             if tp_price and tp_price > 0:
-                data["stop_profit_price"] = str(tp_price)
+                data["stop_profit_price"] = str(tp_price)  # 문자열로 변환
                 logger.info(f"🎯 TP 설정: ${tp_price:.2f}")
             
             if sl_price and sl_price > 0:
-                data["stop_loss_price"] = str(sl_price)
+                data["stop_loss_price"] = str(sl_price)    # 문자열로 변환
                 logger.info(f"🛡️ SL 설정: ${sl_price:.2f}")
             
-            logger.info(f"Gate.io TP/SL 통합 주문 데이터: {json.dumps(data, indent=2)}")
+            logger.info(f"🔧 수정된 Gate.io TP/SL 주문 데이터: {json.dumps(data, indent=2)}")
             
             response = await self._request('POST', endpoint, data=data)
             
@@ -616,43 +611,64 @@ class GateioMirrorClient:
             return response
             
         except Exception as e:
-            logger.error(f"TP/SL 포함 조건부 주문 생성 실패: {e}")
+            logger.error(f"수정된 TP/SL 포함 조건부 주문 생성 실패: {e}")
             raise
     
-    async def create_price_triggered_order(self, trigger_price: float, order_size: int,
-                                         reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """일반 가격 트리거 주문 생성"""
+    async def create_price_triggered_order_fixed(self, trigger_price: float, order_size: int,
+                                               reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        """🔥🔥🔥 수정된 일반 가격 트리거 주문 생성 - API 파라미터 형식 수정"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            initial_data = {
-                "type": "market",
-                "contract": "BTC_USDT",
-                "size": order_size,
-                "price": str(trigger_price)
-            }
-            
-            if reduce_only:
-                initial_data["reduce_only"] = True
-            
-            rule_value = 1 if trigger_type == "ge" else 2
-            
+            # 🔥🔥🔥 수정된 데이터 구조
             data = {
-                "initial": initial_data,
+                "initial": {
+                    "contract": "BTC_USDT",
+                    "size": order_size,  # int 그대로 전달
+                    "price": "0",        # 시장가이므로 0으로 설정
+                    "tif": "ioc"         # immediate or cancel
+                },
                 "trigger": {
-                    "strategy_type": 0,
-                    "price_type": 0,
-                    "price": str(trigger_price),
-                    "rule": rule_value
+                    "strategy_type": 0,   # 가격 기반 트리거
+                    "price_type": 0,      # 마크 가격 기준
+                    "price": str(trigger_price),  # 문자열로 변환
+                    "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
                 }
             }
             
+            # reduce_only 설정
+            if reduce_only:
+                data["initial"]["reduce_only"] = True
+            
+            logger.info(f"🔧 수정된 Gate.io 일반 주문 데이터: {json.dumps(data, indent=2)}")
+            
             response = await self._request('POST', endpoint, data=data)
+            
+            logger.info(f"✅ Gate.io 일반 트리거 주문 생성 성공: {response.get('id')}")
+            
             return response
             
         except Exception as e:
-            logger.error(f"가격 트리거 주문 생성 실패: {e}")
+            logger.error(f"수정된 일반 가격 트리거 주문 생성 실패: {e}")
             raise
+    
+    # 기존 메서드들은 호환성을 위해 새로운 메서드로 리다이렉트
+    async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
+                                                tp_price: Optional[float] = None,
+                                                sl_price: Optional[float] = None,
+                                                reduce_only: bool = False,
+                                                trigger_type: str = "ge") -> Dict:
+        """기존 호환성을 위한 래퍼"""
+        return await self.create_conditional_order_with_tp_sl_fixed(
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
+        )
+    
+    async def create_price_triggered_order(self, trigger_price: float, order_size: int,
+                                         reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        """기존 호환성을 위한 래퍼"""
+        return await self.create_price_triggered_order_fixed(
+            trigger_price, order_size, reduce_only, trigger_type
+        )
     
     async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
         """가격 트리거 주문 조회"""
@@ -684,7 +700,7 @@ class GateioMirrorClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None,
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """🔥🔥🔥 시장가/지정가 주문 생성 - 레버리지 체크 포함"""
+        """시장가/지정가 주문 생성 - 레버리지 체크 포함"""
         try:
             # 주문 전 현재 레버리지 확인 및 기본값 설정
             current_leverage = await self.get_current_leverage(contract)
