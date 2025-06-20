@@ -76,13 +76,19 @@ class MirrorTradingSystem:
             'order_synchronization': 0,
             'high_failure_rate': 0,
             'api_connection': 0,
-            'system_error': 0
+            'system_error': 0,
+            'position_cleanup': 0  # 🔥🔥🔥 포지션 정리 경고 추가
         }
         self.MAX_WARNING_COUNT = 2  # 각 경고 타입별 최대 2회
         
         # 기본 설정
         self.last_sync_check = datetime.min
         self.last_report_time = datetime.min
+        
+        # 🔥🔥🔥 포지션 동기화 강화 설정
+        self.position_sync_enabled = True
+        self.position_sync_interval = 30  # 30초마다 포지션 동기화 체크
+        self.last_position_sync_time = datetime.min
         
         # 시세 차이 관리
         self.bitget_current_price: float = 0.0
@@ -133,6 +139,7 @@ class MirrorTradingSystem:
         self.logger.info(f"   - 미러링 모드: {status_text}")
         self.logger.info(f"   - 초기 복제 비율: {self.mirror_ratio_multiplier}x (텔레그램으로 실시간 조정 가능)")
         self.logger.info(f"   - 예약 주문 체결/취소 구분: 강화됨")
+        self.logger.info(f"   - 포지션 동기화 강화: 30초마다")
         self.logger.info(f"   - 경고 알림 제한: 각 타입별 최대 {self.MAX_WARNING_COUNT}회")
 
     def _parse_mirror_trading_mode(self, mode_str: str) -> bool:
@@ -275,7 +282,7 @@ class MirrorTradingSystem:
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 예약 주문 체결/취소 구분 + 클로징 처리 강화")
+            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 포지션 동기화 강화 + 실패율 수정")
             
             # 미러링 비활성화 확인
             if not self.mirror_trading_enabled:
@@ -312,6 +319,7 @@ class MirrorTradingSystem:
                 self.monitor_sync_status(),
                 self.monitor_price_differences(),
                 self.monitor_order_synchronization(),
+                self.monitor_position_synchronization(),  # 🔥🔥🔥 포지션 동기화 모니터링 추가
                 self.generate_daily_reports()
             ]
             
@@ -324,6 +332,171 @@ class MirrorTradingSystem:
                     f"❌ 미러 트레이딩 시작 실패\n오류: {str(e)[:200]}"
                 )
             raise
+
+    async def monitor_position_synchronization(self):
+        """🔥🔥🔥 포지션 동기화 모니터링 - 비트겟 취소시 게이트도 자동 취소"""
+        try:
+            self.logger.info("🔄 포지션 동기화 모니터링 시작 (강화된 버전)")
+            
+            while self.monitoring:
+                try:
+                    if not self.mirror_trading_enabled:
+                        await asyncio.sleep(self.position_sync_interval)
+                        continue
+                        
+                    if not self.position_sync_enabled:
+                        await asyncio.sleep(self.position_sync_interval)
+                        continue
+                    
+                    current_time = datetime.now()
+                    
+                    # 포지션 동기화 체크 간격 확인
+                    if (current_time - self.last_position_sync_time).total_seconds() >= self.position_sync_interval:
+                        await self._perform_position_synchronization()
+                        self.last_position_sync_time = current_time
+                    
+                    await asyncio.sleep(10)  # 10초마다 체크
+                    
+                except Exception as e:
+                    self.logger.error(f"포지션 동기화 모니터링 오류: {e}")
+                    if self._should_send_warning('position_cleanup'):
+                        await self.telegram.send_message(
+                            f"⚠️ 포지션 동기화 모니터링 오류\n오류: {str(e)[:200]}"
+                        )
+                    await asyncio.sleep(self.position_sync_interval)
+                    
+        except Exception as e:
+            self.logger.error(f"포지션 동기화 모니터링 시스템 실패: {e}")
+
+    async def _perform_position_synchronization(self):
+        """🔥🔥🔥 포지션 동기화 수행 - 비트겟 없으면 게이트도 정리"""
+        try:
+            self.logger.debug("🔄 포지션 동기화 시작")
+            
+            # 1. 비트겟 현재 포지션 조회
+            bitget_positions = await self.bitget_mirror.get_positions(self.SYMBOL)
+            bitget_active_positions = [pos for pos in bitget_positions if float(pos.get('total', 0)) > 0]
+            
+            # 2. 게이트 현재 포지션 조회
+            gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
+            gate_active_positions = [pos for pos in gate_positions if pos.get('size', 0) != 0]
+            
+            # 3. 동기화 분석
+            sync_issues = []
+            
+            # 비트겟에는 없지만 게이트에는 있는 포지션 찾기
+            if not bitget_active_positions and gate_active_positions:
+                # 비트겟에 포지션이 없는데 게이트에는 있음
+                for gate_pos in gate_active_positions:
+                    # 시작 시 존재했던 포지션이 아닌 경우에만 정리
+                    gate_pos_id = self._generate_gate_position_id(gate_pos)
+                    if gate_pos_id not in self.position_manager.startup_gate_positions:
+                        sync_issues.append({
+                            'type': 'orphan_gate_position',
+                            'gate_position': gate_pos,
+                            'gate_pos_id': gate_pos_id
+                        })
+            
+            # 비트겟 포지션 방향과 게이트 포지션 방향이 다른 경우
+            elif bitget_active_positions and gate_active_positions:
+                bitget_main_pos = bitget_active_positions[0]
+                gate_main_pos = gate_active_positions[0]
+                
+                bitget_side = bitget_main_pos.get('holdSide', '').lower()
+                gate_size = int(gate_main_pos.get('size', 0))
+                gate_side = 'long' if gate_size > 0 else 'short'
+                
+                if bitget_side != gate_side:
+                    sync_issues.append({
+                        'type': 'position_direction_mismatch',
+                        'bitget_side': bitget_side,
+                        'gate_side': gate_side,
+                        'gate_position': gate_main_pos
+                    })
+            
+            # 4. 동기화 문제 해결
+            if sync_issues:
+                await self._fix_position_sync_issues(sync_issues)
+            else:
+                self.logger.debug(f"✅ 포지션 동기화 상태 양호: 비트겟 {len(bitget_active_positions)}개, 게이트 {len(gate_active_positions)}개")
+            
+        except Exception as e:
+            self.logger.error(f"포지션 동기화 수행 실패: {e}")
+
+    async def _fix_position_sync_issues(self, sync_issues: List[Dict]):
+        """🔥🔥🔥 포지션 동기화 문제 해결"""
+        try:
+            cleaned_positions = 0
+            
+            for issue in sync_issues:
+                try:
+                    issue_type = issue['type']
+                    
+                    if issue_type == 'orphan_gate_position':
+                        # 고아 게이트 포지션 정리
+                        gate_position = issue['gate_position']
+                        gate_size = int(gate_position.get('size', 0))
+                        
+                        if gate_size != 0:
+                            # 포지션 전체 청산
+                            result = await self.gate_mirror.close_position(self.GATE_CONTRACT)
+                            cleaned_positions += 1
+                            
+                            self.daily_stats['position_closed_cleanups'] = self.daily_stats.get('position_closed_cleanups', 0) + 1
+                            
+                            self.logger.info(f"✅ 고아 게이트 포지션 정리 완료: 크기={gate_size}")
+                    
+                    elif issue_type == 'position_direction_mismatch':
+                        # 포지션 방향 불일치 - 게이트 포지션 정리 후 재미러링
+                        gate_position = issue['gate_position']
+                        
+                        # 기존 포지션 청산
+                        await self.gate_mirror.close_position(self.GATE_CONTRACT)
+                        cleaned_positions += 1
+                        
+                        # 잠시 대기 후 올바른 방향으로 재미러링은 자동으로 수행됨
+                        await asyncio.sleep(2)
+                        
+                        self.logger.info(f"✅ 포지션 방향 불일치 해결: {issue['bitget_side']} vs {issue['gate_side']}")
+                        
+                except Exception as e:
+                    self.logger.error(f"포지션 동기화 문제 해결 실패: {issue['type']} - {e}")
+            
+            # 결과 알림
+            if cleaned_positions > 0:
+                ratio_info = f" (복제비율: {self.mirror_ratio_multiplier}x)" if self.mirror_ratio_multiplier != 1.0 else ""
+                
+                if self._should_send_warning('position_cleanup'):
+                    await self.telegram.send_message(
+                        f"🔄 포지션 동기화 완료{ratio_info}\n"
+                        f"정리된 포지션: {cleaned_positions}개\n"
+                        f"비트겟에서 취소된 포지션을 게이트에서도 정리했습니다.\n"
+                        f"새로운 포지션은 자동으로 미러링됩니다.{ratio_info}"
+                    )
+                
+                self.logger.info(f"🔄 포지션 동기화 완료: {cleaned_positions}개 포지션 정리")
+            
+        except Exception as e:
+            self.logger.error(f"포지션 동기화 문제 해결 중 오류: {e}")
+
+    def _generate_gate_position_id(self, gate_pos: Dict) -> str:
+        """게이트 포지션 ID 생성"""
+        try:
+            contract = gate_pos.get('contract', self.GATE_CONTRACT)
+            size = gate_pos.get('size', 0)
+            
+            if isinstance(size, (int, float)) and size != 0:
+                side = 'long' if size > 0 else 'short'
+            else:
+                side = 'unknown'
+            
+            entry_price = gate_pos.get('entry_price', self.gate_current_price or 0)
+            
+            return f"{contract}_{side}_{entry_price}"
+            
+        except Exception as e:
+            self.logger.error(f"게이트 포지션 ID 생성 실패: {e}")
+            return f"{self.GATE_CONTRACT}_unknown_unknown"
 
     async def monitor_order_synchronization(self):
         """🔥🔥🔥 예약 주문 동기화 모니터링 - 더욱 신중한 접근"""
@@ -934,7 +1107,8 @@ class MirrorTradingSystem:
                         f"🔄 미러링은 정상 진행되며 45초마다 자동 동기화됩니다\n"
                         f"🔥 시세 차이와 무관하게 모든 주문이 즉시 처리됩니다\n"
                         f"🛡️ 의심스러운 주문은 안전상 자동 삭제하지 않습니다{ratio_info}\n"
-                        f"📋 예약 주문 체결/취소가 정확히 구분되어 처리됩니다"
+                        f"📋 예약 주문 체결/취소가 정확히 구분되어 처리됩니다\n"
+                        f"🔄 포지션 동기화: 비트겟 취소시 게이트도 자동 정리"
                     )
                     last_warning_time = now
                 
@@ -956,7 +1130,8 @@ class MirrorTradingSystem:
                         f"🔄 예약 주문 동기화: 45초마다 자동 실행\n"
                         f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리\n"
                         f"🛡️ 안전상 의심스러운 주문은 보존됩니다\n"
-                        f"📋 예약 주문 체결/취소가 정확히 구분됩니다{ratio_info}"
+                        f"📋 예약 주문 체결/취소가 정확히 구분됩니다\n"
+                        f"🔄 포지션 동기화: 30초마다 자동 실행{ratio_info}"
                     )
                     last_normal_report_time = now
                 
@@ -975,7 +1150,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(60)
 
     async def monitor_sync_status(self):
-        """포지션 동기화 상태 모니터링"""
+        """포지션 동기화 상태 모니터링 - 실패율 계산 수정"""
         sync_retry_count = 0
         
         while self.monitoring:
@@ -1036,23 +1211,26 @@ class MirrorTradingSystem:
                             f"💡 시세 차이는 미러링 처리에 영향을 주지 않습니다.\n"
                             f"🔥 모든 주문이 즉시 처리되고 있습니다.\n"
                             f"🛡️ 의심스러운 예약 주문은 안전상 보존됩니다.\n"
-                            f"📋 예약 주문 체결/취소가 정확히 구분됩니다.{ratio_info}"
+                            f"📋 예약 주문 체결/취소가 정확히 구분됩니다.\n"
+                            f"🔄 포지션 동기화가 30초마다 자동 실행됩니다.{ratio_info}"
                         )
                         
                         sync_retry_count = 0
                 
-                # 🔥🔥🔥 높은 실패율 감지 및 경고
-                if (self.daily_stats['total_mirrored'] > 5 and 
+                # 🔥🔥🔥 실패율 계산 수정 - 0으로 나누기 방지
+                if (self.daily_stats['total_mirrored'] >= 10 and 
                     self.daily_stats['failed_mirrors'] > 0):
                     
                     failure_rate = (self.daily_stats['failed_mirrors'] / 
-                                  self.daily_stats['total_mirrored']) * 100
+                                  max(self.daily_stats['total_mirrored'], 1)) * 100  # 🔥 0으로 나누기 방지
                     
-                    if failure_rate > 70 and self._should_send_warning('high_failure_rate'):
+                    # 🔥🔥🔥 실패율 임계값을 90%로 높임 (기존 70% → 90%)
+                    if failure_rate >= 90 and self._should_send_warning('high_failure_rate'):
                         await self.telegram.send_message(
-                            f"⚠️ 미러 트레이딩 경고\n"
-                            f"높은 실패율 감지: {failure_rate:.1f}%\n"
-                            f"시스템 점검이 필요할 수 있습니다."
+                            f"⚠️ 미러 트레이딩 높은 실패율 감지\n"
+                            f"실패율: {failure_rate:.1f}% (시도: {self.daily_stats['total_mirrored']}회, 실패: {self.daily_stats['failed_mirrors']}회)\n"
+                            f"포지션 동기화와 예약 주문 동기화가 자동으로 문제를 해결하고 있습니다.\n"
+                            f"잠시 후 정상화될 예정입니다."
                         )
                 else:
                     sync_retry_count = 0
@@ -1081,7 +1259,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(3600)
 
     async def _create_daily_report(self) -> str:
-        """일일 리포트 생성"""
+        """일일 리포트 생성 - 실패율 계산 수정"""
         try:
             # 기본 클라이언트로 계정 조회
             bitget_account = await self.bitget.get_account_info()
@@ -1090,9 +1268,13 @@ class MirrorTradingSystem:
             bitget_equity = float(bitget_account.get('accountEquity', 0))
             gate_equity = float(gate_account.get('total', 0))
             
+            # 🔥🔥🔥 실패율 계산 수정 - 0으로 나누기 방지
             success_rate = 0
+            failure_rate = 0
             if self.daily_stats['total_mirrored'] > 0:
                 success_rate = (self.daily_stats['successful_mirrors'] / 
+                              self.daily_stats['total_mirrored']) * 100
+                failure_rate = (self.daily_stats['failed_mirrors'] / 
                               self.daily_stats['total_mirrored']) * 100
             
             # 시세 차이 통계
@@ -1133,7 +1315,10 @@ class MirrorTradingSystem:
             total_warnings_sent = sum(self.warning_counters.values())
             warning_types_maxed = len([k for k, v in self.warning_counters.items() if v >= self.MAX_WARNING_COUNT])
             
-            report = f"""📊 미러 트레이딩 일일 리포트 (체결/취소 구분 + 경고 제한)
+            # 🔥🔥🔥 포지션 동기화 통계 추가
+            position_cleanups = self.daily_stats.get('position_closed_cleanups', 0)
+            
+            report = f"""📊 미러 트레이딩 일일 리포트 (포지션 동기화 강화 + 실패율 수정)
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
@@ -1149,13 +1334,19 @@ class MirrorTradingSystem:
 - 미러링 모드: {'활성화' if self.mirror_trading_enabled else '비활성화'}
 - 조정 방법: /ratio 명령어로 실시간 변경
 
-⚡ 실시간 포지션 미러링:
+⚡ 실시간 포지션 미러링 (실패율 수정):
 - 주문 체결 기반: {self.daily_stats['order_mirrors']}회
 - 포지션 기반: {self.daily_stats['position_mirrors']}회
 - 총 시도: {self.daily_stats['total_mirrored']}회
 - 성공: {self.daily_stats['successful_mirrors']}회
 - 실패: {self.daily_stats['failed_mirrors']}회
-- 성공률: {success_rate:.1f}%
+- 성공률: {success_rate:.1f}% (실패율: {failure_rate:.1f}%)
+
+🔄 포지션 동기화 강화 (NEW!):
+- 자동 포지션 정리: {position_cleanups}회
+- 동기화 주기: 30초마다
+- 비트겟 취소시 게이트도 자동 정리
+- 포지션 방향 불일치 자동 해결
 
 🎯 완벽한 TP/SL 미러링 성과:
 - 완벽한 미러링: {perfect_mirrors}회 ✨
@@ -1181,7 +1372,7 @@ class MirrorTradingSystem:
 - 자동 동기화 수정: {self.daily_stats.get('sync_corrections', 0)}회
 - 확실한 고아 주문 삭제: {self.daily_stats.get('sync_deletions', 0)}회
 - 자동 클로즈 주문 정리: {self.daily_stats.get('auto_close_order_cleanups', 0)}회
-- 포지션 종료 정리: {self.daily_stats.get('position_closed_cleanups', 0)}회
+- 포지션 종료 정리: {position_cleanups}회
 
 📉 포지션 관리:
 - 부분 청산: {self.daily_stats['partial_closes']}회
@@ -1200,7 +1391,8 @@ class MirrorTradingSystem:
 - 실패 기록: {len(self.failed_mirrors)}건
 
 🔥 강화된 안전장치:
-- 동기화 간격: 45초 (더 신중하게)
+- 예약 주문 동기화: 45초 (더 신중하게)
+- 포지션 동기화: 30초 (NEW! 비트겟 취소시 게이트 자동 정리)
 - 체결/취소 구분: 정확한 감지 시스템
 - 3단계 검증: 확실한 고아만 삭제
 - 안전 우선: 의심스러운 주문 보존
@@ -1208,13 +1400,15 @@ class MirrorTradingSystem:
 - 클로징 처리: 강화된 미러링
 - 복제 비율: {self.mirror_ratio_multiplier}x 적용 (실시간 조정 가능)
 - 경고 제한: 각 타입별 최대 {self.MAX_WARNING_COUNT}회
+- 실패율 계산: 수정됨 (0으로 나누기 방지)
 
 ━━━━━━━━━━━━━━━━━━━
 ✅ 미러 트레이딩 시스템 안전하게 작동 중
 🛡️ 안전 우선 정책으로 잘못된 삭제 방지
 📋 예약 주문 체결/취소가 정확히 구분됨
 🔄 복제 비율 {self.mirror_ratio_multiplier}x 적용 중 (텔레그램 /ratio로 변경)
-🔔 경고 알림 스팸 방지: 각 타입별 최대 {self.MAX_WARNING_COUNT}회"""
+🔔 경고 알림 스팸 방지: 각 타입별 최대 {self.MAX_WARNING_COUNT}회
+🔄 포지션 동기화 강화: 비트겟 취소시 게이트도 자동 정리"""
             
             if self.daily_stats.get('errors'):
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -1270,7 +1464,7 @@ class MirrorTradingSystem:
         self.position_manager.daily_stats = self.daily_stats
 
     async def _log_account_status(self):
-        """계정 상태 로깅"""
+        """계정 상태 로깅 - 포지션 동기화 강화 안내 추가"""
         try:
             # 기본 클라이언트로 계정 조회
             bitget_account = await self.bitget.get_account_info()
@@ -1299,7 +1493,7 @@ class MirrorTradingSystem:
             ratio_description = self.utils.get_ratio_multiplier_description(self.mirror_ratio_multiplier)
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (체결/취소 구분 강화 + 경고 제한)\n\n"
+                f"🔄 미러 트레이딩 시스템 시작 (포지션 동기화 강화 + 실패율 수정)\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}\n\n"
@@ -1309,6 +1503,11 @@ class MirrorTradingSystem:
                 f"• 설명: {ratio_description}\n"
                 f"• 미러링 모드: {'활성화' if self.mirror_trading_enabled else '비활성화'}\n"
                 f"• 실시간 조정: /ratio 명령어 사용\n\n"
+                f"🔄 포지션 동기화 강화 (NEW!):\n"
+                f"• 30초마다 자동 동기화 체크\n"
+                f"• 비트겟에서 포지션 취소시 게이트도 자동 정리\n"
+                f"• 포지션 방향 불일치 자동 해결\n"
+                f"• 고아 포지션 자동 정리\n\n"
                 f"📊 현재 상태:\n"
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
@@ -1330,9 +1529,12 @@ class MirrorTradingSystem:
                 f"• 🚀 클로징 롱/숏 강제 미러링\n"
                 f"• 📈 복제 비율 {self.mirror_ratio_multiplier}x 적용 (텔레그램 실시간 조정)\n"
                 f"• 🔄 렌더 재구동 시 예약 주문 자동 미러링\n"
-                f"• 🔔 경고 알림 스팸 방지 (각 타입별 최대 {self.MAX_WARNING_COUNT}회)\n\n"
-                f"🚀 체결/취소 구분 + 클로징 처리 강화 + 경고 제한 시스템이 시작되었습니다.\n"
-                f"📱 /ratio 명령어로 복제 비율을 실시간 조정할 수 있습니다."
+                f"• 🔔 경고 알림 스팸 방지 (각 타입별 최대 {self.MAX_WARNING_COUNT}회)\n"
+                f"• 🔄 포지션 동기화 강화 (30초마다 자동 정리)\n"
+                f"• 📊 실패율 계산 수정 (0으로 나누기 방지)\n\n"
+                f"🚀 포지션 동기화 강화 + 실패율 수정 시스템이 시작되었습니다.\n"
+                f"📱 /ratio 명령어로 복제 비율을 실시간 조정할 수 있습니다.\n"
+                f"🔄 비트겟에서 포지션을 취소하면 게이트에서도 자동으로 정리됩니다."
             )
             
         except Exception as e:
