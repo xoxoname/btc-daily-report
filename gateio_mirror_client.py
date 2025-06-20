@@ -12,7 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
-    """Gate.io 미러링 전용 클라이언트 - API 파라미터 형식 수정 + 복제 비율 적용 강화"""
+    """Gate.io 미러링 전용 클라이언트 - API v4 정확한 형식"""
     
     def __init__(self, config):
         self.config = config
@@ -141,6 +141,13 @@ class GateioMirrorClient:
                     continue
                 else:
                     raise Exception("요청 타임아웃")
+                    
+            except aiohttp.ClientError as client_error:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                else:
+                    raise Exception(f"클라이언트 오류: {client_error}")
                     
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -389,7 +396,7 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - API 파라미터 형식 수정"""
+        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식"""
         try:
             # 레버리지 미러링
             leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
@@ -569,7 +576,7 @@ class GateioMirrorClient:
                                                       sl_price: Optional[float] = None,
                                                       reduce_only: bool = False,
                                                       trigger_type: str = "ge") -> Dict:
-        """🔥🔥🔥 수정된 TP/SL 포함 조건부 주문 생성 - API 파라미터 형식 수정"""
+        """🔥🔥🔥 수정된 TP/SL 포함 조건부 주문 생성 - Gate.io API v4 정확한 형식"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
@@ -577,9 +584,7 @@ class GateioMirrorClient:
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": order_size,  # int 그대로 전달
-                    "price": "0",        # 시장가이므로 0으로 설정
-                    "tif": "ioc"         # immediate or cancel
+                    "size": order_size  # int 그대로 전달
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
@@ -588,6 +593,9 @@ class GateioMirrorClient:
                     "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
                 }
             }
+            
+            # 🔥🔥🔥 price 필드 제거 (트리거 주문이므로 불필요)
+            # tif 필드 제거 (트리거 주문이므로 불필요)
             
             # reduce_only 설정
             if reduce_only:
@@ -616,7 +624,7 @@ class GateioMirrorClient:
     
     async def create_price_triggered_order_fixed(self, trigger_price: float, order_size: int,
                                                reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """🔥🔥🔥 수정된 일반 가격 트리거 주문 생성 - API 파라미터 형식 수정"""
+        """🔥🔥🔥 수정된 일반 가격 트리거 주문 생성 - Gate.io API v4 정확한 형식"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
@@ -624,9 +632,7 @@ class GateioMirrorClient:
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": order_size,  # int 그대로 전달
-                    "price": "0",        # 시장가이므로 0으로 설정
-                    "tif": "ioc"         # immediate or cancel
+                    "size": order_size  # int 그대로 전달
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
@@ -635,6 +641,8 @@ class GateioMirrorClient:
                     "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
                 }
             }
+            
+            # 🔥🔥🔥 price와 tif 필드 제거 (트리거 주문이므로 불필요)
             
             # reduce_only 설정
             if reduce_only:
