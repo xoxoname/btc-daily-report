@@ -746,7 +746,7 @@ class GateioMirrorClient:
                                                    sl_price: Optional[float] = None,
                                                    reduce_only: bool = False,
                                                    trigger_type: str = "ge") -> Dict:
-        """V2 TP/SL 포함 조건부 주문 생성 - size를 정수로 수정"""
+        """V2 TP/SL 포함 조건부 주문 생성 - TP/SL 가격을 문자열로 전송"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
@@ -768,14 +768,14 @@ class GateioMirrorClient:
             if reduce_only:
                 data["initial"]["reduce_only"] = True
             
-            # TP/SL 설정 - 숫자로 전송
+            # 🔥🔥🔥 TP/SL 설정 - 문자열로 전송 (오류 수정)
             if tp_price and tp_price > 0:
-                data["stop_profit_price"] = tp_price  # 🔥🔥🔥 수정: 숫자로 전송 (문자열 X)
-                logger.info(f"🎯 TP 설정: ${tp_price:.2f}")
+                data["stop_profit_price"] = str(tp_price)  # 🔥🔥🔥 수정: 문자열로 전송
+                logger.info(f"🎯 TP 설정: ${tp_price:.2f} (문자열)")
             
             if sl_price and sl_price > 0:
-                data["stop_loss_price"] = sl_price  # 🔥🔥🔥 수정: 숫자로 전송 (문자열 X)
-                logger.info(f"🛡️ SL 설정: ${sl_price:.2f}")
+                data["stop_loss_price"] = str(sl_price)  # 🔥🔥🔥 수정: 문자열로 전송
+                logger.info(f"🛡️ SL 설정: ${sl_price:.2f} (문자열)")
             
             logger.info(f"🔧 V2 Gate.io TP/SL 주문 데이터: {json.dumps(data, indent=2)}")
             
