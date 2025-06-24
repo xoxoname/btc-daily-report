@@ -566,7 +566,7 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식 (수정됨)"""
+        """완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식 (size를 정수로 수정)"""
         try:
             # 레버리지 미러링
             leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
@@ -746,20 +746,20 @@ class GateioMirrorClient:
                                                    sl_price: Optional[float] = None,
                                                    reduce_only: bool = False,
                                                    trigger_type: str = "ge") -> Dict:
-        """V2 TP/SL 포함 조건부 주문 생성 - initial.price 필드 완전 제거"""
+        """V2 TP/SL 포함 조건부 주문 생성 - size를 정수로 수정"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 수정된 데이터 구조 - initial에서 price 완전 제거
+            # 수정된 데이터 구조 - size를 정수로 전송
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": str(order_size)  # 문자열로 변환
+                    "size": order_size  # 🔥🔥🔥 수정: 정수로 전송 (문자열 X)
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
                     "price_type": 0,      # 마크 가격 기준
-                    "price": str(trigger_price),  # 문자열로 변환
+                    "price": str(trigger_price),  # 가격은 문자열로 유지
                     "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
                 }
             }
@@ -768,13 +768,13 @@ class GateioMirrorClient:
             if reduce_only:
                 data["initial"]["reduce_only"] = True
             
-            # TP/SL 설정 - 올바른 필드명 사용
+            # TP/SL 설정 - 숫자로 전송
             if tp_price and tp_price > 0:
-                data["stop_profit_price"] = str(tp_price)  # 문자열로 변환
+                data["stop_profit_price"] = tp_price  # 🔥🔥🔥 수정: 숫자로 전송 (문자열 X)
                 logger.info(f"🎯 TP 설정: ${tp_price:.2f}")
             
             if sl_price and sl_price > 0:
-                data["stop_loss_price"] = str(sl_price)    # 문자열로 변환
+                data["stop_loss_price"] = sl_price  # 🔥🔥🔥 수정: 숫자로 전송 (문자열 X)
                 logger.info(f"🛡️ SL 설정: ${sl_price:.2f}")
             
             logger.info(f"🔧 V2 Gate.io TP/SL 주문 데이터: {json.dumps(data, indent=2)}")
@@ -791,20 +791,20 @@ class GateioMirrorClient:
     
     async def create_price_triggered_order_v2(self, trigger_price: float, order_size: int,
                                             reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """V2 일반 가격 트리거 주문 생성 - initial.price 필드 완전 제거"""
+        """V2 일반 가격 트리거 주문 생성 - size를 정수로 수정"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 수정된 데이터 구조 - initial에서 price 완전 제거
+            # 수정된 데이터 구조 - size를 정수로 전송
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": str(order_size)  # 문자열로 변환
+                    "size": order_size  # 🔥🔥🔥 수정: 정수로 전송 (문자열 X)
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
                     "price_type": 0,      # 마크 가격 기준
-                    "price": str(trigger_price),  # 문자열로 변환
+                    "price": str(trigger_price),  # 가격은 문자열로 유지
                     "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
                 }
             }
