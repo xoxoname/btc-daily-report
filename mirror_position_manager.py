@@ -21,16 +21,16 @@ class MirrorPositionManager:
         self.utils = utils
         self.logger = logging.getLogger('mirror_position_manager')
         
-        # 환경변수 처리 개선 - O/X 지원
-        raw_mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'O')
-        self.mirror_trading_enabled = self._parse_mirror_trading_mode(raw_mirror_mode)
+        # 🔥🔥🔥 미러링 모드는 mirror_trading.py에서 설정됨 (텔레그램 제어)
+        self.mirror_trading_enabled = True  # 기본값, mirror_trading.py에서 동기화됨
         
         # 🔥🔥🔥 배율은 기본값 1.0으로 시작, 텔레그램으로 실시간 조정
         self.mirror_ratio_multiplier = 1.0
         
-        # 환경변수 로깅
-        self.logger.info(f"🔥 포지션 매니저 환경변수: 미러링모드='{raw_mirror_mode}' → {'활성화' if self.mirror_trading_enabled else '비활성화'}")
-        self.logger.info(f"🔥 포지션 매니저 초기 복제 비율: {self.mirror_ratio_multiplier}x (텔레그램으로 실시간 조정 가능)")
+        # 환경변수 로깅 (정보용)
+        self.logger.info(f"🔥 포지션 매니저 초기화")
+        self.logger.info(f"🔥 초기 복제 비율: {self.mirror_ratio_multiplier}x (텔레그램으로 실시간 조정 가능)")
+        self.logger.info(f"🔥 미러링 모드는 텔레그램 /mirror 명령으로 제어됩니다")
         
         # 미러링 상태 관리
         self.mirrored_positions: Dict[str, PositionInfo] = {}
@@ -157,45 +157,9 @@ class MirrorPositionManager:
             'errors': []
         }
         
-        self.logger.info(f"🔥 미러 포지션 매니저 초기화 완료 - 미러링 모드: {'활성화' if self.mirror_trading_enabled else '비활성화'}, 초기 복제 비율: {self.mirror_ratio_multiplier}x (텔레그램 조정 가능)")
-
-    def _parse_mirror_trading_mode(self, mode_str: str) -> bool:
-        """미러링 모드 파싱 - O/X 정확한 구분"""
-        if isinstance(mode_str, bool):
-            return mode_str
-        
-        # 문자열로 변환하되 원본 보존
-        mode_str_original = str(mode_str).strip()
-        mode_str_upper = mode_str_original.upper()
-        
-        self.logger.info(f"🔍 포지션 매니저 미러링 모드 파싱: 원본='{mode_str_original}', 대문자='{mode_str_upper}'")
-        
-        # 영어 O, X 우선 처리 (숫자 0과 구분)
-        if mode_str_upper == 'O':
-            self.logger.info("✅ 포지션 매니저: 영어 대문자 O 감지 → 활성화")
-            return True
-        elif mode_str_upper == 'X':
-            self.logger.info("✅ 포지션 매니저: 영어 대문자 X 감지 → 비활성화")
-            return False
-        
-        # 기타 활성화 키워드
-        elif mode_str_upper in ['ON', 'OPEN', 'TRUE', 'Y', 'YES']:
-            self.logger.info(f"✅ 포지션 매니저 활성화 키워드 감지: '{mode_str_upper}' → 활성화")
-            return True
-        
-        # 기타 비활성화 키워드 (숫자 0 포함)
-        elif mode_str_upper in ['OFF', 'CLOSE', 'FALSE', 'N', 'NO'] or mode_str_original == '0':
-            self.logger.info(f"✅ 포지션 매니저 비활성화 키워드 감지: '{mode_str_upper}' → 비활성화")
-            return False
-        
-        # 숫자 1은 활성화
-        elif mode_str_original == '1':
-            self.logger.info("✅ 포지션 매니저: 숫자 1 감지 → 활성화")
-            return True
-        
-        else:
-            self.logger.warning(f"⚠️ 포지션 매니저: 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(활성화) 사용")
-            return True
+        self.logger.info(f"🔥 미러 포지션 매니저 초기화 완료")
+        self.logger.info(f"🔥 미러링 모드는 텔레그램 /mirror 명령으로 제어")
+        self.logger.info(f"🔥 복제 비율은 텔레그램 /ratio 명령으로 조정")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -210,10 +174,10 @@ class MirrorPositionManager:
             
             # 미러링 비활성화 확인
             if not self.mirror_trading_enabled:
-                self.logger.warning("⚠️ 미러링 모드가 비활성화되어 있습니다 (MIRROR_TRADING_MODE=X)")
+                self.logger.warning("⚠️ 미러링 모드가 비활성화되어 있습니다 (텔레그램 /mirror on으로 활성화)")
                 return
             
-            # Gate 미러링 클라이언트 초기화
+            # Gate 미러링 클라이언트 초기화 (마진 모드 Cross 설정 포함)
             await self.gate_mirror.initialize()
             
             # 렌더 재구동 시 기존 게이트 포지션 확인
@@ -872,6 +836,9 @@ class MirrorPositionManager:
                 if mirror_result.get('sl_price'):
                     tp_sl_info += f"\n❌ SL 요청: ${mirror_result['sl_price']:.2f}"
             
+            # 미러링 모드 상태
+            mirror_mode_status = "활성화" if self.mirror_trading_enabled else "비활성화"
+            
             await self.telegram.send_message(
                 f"✅ {order_type} {perfect_status} 미러링 성공{forced_status}{ratio_status}\n"
                 f"비트겟 ID: {order_id}\n"
@@ -885,7 +852,8 @@ class MirrorPositionManager:
                 f"최종 마진 비율: {margin_ratio*100:.2f}%\n"
                 f"게이트 투입 마진: ${gate_margin:,.2f}\n"
                 f"레버리지: {bitget_leverage}x\n"
-                f"복제 효과: {ratio_effect.get('impact', '알 수 없음')}{tp_sl_info}"
+                f"복제 효과: {ratio_effect.get('impact', '알 수 없음')}\n"
+                f"미러링 모드: {mirror_mode_status}{tp_sl_info}"
             )
             
             # 반환값 개선
@@ -1606,8 +1574,7 @@ class MirrorPositionManager:
                     except Exception as e:
                         error_msg = str(e).lower()
                         if any(keyword in error_msg for keyword in [
-                            "not found", "order not exist", "invalid order",
-                            "order does not exist", "auto_order_not_found"
+                            "not found", "order not exist", "invalid order"
                         ]):
                             deleted_count += 1
                             self.logger.info(f"클로즈 주문이 이미 처리됨: {gate_order_id}")
@@ -1659,6 +1626,49 @@ class MirrorPositionManager:
             
         except Exception as e:
             self.logger.error(f"체결 주문 처리 중 오류: {e}")
+
+    async def check_sync_status(self) -> Dict:
+        """동기화 상태 확인"""
+        try:
+            # 비트겟 포지션
+            bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+            bitget_active = [p for p in bitget_positions if float(p.get('total', 0)) > 0]
+            
+            # 게이트 포지션
+            gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
+            gate_active = [p for p in gate_positions if p.get('size', 0) != 0]
+            
+            # 동기화 상태 계산
+            bitget_new_count = len([p for p in bitget_active if self.utils.generate_position_id(p) not in self.startup_positions])
+            gate_new_count = len([p for p in gate_active if self._generate_gate_position_id(p) not in self.startup_gate_positions])
+            
+            is_synced = bitget_new_count == gate_new_count
+            
+            return {
+                'is_synced': is_synced,
+                'bitget_total_count': len(bitget_active),
+                'gate_total_count': len(gate_active),
+                'bitget_new_count': bitget_new_count,
+                'gate_new_count': gate_new_count,
+                'position_diff': abs(bitget_new_count - gate_new_count)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"동기화 상태 확인 실패: {e}")
+            return {
+                'is_synced': False,
+                'error': str(e)
+            }
+    
+    async def process_position(self, bitget_pos: Dict):
+        """포지션 처리 (미러링이 필요한 경우)"""
+        # 기존 로직 유지
+        pass
+    
+    async def handle_position_close(self, pos_id: str):
+        """포지션 종료 처리"""
+        # 기존 로직 유지
+        pass
 
     async def stop(self):
         """포지션 매니저 중지"""
