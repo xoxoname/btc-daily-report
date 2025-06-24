@@ -746,16 +746,17 @@ class GateioMirrorClient:
                                                    sl_price: Optional[float] = None,
                                                    reduce_only: bool = False,
                                                    trigger_type: str = "ge") -> Dict:
-        """V3 TP/SL 포함 조건부 주문 생성 - initial.size를 정수형으로"""
+        """V3 TP/SL 포함 조건부 주문 생성 - initial.size를 정수형으로, tif 추가"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥 수정된 데이터 구조 - initial.size를 정수형으로
+            # 🔥🔥🔥 수정된 데이터 구조 - initial.tif 추가
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": order_size,  # 🔥🔥🔥 정수형으로 전송
-                    "price": "0"  # 시장가로 설정 (0은 시장가 의미)
+                    "size": order_size,  # 정수형으로 전송
+                    "price": "0",  # 시장가로 설정 (0은 시장가 의미)
+                    "tif": "ioc"  # 🔥🔥🔥 시장가 주문에는 반드시 ioc 설정
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
@@ -769,7 +770,7 @@ class GateioMirrorClient:
             if reduce_only:
                 data["initial"]["reduce_only"] = True
             
-            # 🔥🔥🔥 TP/SL 설정 - 문자열로 전송
+            # TP/SL 설정 - 문자열로 전송
             if tp_price and tp_price > 0:
                 data["stop_profit_price"] = str(tp_price)
                 logger.info(f"🎯 TP 설정: ${tp_price:.2f} (문자열)")
@@ -778,7 +779,7 @@ class GateioMirrorClient:
                 data["stop_loss_price"] = str(sl_price)
                 logger.info(f"🛡️ SL 설정: ${sl_price:.2f} (문자열)")
             
-            logger.info(f"🔧 V3 Gate.io TP/SL 주문 데이터: {json.dumps(data, indent=2)}")
+            logger.info(f"🔧 V3 Gate.io TP/SL 주문 데이터 (tif 포함): {json.dumps(data, indent=2)}")
             
             response = await self._request('POST', endpoint, data=data)
             
@@ -792,16 +793,17 @@ class GateioMirrorClient:
     
     async def create_price_triggered_order_v3(self, trigger_price: float, order_size: int,
                                             reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """V3 일반 가격 트리거 주문 생성 - initial.size를 정수형으로"""
+        """V3 일반 가격 트리거 주문 생성 - initial.size를 정수형으로, tif 추가"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥 수정된 데이터 구조 - initial.size를 정수형으로
+            # 🔥🔥🔥 수정된 데이터 구조 - initial.tif 추가
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": order_size,  # 🔥🔥🔥 정수형으로 전송
-                    "price": "0"  # 시장가로 설정 (0은 시장가 의미)
+                    "size": order_size,  # 정수형으로 전송
+                    "price": "0",  # 시장가로 설정 (0은 시장가 의미)
+                    "tif": "ioc"  # 🔥🔥🔥 시장가 주문에는 반드시 ioc 설정
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
@@ -815,7 +817,7 @@ class GateioMirrorClient:
             if reduce_only:
                 data["initial"]["reduce_only"] = True
             
-            logger.info(f"🔧 V3 Gate.io 일반 주문 데이터: {json.dumps(data, indent=2)}")
+            logger.info(f"🔧 V3 Gate.io 일반 주문 데이터 (tif 포함): {json.dumps(data, indent=2)}")
             
             response = await self._request('POST', endpoint, data=data)
             
@@ -923,15 +925,18 @@ class GateioMirrorClient:
             
             endpoint = "/api/v4/futures/usdt/orders"
             
-            # 🔥🔥🔥 size는 정수형으로 전송
+            # size는 정수형으로 전송
             data = {
                 "contract": contract,
-                "size": size  # 🔥🔥🔥 정수형으로 전송
+                "size": size  # 정수형으로 전송
             }
             
             if price is not None:
                 data["price"] = str(price)
                 data["tif"] = tif
+            else:
+                # 🔥🔥🔥 시장가 주문일 때는 반드시 tif를 ioc로 설정
+                data["tif"] = "ioc"
             
             if reduce_only:
                 data["reduce_only"] = True
