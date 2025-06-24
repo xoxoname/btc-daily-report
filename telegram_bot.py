@@ -11,11 +11,14 @@ class TelegramBot:
         self.logger = logging.getLogger('telegram_bot')
         self.bot = None
         self.application = None
-        self.mirror_trading_system = None  # 🔥🔥🔥 미러 트레이딩 시스템 참조
+        self.mirror_trading_system = None  # 미러 트레이딩 시스템 참조
         self._initialize_bot()
         
-        # 🔥🔥🔥 배율 설정 관련 상태 관리
+        # 배율 설정 관련 상태 관리
         self.pending_ratio_confirmations = {}  # user_id: {'ratio': float, 'timestamp': datetime}
+        
+        # 🔥🔥🔥 미러링 모드 설정 관련 상태 관리
+        self.pending_mirror_confirmations = {}  # user_id: {'mode': bool, 'timestamp': datetime}
         
     def _initialize_bot(self):
         """봇 초기화"""
@@ -38,7 +41,7 @@ class TelegramBot:
             raise
     
     def set_mirror_trading_system(self, mirror_system):
-        """🔥🔥🔥 미러 트레이딩 시스템 참조 설정"""
+        """미러 트레이딩 시스템 참조 설정"""
         self.mirror_trading_system = mirror_system
         self.logger.info("미러 트레이딩 시스템 참조 설정 완료")
     
@@ -99,8 +102,280 @@ class TelegramBot:
         except Exception as e:
             self.logger.error(f"텔레그램 봇 정지 실패: {str(e)}")
     
+    async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """🔥🔥🔥 /mirror 명령어 처리 - 미러링 모드 실시간 제어"""
+        try:
+            user_id = update.effective_user.id
+            chat_id = update.effective_chat.id
+            
+            # 미러 트레이딩 시스템 참조 확인
+            if not self.mirror_trading_system:
+                await update.message.reply_text(
+                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.\n"
+                    "시스템 관리자에게 문의하세요."
+                )
+                return
+            
+            # 현재 미러링 모드 정보 조회
+            current_info = await self.mirror_trading_system.get_current_mirror_mode()
+            current_enabled = current_info['enabled']
+            description = current_info['description']
+            ratio_multiplier = current_info.get('ratio_multiplier', 1.0)
+            
+            # 파라미터 확인
+            if context.args:
+                arg = context.args[0].lower()
+                
+                # 단축어 처리
+                if arg in ['on', 'o', '1', 'true', 'start', '활성화', '켜기', '시작']:
+                    new_mode = True
+                    mode_text = "활성화"
+                    
+                elif arg in ['off', 'x', '0', 'false', 'stop', '비활성화', '끄기', '중지']:
+                    new_mode = False
+                    mode_text = "비활성화"
+                    
+                elif arg in ['status', 'check', 'info', '상태', '확인']:
+                    # 현재 상태만 표시
+                    await self._show_current_mirror_status(update)
+                    return
+                    
+                else:
+                    await update.message.reply_text(
+                        f"❌ 올바르지 않은 옵션: '{arg}'\n\n"
+                        f"💡 사용법:\n"
+                        f"• 활성화: /mirror on (또는 o, 1, start)\n"
+                        f"• 비활성화: /mirror off (또는 x, 0, stop)\n"
+                        f"• 상태 확인: /mirror status\n"
+                        f"• 현재 상태: /mirror"
+                    )
+                    return
+                
+                # 동일한 모드인지 확인
+                if new_mode == current_enabled:
+                    status_emoji = "✅" if new_mode else "⏸️"
+                    await update.message.reply_text(
+                        f"{status_emoji} 이미 해당 모드로 설정되어 있습니다.\n"
+                        f"현재 상태: {description}\n"
+                        f"복제 비율: {ratio_multiplier}x"
+                    )
+                    return
+                
+                # 🔥🔥🔥 확인 절차 - 대기 상태 저장
+                from datetime import datetime, timedelta
+                
+                self.pending_mirror_confirmations[user_id] = {
+                    'mode': new_mode,
+                    'timestamp': datetime.now(),
+                    'chat_id': chat_id
+                }
+                
+                # 변경 사항 미리 분석
+                change_description = f"{'비활성화' if current_enabled else '활성화'} → {mode_text}"
+                
+                if new_mode:
+                    impact_info = (
+                        "🔥 모든 새로운 포지션과 예약 주문이 즉시 미러링됩니다.\n"
+                        "⚡ 기존 활성 주문은 영향받지 않습니다.\n"
+                        "💳 게이트 마진 모드가 Cross로 자동 설정됩니다.\n"
+                        "🎯 완벽한 TP/SL 미러링이 활성화됩니다."
+                    )
+                    warning_info = "⚠️ 활성화 후 모든 거래가 자동 복제됩니다!"
+                else:
+                    impact_info = (
+                        "⏸️ 모든 미러링이 중지됩니다.\n"
+                        "🛑 새로운 포지션과 예약 주문이 복제되지 않습니다.\n"
+                        "💡 기존 활성 주문은 그대로 유지됩니다.\n"
+                        "📊 모니터링은 계속 진행됩니다."
+                    )
+                    warning_info = "💡 비활성화 후에도 기존 주문은 유지됩니다."
+                
+                # 확인 키보드 생성
+                keyboard = [
+                    [KeyboardButton("✅ 예, 변경합니다"), KeyboardButton("❌ 아니오, 취소")]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                
+                await update.message.reply_text(
+                    f"🔄 미러링 모드 변경 확인\n\n"
+                    f"📊 현재 설정:\n"
+                    f"• 미러링: {description}\n"
+                    f"• 복제 비율: {ratio_multiplier}x\n\n"
+                    f"🎯 새로운 설정:\n"
+                    f"• 미러링: {mode_text}\n"
+                    f"• 변경: {change_description}\n\n"
+                    f"📋 영향:\n"
+                    f"{impact_info}\n\n"
+                    f"{warning_info}\n\n"
+                    f"💡 이 모드로 변경하시겠습니까?",
+                    reply_markup=reply_markup
+                )
+                
+                # 1분 후 자동 만료 스케줄링
+                async def cleanup_mirror_confirmation():
+                    await asyncio.sleep(60)
+                    if user_id in self.pending_mirror_confirmations:
+                        del self.pending_mirror_confirmations[user_id]
+                
+                asyncio.create_task(cleanup_mirror_confirmation())
+                
+            else:
+                # 현재 상태만 표시
+                await self._show_current_mirror_status(update)
+                
+        except Exception as e:
+            self.logger.error(f"미러링 명령어 처리 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 미러링 명령어 처리 실패\n"
+                f"오류: {str(e)[:200]}"
+            )
+    
+    async def _show_current_mirror_status(self, update: Update):
+        """현재 미러링 상태 표시"""
+        try:
+            if not self.mirror_trading_system:
+                await update.message.reply_text("❌ 미러 트레이딩 시스템이 연결되지 않았습니다.")
+                return
+            
+            current_info = await self.mirror_trading_system.get_current_mirror_mode()
+            current_enabled = current_info['enabled']
+            description = current_info['description']
+            ratio_multiplier = current_info.get('ratio_multiplier', 1.0)
+            
+            status_emoji = "✅" if current_enabled else "⏸️"
+            status_color = "🟢" if current_enabled else "🔴"
+            
+            await update.message.reply_text(
+                f"{status_emoji} 현재 미러링 상태\n\n"
+                f"{status_color} 미러링: {description}\n"
+                f"🎯 복제 비율: {ratio_multiplier}x\n"
+                f"💳 마진 모드: Cross (자동 유지)\n"
+                f"🔄 적용 범위: {'모든 새로운 거래' if current_enabled else '미러링 중지'}\n\n"
+                f"💡 사용법:\n"
+                f"• 활성화: /mirror on\n"
+                f"• 비활성화: /mirror off\n"
+                f"• 상태 확인: /mirror\n"
+                f"• 복제 비율: /ratio [숫자]\n\n"
+                f"🚀 실시간 제어로 언제든 변경 가능합니다!"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"미러링 상태 표시 실패: {e}")
+            await update.message.reply_text(f"❌ 상태 조회 실패: {str(e)[:200]}")
+    
+    async def handle_mirror_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """🔥🔥🔥 미러링 모드 설정 확인 처리"""
+        try:
+            user_id = update.effective_user.id
+            message_text = update.message.text.strip()
+            
+            # 대기 중인 확인이 있는지 확인
+            if user_id not in self.pending_mirror_confirmations:
+                return False  # 이 메시지는 미러링 확인과 관련 없음
+            
+            pending_info = self.pending_mirror_confirmations[user_id]
+            new_mode = pending_info['mode']
+            
+            # 만료 확인 (1분 제한)
+            from datetime import datetime, timedelta
+            if datetime.now() - pending_info['timestamp'] > timedelta(minutes=1):
+                del self.pending_mirror_confirmations[user_id]
+                await update.message.reply_text(
+                    "⏰ 미러링 설정 확인 시간이 만료되었습니다.\n"
+                    "/mirror 명령어를 다시 사용해 주세요."
+                )
+                return True
+            
+            # 확인 응답 처리
+            if "✅" in message_text or "예" in message_text:
+                # 미러링 모드 적용
+                try:
+                    if not self.mirror_trading_system:
+                        await update.message.reply_text(
+                            "❌ 미러 트레이딩 시스템이 연결되지 않았습니다."
+                        )
+                        return True
+                    
+                    # 실제 미러링 모드 변경 실행
+                    result = await self.mirror_trading_system.set_mirror_mode(new_mode)
+                    
+                    if result['success']:
+                        old_state = result['old_state']
+                        new_state = result['new_state']
+                        state_change = result['state_change']
+                        
+                        status_emoji = "✅" if new_state else "⏸️"
+                        mode_text = "활성화" if new_state else "비활성화"
+                        
+                        # 게이트 마진 모드 확인 (활성화 시)
+                        margin_info = ""
+                        if new_state:
+                            try:
+                                # 마진 모드 Cross 확인 및 설정
+                                margin_success = await self.mirror_trading_system.gate_mirror.ensure_cross_margin_mode("BTC_USDT")
+                                if margin_success:
+                                    margin_info = "\n💳 게이트 마진 모드: Cross로 설정 완료"
+                                else:
+                                    margin_info = "\n⚠️ 게이트 마진 모드 설정 실패 (수동 확인 필요)"
+                            except Exception as margin_error:
+                                margin_info = f"\n⚠️ 마진 모드 확인 실패: {str(margin_error)[:100]}"
+                        
+                        await update.message.reply_text(
+                            f"{status_emoji} 미러링 모드 변경 완료!\n\n"
+                            f"📊 변경 사항:\n"
+                            f"• {state_change}\n"
+                            f"• 현재 상태: {mode_text}\n"
+                            f"• 복제 비율: {self.mirror_trading_system.mirror_ratio_multiplier}x{margin_info}\n\n"
+                            f"🔥 {'새로운 거래부터 즉시 미러링 시작!' if new_state else '미러링이 중지되었습니다.'}\n"
+                            f"⚡ 기존 활성 주문은 영향받지 않습니다.\n"
+                            f"📱 언제든 /mirror on/off로 실시간 제어 가능합니다."
+                        )
+                        
+                        self.logger.info(f"텔레그램으로 미러링 모드 변경: {old_state} → {new_state} (사용자: {user_id})")
+                        
+                    else:
+                        await update.message.reply_text(
+                            f"❌ 미러링 모드 변경 실패\n"
+                            f"오류: {result.get('error', '알 수 없는 오류')}\n"
+                            f"현재 상태 유지: {result.get('current_state', '불명')}"
+                        )
+                        
+                except Exception as e:
+                    await update.message.reply_text(
+                        f"❌ 미러링 모드 적용 중 오류 발생\n"
+                        f"오류: {str(e)[:200]}"
+                    )
+                    
+            elif "❌" in message_text or "아니" in message_text:
+                # 취소
+                current_status = "활성화" if self.mirror_trading_system.mirror_trading_enabled else "비활성화"
+                await update.message.reply_text(
+                    f"🚫 미러링 모드 변경이 취소되었습니다.\n"
+                    f"현재 상태 유지: {current_status}"
+                )
+                
+            else:
+                # 잘못된 응답
+                await update.message.reply_text(
+                    f"❓ 올바른 응답을 선택해 주세요.\n"
+                    f"✅ 예, 변경합니다 또는 ❌ 아니오, 취소"
+                )
+                return True  # 다시 대기
+            
+            # 확인 상태 정리
+            del self.pending_mirror_confirmations[user_id]
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"미러링 확인 처리 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 미러링 확인 처리 실패\n"
+                f"오류: {str(e)[:200]}"
+            )
+            return True
+    
     async def handle_ratio_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🔥🔥🔥 /ratio 명령어 처리 - 복제 비율 실시간 조정"""
+        """복제 비율 실시간 조정"""
         try:
             user_id = update.effective_user.id
             chat_id = update.effective_chat.id
@@ -152,7 +427,7 @@ class TelegramBot:
                         )
                         return
                     
-                    # 🔥🔥🔥 확인 절차 - 대기 상태 저장
+                    # 확인 절차 - 대기 상태 저장
                     from datetime import datetime, timedelta
                     
                     self.pending_ratio_confirmations[user_id] = {
@@ -228,7 +503,7 @@ class TelegramBot:
             )
     
     async def handle_ratio_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🔥🔥🔥 배율 설정 확인 처리"""
+        """배율 설정 확인 처리"""
         try:
             user_id = update.effective_user.id
             message_text = update.message.text.strip()
@@ -322,35 +597,87 @@ class TelegramBot:
             )
             return True
     
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """🔥🔥🔥 통합 메시지 핸들러 - 확인 메시지들을 우선 처리"""
+        try:
+            # 1. 미러링 모드 확인 처리
+            if await self.handle_mirror_confirmation(update, context):
+                return
+            
+            # 2. 배율 확인 처리
+            if await self.handle_ratio_confirmation(update, context):
+                return
+            
+            # 3. 기타 메시지 처리 (필요한 경우 추가)
+            message_text = update.message.text.strip().lower()
+            
+            # 자연어 단축어 처리
+            if any(keyword in message_text for keyword in ['미러링 켜', '미러링 시작', '미러링 활성화']):
+                context.args = ['on']
+                await self.handle_mirror_command(update, context)
+                return
+                
+            elif any(keyword in message_text for keyword in ['미러링 꺼', '미러링 중지', '미러링 비활성화']):
+                context.args = ['off']
+                await self.handle_mirror_command(update, context)
+                return
+                
+            elif any(keyword in message_text for keyword in ['미러링 상태', '미러링 확인']):
+                context.args = ['status']
+                await self.handle_mirror_command(update, context)
+                return
+            
+            # 기타 메시지는 무시 (로그 없이)
+            
+        except Exception as e:
+            self.logger.error(f"메시지 처리 실패: {e}")
+    
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """도움말 명령어 처리"""
         try:
             help_text = """🤖 미러 트레이딩 봇 도움말
 
-📊 주요 명령어:
+🔄 미러링 제어:
+• /mirror - 현재 미러링 상태 확인
+• /mirror on - 미러링 활성화 (단축어: o, 1, start)
+• /mirror off - 미러링 비활성화 (단축어: x, 0, stop)
+• /mirror status - 상태 확인
+
+📊 복제 비율 제어:
 • /ratio - 현재 복제 비율 확인
 • /ratio [숫자] - 복제 비율 변경
-• /help - 이 도움말 표시
-
-🎯 복제 비율 사용법:
 • /ratio 1.0 - 원본 비율 그대로 (기본값)
 • /ratio 0.5 - 원본의 절반 크기로 축소
 • /ratio 2.0 - 원본의 2배 크기로 확대
-• /ratio 0.1 - 원본의 10%로 대폭 축소
-• /ratio 5.0 - 원본의 5배로 확대
 
-📋 허용 범위: 0.1 ~ 10.0배
+💡 기타:
+• /help - 이 도움말 표시
 
-⚡ 실시간 적용:
-• 변경 즉시 새로운 예약 주문에 적용
+🎯 사용 예시:
+• /mirror on (미러링 시작)
+• /ratio 1.5 (1.5배로 확대)
+• /mirror off (미러링 중지)
+
+📋 허용 범위:
+• 복제 비율: 0.1 ~ 10.0배
+• 실시간 적용: 즉시 반영
+
+⚡ 실시간 제어:
+• 변경 즉시 새로운 거래에 적용
 • 기존 활성 주문은 영향받지 않음
 • 확인 절차로 안전하게 변경
+• 게이트 마진 모드 자동 Cross 설정
 
 🔥 리스크 관리:
 • 0.5배 이하: 보수적 (리스크 감소)
 • 1.0배: 표준 (원본과 동일)
 • 1.5배 이상: 적극적 (리스크 증가)
 • 3.0배 이상: 공격적 (높은 리스크)
+
+💳 자동 설정:
+• 게이트 마진 모드: 항상 Cross로 유지
+• TP/SL 완벽 미러링
+• 예약 주문 체결/취소 정확한 구분
 
 💡 시스템이 24시간 안전하게 작동합니다."""
             
@@ -361,7 +688,7 @@ class TelegramBot:
             await update.message.reply_text("❌ 도움말 표시 실패")
     
     def _clean_html_message(self, text: str) -> str:
-        """🔥🔥 HTML 메시지 정리 및 검증"""
+        """HTML 메시지 정리 및 검증"""
         try:
             # 1. 기본 null/None 체크
             if not text:
@@ -426,7 +753,7 @@ class TelegramBot:
             return re.sub(r'<[^>]+>', '', str(text))
     
     def _validate_html_structure(self, text: str) -> bool:
-        """🔥 HTML 구조 검증"""
+        """HTML 구조 검증"""
         try:
             # 기본 유효성 검사
             if not text or text.isspace():
@@ -460,7 +787,7 @@ class TelegramBot:
             return False
     
     async def send_message(self, text: str, chat_id: str = None, parse_mode: str = 'HTML'):
-        """🔥🔥 개선된 메시지 전송 - HTML 파싱 오류 완전 해결"""
+        """개선된 메시지 전송 - HTML 파싱 오류 완전 해결"""
         try:
             if chat_id is None:
                 chat_id = self.config.TELEGRAM_CHAT_ID
