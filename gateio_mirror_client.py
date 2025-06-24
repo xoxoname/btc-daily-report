@@ -32,7 +32,7 @@ class GateioMirrorClient:
         self.MIN_LEVERAGE = 1
         self.current_leverage_cache = {}
         
-        # 🔥🔥🔥 마진 모드 설정 추가
+        # 마진 모드 설정 추가
         self.DEFAULT_MARGIN_MODE = "cross"  # 항상 Cross 모드 사용
         self.current_margin_mode_cache = {}
         
@@ -56,7 +56,7 @@ class GateioMirrorClient:
         """클라이언트 초기화 - 기본 레버리지 30배 설정 + 마진 모드 Cross 설정"""
         self._initialize_session()
         
-        # 🔥🔥🔥 마진 모드를 Cross로 설정
+        # 마진 모드를 Cross로 설정
         try:
             logger.info("🔥 게이트 마진 모드 확인 및 설정 시작...")
             
@@ -184,7 +184,7 @@ class GateioMirrorClient:
                     raise
     
     async def get_current_margin_mode(self, contract: str = "BTC_USDT") -> str:
-        """🔥🔥🔥 현재 마진 모드 조회"""
+        """현재 마진 모드 조회"""
         try:
             # 캐시에서 먼저 확인
             if contract in self.current_margin_mode_cache:
@@ -228,7 +228,7 @@ class GateioMirrorClient:
             return "unknown"
     
     async def set_margin_mode(self, contract: str, mode: str = "cross") -> Dict:
-        """🔥🔥🔥 마진 모드 설정 (cross/isolated)"""
+        """마진 모드 설정 (cross/isolated)"""
         try:
             # Gate.io API v4 마진 모드 변경
             endpoint = f"/api/v4/futures/usdt/positions/{contract}/margin_mode"
@@ -302,7 +302,7 @@ class GateioMirrorClient:
             }
     
     async def ensure_cross_margin_mode(self, contract: str = "BTC_USDT") -> bool:
-        """🔥🔥🔥 Cross 마진 모드 보장"""
+        """Cross 마진 모드 보장"""
         try:
             current_mode = await self.get_current_margin_mode(contract)
             
@@ -565,7 +565,7 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """🔥🔥🔥 완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식"""
+        """완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식"""
         try:
             # 레버리지 미러링
             leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
@@ -745,11 +745,11 @@ class GateioMirrorClient:
                                                       sl_price: Optional[float] = None,
                                                       reduce_only: bool = False,
                                                       trigger_type: str = "ge") -> Dict:
-        """🔥🔥🔥 수정된 TP/SL 포함 조건부 주문 생성 - Gate.io API v4 정확한 형식"""
+        """수정된 TP/SL 포함 조건부 주문 생성 - Gate.io API v4 정확한 형식 (price 필드 제거)"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥 수정된 데이터 구조 - Gate.io API v4 정확한 형식
+            # 수정된 데이터 구조 - initial.price 필드 제거
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
@@ -763,14 +763,11 @@ class GateioMirrorClient:
                 }
             }
             
-            # 🔥🔥🔥 price 필드 제거 (트리거 주문이므로 불필요)
-            # tif 필드 제거 (트리거 주문이므로 불필요)
-            
             # reduce_only 설정
             if reduce_only:
                 data["initial"]["reduce_only"] = True
             
-            # 🔥🔥🔥 TP/SL 설정 - 올바른 필드명 사용
+            # TP/SL 설정 - 올바른 필드명 사용
             if tp_price and tp_price > 0:
                 data["stop_profit_price"] = str(tp_price)  # 문자열로 변환
                 logger.info(f"🎯 TP 설정: ${tp_price:.2f}")
@@ -793,11 +790,11 @@ class GateioMirrorClient:
     
     async def create_price_triggered_order_fixed(self, trigger_price: float, order_size: int,
                                                reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """🔥🔥🔥 수정된 일반 가격 트리거 주문 생성 - Gate.io API v4 정확한 형식"""
+        """수정된 일반 가격 트리거 주문 생성 - Gate.io API v4 정확한 형식 (price 필드 제거)"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥 수정된 데이터 구조
+            # 수정된 데이터 구조 - initial.price 필드 제거
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
@@ -810,8 +807,6 @@ class GateioMirrorClient:
                     "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
                 }
             }
-            
-            # 🔥🔥🔥 price와 tif 필드 제거 (트리거 주문이므로 불필요)
             
             # reduce_only 설정
             if reduce_only:
@@ -879,7 +874,7 @@ class GateioMirrorClient:
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
         """시장가/지정가 주문 생성 - 레버리지 체크 포함"""
         try:
-            # 🔥🔥🔥 마진 모드 확인 및 Cross 설정
+            # 마진 모드 확인 및 Cross 설정
             await self.ensure_cross_margin_mode(contract)
             
             # 주문 전 현재 레버리지 확인 및 기본값 설정
