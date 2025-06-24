@@ -40,8 +40,8 @@ class GateioMirrorClient:
         self.MARGIN_MODE_MAPPING = {
             'cross': 'cross',
             'isolated': 'isolated',
-            'dual_long': 'dual_long',
-            'dual_short': 'dual_short',
+            'dual_long': 'cross',  # dual_long을 cross로 매핑
+            'dual_short': 'cross',  # dual_short를 cross로 매핑
             'single': 'cross',  # single을 cross로 매핑
             'default': 'cross'
         }
@@ -87,6 +87,9 @@ class GateioMirrorClient:
             
             if current_mode in ['cross', 'Cross', 'CROSS']:
                 logger.info("✅ 게이트 마진 모드가 Cross로 설정되어 있습니다")
+            elif current_mode in ['dual_long', 'dual_short']:
+                logger.warning(f"⚠️ 게이트 마진 모드가 {current_mode}입니다")
+                logger.info("💡 듀얼 모드는 Cross로 자동 매핑하여 처리합니다")
             elif current_mode == 'unknown':
                 logger.warning("⚠️ 게이트 마진 모드를 확인할 수 없습니다")
                 logger.info("💡 포지션 생성 시 Cross 마진 모드 사용을 권장합니다")
@@ -255,12 +258,8 @@ class GateioMirrorClient:
             elif 'isolated' in mode_lower:
                 return 'isolated'
             elif 'dual' in mode_lower:
-                if 'long' in mode_lower:
-                    return 'dual_long'
-                elif 'short' in mode_lower:
-                    return 'dual_short'
-                else:
-                    return 'dual_long'  # 기본값
+                # dual 모드는 cross로 매핑
+                return 'cross'
             elif mode_lower in ['single', 'default', '']:
                 return 'cross'
             else:
@@ -310,6 +309,10 @@ class GateioMirrorClient:
             if current_mode == "cross":
                 logger.info(f"✅ 이미 Cross 마진 모드입니다: {contract}")
                 return True
+            elif current_mode in ["dual_long", "dual_short"]:
+                logger.warning(f"⚠️ 현재 마진 모드가 {current_mode}입니다: {contract}")
+                logger.info(f"💡 듀얼 모드는 Cross로 매핑하여 처리합니다")
+                return True  # 듀얼 모드도 허용
             elif current_mode == "unknown":
                 logger.warning(f"⚠️ 마진 모드를 확인할 수 없습니다: {contract}")
                 logger.info(f"💡 포지션 생성 시 Cross 마진 모드 사용을 권장합니다")
@@ -563,7 +566,7 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식"""
+        """완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식 (수정됨)"""
         try:
             # 레버리지 미러링
             leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
@@ -675,7 +678,7 @@ class GateioMirrorClient:
             if tp_price or sl_price:
                 logger.info(f"🎯 TP/SL 포함 통합 주문 생성")
                 
-                gate_order = await self.create_conditional_order_with_tp_sl_fixed(
+                gate_order = await self.create_conditional_order_with_tp_sl_v2(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     tp_price=tp_price,
@@ -709,7 +712,7 @@ class GateioMirrorClient:
                 # TP/SL 없는 일반 주문
                 logger.info(f"📝 일반 예약 주문 생성 (TP/SL 없음)")
                 
-                gate_order = await self.create_price_triggered_order_fixed(
+                gate_order = await self.create_price_triggered_order_v2(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     reduce_only=reduce_only_flag,
@@ -738,20 +741,20 @@ class GateioMirrorClient:
                 'leverage_mirrored': False
             }
     
-    async def create_conditional_order_with_tp_sl_fixed(self, trigger_price: float, order_size: int,
-                                                      tp_price: Optional[float] = None,
-                                                      sl_price: Optional[float] = None,
-                                                      reduce_only: bool = False,
-                                                      trigger_type: str = "ge") -> Dict:
-        """수정된 TP/SL 포함 조건부 주문 생성 - Gate.io API v4 정확한 형식 (price 필드 제거)"""
+    async def create_conditional_order_with_tp_sl_v2(self, trigger_price: float, order_size: int,
+                                                   tp_price: Optional[float] = None,
+                                                   sl_price: Optional[float] = None,
+                                                   reduce_only: bool = False,
+                                                   trigger_type: str = "ge") -> Dict:
+        """V2 TP/SL 포함 조건부 주문 생성 - initial.price 필드 완전 제거"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 수정된 데이터 구조 - initial.price 필드 제거
+            # 수정된 데이터 구조 - initial에서 price 완전 제거
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": order_size  # int 그대로 전달
+                    "size": str(order_size)  # 문자열로 변환
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
@@ -761,7 +764,7 @@ class GateioMirrorClient:
                 }
             }
             
-            # reduce_only 설정
+            # reduce_only 설정 (클로즈 주문인 경우)
             if reduce_only:
                 data["initial"]["reduce_only"] = True
             
@@ -774,29 +777,29 @@ class GateioMirrorClient:
                 data["stop_loss_price"] = str(sl_price)    # 문자열로 변환
                 logger.info(f"🛡️ SL 설정: ${sl_price:.2f}")
             
-            logger.info(f"🔧 수정된 Gate.io TP/SL 주문 데이터: {json.dumps(data, indent=2)}")
+            logger.info(f"🔧 V2 Gate.io TP/SL 주문 데이터: {json.dumps(data, indent=2)}")
             
             response = await self._request('POST', endpoint, data=data)
             
-            logger.info(f"✅ Gate.io TP/SL 통합 주문 생성 성공: {response.get('id')}")
+            logger.info(f"✅ Gate.io V2 TP/SL 통합 주문 생성 성공: {response.get('id')}")
             
             return response
             
         except Exception as e:
-            logger.error(f"수정된 TP/SL 포함 조건부 주문 생성 실패: {e}")
+            logger.error(f"V2 TP/SL 포함 조건부 주문 생성 실패: {e}")
             raise
     
-    async def create_price_triggered_order_fixed(self, trigger_price: float, order_size: int,
-                                               reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """수정된 일반 가격 트리거 주문 생성 - Gate.io API v4 정확한 형식 (price 필드 제거)"""
+    async def create_price_triggered_order_v2(self, trigger_price: float, order_size: int,
+                                            reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        """V2 일반 가격 트리거 주문 생성 - initial.price 필드 완전 제거"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 수정된 데이터 구조 - initial.price 필드 제거
+            # 수정된 데이터 구조 - initial에서 price 완전 제거
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": order_size  # int 그대로 전달
+                    "size": str(order_size)  # 문자열로 변환
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
@@ -806,21 +809,39 @@ class GateioMirrorClient:
                 }
             }
             
-            # reduce_only 설정
+            # reduce_only 설정 (클로즈 주문인 경우)
             if reduce_only:
                 data["initial"]["reduce_only"] = True
             
-            logger.info(f"🔧 수정된 Gate.io 일반 주문 데이터: {json.dumps(data, indent=2)}")
+            logger.info(f"🔧 V2 Gate.io 일반 주문 데이터: {json.dumps(data, indent=2)}")
             
             response = await self._request('POST', endpoint, data=data)
             
-            logger.info(f"✅ Gate.io 일반 트리거 주문 생성 성공: {response.get('id')}")
+            logger.info(f"✅ Gate.io V2 일반 트리거 주문 생성 성공: {response.get('id')}")
             
             return response
             
         except Exception as e:
-            logger.error(f"수정된 일반 가격 트리거 주문 생성 실패: {e}")
+            logger.error(f"V2 일반 가격 트리거 주문 생성 실패: {e}")
             raise
+    
+    # 기존 메서드들은 호환성을 위해 새로운 메서드로 리다이렉트
+    async def create_conditional_order_with_tp_sl_fixed(self, trigger_price: float, order_size: int,
+                                                      tp_price: Optional[float] = None,
+                                                      sl_price: Optional[float] = None,
+                                                      reduce_only: bool = False,
+                                                      trigger_type: str = "ge") -> Dict:
+        """기존 호환성을 위한 래퍼"""
+        return await self.create_conditional_order_with_tp_sl_v2(
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
+        )
+    
+    async def create_price_triggered_order_fixed(self, trigger_price: float, order_size: int,
+                                               reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        """기존 호환성을 위한 래퍼"""
+        return await self.create_price_triggered_order_v2(
+            trigger_price, order_size, reduce_only, trigger_type
+        )
     
     # 기존 메서드들은 호환성을 위해 새로운 메서드로 리다이렉트
     async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
@@ -829,14 +850,14 @@ class GateioMirrorClient:
                                                 reduce_only: bool = False,
                                                 trigger_type: str = "ge") -> Dict:
         """기존 호환성을 위한 래퍼"""
-        return await self.create_conditional_order_with_tp_sl_fixed(
+        return await self.create_conditional_order_with_tp_sl_v2(
             trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
         )
     
     async def create_price_triggered_order(self, trigger_price: float, order_size: int,
                                          reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
         """기존 호환성을 위한 래퍼"""
-        return await self.create_price_triggered_order_fixed(
+        return await self.create_price_triggered_order_v2(
             trigger_price, order_size, reduce_only, trigger_type
         )
     
@@ -885,7 +906,7 @@ class GateioMirrorClient:
             
             data = {
                 "contract": contract,
-                "size": size
+                "size": str(size)  # 문자열로 변환
             }
             
             if price is not None:
