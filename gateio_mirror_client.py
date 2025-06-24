@@ -566,7 +566,7 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식 (size를 정수로 수정)"""
+        """완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식 (initial.price 추가)"""
         try:
             # 레버리지 미러링
             leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
@@ -678,7 +678,7 @@ class GateioMirrorClient:
             if tp_price or sl_price:
                 logger.info(f"🎯 TP/SL 포함 통합 주문 생성")
                 
-                gate_order = await self.create_conditional_order_with_tp_sl_v2(
+                gate_order = await self.create_conditional_order_with_tp_sl_v3(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     tp_price=tp_price,
@@ -712,7 +712,7 @@ class GateioMirrorClient:
                 # TP/SL 없는 일반 주문
                 logger.info(f"📝 일반 예약 주문 생성 (TP/SL 없음)")
                 
-                gate_order = await self.create_price_triggered_order_v2(
+                gate_order = await self.create_price_triggered_order_v3(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     reduce_only=reduce_only_flag,
@@ -741,105 +741,124 @@ class GateioMirrorClient:
                 'leverage_mirrored': False
             }
     
+    async def create_conditional_order_with_tp_sl_v3(self, trigger_price: float, order_size: int,
+                                                   tp_price: Optional[float] = None,
+                                                   sl_price: Optional[float] = None,
+                                                   reduce_only: bool = False,
+                                                   trigger_type: str = "ge") -> Dict:
+        """V3 TP/SL 포함 조건부 주문 생성 - initial.price 필드 추가"""
+        try:
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            
+            # 🔥🔥🔥 수정된 데이터 구조 - initial.price 필드 추가
+            data = {
+                "initial": {
+                    "contract": "BTC_USDT",
+                    "size": str(order_size),  # 문자열로 전송
+                    "price": "0"  # 🔥🔥🔥 추가: 시장가로 설정 (0은 시장가 의미)
+                },
+                "trigger": {
+                    "strategy_type": 0,   # 가격 기반 트리거
+                    "price_type": 0,      # 마크 가격 기준
+                    "price": str(trigger_price),  # 가격은 문자열로 유지
+                    "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
+                }
+            }
+            
+            # reduce_only 설정 (클로즈 주문인 경우)
+            if reduce_only:
+                data["initial"]["reduce_only"] = True
+            
+            # 🔥🔥🔥 TP/SL 설정 - 문자열로 전송
+            if tp_price and tp_price > 0:
+                data["stop_profit_price"] = str(tp_price)
+                logger.info(f"🎯 TP 설정: ${tp_price:.2f} (문자열)")
+            
+            if sl_price and sl_price > 0:
+                data["stop_loss_price"] = str(sl_price)
+                logger.info(f"🛡️ SL 설정: ${sl_price:.2f} (문자열)")
+            
+            logger.info(f"🔧 V3 Gate.io TP/SL 주문 데이터: {json.dumps(data, indent=2)}")
+            
+            response = await self._request('POST', endpoint, data=data)
+            
+            logger.info(f"✅ Gate.io V3 TP/SL 통합 주문 생성 성공: {response.get('id')}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"V3 TP/SL 포함 조건부 주문 생성 실패: {e}")
+            raise
+    
+    async def create_price_triggered_order_v3(self, trigger_price: float, order_size: int,
+                                            reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        """V3 일반 가격 트리거 주문 생성 - initial.price 필드 추가"""
+        try:
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            
+            # 🔥🔥🔥 수정된 데이터 구조 - initial.price 필드 추가
+            data = {
+                "initial": {
+                    "contract": "BTC_USDT",
+                    "size": str(order_size),  # 문자열로 전송
+                    "price": "0"  # 🔥🔥🔥 추가: 시장가로 설정 (0은 시장가 의미)
+                },
+                "trigger": {
+                    "strategy_type": 0,   # 가격 기반 트리거
+                    "price_type": 0,      # 마크 가격 기준
+                    "price": str(trigger_price),  # 가격은 문자열로 유지
+                    "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
+                }
+            }
+            
+            # reduce_only 설정 (클로즈 주문인 경우)
+            if reduce_only:
+                data["initial"]["reduce_only"] = True
+            
+            logger.info(f"🔧 V3 Gate.io 일반 주문 데이터: {json.dumps(data, indent=2)}")
+            
+            response = await self._request('POST', endpoint, data=data)
+            
+            logger.info(f"✅ Gate.io V3 일반 트리거 주문 생성 성공: {response.get('id')}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"V3 일반 가격 트리거 주문 생성 실패: {e}")
+            raise
+    
+    # 기존 메서드들은 호환성을 위해 새로운 메서드로 리다이렉트
     async def create_conditional_order_with_tp_sl_v2(self, trigger_price: float, order_size: int,
                                                    tp_price: Optional[float] = None,
                                                    sl_price: Optional[float] = None,
                                                    reduce_only: bool = False,
                                                    trigger_type: str = "ge") -> Dict:
-        """V2 TP/SL 포함 조건부 주문 생성 - TP/SL 가격을 문자열로 전송"""
-        try:
-            endpoint = "/api/v4/futures/usdt/price_orders"
-            
-            # 수정된 데이터 구조 - size를 정수로 전송
-            data = {
-                "initial": {
-                    "contract": "BTC_USDT",
-                    "size": order_size  # 🔥🔥🔥 수정: 정수로 전송 (문자열 X)
-                },
-                "trigger": {
-                    "strategy_type": 0,   # 가격 기반 트리거
-                    "price_type": 0,      # 마크 가격 기준
-                    "price": str(trigger_price),  # 가격은 문자열로 유지
-                    "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
-                }
-            }
-            
-            # reduce_only 설정 (클로즈 주문인 경우)
-            if reduce_only:
-                data["initial"]["reduce_only"] = True
-            
-            # 🔥🔥🔥 TP/SL 설정 - 문자열로 전송 (오류 수정)
-            if tp_price and tp_price > 0:
-                data["stop_profit_price"] = str(tp_price)  # 🔥🔥🔥 수정: 문자열로 전송
-                logger.info(f"🎯 TP 설정: ${tp_price:.2f} (문자열)")
-            
-            if sl_price and sl_price > 0:
-                data["stop_loss_price"] = str(sl_price)  # 🔥🔥🔥 수정: 문자열로 전송
-                logger.info(f"🛡️ SL 설정: ${sl_price:.2f} (문자열)")
-            
-            logger.info(f"🔧 V2 Gate.io TP/SL 주문 데이터: {json.dumps(data, indent=2)}")
-            
-            response = await self._request('POST', endpoint, data=data)
-            
-            logger.info(f"✅ Gate.io V2 TP/SL 통합 주문 생성 성공: {response.get('id')}")
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"V2 TP/SL 포함 조건부 주문 생성 실패: {e}")
-            raise
+        """V2 호환성을 위한 래퍼"""
+        return await self.create_conditional_order_with_tp_sl_v3(
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
+        )
     
     async def create_price_triggered_order_v2(self, trigger_price: float, order_size: int,
                                             reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """V2 일반 가격 트리거 주문 생성 - size를 정수로 수정"""
-        try:
-            endpoint = "/api/v4/futures/usdt/price_orders"
-            
-            # 수정된 데이터 구조 - size를 정수로 전송
-            data = {
-                "initial": {
-                    "contract": "BTC_USDT",
-                    "size": order_size  # 🔥🔥🔥 수정: 정수로 전송 (문자열 X)
-                },
-                "trigger": {
-                    "strategy_type": 0,   # 가격 기반 트리거
-                    "price_type": 0,      # 마크 가격 기준
-                    "price": str(trigger_price),  # 가격은 문자열로 유지
-                    "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
-                }
-            }
-            
-            # reduce_only 설정 (클로즈 주문인 경우)
-            if reduce_only:
-                data["initial"]["reduce_only"] = True
-            
-            logger.info(f"🔧 V2 Gate.io 일반 주문 데이터: {json.dumps(data, indent=2)}")
-            
-            response = await self._request('POST', endpoint, data=data)
-            
-            logger.info(f"✅ Gate.io V2 일반 트리거 주문 생성 성공: {response.get('id')}")
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"V2 일반 가격 트리거 주문 생성 실패: {e}")
-            raise
+        """V2 호환성을 위한 래퍼"""
+        return await self.create_price_triggered_order_v3(
+            trigger_price, order_size, reduce_only, trigger_type
+        )
     
-    # 기존 메서드들은 호환성을 위해 새로운 메서드로 리다이렉트
     async def create_conditional_order_with_tp_sl_fixed(self, trigger_price: float, order_size: int,
                                                       tp_price: Optional[float] = None,
                                                       sl_price: Optional[float] = None,
                                                       reduce_only: bool = False,
                                                       trigger_type: str = "ge") -> Dict:
         """기존 호환성을 위한 래퍼"""
-        return await self.create_conditional_order_with_tp_sl_v2(
+        return await self.create_conditional_order_with_tp_sl_v3(
             trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
         )
     
     async def create_price_triggered_order_fixed(self, trigger_price: float, order_size: int,
                                                reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
         """기존 호환성을 위한 래퍼"""
-        return await self.create_price_triggered_order_v2(
+        return await self.create_price_triggered_order_v3(
             trigger_price, order_size, reduce_only, trigger_type
         )
     
@@ -850,14 +869,14 @@ class GateioMirrorClient:
                                                 reduce_only: bool = False,
                                                 trigger_type: str = "ge") -> Dict:
         """기존 호환성을 위한 래퍼"""
-        return await self.create_conditional_order_with_tp_sl_v2(
+        return await self.create_conditional_order_with_tp_sl_v3(
             trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
         )
     
     async def create_price_triggered_order(self, trigger_price: float, order_size: int,
                                          reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
         """기존 호환성을 위한 래퍼"""
-        return await self.create_price_triggered_order_v2(
+        return await self.create_price_triggered_order_v3(
             trigger_price, order_size, reduce_only, trigger_type
         )
     
