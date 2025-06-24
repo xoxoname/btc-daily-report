@@ -12,6 +12,7 @@ class TelegramBot:
         self.bot = None
         self.application = None
         self.mirror_trading_system = None  # 미러 트레이딩 시스템 참조
+        self.system_reference = None  # 메인 시스템 참조
         self._initialize_bot()
         
         # 배율 설정 관련 상태 관리
@@ -44,6 +45,11 @@ class TelegramBot:
         """미러 트레이딩 시스템 참조 설정"""
         self.mirror_trading_system = mirror_system
         self.logger.info("미러 트레이딩 시스템 참조 설정 완료")
+    
+    def set_system_reference(self, system):
+        """메인 시스템 참조 설정"""
+        self.system_reference = system
+        self.logger.info("메인 시스템 참조 설정 완료")
     
     def add_handler(self, command: str, handler_func: Callable):
         """명령 핸들러 추가"""
@@ -101,6 +107,49 @@ class TelegramBot:
                 
         except Exception as e:
             self.logger.error(f"텔레그램 봇 정지 실패: {str(e)}")
+    
+    async def handle_mirror_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """미러 트레이딩 상태 확인"""
+        try:
+            # 미러 트레이딩 시스템 또는 메인 시스템에서 상태 조회
+            if self.mirror_trading_system:
+                current_info = await self.mirror_trading_system.get_current_mirror_mode()
+                current_enabled = current_info['enabled']
+                description = current_info['description']
+                ratio_multiplier = current_info.get('ratio_multiplier', 1.0)
+            elif self.system_reference and hasattr(self.system_reference, 'get_mirror_mode'):
+                current_enabled = self.system_reference.get_mirror_mode()
+                description = '활성화' if current_enabled else '비활성화'
+                ratio_multiplier = getattr(self.system_reference, 'mirror_ratio_multiplier', 1.0)
+            else:
+                await update.message.reply_text(
+                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다."
+                )
+                return
+            
+            status_emoji = "✅" if current_enabled else "⏸️"
+            status_color = "🟢" if current_enabled else "🔴"
+            
+            await update.message.reply_text(
+                f"{status_emoji} 현재 미러링 상태\n\n"
+                f"{status_color} 미러링: {description}\n"
+                f"🎯 복제 비율: {ratio_multiplier}x\n"
+                f"💳 마진 모드: Cross (자동 유지)\n"
+                f"🔄 적용 범위: {'모든 새로운 거래' if current_enabled else '미러링 중지'}\n\n"
+                f"💡 사용법:\n"
+                f"• 활성화: /mirror on\n"
+                f"• 비활성화: /mirror off\n"
+                f"• 상태 확인: /mirror\n"
+                f"• 복제 비율: /ratio [숫자]\n\n"
+                f"🚀 실시간 제어로 언제든 변경 가능합니다!"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"미러링 상태 조회 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 미러링 상태 조회 실패\n"
+                f"오류: {str(e)[:200]}"
+            )
     
     async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """🔥🔥🔥 /mirror 명령어 처리 - 미러링 모드 실시간 제어"""
