@@ -746,16 +746,16 @@ class GateioMirrorClient:
                                                    sl_price: Optional[float] = None,
                                                    reduce_only: bool = False,
                                                    trigger_type: str = "ge") -> Dict:
-        """V3 TP/SL 포함 조건부 주문 생성 - initial.price 필드 추가"""
+        """V3 TP/SL 포함 조건부 주문 생성 - initial.size를 정수형으로"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥 수정된 데이터 구조 - initial.price 필드 추가
+            # 🔥🔥🔥 수정된 데이터 구조 - initial.size를 정수형으로
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": str(order_size),  # 문자열로 전송
-                    "price": "0"  # 🔥🔥🔥 추가: 시장가로 설정 (0은 시장가 의미)
+                    "size": order_size,  # 🔥🔥🔥 정수형으로 전송
+                    "price": "0"  # 시장가로 설정 (0은 시장가 의미)
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
@@ -792,16 +792,16 @@ class GateioMirrorClient:
     
     async def create_price_triggered_order_v3(self, trigger_price: float, order_size: int,
                                             reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """V3 일반 가격 트리거 주문 생성 - initial.price 필드 추가"""
+        """V3 일반 가격 트리거 주문 생성 - initial.size를 정수형으로"""
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥 수정된 데이터 구조 - initial.price 필드 추가
+            # 🔥🔥🔥 수정된 데이터 구조 - initial.size를 정수형으로
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
-                    "size": str(order_size),  # 문자열로 전송
-                    "price": "0"  # 🔥🔥🔥 추가: 시장가로 설정 (0은 시장가 의미)
+                    "size": order_size,  # 🔥🔥🔥 정수형으로 전송
+                    "price": "0"  # 시장가로 설정 (0은 시장가 의미)
                 },
                 "trigger": {
                     "strategy_type": 0,   # 가격 기반 트리거
@@ -923,9 +923,10 @@ class GateioMirrorClient:
             
             endpoint = "/api/v4/futures/usdt/orders"
             
+            # 🔥🔥🔥 size는 정수형으로 전송
             data = {
                 "contract": contract,
-                "size": str(size)  # 문자열로 변환
+                "size": size  # 🔥🔥🔥 정수형으로 전송
             }
             
             if price is not None:
