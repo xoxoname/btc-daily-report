@@ -73,6 +73,13 @@ class MirrorTradingSystem:
         self.startup_positions = self.position_manager.startup_positions
         self.failed_mirrors = self.position_manager.failed_mirrors
         
+        # 🔥🔥🔥 마진 모드 관리 강화
+        self.margin_mode_check_interval = 300  # 5분마다 마진 모드 체크
+        self.last_margin_mode_check = datetime.min
+        self.margin_mode_enforcement_enabled = True
+        self.margin_mode_check_failures = 0
+        self.max_margin_mode_failures = 5
+        
         # 🔥🔥🔥 경고 알림 제한 시스템 - 각 타입별로 최대 2번까지만
         self.warning_counters = {
             'price_difference': 0,
@@ -85,8 +92,9 @@ class MirrorTradingSystem:
             'high_failure_rate': 0,
             'api_connection': 0,
             'system_error': 0,
-            'position_cleanup': 0,  # 🔥🔥🔥 포지션 정리 경고 추가
-            'mirror_mode_change': 0  # 🔥🔥🔥 미러링 모드 변경 경고 추가
+            'position_cleanup': 0,
+            'mirror_mode_change': 0,
+            'margin_mode_warning': 0  # 🔥🔥🔥 마진 모드 경고 추가
         }
         self.MAX_WARNING_COUNT = 2  # 각 경고 타입별 최대 2회
         
@@ -147,7 +155,8 @@ class MirrorTradingSystem:
         self.logger.info(f"🔥 미러 트레이딩 시스템 초기화 완료")
         self.logger.info(f"   - 미러링 모드: {status_text} (텔레그램 /mirror로 변경)")
         self.logger.info(f"   - 초기 복제 비율: {self.mirror_ratio_multiplier}x (텔레그램 /ratio로 변경)")
-        self.logger.info(f"   - 마진 모드: 항상 Cross로 자동 설정")
+        self.logger.info(f"   - 마진 모드: 무조건 Cross로 강제 설정")
+        self.logger.info(f"   - 마진 모드 체크: {self.margin_mode_check_interval}초마다")
         self.logger.info(f"   - 예약 주문 체결/취소 구분: 강화됨")
         self.logger.info(f"   - 포지션 동기화 강화: 30초마다")
         self.logger.info(f"   - 경고 알림 제한: 각 타입별 최대 {self.MAX_WARNING_COUNT}회")
@@ -229,12 +238,12 @@ class MirrorTradingSystem:
             }
 
     async def _restart_mirror_monitoring(self):
-        """🔥🔥🔥 미러링 모니터링 재시작 (활성화 시)"""
+        """🔥🔥🔥 미러링 모니터링 재시작 (활성화 시) - 마진 모드 강제 포함"""
         try:
             self.logger.info("🔄 미러링 모니터링 재시작 중...")
             
-            # Gate.io 마진 모드 Cross 확인
-            await self.gate_mirror.ensure_cross_margin_mode("BTC_USDT")
+            # 🔥🔥🔥 Gate.io 마진 모드 무조건 Cross 강제 설정
+            await self.gate_mirror.force_cross_margin_mode_aggressive("BTC_USDT")
             
             # 현재 시세 업데이트
             await self._update_current_prices()
@@ -283,6 +292,9 @@ class MirrorTradingSystem:
             bitget_plan_orders = await self.bitget_mirror.get_all_trigger_orders(self.SYMBOL)
             gate_trigger_orders = await self.gate_mirror.get_price_triggered_orders(self.GATE_CONTRACT, "open")
             
+            # 🔥🔥🔥 마진 모드 상태 확인
+            current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
+            
             self.logger.info(f"📊 현재 미러링 상태:")
             self.logger.info(f"  - 미러링 모드: {'활성화' if self.mirror_trading_enabled else '비활성화'}")
             self.logger.info(f"  - 복제 비율: {self.mirror_ratio_multiplier}x")
@@ -290,6 +302,7 @@ class MirrorTradingSystem:
             self.logger.info(f"  - 게이트 포지션: {gate_active}개")
             self.logger.info(f"  - 비트겟 예약 주문: {len(bitget_plan_orders)}개")
             self.logger.info(f"  - 게이트 예약 주문: {len(gate_trigger_orders)}개")
+            self.logger.info(f"  - 게이트 마진 모드: {current_margin_mode.upper()} {'✅' if current_margin_mode == 'cross' else '⚠️'}")
             
         except Exception as e:
             self.logger.error(f"미러링 상태 로깅 실패: {e}")
@@ -393,10 +406,94 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"경고 카운터 리셋 실패: {e}")
 
+    async def monitor_margin_mode_enforcement(self):
+        """🔥🔥🔥 마진 모드 강제 모니터링 - 주기적으로 Cross 모드 체크 및 설정"""
+        try:
+            self.logger.info("🔥 마진 모드 강제 모니터링 시작")
+            
+            while self.monitoring:
+                try:
+                    if not self.mirror_trading_enabled or not self.margin_mode_enforcement_enabled:
+                        await asyncio.sleep(self.margin_mode_check_interval)
+                        continue
+                    
+                    current_time = datetime.now()
+                    
+                    # 마진 모드 체크 간격 확인
+                    if (current_time - self.last_margin_mode_check).total_seconds() >= self.margin_mode_check_interval:
+                        await self._perform_margin_mode_check()
+                        self.last_margin_mode_check = current_time
+                    
+                    await asyncio.sleep(60)  # 1분마다 체크
+                    
+                except Exception as e:
+                    self.margin_mode_check_failures += 1
+                    self.logger.error(f"마진 모드 모니터링 오류 ({self.margin_mode_check_failures}회): {e}")
+                    
+                    if (self.margin_mode_check_failures >= self.max_margin_mode_failures and 
+                        self._should_send_warning('margin_mode_warning')):
+                        await self.telegram.send_message(
+                            f"⚠️ 마진 모드 모니터링 시스템 오류\n"
+                            f"연속 {self.margin_mode_check_failures}회 실패\n"
+                            f"수동으로 Gate.io Cross 마진 모드 확인을 권장합니다."
+                        )
+                    
+                    await asyncio.sleep(self.margin_mode_check_interval)
+                    
+        except Exception as e:
+            self.logger.error(f"마진 모드 강제 모니터링 시스템 실패: {e}")
+
+    async def _perform_margin_mode_check(self):
+        """🔥🔥🔥 마진 모드 체크 및 강제 설정 수행"""
+        try:
+            self.logger.debug("🔥 마진 모드 체크 시작")
+            
+            # 현재 마진 모드 확인
+            current_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
+            
+            if current_mode == "cross":
+                self.logger.debug(f"✅ 마진 모드 정상: {current_mode}")
+                self.margin_mode_check_failures = 0  # 성공 시 실패 카운터 리셋
+                return
+            
+            # Cross가 아닌 경우 강제 설정 시도
+            self.logger.warning(f"⚠️ 마진 모드가 Cross가 아님: {current_mode} → Cross로 강제 변경 시도")
+            
+            success = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
+            
+            if success:
+                self.logger.info(f"✅ 마진 모드 강제 변경 성공: {current_mode} → Cross")
+                self.margin_mode_check_failures = 0
+                
+                # 성공 알림 (한 번만)
+                if self._should_send_warning('margin_mode_warning'):
+                    await self.telegram.send_message(
+                        f"✅ Gate.io 마진 모드 자동 수정 완료\n"
+                        f"변경: {current_mode.upper()} → CROSS\n"
+                        f"💳 Cross 마진 모드로 안전하게 운영됩니다"
+                    )
+            else:
+                self.logger.warning(f"⚠️ 마진 모드 강제 변경 실패: {current_mode}")
+                self.margin_mode_check_failures += 1
+                
+                # 실패 알림 (제한적으로)
+                if (self.margin_mode_check_failures >= 3 and 
+                    self._should_send_warning('margin_mode_warning')):
+                    await self.telegram.send_message(
+                        f"⚠️ Gate.io 마진 모드 자동 변경 실패\n"
+                        f"현재 모드: {current_mode.upper()}\n"
+                        f"수동으로 Cross 마진 모드로 변경해주세요.\n"
+                        f"💡 Gate.io 웹/앱 → 선물 거래 → 마진 모드 → Cross 선택"
+                    )
+            
+        except Exception as e:
+            self.logger.error(f"마진 모드 체크 수행 실패: {e}")
+            self.margin_mode_check_failures += 1
+
     async def start(self):
         """미러 트레이딩 시작"""
         try:
-            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 텔레그램 제어 + 마진 모드 Cross")
+            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 텔레그램 제어 + 마진 모드 Cross 강제")
             
             # 🔥🔥🔥 미러링 모드 상태 확인 (비활성화여도 시스템은 시작)
             if not self.mirror_trading_enabled:
@@ -413,8 +510,17 @@ class MirrorTradingSystem:
             # Bitget 미러링 클라이언트 초기화
             await self.bitget_mirror.initialize()
             
-            # Gate.io 미러링 클라이언트 초기화 (마진 모드 Cross 설정 포함)
+            # 🔥🔥🔥 Gate.io 미러링 클라이언트 초기화 (무조건 Cross 마진 모드 강제 설정 포함)
             await self.gate_mirror.initialize()
+            
+            # 🔥🔥🔥 추가 마진 모드 강제 설정 확인
+            self.logger.info("🔥 Gate.io 마진 모드 최종 확인 및 강제 설정")
+            final_margin_success = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
+            
+            if final_margin_success:
+                self.logger.info("✅ Gate.io Cross 마진 모드 최종 확인 완료")
+            else:
+                self.logger.warning("⚠️ Gate.io Cross 마진 모드 자동 설정 실패 - 수동 설정 필요")
             
             # 현재 시세 업데이트
             await self._update_current_prices()
@@ -437,6 +543,7 @@ class MirrorTradingSystem:
                 self.monitor_price_differences(),
                 self.monitor_order_synchronization(),
                 self.monitor_position_synchronization(),  # 🔥🔥🔥 포지션 동기화 모니터링 추가
+                self.monitor_margin_mode_enforcement(),   # 🔥🔥🔥 마진 모드 강제 모니터링 추가
                 self.generate_daily_reports()
             ]
             
@@ -588,7 +695,8 @@ class MirrorTradingSystem:
                         f"🔄 포지션 동기화 완료{ratio_info}\n"
                         f"정리된 포지션: {cleaned_positions}개\n"
                         f"비트겟에서 취소된 포지션을 게이트에서도 정리했습니다.\n"
-                        f"새로운 포지션은 자동으로 미러링됩니다.{ratio_info}"
+                        f"새로운 포지션은 자동으로 미러링됩니다.{ratio_info}\n"
+                        f"💳 마진 모드: Cross 자동 유지"
                     )
                 
                 self.logger.info(f"🔄 포지션 동기화 완료: {cleaned_positions}개 포지션 정리")
@@ -948,7 +1056,8 @@ class MirrorTradingSystem:
                         f"- 확실한 고아 주문 삭제: {len(confirmed_orphans)}건\n"
                         f"- 안전한 주문 보존: {len(safe_orders)}건\n\n"
                         f"📊 현재 시세 차이: ${price_diff:.2f}\n"
-                        f"🛡️ 의심스러운 주문은 모두 안전상 보존됩니다{ratio_info}"
+                        f"🛡️ 의심스러운 주문은 모두 안전상 보존됩니다{ratio_info}\n"
+                        f"💳 마진 모드: Cross 자동 유지"
                     )
             elif fixed_count > 0:
                 self.logger.info(f"🔄 예약 주문 안전한 동기화 완료: {fixed_count}건 해결")
@@ -1383,7 +1492,7 @@ class MirrorTradingSystem:
                 await asyncio.sleep(3600)
 
     async def _create_daily_report(self) -> str:
-        """일일 리포트 생성 - 실패율 계산 수정"""
+        """일일 리포트 생성 - 마진 모드 정보 포함"""
         try:
             # 기본 클라이언트로 계정 조회
             bitget_account = await self.bitget.get_account_info()
@@ -1442,10 +1551,18 @@ class MirrorTradingSystem:
             # 🔥🔥🔥 포지션 동기화 통계 추가
             position_cleanups = self.daily_stats.get('position_closed_cleanups', 0)
             
+            # 🔥🔥🔥 마진 모드 현재 상태 확인
+            try:
+                current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
+                margin_mode_status = f"{current_margin_mode.upper()} {'✅' if current_margin_mode == 'cross' else '⚠️'}"
+            except:
+                current_margin_mode = "확인 실패"
+                margin_mode_status = "확인 실패 ⚠️"
+            
             # 미러링 모드 상태
             mirror_status = "활성화" if self.mirror_trading_enabled else "비활성화"
             
-            report = f"""📊 미러 트레이딩 일일 리포트 (텔레그램 제어 + 마진 모드 Cross)
+            report = f"""📊 미러 트레이딩 일일 리포트 (텔레그램 제어 + 마진 모드 Cross 강제)
 📅 {datetime.now().strftime('%Y-%m-%d')}
 ━━━━━━━━━━━━━━━━━━━
 
@@ -1459,8 +1576,13 @@ class MirrorTradingSystem:
 - 미러링 모드: {mirror_status} (/mirror on/off로 변경)
 - 복제 비율: {self.mirror_ratio_multiplier}x
 - 설명: {ratio_description}
-- 마진 모드: Cross (자동 유지)
 - 조정 방법: /ratio 명령어로 실시간 변경
+
+💳 마진 모드 강제 관리:
+- 현재 상태: {margin_mode_status}
+- 자동 체크: {self.margin_mode_check_interval}초마다
+- 강제 설정: 4가지 방법으로 시도
+- 모니터링: 활성화 (실패 시 알림)
 
 ⚡ 실시간 포지션 미러링 (실패율 수정):
 - 주문 체결 기반: {self.daily_stats['order_mirrors']}회
@@ -1520,7 +1642,8 @@ class MirrorTradingSystem:
 
 🔥 강화된 안전장치:
 - 미러링 모드: 텔레그램 실시간 제어 (/mirror on/off)
-- 마진 모드: 항상 Cross 자동 유지 (청산 방지)
+- 마진 모드: 무조건 Cross 강제 설정 ({self.margin_mode_check_interval}초마다 체크)
+- 마진 모드 강제: 4가지 방법 (포지션, 계정, 리셋, 직접 API)
 - 예약 주문 동기화: 45초 (더 신중하게)
 - 포지션 동기화: 30초 (비트겟 취소시 게이트 자동 정리)
 - 체결/취소 구분: 정확한 감지 시스템
@@ -1535,12 +1658,13 @@ class MirrorTradingSystem:
 ━━━━━━━━━━━━━━━━━━━
 ✅ 미러 트레이딩 시스템 안전하게 작동 중
 🎮 텔레그램으로 실시간 제어 가능 (/mirror, /ratio)
-💳 게이트 마진 모드 Cross 자동 유지 (청산 방지)
+💳 게이트 마진 모드 무조건 Cross 강제 ({margin_mode_status})
 🛡️ 안전 우선 정책으로 잘못된 삭제 방지
 📋 예약 주문 체결/취소가 정확히 구분됨
 🔄 복제 비율 {self.mirror_ratio_multiplier}x 적용 중
 🔔 경고 알림 스팸 방지: 각 타입별 최대 {self.MAX_WARNING_COUNT}회
-🔄 포지션 동기화 강화: 비트겟 취소시 게이트도 자동 정리"""
+🔄 포지션 동기화 강화: 비트겟 취소시 게이트도 자동 정리
+🔥 마진 모드 강제: {self.margin_mode_check_interval}초마다 Cross 모드 보장"""
             
             if self.daily_stats.get('errors'):
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -1592,11 +1716,14 @@ class MirrorTradingSystem:
         # 🔥🔥🔥 경고 카운터도 매일 리셋
         self._reset_warning_counter()
         
+        # 🔥🔥🔥 마진 모드 체크 실패 카운터 리셋
+        self.margin_mode_check_failures = 0
+        
         # 포지션 매니저의 통계도 동기화
         self.position_manager.daily_stats = self.daily_stats
 
     async def _log_account_status(self):
-        """계정 상태 로깅 - 텔레그램 제어 안내 추가"""
+        """계정 상태 로깅 - 마진 모드 강제 설정 안내 추가"""
         try:
             # 기본 클라이언트로 계정 조회
             bitget_account = await self.bitget.get_account_info()
@@ -1632,15 +1759,30 @@ class MirrorTradingSystem:
 • 현재 상태: /mirror status
 • 복제 비율 변경: /ratio [배율]"""
             
-            # 게이트 마진 모드 확인
+            # 🔥🔥🔥 게이트 마진 모드 강제 확인 및 설정
             try:
                 gate_margin_mode = await self.gate_mirror.get_current_margin_mode("BTC_USDT")
-                margin_mode_info = f"💳 게이트 마진 모드: {gate_margin_mode.upper()} {'✅' if gate_margin_mode == 'cross' else '⚠️ Cross로 변경 필요'}"
-            except:
-                margin_mode_info = "💳 게이트 마진 모드: 확인 실패 (자동으로 Cross 설정 시도)"
+                
+                if gate_margin_mode == 'cross':
+                    margin_mode_info = f"💳 게이트 마진 모드: {gate_margin_mode.upper()} ✅ (완벽)"
+                else:
+                    margin_mode_info = f"💳 게이트 마진 모드: {gate_margin_mode.upper()} ⚠️ → Cross로 강제 변경 시도 중"
+                    
+                    # 즉시 강제 설정 시도
+                    self.logger.info(f"🔥 마진 모드가 Cross가 아님: {gate_margin_mode} → 즉시 강제 변경 시도")
+                    force_result = await self.gate_mirror.force_cross_margin_mode_aggressive("BTC_USDT")
+                    
+                    if force_result:
+                        margin_mode_info = f"💳 게이트 마진 모드: {gate_margin_mode.upper()} → CROSS ✅ (강제 변경 완료)"
+                    else:
+                        margin_mode_info = f"💳 게이트 마진 모드: {gate_margin_mode.upper()} ⚠️ (자동 변경 실패 - 수동 설정 필요)"
+                        
+            except Exception as margin_error:
+                margin_mode_info = f"💳 게이트 마진 모드: 확인 실패 ⚠️ (자동으로 Cross 설정 시도 중)"
+                self.logger.error(f"마진 모드 확인 실패: {margin_error}")
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (텔레그램 제어 + 마진 모드 Cross)\n\n"
+                f"🔄 미러 트레이딩 시스템 시작 (텔레그램 제어 + 마진 모드 Cross 강제)\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}\n\n"
@@ -1651,6 +1793,11 @@ class MirrorTradingSystem:
                 f"• 설명: {ratio_description}\n\n"
                 f"{mirror_control_info}\n\n"
                 f"{margin_mode_info}\n\n"
+                f"🔥 마진 모드 강제 관리:\n"
+                f"• 자동 체크: {self.margin_mode_check_interval}초마다 실행\n"
+                f"• 강제 설정: 4가지 방법으로 시도\n"
+                f"• 모니터링: 상시 실행 (실패 시 알림)\n"
+                f"• Cross 보장: 무조건 Cross 모드 유지\n\n"
                 f"🔄 포지션 동기화 강화:\n"
                 f"• 30초마다 자동 동기화 체크\n"
                 f"• 비트겟에서 포지션 취소시 게이트도 자동 정리\n"
@@ -1666,7 +1813,7 @@ class MirrorTradingSystem:
                 f"• 매일 자정에 카운터 리셋\n\n"
                 f"⚡ 개선된 핵심 기능:\n"
                 f"• 🎮 텔레그램 실시간 제어 (/mirror on/off)\n"
-                f"• 💳 게이트 마진 모드 항상 Cross 유지\n"
+                f"• 💳 게이트 마진 모드 무조건 Cross 강제 ({self.margin_mode_check_interval}초마다)\n"
                 f"• 🎯 완벽한 TP/SL 미러링\n"
                 f"• 🔄 45초마다 안전한 자동 동기화\n"
                 f"• 🛡️ 강화된 중복 복제 방지\n"
@@ -1681,11 +1828,12 @@ class MirrorTradingSystem:
                 f"• 🔄 렌더 재구동 시 예약 주문 자동 미러링\n"
                 f"• 🔔 경고 알림 스팸 방지 (각 타입별 최대 {self.MAX_WARNING_COUNT}회)\n"
                 f"• 🔄 포지션 동기화 강화 (30초마다 자동 정리)\n"
-                f"• 📊 실패율 계산 수정 (0으로 나누기 방지)\n\n"
-                f"🚀 텔레그램 제어 + 마진 모드 Cross 시스템이 시작되었습니다.\n"
+                f"• 📊 실패율 계산 수정 (0으로 나누기 방지)\n"
+                f"• 🔥 마진 모드 강제: {self.margin_mode_check_interval}초마다 Cross 보장\n\n"
+                f"🚀 텔레그램 제어 + 마진 모드 Cross 강제 시스템이 시작되었습니다.\n"
                 f"📱 /mirror on/off로 미러링을 실시간 제어할 수 있습니다.\n"
                 f"📱 /ratio 명령어로 복제 비율을 실시간 조정할 수 있습니다.\n"
-                f"💳 게이트 마진 모드는 항상 Cross로 자동 유지됩니다."
+                f"💳 게이트 마진 모드는 무조건 Cross로 강제 유지됩니다."
             )
             
         except Exception as e:
