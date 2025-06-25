@@ -779,10 +779,13 @@ class BitcoinPredictionSystem:
             await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.", parse_mode='HTML')
     
     async def handle_ratio_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """배율 명령어 처리 - 텔레그램 봇에 위임"""
+        """🔥🔥🔥 배율 명령어 처리 - 텔레그램 봇에 완전 위임"""
         try:
             self.command_stats['ratio'] += 1
             
+            self.logger.info(f"🔥 main.py에서 ratio 명령어 수신 - 텔레그램 봇으로 완전 위임")
+            
+            # 미러 트레이딩 시스템 참조 확인
             if not self.mirror_trading:
                 await update.message.reply_text(
                     "❌ 미러 트레이딩 시스템이 초기화되지 않았습니다.\n"
@@ -791,7 +794,7 @@ class BitcoinPredictionSystem:
                 )
                 return
             
-            # 텔레그램 봇의 ratio 핸들러에 위임
+            # 🔥🔥🔥 텔레그램 봇의 ratio 핸들러에 완전 위임
             await self.telegram_bot.handle_ratio_command(update, context)
             
         except Exception as e:
@@ -959,9 +962,11 @@ class BitcoinPredictionSystem:
         return f"{response}{default_commands}"
     
     async def handle_mirror_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """미러 트레이딩 상태 확인 - 텔레그램 봇에 위임"""
+        """🔥🔥🔥 미러 트레이딩 상태 확인 - 텔레그램 봇에 완전 위임"""
         try:
             self.command_stats['mirror'] += 1
+            
+            self.logger.info(f"🔥 main.py에서 mirror 상태 요청 - 텔레그램 봇으로 완전 위임")
             
             if not self.mirror_trading:
                 await update.message.reply_text(
@@ -971,7 +976,7 @@ class BitcoinPredictionSystem:
                 )
                 return
             
-            # 텔레그램 봇의 미러 상태 핸들러에 위임
+            # 🔥🔥🔥 텔레그램 봇의 미러 상태 핸들러에 완전 위임
             await self.telegram_bot.handle_mirror_status(update, context)
             
         except Exception as e:
@@ -1507,6 +1512,9 @@ class BitcoinPredictionSystem:
 🎮 텔레그램 실시간 제어 시스템 정상 작동
 💳 Gate.io Cross 마진 자동 설정 완료"""
             
+            if self.daily_stats.get('errors'):
+                report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
+            
             await self.telegram_bot.send_message(report, parse_mode='HTML')
             
             # 통계 초기화
@@ -1696,8 +1704,16 @@ class BitcoinPredictionSystem:
             await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
     
     async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """미러 트레이딩 상태 명령"""
-        await self.handle_mirror_status(update, context)
+        """🔥🔥🔥 미러 트레이딩 명령 - 텔레그램 봇에 완전 위임"""
+        try:
+            self.logger.info(f"🔥 main.py에서 mirror 명령어 수신 - 텔레그램 봇으로 완전 위임")
+            
+            # 🔥🔥🔥 텔레그램 봇의 미러 핸들러에 완전 위임
+            await self.telegram_bot.handle_mirror_command(update, context)
+        
+        except Exception as e:
+            self.logger.error(f"미러 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 미러링 명령어 처리 실패", parse_mode='HTML')
     
     async def start(self):
         """시스템 시작"""
@@ -1782,22 +1798,27 @@ class BitcoinPredictionSystem:
             self.logger.info("스케줄러 시작 중...")
             self.scheduler.start()
             
-            # 텔레그램 봇 핸들러 등록
-            self.logger.info("텔레그램 봇 핸들러 등록 중...")
+            # 🔥🔥🔥 텔레그램 봇 핸들러 등록 - 중복 방지 강화
+            self.logger.info("🔥 텔레그램 봇 핸들러 등록 중 (중복 방지)")
+            
+            # 기본 명령어 핸들러 등록
             self.telegram_bot.add_handler('start', self.handle_start_command)
+            self.telegram_bot.add_handler('help', self.handle_start_command)
             self.telegram_bot.add_handler('report', self.handle_report_command)
             self.telegram_bot.add_handler('forecast', self.handle_forecast_command)
             self.telegram_bot.add_handler('profit', self.handle_profit_command)
             self.telegram_bot.add_handler('schedule', self.handle_schedule_command)
             self.telegram_bot.add_handler('stats', self.handle_stats_command)
-            self.telegram_bot.add_handler('help', self.handle_start_command)
             
-            # 미러링 관련 핸들러는 항상 등록 (시스템이 초기화되어 있으므로)
+            # 🔥🔥🔥 미러링 관련 핸들러는 텔레그램 봇에서 자체 처리하도록 변경
+            # main.py의 핸들러는 단순히 위임만 함
             self.telegram_bot.add_handler('mirror', self.handle_mirror_command)
             self.telegram_bot.add_handler('ratio', self.handle_ratio_command)
             
             # 자연어 메시지 핸들러 추가
             self.telegram_bot.add_message_handler(self.handle_natural_language)
+            
+            self.logger.info("✅ 모든 텔레그램 핸들러 등록 완료")
             
             # 텔레그램 봇 시작
             self.logger.info("텔레그램 봇 시작 중...")
