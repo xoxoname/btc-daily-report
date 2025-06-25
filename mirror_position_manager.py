@@ -10,7 +10,7 @@ from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 logger = logging.getLogger(__name__)
 
 class MirrorPositionManager:
-    """🔥🔥🔥 포지션 및 주문 관리 클래스 - 예약 주문 취소 동기화 강화 + 복제 비율 적용 수정"""
+    """🔥🔥🔥 포지션 및 주문 관리 클래스 - 시세 차이 고려한 체결/취소 구분 강화"""
     
     def __init__(self, config, bitget_client, gate_client, gate_mirror_client, telegram_bot, utils):
         self.config = config
@@ -55,6 +55,12 @@ class MirrorPositionManager:
         self.filled_order_timestamps: Dict[str, datetime] = {}
         self.filled_order_check_window = 300  # 5분간 체결 기록 유지
         
+        # 🔥🔥🔥 시세 차이 고려 체결/취소 판단 시스템 강화
+        self.price_based_fill_detection = True  # 시세 기반 체결 감지 활성화
+        self.price_diff_threshold = 100.0  # 100달러 차이 임계값
+        self.safe_cancel_window = 60  # 안전한 취소 판단을 위한 대기 시간 (초)
+        self.order_fill_analysis_cache: Dict[str, Dict] = {}  # 주문별 분석 캐시
+        
         # 🔥🔥🔥 중복 복제 방지 시스템 - 완화된 버전
         self.order_processing_locks: Dict[str, asyncio.Lock] = {}
         self.recently_processed_orders: Dict[str, datetime] = {}
@@ -65,7 +71,7 @@ class MirrorPositionManager:
         self.order_hash_timestamps: Dict[str, datetime] = {}
         self.hash_cleanup_interval = 180  # 300초 → 180초로 단축
         
-        # 🔥🔥🔥 예약 주문 취소 감지 시스템 강화 - 더 적극적인 동기화
+        # 🔥🔥🔥 예약 주문 취소 감지 시스템 강화 - 시세 차이 고려
         self.last_plan_order_ids: Set[str] = set()
         self.plan_order_snapshot: Dict[str, Dict] = {}
         self.cancel_retry_count: Dict[str, int] = {}
@@ -153,13 +159,16 @@ class MirrorPositionManager:
             'cancel_failures': 0,
             'cancel_successes': 0,
             'filled_detection_successes': 0,
-            'forced_cancel_cleanups': 0,  # 🔥🔥🔥 강제 취소 정리 통계 추가
+            'forced_cancel_cleanups': 0,
+            'price_based_fill_detections': 0,  # 🔥🔥🔥 시세 기반 체결 감지 통계
+            'safe_cancel_preventions': 0,     # 🔥🔥🔥 안전한 취소 방지 통계
             'errors': []
         }
         
         self.logger.info(f"🔥 미러 포지션 매니저 초기화 완료")
         self.logger.info(f"🔥 미러링 모드는 텔레그램 /mirror 명령으로 제어")
         self.logger.info(f"🔥 복제 비율은 텔레그램 /ratio 명령으로 조정")
+        self.logger.info(f"🔥 시세 차이 고려 체결/취소 구분 시스템 활성화")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
         """시세 정보 업데이트"""
@@ -170,7 +179,7 @@ class MirrorPositionManager:
     async def initialize(self):
         """포지션 매니저 초기화"""
         try:
-            self.logger.info("🔥 포지션 매니저 초기화 시작 - 예약 주문 취소 동기화 강화 + 복제 비율 적용 수정")
+            self.logger.info("🔥 포지션 매니저 초기화 시작 - 시세 차이 고려한 체결/취소 구분 강화")
             
             # 미러링 비활성화 확인
             if not self.mirror_trading_enabled:
@@ -204,7 +213,7 @@ class MirrorPositionManager:
             raise
 
     async def monitor_plan_orders_cycle(self):
-        """🔥🔥🔥 예약 주문 모니터링 사이클 - 취소 동기화 강화"""
+        """🔥🔥🔥 예약 주문 모니터링 사이클 - 시세 차이 고려한 체결/취소 구분 강화"""
         try:
             if not self.mirror_trading_enabled:
                 await asyncio.sleep(1.0)
@@ -255,36 +264,45 @@ class MirrorPositionManager:
                         'status': 'active'
                     }
             
-            # 🔥🔥🔥 사라진 예약 주문 분석 - 체결 vs 취소 구분 강화
+            # 🔥🔥🔥 사라진 예약 주문 분석 - 시세 차이 고려한 체결/취소 구분 강화
             disappeared_order_ids = self.last_plan_order_ids - current_order_ids
             
             if disappeared_order_ids:
-                self.logger.info(f"📋 {len(disappeared_order_ids)}개의 예약 주문이 사라짐 - 강화된 체결/취소 분석 시작")
+                self.logger.info(f"📋 {len(disappeared_order_ids)}개의 예약 주문이 사라짐 - 시세 차이 고려한 강화된 체결/취소 분석 시작")
                 
                 canceled_count = 0
                 filled_count = 0
                 
                 for disappeared_id in disappeared_order_ids:
                     try:
-                        # 체결/취소 구분 로직
-                        is_filled = await self._check_if_order_was_filled(disappeared_id)
+                        # 🔥🔥🔥 시세 차이를 고려한 개선된 체결/취소 구분 로직
+                        analysis_result = await self._analyze_order_disappearance_with_price_context(disappeared_id)
                         
-                        if is_filled:
+                        if analysis_result['is_filled']:
                             filled_count += 1
                             self.daily_stats['filled_detection_successes'] += 1
-                            self.logger.info(f"✅ 체결 감지: {disappeared_id} - 게이트 주문 유지")
+                            if analysis_result.get('price_based_detection'):
+                                self.daily_stats['price_based_fill_detections'] += 1
+                            
+                            self.logger.info(f"✅ 체결 감지: {disappeared_id} - 게이트 주문 유지 (방법: {analysis_result['detection_method']})")
                             
                             # 체결된 주문은 미러링 기록에서 제거만 하고 게이트 주문은 건드리지 않음
                             if disappeared_id in self.mirrored_plan_orders:
                                 await self._cleanup_mirror_records_for_filled_order(disappeared_id)
                         else:
-                            # 실제 취소된 주문만 처리 - 강화된 버전
-                            success = await self._handle_plan_order_cancel_enhanced_v2(disappeared_id)
-                            if success:
-                                canceled_count += 1
-                                self.daily_stats['cancel_successes'] += 1
+                            # 실제 취소된 주문만 처리 - 시세 차이 고려한 안전한 처리
+                            if analysis_result.get('safe_to_cancel', True):
+                                success = await self._handle_plan_order_cancel_enhanced_v2(disappeared_id)
+                                if success:
+                                    canceled_count += 1
+                                    self.daily_stats['cancel_successes'] += 1
+                                else:
+                                    self.daily_stats['cancel_failures'] += 1
                             else:
-                                self.daily_stats['cancel_failures'] += 1
+                                # 안전하지 않은 취소 - 대기
+                                self.daily_stats['safe_cancel_preventions'] += 1
+                                self.logger.warning(f"⏳ 시세 차이로 인한 안전 대기: {disappeared_id} (이유: {analysis_result['reason']})")
+                                continue
                                 
                     except Exception as e:
                         self.logger.error(f"사라진 주문 분석 중 예외: {disappeared_id} - {e}")
@@ -295,12 +313,13 @@ class MirrorPositionManager:
                 # 체결/취소 결과 알림
                 if filled_count > 0 or canceled_count > 0:
                     await self.telegram.send_message(
-                        f"📋 예약 주문 변화 분석 결과 (강화된 동기화)\n"
+                        f"📋 시세 차이 고려한 예약 주문 변화 분석 결과\n"
                         f"사라진 주문: {len(disappeared_order_ids)}개\n"
                         f"🎯 체결 감지: {filled_count}개 (게이트 주문 유지)\n"
-                        f"🚫 취소 동기화: {canceled_count}개 (강화된 로직)\n"
+                        f"🚫 취소 동기화: {canceled_count}개 (시세 차이 고려)\n"
+                        f"⏳ 안전 대기: {len(disappeared_order_ids) - filled_count - canceled_count}개\n"
                         f"📊 현재 시세 차이: ${price_diff_abs:.2f}\n\n"
-                        f"{'✅ 체결/취소가 정확히 구분되어 처리되었습니다!' if filled_count > 0 else '🔄 모든 취소가 성공적으로 동기화되었습니다!'}"
+                        f"{'✅ 시세 차이를 고려하여 체결/취소가 정확히 구분되었습니다!' if filled_count > 0 else '🔄 안전한 취소 동기화가 완료되었습니다!'}"
                     )
             
             # 새로운 예약 주문 감지 - 복제 비율 적용 강화
@@ -451,6 +470,206 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
 
+    async def _analyze_order_disappearance_with_price_context(self, order_id: str) -> Dict:
+        """🔥🔥🔥 시세 차이를 고려한 주문 사라짐 분석 - 체결/취소 정확한 구분"""
+        try:
+            self.logger.info(f"🔍 시세 차이 고려한 주문 사라짐 분석 시작: {order_id}")
+            
+            # 기본 결과 구조
+            result = {
+                'order_id': order_id,
+                'is_filled': False,
+                'safe_to_cancel': True,
+                'detection_method': 'unknown',
+                'price_based_detection': False,
+                'reason': '',
+                'bitget_price': self.bitget_current_price,
+                'gate_price': self.gate_current_price,
+                'price_diff': abs(self.bitget_current_price - self.gate_current_price)
+            }
+            
+            # 1. 캐시에서 주문 정보 조회
+            order_info = None
+            if order_id in self.plan_order_snapshot:
+                order_info = self.plan_order_snapshot[order_id]['order_data']
+            elif order_id in self.mirrored_plan_orders:
+                order_info = self.mirrored_plan_orders[order_id].get('bitget_order')
+            
+            if not order_info:
+                self.logger.warning(f"주문 정보를 찾을 수 없음: {order_id}")
+                result['reason'] = '주문 정보 없음'
+                result['safe_to_cancel'] = True
+                return result
+            
+            # 2. 트리거 가격 추출
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if order_info.get(price_field):
+                    trigger_price = float(order_info.get(price_field))
+                    break
+            
+            if trigger_price <= 0:
+                self.logger.warning(f"유효한 트리거 가격을 찾을 수 없음: {order_id}")
+                result['reason'] = '트리거 가격 없음'
+                result['safe_to_cancel'] = True
+                return result
+            
+            # 3. 주문 방향 분석
+            side = order_info.get('side', order_info.get('tradeSide', '')).lower()
+            is_long_order = ('buy' in side or 'long' in side) and 'close' not in side
+            is_short_order = ('sell' in side or 'short' in side) and 'close' not in side
+            is_close_order = 'close' in side or order_info.get('reduceOnly', False)
+            
+            # 4. 🔥🔥🔥 시세 기반 체결 가능성 분석
+            bitget_reached = False
+            gate_reached = False
+            
+            if is_long_order:
+                # 롱 오픈: 현재가가 트리거가 이하로 내려가면 체결
+                bitget_reached = self.bitget_current_price <= trigger_price
+                gate_reached = self.gate_current_price <= trigger_price
+            elif is_short_order:
+                # 숏 오픈: 현재가가 트리거가 이상으로 올라가면 체결
+                bitget_reached = self.bitget_current_price >= trigger_price
+                gate_reached = self.gate_current_price >= trigger_price
+            elif is_close_order:
+                # 클로즈 주문: 방향에 따라 다름
+                if 'close_long' in side or 'sell' in side:
+                    # 롱 클로즈: 현재가가 트리거가 이상으로 올라가면 체결 (이익실현) 또는 이하로 내려가면 체결 (손절)
+                    bitget_reached = abs(self.bitget_current_price - trigger_price) <= self.price_diff_threshold
+                    gate_reached = abs(self.gate_current_price - trigger_price) <= self.price_diff_threshold
+                elif 'close_short' in side or 'buy' in side:
+                    # 숏 클로즈: 현재가가 트리거가 이하로 내려가면 체결 (이익실현) 또는 이상으로 올라가면 체결 (손절)
+                    bitget_reached = abs(self.bitget_current_price - trigger_price) <= self.price_diff_threshold
+                    gate_reached = abs(self.gate_current_price - trigger_price) <= self.price_diff_threshold
+                else:
+                    # 일반적인 클로즈: 트리거 가격 근처에서 체결 가능
+                    bitget_reached = abs(self.bitget_current_price - trigger_price) <= self.price_diff_threshold * 2
+                    gate_reached = abs(self.gate_current_price - trigger_price) <= self.price_diff_threshold * 2
+            
+            result['trigger_price'] = trigger_price
+            result['bitget_reached'] = bitget_reached
+            result['gate_reached'] = gate_reached
+            result['side'] = side
+            result['is_close_order'] = is_close_order
+            
+            # 5. 🔥🔥🔥 체결/취소 판단 로직
+            if bitget_reached and not gate_reached:
+                # 비트겟은 도달했지만 게이트는 아직 도달하지 않음 → 체결로 판단
+                result['is_filled'] = True
+                result['detection_method'] = 'price_based_bitget_reached'
+                result['price_based_detection'] = True
+                result['safe_to_cancel'] = False  # 게이트 주문은 유지해야 함
+                result['reason'] = f'비트겟 시세({self.bitget_current_price:.2f})는 트리거가({trigger_price:.2f})에 도달했지만 게이트({self.gate_current_price:.2f})는 미도달'
+                
+                self.logger.info(f"🎯 시세 기반 체결 감지: {order_id}")
+                self.logger.info(f"   트리거가: ${trigger_price:.2f}")
+                self.logger.info(f"   비트겟: ${self.bitget_current_price:.2f} ({'도달' if bitget_reached else '미도달'})")
+                self.logger.info(f"   게이트: ${self.gate_current_price:.2f} ({'도달' if gate_reached else '미도달'})")
+                
+            elif not bitget_reached and not gate_reached:
+                # 양쪽 모두 도달하지 않음 → 실제 취소로 판단
+                result['is_filled'] = False
+                result['detection_method'] = 'likely_cancelled'
+                result['safe_to_cancel'] = True
+                result['reason'] = f'양쪽 거래소 모두 트리거가에 미도달 - 실제 취소로 판단'
+                
+            elif bitget_reached and gate_reached:
+                # 양쪽 모두 도달 → 기존 방식으로 체결 여부 확인
+                is_filled_traditional = await self._check_if_order_was_filled_traditional(order_id)
+                result['is_filled'] = is_filled_traditional
+                result['detection_method'] = 'traditional_check_both_reached'
+                result['safe_to_cancel'] = not is_filled_traditional
+                result['reason'] = f'양쪽 거래소 모두 트리거가 도달 - 기존 방식으로 확인'
+                
+            else:
+                # 게이트만 도달, 비트겟 미도달 (매우 드문 경우) → 안전하게 대기
+                result['is_filled'] = False
+                result['detection_method'] = 'gate_only_reached_wait'
+                result['safe_to_cancel'] = False  # 안전상 대기
+                result['reason'] = f'게이트만 도달한 특이 상황 - 안전상 대기'
+            
+            # 6. 🔥🔥🔥 추가 안전장치 - 큰 시세 차이에서는 더 신중하게
+            price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
+            if price_diff_abs > self.price_diff_threshold * 2:
+                if result['is_filled'] and result['price_based_detection']:
+                    # 시세 기반 체결 감지는 유지하되 더 엄격하게
+                    price_ratio = price_diff_abs / trigger_price * 100
+                    if price_ratio > 5.0:  # 트리거가의 5% 이상 차이
+                        result['safe_to_cancel'] = False
+                        result['reason'] += f' (큰 시세 차이로 더 신중: {price_diff_abs:.2f}$)'
+                        self.logger.warning(f"큰 시세 차이로 더 신중한 처리: {order_id}")
+            
+            # 7. 분석 결과 로깅
+            self.logger.info(f"🔍 주문 사라짐 분석 완료: {order_id}")
+            self.logger.info(f"   결과: {'체결' if result['is_filled'] else '취소'}")
+            self.logger.info(f"   방법: {result['detection_method']}")
+            self.logger.info(f"   안전: {'취소 가능' if result['safe_to_cancel'] else '대기 필요'}")
+            self.logger.info(f"   이유: {result['reason']}")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"시세 차이 고려한 주문 사라짐 분석 실패: {order_id} - {e}")
+            return {
+                'order_id': order_id,
+                'is_filled': False,
+                'safe_to_cancel': True,  # 오류 시 안전하게 취소 허용
+                'detection_method': 'error_fallback',
+                'price_based_detection': False,
+                'reason': f'분석 오류: {str(e)[:100]}',
+                'bitget_price': self.bitget_current_price,
+                'gate_price': self.gate_current_price,
+                'price_diff': abs(self.bitget_current_price - self.gate_current_price)
+            }
+
+    async def _check_if_order_was_filled_traditional(self, order_id: str) -> bool:
+        """🔥🔥🔥 기존 방식의 체결 확인 (양쪽 거래소 모두 도달한 경우)"""
+        try:
+            # 1. 최근 체결 기록에서 확인
+            if order_id in self.recently_filled_order_ids:
+                self.logger.info(f"✅ 체결 확인 (최근 기록): {order_id}")
+                return True
+            
+            # 2. 실시간 체결 주문 조회로 재확인
+            recent_filled = await self.bitget.get_recent_filled_orders(symbol=self.SYMBOL, minutes=2)
+            
+            for filled_order in recent_filled:
+                filled_id = filled_order.get('orderId', filled_order.get('id', ''))
+                if filled_id == order_id:
+                    self.logger.info(f"✅ 체결 확인 (실시간 조회): {order_id}")
+                    
+                    # 체결 기록에 추가
+                    self.recently_filled_order_ids.add(order_id)
+                    self.filled_order_timestamps[order_id] = datetime.now()
+                    return True
+            
+            # 3. 주문 내역에서 체결 상태 확인
+            try:
+                order_history = await self.bitget.get_order_history(
+                    symbol=self.SYMBOL, 
+                    status='filled',
+                    limit=50
+                )
+                
+                for hist_order in order_history:
+                    hist_id = hist_order.get('orderId', hist_order.get('id', ''))
+                    if hist_id == order_id:
+                        self.logger.info(f"✅ 체결 확인 (주문 내역): {order_id}")
+                        return True
+                        
+            except Exception as e:
+                self.logger.debug(f"주문 내역 조회 실패: {e}")
+            
+            # 체결되지 않음 = 취소됨
+            self.logger.info(f"🚫 취소 확인 (기존 방식): {order_id}")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"기존 방식 체결/취소 확인 실패: {order_id} - {e}")
+            # 확실하지 않으면 체결로 처리 (안전상)
+            return True
+
     async def _enhanced_cancel_detection(self):
         """🔥🔥🔥 강화된 취소 감지 시스템 - 더 빠른 동기화"""
         try:
@@ -468,16 +687,16 @@ class MirrorPositionManager:
             
             for bitget_id, mirror_info in list(self.mirrored_plan_orders.items()):
                 if bitget_id not in current_bitget_ids:
-                    # 체결 여부 확인
-                    is_filled = await self._check_if_order_was_filled(bitget_id)
+                    # 🔥🔥🔥 시세 차이를 고려한 체결/취소 분석
+                    analysis_result = await self._analyze_order_disappearance_with_price_context(bitget_id)
                     
-                    if not is_filled:
-                        # 취소된 것으로 판단
+                    if not analysis_result['is_filled'] and analysis_result['safe_to_cancel']:
+                        # 실제 취소된 것으로 판단되고 안전한 경우에만 처리
                         missing_bitget_orders.append(bitget_id)
             
             # 취소된 주문들 처리
             if missing_bitget_orders:
-                self.logger.info(f"🔍 강화된 취소 감지: {len(missing_bitget_orders)}개 주문이 비트겟에서 취소됨")
+                self.logger.info(f"🔍 강화된 취소 감지: {len(missing_bitget_orders)}개 주문이 비트겟에서 안전하게 취소됨")
                 
                 for bitget_id in missing_bitget_orders:
                     try:
@@ -590,7 +809,7 @@ class MirrorPositionManager:
                     f"비트겟 ID: {bitget_order_id}\n"
                     f"게이트 ID: {gate_order_id}\n"
                     f"재시도 횟수: {retry_count + 1}회\n"
-                    f"🔥 강화된 동기화 로직으로 처리됨"
+                    f"🔥 시세 차이를 고려한 강화된 동기화 로직으로 처리됨"
                 )
                 
                 self.logger.info(f"🎯 강화된 예약 주문 취소 동기화 성공: {bitget_order_id} → {gate_order_id}")
@@ -640,7 +859,7 @@ class MirrorPositionManager:
                 f"비트겟 ID: {bitget_order_id}\n"
                 f"게이트 ID: {gate_order_id}\n"
                 f"사유: 반복 취소 실패로 강제 정리\n"
-                f"🔥 강화된 정리 로직으로 처리됨\n"
+                f"🔥 시세 차이 고려한 강화된 정리 로직으로 처리됨\n"
                 f"⚠️ 게이트에서 수동 확인을 권장합니다"
             )
             
@@ -901,53 +1120,6 @@ class MirrorPositionManager:
                 
         except Exception as e:
             self.logger.error(f"최근 체결 주문 업데이트 실패: {e}")
-
-    async def _check_if_order_was_filled(self, order_id: str) -> bool:
-        """주문이 체결되었는지 확인"""
-        try:
-            # 1. 최근 체결 기록에서 확인
-            if order_id in self.recently_filled_order_ids:
-                self.logger.info(f"✅ 체결 확인 (최근 기록): {order_id}")
-                return True
-            
-            # 2. 실시간 체결 주문 조회로 재확인
-            recent_filled = await self.bitget.get_recent_filled_orders(symbol=self.SYMBOL, minutes=2)
-            
-            for filled_order in recent_filled:
-                filled_id = filled_order.get('orderId', filled_order.get('id', ''))
-                if filled_id == order_id:
-                    self.logger.info(f"✅ 체결 확인 (실시간 조회): {order_id}")
-                    
-                    # 체결 기록에 추가
-                    self.recently_filled_order_ids.add(order_id)
-                    self.filled_order_timestamps[order_id] = datetime.now()
-                    return True
-            
-            # 3. 주문 내역에서 체결 상태 확인
-            try:
-                order_history = await self.bitget.get_order_history(
-                    symbol=self.SYMBOL, 
-                    status='filled',
-                    limit=50
-                )
-                
-                for hist_order in order_history:
-                    hist_id = hist_order.get('orderId', hist_order.get('id', ''))
-                    if hist_id == order_id:
-                        self.logger.info(f"✅ 체결 확인 (주문 내역): {order_id}")
-                        return True
-                        
-            except Exception as e:
-                self.logger.debug(f"주문 내역 조회 실패: {e}")
-            
-            # 체결되지 않음 = 취소됨
-            self.logger.info(f"🚫 취소 확인: {order_id}")
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"주문 체결/취소 확인 실패: {order_id} - {e}")
-            # 확실하지 않으면 취소로 처리하지 않음 (안전상)
-            return True
 
     async def _cleanup_mirror_records_for_filled_order(self, bitget_order_id: str):
         """체결된 주문의 미러링 기록 정리"""
