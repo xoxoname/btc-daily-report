@@ -20,6 +20,9 @@ class TelegramBot:
         # 🔥🔥🔥 미러링 모드 설정 관련 상태 관리
         self.pending_mirror_confirmations = {}  # user_id: {'mode': bool, 'timestamp': datetime}
         
+        # 핸들러 등록 여부 추적
+        self._handlers_registered = False
+        
         self._initialize_bot()
         
     def _initialize_bot(self):
@@ -36,10 +39,7 @@ class TelegramBot:
             # Application 생성
             self.application = Application.builder().token(telegram_token).build()
             
-            # 🔥🔥🔥 자동 핸들러 등록 제거 - main.py에서만 등록하도록 함
-            # self._register_all_handlers()  # 이 줄을 제거
-            
-            self.logger.info("텔레그램 봇 초기화 완료 (핸들러는 main.py에서 등록)")
+            self.logger.info("✅ 텔레그램 봇 초기화 완료")
             
         except Exception as e:
             self.logger.error(f"텔레그램 봇 초기화 실패: {str(e)}")
@@ -56,57 +56,103 @@ class TelegramBot:
         self.logger.info("메인 시스템 참조 설정 완료")
     
     def add_handler(self, command: str, handler_func: Callable):
-        """명령 핸들러 추가 - 중복 방지 강화"""
+        """명령 핸들러 추가 - 중복 방지 및 디버깅 강화"""
         try:
             if self.application is None:
                 self._initialize_bot()
             
-            # 🔥🔥🔥 기존 핸들러 제거 (중복 방지)
-            existing_handlers = []
-            for handler in self.application.handlers[0]:
-                if hasattr(handler, 'commands') and command in handler.commands:
-                    existing_handlers.append(handler)
+            # 🔥 디버깅을 위한 로깅 강화
+            self.logger.info(f"🔥 핸들러 등록 시도: /{command}")
             
-            for handler in existing_handlers:
-                self.application.remove_handler(handler, 0)
-                self.logger.info(f"기존 핸들러 제거: /{command}")
+            # 기존 핸들러 확인 및 제거
+            handlers_to_remove = []
+            for group_idx, group in enumerate(self.application.handlers):
+                for handler in group:
+                    if isinstance(handler, CommandHandler) and command in handler.commands:
+                        handlers_to_remove.append((group_idx, handler))
+                        self.logger.info(f"🔄 기존 핸들러 발견: /{command} (그룹 {group_idx})")
+            
+            # 기존 핸들러 제거
+            for group_idx, handler in handlers_to_remove:
+                self.application.remove_handler(handler, group_idx)
+                self.logger.info(f"❌ 기존 핸들러 제거: /{command} (그룹 {group_idx})")
             
             # 새 핸들러 등록
             command_handler = CommandHandler(command, handler_func)
-            self.application.add_handler(command_handler)
-            self.logger.info(f"✅ 핸들러 등록 완료: /{command}")
+            self.application.add_handler(command_handler, 0)  # 그룹 0에 명시적으로 추가
+            
+            # 등록 확인
+            registered = False
+            for handler in self.application.handlers[0]:
+                if isinstance(handler, CommandHandler) and command in handler.commands:
+                    registered = True
+                    break
+            
+            if registered:
+                self.logger.info(f"✅ 핸들러 등록 성공: /{command}")
+            else:
+                self.logger.error(f"❌ 핸들러 등록 실패: /{command}")
+            
+            # 현재 등록된 모든 핸들러 목록 출력
+            self._log_all_handlers()
             
         except Exception as e:
-            self.logger.error(f"핸들러 등록 실패: {str(e)}")
+            self.logger.error(f"핸들러 등록 실패: /{command} - {str(e)}")
             raise
     
     def add_message_handler(self, handler_func: Callable):
-        """자연어 메시지 핸들러 추가 - 중복 방지"""
+        """자연어 메시지 핸들러 추가 - 명령어 제외 필터 강화"""
         try:
             if self.application is None:
                 self._initialize_bot()
             
-            # 🔥🔥🔥 기존 메시지 핸들러 제거 (중복 방지)
-            existing_message_handlers = []
-            for handler in self.application.handlers[0]:
-                if isinstance(handler, MessageHandler) and hasattr(handler, 'filters'):
-                    existing_message_handlers.append(handler)
+            self.logger.info("🔥 메시지 핸들러 등록 시도")
             
-            for handler in existing_message_handlers:
-                self.application.remove_handler(handler, 0)
-                self.logger.info("기존 메시지 핸들러 제거")
+            # 기존 메시지 핸들러 제거
+            handlers_to_remove = []
+            for group_idx, group in enumerate(self.application.handlers):
+                for handler in group:
+                    if isinstance(handler, MessageHandler) and not isinstance(handler, CommandHandler):
+                        handlers_to_remove.append((group_idx, handler))
+                        self.logger.info(f"🔄 기존 메시지 핸들러 발견 (그룹 {group_idx})")
             
-            # 새 메시지 핸들러 등록
-            message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handler_func)
-            self.application.add_handler(message_handler)
-            self.logger.info("✅ 자연어 메시지 핸들러 등록 완료")
+            for group_idx, handler in handlers_to_remove:
+                self.application.remove_handler(handler, group_idx)
+                self.logger.info(f"❌ 기존 메시지 핸들러 제거 (그룹 {group_idx})")
+            
+            # 명령어를 제외한 텍스트만 처리하는 필터
+            # 더 낮은 우선순위(그룹 1)에 추가하여 명령어가 먼저 처리되도록 함
+            message_handler = MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                handler_func
+            )
+            self.application.add_handler(message_handler, 1)  # 그룹 1에 추가 (명령어보다 낮은 우선순위)
+            
+            self.logger.info("✅ 자연어 메시지 핸들러 등록 완료 (그룹 1)")
             
         except Exception as e:
             self.logger.error(f"메시지 핸들러 등록 실패: {str(e)}")
             raise
     
+    def _log_all_handlers(self):
+        """현재 등록된 모든 핸들러 로깅"""
+        try:
+            self.logger.info("📋 현재 등록된 핸들러 목록:")
+            for group_idx, group in enumerate(self.application.handlers):
+                self.logger.info(f"  그룹 {group_idx}:")
+                for idx, handler in enumerate(group):
+                    if isinstance(handler, CommandHandler):
+                        commands = ', '.join(handler.commands)
+                        self.logger.info(f"    [{idx}] CommandHandler: /{commands}")
+                    elif isinstance(handler, MessageHandler):
+                        self.logger.info(f"    [{idx}] MessageHandler")
+                    else:
+                        self.logger.info(f"    [{idx}] {type(handler).__name__}")
+        except Exception as e:
+            self.logger.error(f"핸들러 목록 로깅 실패: {e}")
+    
     async def start(self):
-        """봇 시작"""
+        """봇 시작 - 폴링 관련 디버깅 강화"""
         try:
             if self.application is None:
                 self._initialize_bot()
@@ -114,9 +160,22 @@ class TelegramBot:
             # Application 시작
             await self.application.initialize()
             await self.application.start()
-            await self.application.updater.start_polling()
             
-            self.logger.info("✅ 텔레그램 봇 시작됨")
+            # 현재 등록된 핸들러 확인
+            self._log_all_handlers()
+            
+            # 폴링 시작
+            self.logger.info("🔄 텔레그램 폴링 시작...")
+            await self.application.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,  # 모든 업데이트 타입 허용
+                drop_pending_updates=True  # 대기중인 업데이트 삭제 (문제 해결용)
+            )
+            
+            self.logger.info("✅ 텔레그램 봇 시작 완료 - 폴링 활성화")
+            
+            # 봇 정보 확인
+            bot_info = await self.bot.get_me()
+            self.logger.info(f"🤖 봇 정보: @{bot_info.username} (ID: {bot_info.id})")
             
         except Exception as e:
             self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
@@ -148,7 +207,9 @@ class TelegramBot:
             elif self.system_reference and hasattr(self.system_reference, 'get_mirror_mode'):
                 current_enabled = self.system_reference.get_mirror_mode()
                 description = '활성화' if current_enabled else '비활성화'
-                ratio_multiplier = getattr(self.system_reference, 'mirror_ratio_multiplier', 1.0)
+                ratio_multiplier = 1.0
+                if self.mirror_trading_system:
+                    ratio_multiplier = self.mirror_trading_system.mirror_ratio_multiplier
             else:
                 await update.message.reply_text(
                     "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
