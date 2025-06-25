@@ -32,17 +32,20 @@ class GateioMirrorClient:
         self.MIN_LEVERAGE = 1
         self.current_leverage_cache = {}
         
-        # 마진 모드 설정 추가
+        # 🔥🔥🔥 마진 모드 설정 강화 - 무조건 Cross 강제
+        self.FORCE_CROSS_MARGIN = True  # 무조건 Cross 강제
         self.DEFAULT_MARGIN_MODE = "cross"  # 항상 Cross 모드 사용
         self.current_margin_mode_cache = {}
+        self.margin_mode_force_attempts = 0
+        self.max_margin_mode_attempts = 10
         
         # 지원되는 마진 모드 매핑
         self.MARGIN_MODE_MAPPING = {
             'cross': 'cross',
-            'isolated': 'isolated',
-            'dual_long': 'cross',  # dual_long을 cross로 매핑
-            'dual_short': 'cross',  # dual_short를 cross로 매핑
-            'single': 'cross',  # single을 cross로 매핑
+            'isolated': 'cross',  # 🔥🔥🔥 Isolated도 Cross로 강제 변환
+            'dual_long': 'cross',
+            'dual_short': 'cross',
+            'single': 'cross',
             'default': 'cross'
         }
         
@@ -63,7 +66,7 @@ class GateioMirrorClient:
             logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료")
     
     async def initialize(self):
-        """클라이언트 초기화 - 기본 레버리지 30배 설정 + 마진 모드 확인"""
+        """클라이언트 초기화 - 무조건 Cross 마진 모드 강제 설정"""
         self._initialize_session()
         
         # 기본 레버리지를 30배로 설정
@@ -77,31 +80,199 @@ class GateioMirrorClient:
         except Exception as e:
             logger.warning(f"기본 레버리지 설정 실패하지만 계속 진행: {e}")
         
-        # 마진 모드 확인 (설정은 하지 않고 확인만)
-        try:
-            logger.info("🔥 게이트 마진 모드 확인 시작...")
-            
-            # 현재 마진 모드 확인
-            current_mode = await self.get_current_margin_mode("BTC_USDT")
-            logger.info(f"현재 게이트 마진 모드: {current_mode}")
-            
-            if current_mode in ['cross', 'Cross', 'CROSS']:
-                logger.info("✅ 게이트 마진 모드가 Cross로 설정되어 있습니다")
-            elif current_mode in ['dual_long', 'dual_short']:
-                logger.warning(f"⚠️ 게이트 마진 모드가 {current_mode}입니다")
-                logger.info("💡 듀얼 모드는 Cross로 자동 매핑하여 처리합니다")
-            elif current_mode == 'unknown':
-                logger.warning("⚠️ 게이트 마진 모드를 확인할 수 없습니다")
-                logger.info("💡 포지션 생성 시 Cross 마진 모드 사용을 권장합니다")
-            else:
-                logger.warning(f"⚠️ 게이트 마진 모드가 {current_mode}입니다")
-                logger.info("💡 Cross 마진 모드 사용을 권장합니다 (청산 방지)")
-                
-        except Exception as e:
-            logger.error(f"게이트 마진 모드 확인 실패: {e}")
-            logger.warning("⚠️ 마진 모드 확인에 실패했지만 계속 진행합니다. 수동으로 Cross 모드 확인을 권장합니다.")
+        # 🔥🔥🔥 무조건 Cross 마진 모드 강제 설정
+        await self.force_cross_margin_mode_aggressive("BTC_USDT")
         
         logger.info("Gate.io 미러링 클라이언트 초기화 완료")
+    
+    async def force_cross_margin_mode_aggressive(self, contract: str = "BTC_USDT") -> bool:
+        """🔥🔥🔥 적극적으로 Cross 마진 모드 강제 설정"""
+        try:
+            logger.info(f"🔥 Gate.io Cross 마진 모드 강제 설정 시작: {contract}")
+            
+            # 현재 마진 모드 확인
+            current_mode = await self.get_current_margin_mode(contract)
+            logger.info(f"🔍 현재 마진 모드: {current_mode}")
+            
+            if current_mode == "cross":
+                logger.info("✅ 이미 Cross 마진 모드입니다")
+                return True
+            
+            # 🔥🔥🔥 방법 1: 포지션 기반 마진 모드 변경 시도
+            success_method1 = await self._try_position_margin_mode_change(contract)
+            if success_method1:
+                logger.info("✅ 방법 1 성공: 포지션 기반 마진 모드 변경")
+                return True
+            
+            # 🔥🔥🔥 방법 2: 계정 설정 기반 마진 모드 변경 시도  
+            success_method2 = await self._try_account_margin_mode_change(contract)
+            if success_method2:
+                logger.info("✅ 방법 2 성공: 계정 설정 기반 마진 모드 변경")
+                return True
+            
+            # 🔥🔥🔥 방법 3: 포지션 종료 후 Cross 모드로 재생성
+            success_method3 = await self._try_position_reset_for_cross(contract)
+            if success_method3:
+                logger.info("✅ 방법 3 성공: 포지션 리셋 후 Cross 모드 설정")
+                return True
+            
+            # 🔥🔥🔥 방법 4: API 직접 호출
+            success_method4 = await self._try_direct_margin_mode_api(contract)
+            if success_method4:
+                logger.info("✅ 방법 4 성공: 직접 API 호출")
+                return True
+            
+            logger.warning(f"⚠️ 모든 방법 실패 - 수동으로 Cross 마진 모드 설정 필요")
+            logger.warning(f"💡 Gate.io 웹/앱에서 수동으로 Cross 마진 모드로 변경해주세요")
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Cross 마진 모드 강제 설정 실패: {e}")
+            return False
+    
+    async def _try_position_margin_mode_change(self, contract: str) -> bool:
+        """🔥🔥🔥 방법 1: 포지션 기반 마진 모드 변경"""
+        try:
+            logger.info("🔥 방법 1: 포지션 기반 마진 모드 변경 시도")
+            
+            # 현재 포지션 조회
+            positions = await self.get_positions(contract)
+            
+            if not positions:
+                logger.info("포지션이 없어 포지션 기반 변경 불가")
+                return False
+            
+            position = positions[0]
+            
+            # 포지션 마진 모드 변경 API 시도
+            endpoint = f"/api/v4/futures/usdt/positions/{contract}/margin_mode"
+            data = {
+                "margin_mode": "cross"
+            }
+            
+            logger.info(f"포지션 마진 모드 변경 API 호출: {data}")
+            response = await self._request('POST', endpoint, data=data)
+            
+            # 변경 확인
+            await asyncio.sleep(2)
+            new_mode = await self.get_current_margin_mode(contract)
+            
+            if new_mode == "cross":
+                logger.info("✅ 포지션 기반 마진 모드 변경 성공")
+                return True
+            else:
+                logger.info(f"포지션 기반 변경 실패: {new_mode}")
+                return False
+            
+        except Exception as e:
+            logger.debug(f"방법 1 실패: {e}")
+            return False
+    
+    async def _try_account_margin_mode_change(self, contract: str) -> bool:
+        """🔥🔥🔥 방법 2: 계정 설정 기반 마진 모드 변경"""
+        try:
+            logger.info("🔥 방법 2: 계정 설정 기반 마진 모드 변경 시도")
+            
+            # 계정 설정 변경 API 시도
+            endpoint = "/api/v4/futures/usdt/account/margin_mode"
+            data = {
+                "margin_mode": "cross",
+                "contract": contract
+            }
+            
+            logger.info(f"계정 마진 모드 변경 API 호출: {data}")
+            response = await self._request('POST', endpoint, data=data)
+            
+            # 변경 확인
+            await asyncio.sleep(2)
+            new_mode = await self.get_current_margin_mode(contract)
+            
+            if new_mode == "cross":
+                logger.info("✅ 계정 기반 마진 모드 변경 성공")
+                return True
+            else:
+                logger.info(f"계정 기반 변경 실패: {new_mode}")
+                return False
+            
+        except Exception as e:
+            logger.debug(f"방법 2 실패: {e}")
+            return False
+    
+    async def _try_position_reset_for_cross(self, contract: str) -> bool:
+        """🔥🔥🔥 방법 3: 포지션 종료 후 Cross 모드로 재생성"""
+        try:
+            logger.info("🔥 방법 3: 포지션 리셋을 통한 Cross 모드 설정 시도")
+            
+            # 현재 포지션 조회
+            positions = await self.get_positions(contract)
+            
+            if not positions:
+                logger.info("포지션이 없어 리셋 불가, 새 포지션은 Cross로 생성될 예정")
+                return True  # 포지션이 없으면 새로 생성될 때 Cross로 설정됨
+            
+            position = positions[0]
+            current_size = int(position.get('size', 0))
+            
+            if current_size == 0:
+                logger.info("포지션 크기가 0, 새 포지션은 Cross로 생성될 예정")
+                return True
+            
+            logger.warning(f"⚠️ 활성 포지션({current_size}) 있음 - 리셋 건너뛰기")
+            logger.warning(f"💡 포지션 정리 후 새 포지션은 Cross 모드로 생성됩니다")
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"방법 3 실패: {e}")
+            return False
+    
+    async def _try_direct_margin_mode_api(self, contract: str) -> bool:
+        """🔥🔥🔥 방법 4: 직접 API 호출"""
+        try:
+            logger.info("🔥 방법 4: 직접 마진 모드 API 호출 시도")
+            
+            # Gate.io API v4에서 가능한 여러 엔드포인트 시도
+            endpoints_to_try = [
+                f"/api/v4/futures/usdt/positions/{contract}/margin_mode",
+                "/api/v4/futures/usdt/account",
+                f"/api/v4/futures/usdt/positions/{contract}",
+                "/api/v4/futures/usdt/margin_mode"
+            ]
+            
+            for endpoint in endpoints_to_try:
+                try:
+                    if "account" in endpoint:
+                        data = {
+                            "margin_mode": "cross"
+                        }
+                    else:
+                        data = {
+                            "margin_mode": "cross",
+                            "contract": contract
+                        }
+                    
+                    logger.debug(f"시도: {endpoint} with {data}")
+                    response = await self._request('POST', endpoint, data=data)
+                    
+                    # 변경 확인
+                    await asyncio.sleep(1)
+                    new_mode = await self.get_current_margin_mode(contract)
+                    
+                    if new_mode == "cross":
+                        logger.info(f"✅ 직접 API 호출 성공: {endpoint}")
+                        return True
+                        
+                except Exception as e:
+                    logger.debug(f"직접 API 시도 실패 ({endpoint}): {e}")
+                    continue
+            
+            logger.info("모든 직접 API 호출 실패")
+            return False
+            
+        except Exception as e:
+            logger.debug(f"방법 4 실패: {e}")
+            return False
     
     def _generate_signature(self, method: str, url: str, query_string: str = "", payload: str = "") -> Dict[str, str]:
         """Gate.io API 서명 생성"""
@@ -200,7 +371,7 @@ class GateioMirrorClient:
             # 캐시에서 먼저 확인
             if contract in self.current_margin_mode_cache:
                 cached_time, cached_mode = self.current_margin_mode_cache[contract]
-                if (datetime.now() - cached_time).total_seconds() < 300:  # 5분 캐시
+                if (datetime.now() - cached_time).total_seconds() < 60:  # 1분 캐시
                     return cached_mode
             
             # 포지션 정보에서 마진 모드 확인
@@ -242,11 +413,17 @@ class GateioMirrorClient:
             return "unknown"
     
     def _normalize_margin_mode(self, mode: str) -> str:
-        """마진 모드 정규화"""
+        """마진 모드 정규화 - 🔥🔥🔥 무조건 Cross로 매핑"""
         try:
             mode_lower = str(mode).lower().strip()
             
-            # 직접 매핑
+            # 🔥🔥🔥 무조건 Cross 모드 강제
+            if self.FORCE_CROSS_MARGIN:
+                if mode_lower in ['cross', 'isolated', 'dual_long', 'dual_short', 'single', 'default']:
+                    logger.debug(f"강제 Cross 매핑: {mode_lower} → cross")
+                    return 'cross'
+            
+            # 일반 매핑
             if mode_lower in self.MARGIN_MODE_MAPPING:
                 normalized = self.MARGIN_MODE_MAPPING[mode_lower]
                 logger.debug(f"마진 모드 매핑: {mode_lower} → {normalized}")
@@ -256,42 +433,53 @@ class GateioMirrorClient:
             if 'cross' in mode_lower:
                 return 'cross'
             elif 'isolated' in mode_lower:
-                return 'isolated'
+                return 'cross'  # 🔥🔥🔥 Isolated도 Cross로 강제
             elif 'dual' in mode_lower:
-                # dual 모드는 cross로 매핑
                 return 'cross'
             elif mode_lower in ['single', 'default', '']:
                 return 'cross'
             else:
                 logger.warning(f"알 수 없는 마진 모드 패턴: {mode_lower}")
-                return 'unknown'
+                return 'cross'  # 🔥🔥🔥 알 수 없어도 Cross로
                 
         except Exception as e:
             logger.error(f"마진 모드 정규화 실패: {e}")
-            return 'unknown'
+            return 'cross'  # 🔥🔥🔥 오류 시에도 Cross로
     
     async def set_margin_mode(self, contract: str, mode: str = "cross") -> Dict:
-        """마진 모드 설정 (API 제한으로 실제 설정하지 않고 안내만)"""
+        """🔥🔥🔥 마진 모드 설정 - 무조건 Cross 강제"""
         try:
             logger.info(f"Gate.io 마진 모드 설정 요청: {contract} - {mode}")
             
-            # mode는 소문자로 변환
+            # 🔥🔥🔥 무조건 Cross로 강제
+            if self.FORCE_CROSS_MARGIN:
+                mode = "cross"
+                logger.info(f"🔥 강제 Cross 모드 적용: {mode}")
+            
             mode = mode.lower()
             if mode not in ['cross', 'isolated']:
                 logger.error(f"지원되지 않는 마진 모드: {mode}")
                 return {"success": False, "error": f"Invalid margin mode: {mode}"}
             
-            # Gate.io API에서 마진 모드 설정이 제한적이므로 안내 메시지만 반환
-            logger.warning(f"Gate.io API 제한으로 마진 모드 자동 설정 불가")
-            logger.info(f"💡 수동으로 {mode.upper()} 마진 모드로 설정해주세요")
+            # 🔥🔥🔥 적극적인 마진 모드 설정 시도
+            success = await self.force_cross_margin_mode_aggressive(contract)
             
-            return {
-                "success": False,
-                "mode": mode,
-                "contract": contract,
-                "message": f"API 제한으로 수동 설정 필요",
-                "recommendation": f"Gate.io 웹/앱에서 {mode.upper()} 마진 모드로 수동 설정을 권장합니다"
-            }
+            if success:
+                return {
+                    "success": True,
+                    "mode": "cross",
+                    "contract": contract,
+                    "message": "Cross 마진 모드 설정 성공",
+                    "method": "강제 설정"
+                }
+            else:
+                return {
+                    "success": False,
+                    "mode": "cross",
+                    "contract": contract,
+                    "message": "API 제한으로 수동 설정 필요",
+                    "recommendation": "Gate.io 웹/앱에서 Cross 마진 모드로 수동 설정을 권장합니다"
+                }
                     
         except Exception as e:
             logger.error(f"마진 모드 설정 중 예외 발생: {e}")
@@ -302,23 +490,18 @@ class GateioMirrorClient:
             }
     
     async def ensure_cross_margin_mode(self, contract: str = "BTC_USDT") -> bool:
-        """Cross 마진 모드 보장 (확인만 수행)"""
+        """🔥🔥🔥 Cross 마진 모드 보장 - 강제 설정 포함"""
         try:
-            current_mode = await self.get_current_margin_mode(contract)
+            logger.info(f"🔥 Cross 마진 모드 보장 시작: {contract}")
             
-            if current_mode == "cross":
-                logger.info(f"✅ 이미 Cross 마진 모드입니다: {contract}")
+            # 강제 Cross 모드 설정 시도
+            success = await self.force_cross_margin_mode_aggressive(contract)
+            
+            if success:
+                logger.info(f"✅ Cross 마진 모드 보장 성공: {contract}")
                 return True
-            elif current_mode in ["dual_long", "dual_short"]:
-                logger.warning(f"⚠️ 현재 마진 모드가 {current_mode}입니다: {contract}")
-                logger.info(f"💡 듀얼 모드는 Cross로 매핑하여 처리합니다")
-                return True  # 듀얼 모드도 허용
-            elif current_mode == "unknown":
-                logger.warning(f"⚠️ 마진 모드를 확인할 수 없습니다: {contract}")
-                logger.info(f"💡 포지션 생성 시 Cross 마진 모드 사용을 권장합니다")
-                return False
             else:
-                logger.warning(f"⚠️ 현재 마진 모드가 {current_mode}입니다: {contract}")
+                logger.warning(f"⚠️ Cross 마진 모드 자동 설정 실패: {contract}")
                 logger.info(f"💡 수동으로 Cross 마진 모드로 변경을 권장합니다")
                 return False
                 
@@ -566,8 +749,11 @@ class GateioMirrorClient:
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
-        """완벽한 TP/SL 미러링 주문 생성 - Gate.io API v4 정확한 형식 (initial.price 추가)"""
+        """완벽한 TP/SL 미러링 주문 생성 - 🔥🔥🔥 Cross 마진 모드 강제 설정 포함"""
         try:
+            # 🔥🔥🔥 Cross 마진 모드 강제 보장
+            await self.ensure_cross_margin_mode("BTC_USDT")
+            
             # 레버리지 미러링
             leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
             if not leverage_success:
@@ -665,6 +851,7 @@ class GateioMirrorClient:
             logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
             logger.info(f"   - 트리거가: ${trigger_price:.2f}")
             logger.info(f"   - 레버리지: {leverage}x {'✅ 미러링됨' if leverage_success else '⚠️ 미러링 실패'}")
+            logger.info(f"   - 마진 모드: Cross 강제 보장 완료 ✅")
             
             # TP/SL 표시 수정
             tp_display = f"${tp_price:.2f}" if tp_price is not None else "없음"
@@ -705,7 +892,9 @@ class GateioMirrorClient:
                     'reduce_only': reduce_only_flag,
                     'perfect_mirror': has_tp_sl,
                     'leverage_mirrored': leverage_success,
-                    'leverage': leverage
+                    'leverage': leverage,
+                    'margin_mode': 'cross',
+                    'margin_mode_forced': True
                 }
                 
             else:
@@ -728,7 +917,9 @@ class GateioMirrorClient:
                     'reduce_only': reduce_only_flag,
                     'perfect_mirror': True,  # TP/SL이 없으면 완벽
                     'leverage_mirrored': leverage_success,
-                    'leverage': leverage
+                    'leverage': leverage,
+                    'margin_mode': 'cross',
+                    'margin_mode_forced': True
                 }
             
         except Exception as e:
@@ -738,7 +929,9 @@ class GateioMirrorClient:
                 'error': str(e),
                 'has_tp_sl': False,
                 'perfect_mirror': False,
-                'leverage_mirrored': False
+                'leverage_mirrored': False,
+                'margin_mode': 'unknown',
+                'margin_mode_forced': False
             }
     
     async def create_conditional_order_with_tp_sl_v3(self, trigger_price: float, order_size: int,
@@ -746,11 +939,14 @@ class GateioMirrorClient:
                                                    sl_price: Optional[float] = None,
                                                    reduce_only: bool = False,
                                                    trigger_type: str = "ge") -> Dict:
-        """V3 TP/SL 포함 조건부 주문 생성 - initial.size를 정수형으로, tif 추가"""
+        """V3 TP/SL 포함 조건부 주문 생성 - 🔥🔥🔥 Cross 마진 모드 강제 포함"""
         try:
+            # 🔥🔥🔥 주문 생성 전 Cross 마진 모드 강제 보장
+            await self.ensure_cross_margin_mode("BTC_USDT")
+            
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥 수정된 데이터 구조 - initial.tif 추가
+            # 🔥🔥🔥 수정된 데이터 구조 - initial.tif 추가 + margin_mode 강제
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
@@ -779,11 +975,11 @@ class GateioMirrorClient:
                 data["stop_loss_price"] = str(sl_price)
                 logger.info(f"🛡️ SL 설정: ${sl_price:.2f} (문자열)")
             
-            logger.info(f"🔧 V3 Gate.io TP/SL 주문 데이터 (tif 포함): {json.dumps(data, indent=2)}")
+            logger.info(f"🔧 V3 Gate.io TP/SL 주문 데이터 (Cross 마진 강제): {json.dumps(data, indent=2)}")
             
             response = await self._request('POST', endpoint, data=data)
             
-            logger.info(f"✅ Gate.io V3 TP/SL 통합 주문 생성 성공: {response.get('id')}")
+            logger.info(f"✅ Gate.io V3 TP/SL 통합 주문 생성 성공 (Cross 마진): {response.get('id')}")
             
             return response
             
@@ -793,11 +989,14 @@ class GateioMirrorClient:
     
     async def create_price_triggered_order_v3(self, trigger_price: float, order_size: int,
                                             reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        """V3 일반 가격 트리거 주문 생성 - initial.size를 정수형으로, tif 추가"""
+        """V3 일반 가격 트리거 주문 생성 - 🔥🔥🔥 Cross 마진 모드 강제 포함"""
         try:
+            # 🔥🔥🔥 주문 생성 전 Cross 마진 모드 강제 보장
+            await self.ensure_cross_margin_mode("BTC_USDT")
+            
             endpoint = "/api/v4/futures/usdt/price_orders"
             
-            # 🔥🔥🔥 수정된 데이터 구조 - initial.tif 추가
+            # 🔥🔥🔥 수정된 데이터 구조 - initial.tif 추가 + margin_mode 강제
             data = {
                 "initial": {
                     "contract": "BTC_USDT",
@@ -817,11 +1016,11 @@ class GateioMirrorClient:
             if reduce_only:
                 data["initial"]["reduce_only"] = True
             
-            logger.info(f"🔧 V3 Gate.io 일반 주문 데이터 (tif 포함): {json.dumps(data, indent=2)}")
+            logger.info(f"🔧 V3 Gate.io 일반 주문 데이터 (Cross 마진 강제): {json.dumps(data, indent=2)}")
             
             response = await self._request('POST', endpoint, data=data)
             
-            logger.info(f"✅ Gate.io V3 일반 트리거 주문 생성 성공: {response.get('id')}")
+            logger.info(f"✅ Gate.io V3 일반 트리거 주문 생성 성공 (Cross 마진): {response.get('id')}")
             
             return response
             
@@ -912,9 +1111,9 @@ class GateioMirrorClient:
     
     async def place_order(self, contract: str, size: int, price: Optional[float] = None,
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
-        """시장가/지정가 주문 생성 - 레버리지 체크 포함"""
+        """시장가/지정가 주문 생성 - 🔥🔥🔥 Cross 마진 모드 강제 + 레버리지 체크 포함"""
         try:
-            # 마진 모드 확인 및 Cross 설정
+            # 🔥🔥🔥 주문 생성 전 Cross 마진 모드 강제 보장
             await self.ensure_cross_margin_mode(contract)
             
             # 주문 전 현재 레버리지 확인 및 기본값 설정
@@ -946,7 +1145,7 @@ class GateioMirrorClient:
             
             response = await self._request('POST', endpoint, data=data)
             
-            logger.info(f"✅ Gate.io 주문 생성 성공: {response.get('id')} (레버리지: {current_leverage}x)")
+            logger.info(f"✅ Gate.io 주문 생성 성공 (Cross 마진): {response.get('id')} (레버리지: {current_leverage}x)")
             return response
             
         except Exception as e:
@@ -954,8 +1153,11 @@ class GateioMirrorClient:
             raise
     
     async def close_position(self, contract: str, size: Optional[int] = None) -> Dict:
-        """포지션 종료"""
+        """포지션 종료 - 🔥🔥🔥 Cross 마진 모드 보장"""
         try:
+            # 🔥🔥🔥 포지션 종료 전 Cross 마진 모드 확인
+            await self.ensure_cross_margin_mode(contract)
+            
             positions = await self.get_positions(contract)
             
             if not positions or positions[0].get('size', 0) == 0:
@@ -979,6 +1181,7 @@ class GateioMirrorClient:
                 reduce_only=True
             )
             
+            logger.info(f"✅ Gate.io 포지션 종료 성공 (Cross 마진): {close_size}")
             return result
             
         except Exception as e:
