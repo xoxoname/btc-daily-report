@@ -132,6 +132,9 @@ class BitcoinPredictionSystem:
         # 건강 체크 완전 비활성화 플래그
         self.disable_health_check_alerts = True
         
+        # 일일 통계 초기화
+        self.daily_stats = {'errors': []}
+        
         # 클라이언트 초기화
         self._initialize_clients()
         
@@ -1798,10 +1801,10 @@ class BitcoinPredictionSystem:
             self.logger.info("스케줄러 시작 중...")
             self.scheduler.start()
             
-            # 🔥🔥🔥 텔레그램 봇 핸들러 등록 - 중복 방지 강화
-            self.logger.info("🔥 텔레그램 봇 핸들러 등록 중 (중복 방지)")
+            # 🔥🔥🔥 텔레그램 봇 핸들러 등록 - 봇 시작 전에 등록
+            self.logger.info("🔥 텔레그램 봇 핸들러 등록 중...")
             
-            # 기본 명령어 핸들러 등록
+            # 명령어 핸들러 등록 (그룹 0 - 높은 우선순위)
             self.telegram_bot.add_handler('start', self.handle_start_command)
             self.telegram_bot.add_handler('help', self.handle_start_command)
             self.telegram_bot.add_handler('report', self.handle_report_command)
@@ -1810,12 +1813,11 @@ class BitcoinPredictionSystem:
             self.telegram_bot.add_handler('schedule', self.handle_schedule_command)
             self.telegram_bot.add_handler('stats', self.handle_stats_command)
             
-            # 🔥🔥🔥 미러링 관련 핸들러는 텔레그램 봇에서 자체 처리하도록 변경
-            # main.py의 핸들러는 단순히 위임만 함
+            # 미러링 관련 핸들러
             self.telegram_bot.add_handler('mirror', self.handle_mirror_command)
             self.telegram_bot.add_handler('ratio', self.handle_ratio_command)
             
-            # 자연어 메시지 핸들러 추가
+            # 자연어 메시지 핸들러 추가 (그룹 1 - 낮은 우선순위)
             self.telegram_bot.add_message_handler(self.handle_natural_language)
             
             self.logger.info("✅ 모든 텔레그램 핸들러 등록 완료")
@@ -1823,6 +1825,10 @@ class BitcoinPredictionSystem:
             # 텔레그램 봇 시작
             self.logger.info("텔레그램 봇 시작 중...")
             await self.telegram_bot.start()
+            
+            # 핸들러가 제대로 등록되었는지 확인
+            await asyncio.sleep(2)
+            self.telegram_bot._log_all_handlers()
             
             # 현재 배율 정보
             current_ratio = 1.0
