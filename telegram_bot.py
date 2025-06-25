@@ -13,13 +13,14 @@ class TelegramBot:
         self.application = None
         self.mirror_trading_system = None  # 미러 트레이딩 시스템 참조
         self.system_reference = None  # 메인 시스템 참조
-        self._initialize_bot()
         
         # 배율 설정 관련 상태 관리
         self.pending_ratio_confirmations = {}  # user_id: {'ratio': float, 'timestamp': datetime}
         
         # 🔥🔥🔥 미러링 모드 설정 관련 상태 관리
         self.pending_mirror_confirmations = {}  # user_id: {'mode': bool, 'timestamp': datetime}
+        
+        self._initialize_bot()
         
     def _initialize_bot(self):
         """봇 초기화"""
@@ -35,10 +36,31 @@ class TelegramBot:
             # Application 생성
             self.application = Application.builder().token(telegram_token).build()
             
+            # 🔥🔥🔥 핸들러 자동 등록 (이 부분이 누락되어 있었음!)
+            self._register_all_handlers()
+            
             self.logger.info("텔레그램 봇 초기화 완료")
             
         except Exception as e:
             self.logger.error(f"텔레그램 봇 초기화 실패: {str(e)}")
+            raise
+    
+    def _register_all_handlers(self):
+        """🔥🔥🔥 모든 핸들러 자동 등록 - 이 부분이 핵심 수정사항"""
+        try:
+            # 명령어 핸들러들 등록
+            self.application.add_handler(CommandHandler("mirror", self.handle_mirror_command))
+            self.application.add_handler(CommandHandler("ratio", self.handle_ratio_command))
+            self.application.add_handler(CommandHandler("help", self.handle_help_command))
+            self.application.add_handler(CommandHandler("start", self.handle_help_command))
+            
+            # 메시지 핸들러 등록 (확인 응답 처리 포함)
+            self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+            
+            self.logger.info("🔥 모든 텔레그램 핸들러 자동 등록 완료")
+            
+        except Exception as e:
+            self.logger.error(f"핸들러 자동 등록 실패: {str(e)}")
             raise
     
     def set_mirror_trading_system(self, mirror_system):
