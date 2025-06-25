@@ -23,7 +23,7 @@ class TelegramBot:
         self._initialize_bot()
         
     def _initialize_bot(self):
-        """봇 초기화"""
+        """봇 초기화 - 자동 핸들러 등록 제거"""
         try:
             # 환경변수명 통일 - TELEGRAM_BOT_TOKEN 사용
             telegram_token = self.config.TELEGRAM_BOT_TOKEN
@@ -36,31 +36,13 @@ class TelegramBot:
             # Application 생성
             self.application = Application.builder().token(telegram_token).build()
             
-            # 🔥🔥🔥 핸들러 자동 등록 (이 부분이 누락되어 있었음!)
-            self._register_all_handlers()
+            # 🔥🔥🔥 자동 핸들러 등록 제거 - main.py에서만 등록하도록 함
+            # self._register_all_handlers()  # 이 줄을 제거
             
-            self.logger.info("텔레그램 봇 초기화 완료")
+            self.logger.info("텔레그램 봇 초기화 완료 (핸들러는 main.py에서 등록)")
             
         except Exception as e:
             self.logger.error(f"텔레그램 봇 초기화 실패: {str(e)}")
-            raise
-    
-    def _register_all_handlers(self):
-        """🔥🔥🔥 모든 핸들러 자동 등록 - 이 부분이 핵심 수정사항"""
-        try:
-            # 명령어 핸들러들 등록
-            self.application.add_handler(CommandHandler("mirror", self.handle_mirror_command))
-            self.application.add_handler(CommandHandler("ratio", self.handle_ratio_command))
-            self.application.add_handler(CommandHandler("help", self.handle_help_command))
-            self.application.add_handler(CommandHandler("start", self.handle_help_command))
-            
-            # 메시지 핸들러 등록 (확인 응답 처리 포함)
-            self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-            
-            self.logger.info("🔥 모든 텔레그램 핸들러 자동 등록 완료")
-            
-        except Exception as e:
-            self.logger.error(f"핸들러 자동 등록 실패: {str(e)}")
             raise
     
     def set_mirror_trading_system(self, mirror_system):
@@ -74,28 +56,50 @@ class TelegramBot:
         self.logger.info("메인 시스템 참조 설정 완료")
     
     def add_handler(self, command: str, handler_func: Callable):
-        """명령 핸들러 추가"""
+        """명령 핸들러 추가 - 중복 방지 강화"""
         try:
             if self.application is None:
                 self._initialize_bot()
             
+            # 🔥🔥🔥 기존 핸들러 제거 (중복 방지)
+            existing_handlers = []
+            for handler in self.application.handlers[0]:
+                if hasattr(handler, 'commands') and command in handler.commands:
+                    existing_handlers.append(handler)
+            
+            for handler in existing_handlers:
+                self.application.remove_handler(handler, 0)
+                self.logger.info(f"기존 핸들러 제거: /{command}")
+            
+            # 새 핸들러 등록
             command_handler = CommandHandler(command, handler_func)
             self.application.add_handler(command_handler)
-            self.logger.info(f"핸들러 등록 완료: /{command}")
+            self.logger.info(f"✅ 핸들러 등록 완료: /{command}")
             
         except Exception as e:
             self.logger.error(f"핸들러 등록 실패: {str(e)}")
             raise
     
     def add_message_handler(self, handler_func: Callable):
-        """자연어 메시지 핸들러 추가"""
+        """자연어 메시지 핸들러 추가 - 중복 방지"""
         try:
             if self.application is None:
                 self._initialize_bot()
             
+            # 🔥🔥🔥 기존 메시지 핸들러 제거 (중복 방지)
+            existing_message_handlers = []
+            for handler in self.application.handlers[0]:
+                if isinstance(handler, MessageHandler) and hasattr(handler, 'filters'):
+                    existing_message_handlers.append(handler)
+            
+            for handler in existing_message_handlers:
+                self.application.remove_handler(handler, 0)
+                self.logger.info("기존 메시지 핸들러 제거")
+            
+            # 새 메시지 핸들러 등록
             message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handler_func)
             self.application.add_handler(message_handler)
-            self.logger.info("자연어 메시지 핸들러 등록 완료")
+            self.logger.info("✅ 자연어 메시지 핸들러 등록 완료")
             
         except Exception as e:
             self.logger.error(f"메시지 핸들러 등록 실패: {str(e)}")
@@ -112,7 +116,7 @@ class TelegramBot:
             await self.application.start()
             await self.application.updater.start_polling()
             
-            self.logger.info("텔레그램 봇 시작됨")
+            self.logger.info("✅ 텔레그램 봇 시작됨")
             
         except Exception as e:
             self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
@@ -133,6 +137,8 @@ class TelegramBot:
     async def handle_mirror_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """미러 트레이딩 상태 확인"""
         try:
+            self.logger.info(f"🔥 미러링 상태 확인 요청 - 사용자: {update.effective_user.id}")
+            
             # 미러 트레이딩 시스템 또는 메인 시스템에서 상태 조회
             if self.mirror_trading_system:
                 current_info = await self.mirror_trading_system.get_current_mirror_mode()
@@ -146,7 +152,7 @@ class TelegramBot:
             else:
                 await update.message.reply_text(
                     "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return
             
@@ -165,7 +171,7 @@ class TelegramBot:
                 f"• 상태 확인: /mirror\n"
                 f"• 복제 비율: /ratio [숫자]\n\n"
                 f"🚀 실시간 제어로 언제든 변경 가능합니다!",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
             
         except Exception as e:
@@ -173,7 +179,7 @@ class TelegramBot:
             await update.message.reply_text(
                 f"❌ 미러링 상태 조회 실패\n"
                 f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
     
     async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,12 +188,14 @@ class TelegramBot:
             user_id = update.effective_user.id
             chat_id = update.effective_chat.id
             
+            self.logger.info(f"🔥 /mirror 명령어 수신 - 사용자: {user_id}, 인자: {context.args}")
+            
             # 미러 트레이딩 시스템 참조 확인
             if not self.mirror_trading_system:
                 await update.message.reply_text(
                     "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.\n"
                     "시스템 관리자에게 문의하세요.",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return
             
@@ -223,7 +231,7 @@ class TelegramBot:
                         f"• 비활성화: /mirror off (또는 x, 0, stop)\n"
                         f"• 상태 확인: /mirror status\n"
                         f"• 현재 상태: /mirror",
-                        reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                        reply_markup=ReplyKeyboardRemove()
                     )
                     return
                 
@@ -234,7 +242,7 @@ class TelegramBot:
                         f"{status_emoji} 이미 해당 모드로 설정되어 있습니다.\n"
                         f"현재 상태: {description}\n"
                         f"복제 비율: {ratio_multiplier}x",
-                        reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                        reply_markup=ReplyKeyboardRemove()
                     )
                     return
                 
@@ -305,7 +313,7 @@ class TelegramBot:
             await update.message.reply_text(
                 f"❌ 미러링 명령어 처리 실패\n"
                 f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
     
     async def _show_current_mirror_status(self, update: Update):
@@ -314,7 +322,7 @@ class TelegramBot:
             if not self.mirror_trading_system:
                 await update.message.reply_text(
                     "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return
             
@@ -338,14 +346,14 @@ class TelegramBot:
                 f"• 상태 확인: /mirror\n"
                 f"• 복제 비율: /ratio [숫자]\n\n"
                 f"🚀 실시간 제어로 언제든 변경 가능합니다!",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
             
         except Exception as e:
             self.logger.error(f"미러링 상태 표시 실패: {e}")
             await update.message.reply_text(
                 f"❌ 상태 조회 실패: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
     
     async def handle_mirror_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,7 +376,7 @@ class TelegramBot:
                 await update.message.reply_text(
                     "⏰ 미러링 설정 확인 시간이 만료되었습니다.\n"
                     "/mirror 명령어를 다시 사용해 주세요.",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return True
             
@@ -379,7 +387,7 @@ class TelegramBot:
                     if not self.mirror_trading_system:
                         await update.message.reply_text(
                             "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         return True
                     
@@ -416,7 +424,7 @@ class TelegramBot:
                             f"🔥 {'새로운 거래부터 즉시 미러링 시작!' if new_state else '미러링이 중지되었습니다.'}\n"
                             f"⚡ 기존 활성 주문은 영향받지 않습니다.\n"
                             f"📱 언제든 /mirror on/off로 실시간 제어 가능합니다.",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         
                         self.logger.info(f"텔레그램으로 미러링 모드 변경: {old_state} → {new_state} (사용자: {user_id})")
@@ -426,14 +434,14 @@ class TelegramBot:
                             f"❌ 미러링 모드 변경 실패\n"
                             f"오류: {result.get('error', '알 수 없는 오류')}\n"
                             f"현재 상태 유지: {result.get('current_state', '불명')}",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         
                 except Exception as e:
                     await update.message.reply_text(
                         f"❌ 미러링 모드 적용 중 오류 발생\n"
                         f"오류: {str(e)[:200]}",
-                        reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                        reply_markup=ReplyKeyboardRemove()
                     )
                     
             elif "❌" in message_text or "아니" in message_text:
@@ -442,7 +450,7 @@ class TelegramBot:
                 await update.message.reply_text(
                     f"🚫 미러링 모드 변경이 취소되었습니다.\n"
                     f"현재 상태 유지: {current_status}",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 
             else:
@@ -450,7 +458,7 @@ class TelegramBot:
                 await update.message.reply_text(
                     f"❓ 올바른 응답을 선택해 주세요.\n"
                     f"✅ 예, 변경합니다 또는 ❌ 아니오, 취소",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return True  # 다시 대기
             
@@ -463,7 +471,7 @@ class TelegramBot:
             await update.message.reply_text(
                 f"❌ 미러링 확인 처리 실패\n"
                 f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
             return True
     
@@ -473,12 +481,14 @@ class TelegramBot:
             user_id = update.effective_user.id
             chat_id = update.effective_chat.id
             
+            self.logger.info(f"🔥 /ratio 명령어 수신 - 사용자: {user_id}, 인자: {context.args}")
+            
             # 미러 트레이딩 시스템 참조 확인
             if not self.mirror_trading_system:
                 await update.message.reply_text(
                     "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.\n"
                     "시스템 관리자에게 문의하세요.",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return
             
@@ -500,7 +510,7 @@ class TelegramBot:
                         await update.message.reply_text(
                             f"❌ 올바르지 않은 숫자 형식: '{new_ratio_str}'\n"
                             f"예시: /ratio 1.5",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         return
                     
@@ -510,7 +520,7 @@ class TelegramBot:
                             f"❌ 배율 범위 초과: {new_ratio}\n"
                             f"허용 범위: 0.1 ~ 10.0\n"
                             f"현재 설정: {current_ratio}x",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         return
                     
@@ -520,7 +530,7 @@ class TelegramBot:
                             f"💡 이미 해당 배율로 설정되어 있습니다.\n"
                             f"현재 배율: {current_ratio}x\n"
                             f"요청 배율: {new_ratio}x",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         return
                     
@@ -574,7 +584,7 @@ class TelegramBot:
                         f"❌ 배율 변경 처리 중 오류 발생\n"
                         f"오류: {str(e)[:200]}\n"
                         f"현재 배율 유지: {current_ratio}x",
-                        reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                        reply_markup=ReplyKeyboardRemove()
                     )
                     
             else:
@@ -591,7 +601,7 @@ class TelegramBot:
                     f"• 예시: /ratio 0.5 (절반으로 축소)\n"
                     f"• 허용 범위: 0.1 ~ 10.0\n\n"
                     f"🔥 변경 시 새로운 예약 주문부터 즉시 적용됩니다.",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 
         except Exception as e:
@@ -599,7 +609,7 @@ class TelegramBot:
             await update.message.reply_text(
                 f"❌ 배율 명령어 처리 실패\n"
                 f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
     
     async def handle_ratio_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -622,7 +632,7 @@ class TelegramBot:
                 await update.message.reply_text(
                     "⏰ 배율 설정 확인 시간이 만료되었습니다.\n"
                     "/ratio 명령어를 다시 사용해 주세요.",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return True
             
@@ -633,7 +643,7 @@ class TelegramBot:
                     if not self.mirror_trading_system:
                         await update.message.reply_text(
                             "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         return True
                     
@@ -655,7 +665,7 @@ class TelegramBot:
                             f"• 영향: {effect['impact']}\n\n"
                             f"🔥 새로운 예약 주문부터 즉시 적용됩니다!\n"
                             f"⚡ 기존 활성 주문은 영향받지 않습니다.",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         
                         self.logger.info(f"텔레그램으로 복제 비율 변경: {old_ratio}x → {new_ratio}x (사용자: {user_id})")
@@ -665,14 +675,14 @@ class TelegramBot:
                             f"❌ 배율 변경 실패\n"
                             f"오류: {result.get('error', '알 수 없는 오류')}\n"
                             f"현재 배율 유지: {result.get('current_ratio', '불명')}x",
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         
                 except Exception as e:
                     await update.message.reply_text(
                         f"❌ 배율 적용 중 오류 발생\n"
                         f"오류: {str(e)[:200]}",
-                        reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                        reply_markup=ReplyKeyboardRemove()
                     )
                     
             elif "❌" in message_text or "아니" in message_text:
@@ -680,7 +690,7 @@ class TelegramBot:
                 await update.message.reply_text(
                     f"🚫 배율 변경이 취소되었습니다.\n"
                     f"현재 배율 유지: {self.mirror_trading_system.mirror_ratio_multiplier if self.mirror_trading_system else '불명'}x",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 
             else:
@@ -688,7 +698,7 @@ class TelegramBot:
                 await update.message.reply_text(
                     f"❓ 올바른 응답을 선택해 주세요.\n"
                     f"✅ 예, 적용합니다 또는 ❌ 아니오, 취소",
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return True  # 다시 대기
             
@@ -701,7 +711,7 @@ class TelegramBot:
             await update.message.reply_text(
                 f"❌ 배율 확인 처리 실패\n"
                 f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
             return True
     
@@ -743,6 +753,8 @@ class TelegramBot:
     async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """도움말 명령어 처리"""
         try:
+            self.logger.info(f"🔥 /help 명령어 수신 - 사용자: {update.effective_user.id}")
+            
             help_text = """🤖 미러 트레이딩 봇 도움말
 
 🔄 미러링 제어:
@@ -791,14 +803,14 @@ class TelegramBot:
             
             await update.message.reply_text(
                 help_text,
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
             
         except Exception as e:
             self.logger.error(f"도움말 명령어 처리 실패: {e}")
             await update.message.reply_text(
                 "❌ 도움말 표시 실패",
-                reply_markup=ReplyKeyboardRemove()  # 🔥 키보드 제거
+                reply_markup=ReplyKeyboardRemove()
             )
     
     def _clean_html_message(self, text: str) -> str:
@@ -923,7 +935,7 @@ class TelegramBot:
                             chat_id=chat_id,
                             text=cleaned_text,
                             parse_mode='HTML',
-                            reply_markup=ReplyKeyboardRemove()  # 🔥 기본적으로 키보드 제거
+                            reply_markup=ReplyKeyboardRemove()
                         )
                         self.logger.info("HTML 메시지 전송 성공")
                         return
@@ -952,7 +964,7 @@ class TelegramBot:
                 await self.bot.send_message(
                     chat_id=chat_id,
                     text=text_only.strip(),
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 기본적으로 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 self.logger.info("텍스트 모드 메시지 전송 성공")
                 return
@@ -973,7 +985,7 @@ class TelegramBot:
                 await self.bot.send_message(
                     chat_id=chat_id,
                     text=fallback_message,
-                    reply_markup=ReplyKeyboardRemove()  # 🔥 기본적으로 키보드 제거
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 self.logger.warning("폴백 메시지 전송 완료")
                 
