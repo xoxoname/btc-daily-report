@@ -21,7 +21,7 @@ from data_collector import RealTimeDataCollector
 from trading_indicators import AdvancedTradingIndicators
 from report_generators import ReportGeneratorManager
 
-# 미러 트레이딩 관련 임포트 - 수정된 부분
+# 미러 트레이딩 관련 임포트
 try:
     from gateio_client import GateioMirrorClient as GateClient
     from mirror_trading import MirrorTradingSystem
@@ -109,7 +109,7 @@ class BitcoinPredictionSystem:
             'profit': 0,
             'schedule': 0,
             'mirror': 0,
-            'ratio': 0,  # 🔥🔥🔥 배율 명령어 통계 추가
+            'ratio': 0,
             'natural_language': 0,
             'errors': 0
         }
@@ -756,12 +756,14 @@ class BitcoinPredictionSystem:
             self.logger.error(f"예외 통계 리포트 생성 실패: {e}")
     
     async def handle_natural_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🔥🔥🔥 자연어 메시지 처리 - 배율 확인 처리 추가"""
+        """🔥🔥🔥 자연어 메시지 처리 - 텔레그램 확인 메시지 우선 처리"""
         try:
-            # 🔥🔥🔥 배율 확인 메시지 우선 처리
-            if await self.telegram_bot.handle_ratio_confirmation(update, context):
-                return  # 배율 확인 메시지였으면 여기서 종료
+            # 🔥🔥🔥 1순위: 텔레그램 봇의 강화된 자연어 처리 (확인 메시지 포함)
+            handled = await self.telegram_bot.handle_natural_language_enhanced(update, context)
+            if handled:
+                return  # 텔레그램 봇에서 처리되었으면 종료
             
+            # 🔥🔥🔥 2순위: 기존 자연어 처리 로직
             self.command_stats['natural_language'] += 1
             message = update.message.text.lower()
             user_id = update.effective_user.id
@@ -777,7 +779,7 @@ class BitcoinPredictionSystem:
                 'report': ['시장', '상황', '어때', '분석', 'market', '리포트'],
                 'schedule': ['일정', '언제', '시간', 'schedule', '스케줄'],
                 'stats': ['통계', '성과', '감지', 'stats', '예외'],
-                'ratio': ['배율', '비율', '복제', 'ratio', '몇배', '설정'],  # 🔥🔥🔥 배율 관련 추가
+                'ratio': ['배율', '비율', '복제', 'ratio', '몇배', '설정'],
                 'help': ['도움', '명령', 'help', '사용법', '안내']
             }
             
@@ -801,7 +803,7 @@ class BitcoinPredictionSystem:
                 await self.handle_schedule_command(update, context)
             elif detected_command == 'stats':
                 await self.handle_stats_command(update, context)
-            elif detected_command == 'ratio':  # 🔥🔥🔥 배율 명령어 처리 추가
+            elif detected_command == 'ratio':
                 await self.handle_ratio_command(update, context)
             elif detected_command == 'help':
                 await self.handle_start_command(update, context)
@@ -839,147 +841,6 @@ class BitcoinPredictionSystem:
                 "❌ 배율 명령어 처리 중 오류가 발생했습니다.",
                 parse_mode='HTML'
             )
-    
-    async def handle_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """통계 명령 처리 - 크리티컬 뉴스 필터링 통계 포함"""
-        try:
-            user_id = update.effective_user.id
-            username = update.effective_user.username or "Unknown"
-            self.logger.info(f"통계 요청 - User: {username}({user_id})")
-            
-            current_time = datetime.now()
-            uptime = current_time - self.startup_time
-            hours = int(uptime.total_seconds() // 3600)
-            minutes = int((uptime.total_seconds() % 3600) // 60)
-            
-            # 예외 감지 통계
-            last_reset = datetime.fromisoformat(self.exception_stats['last_reset'])
-            stats_time = current_time - last_reset
-            stats_hours = stats_time.total_seconds() / 3600
-            
-            total_exceptions = self.exception_stats['total_detected']
-            total_commands = sum(self.command_stats.values())
-            
-            # 🔥🔥 마지막 알림 시간 계산
-            time_since_last_alert = current_time - self.last_successful_alert
-            minutes_since_alert = int(time_since_last_alert.total_seconds() / 60)
-            
-            # 🔥🔥 크리티컬 뉴스 필터링 통계
-            critical_processed = self.exception_stats['critical_news_processed']
-            critical_filtered = self.exception_stats['critical_news_filtered']
-            total_critical_attempts = critical_processed + critical_filtered
-            filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
-            
-            # 🔥🔥 리포트 매니저 통계
-            report_stats = self.report_manager.get_exception_report_stats()
-            
-            # 🔥🔥🔥 현재 배율 정보 가져오기
-            current_ratio = 1.0
-            if self.mirror_mode and self.mirror_trading:
-                current_ratio = self.mirror_trading.mirror_ratio_multiplier
-            
-            stats_msg = f"""<b>📊 시스템 실시간 통계</b>
-🕐 {current_time.strftime('%Y-%m-%d %H:%M')}
-━━━━━━━━━━━━━━━━━━━
-
-<b>⏱️ 시스템 상태:</b>
-- 가동 시간: <b>{hours}시간 {minutes}분</b>
-- 총 명령 처리: <b>{total_commands}건</b>
-- 오류 발생: <b>{self.command_stats['errors']}건</b>
-- 마지막 알림: <b>{minutes_since_alert}분 전</b>
-
-<b>🚨 예외 감지 성과 (최근 {stats_hours:.1f}시간):</b>
-- 총 감지: <b>{total_exceptions}건</b>
-- 시간당 평균: <b>{total_exceptions/max(stats_hours, 0.1):.1f}건</b>
-
-<b>🔥 크리티컬 뉴스 필터링:</b>
-- 처리됨: <b>{critical_processed}건</b>
-- 필터됨: <b>{critical_filtered}건</b>
-- 필터 효율: <b>{filter_efficiency:.0f}%</b>
-- 정확도 우선 모드 활성화
-
-<b>📄 예외 리포트 시스템:</b>
-- 전송 완료: <b>{self.exception_stats['exception_reports_sent']}건</b>
-- 리포트 생성 시도: <b>{report_stats['total_attempts']}건</b>
-- 리포트 생성 성공: <b>{report_stats['successful_reports']}건</b>
-- 리포트 성공률: <b>{report_stats['success_rate']:.0f}%</b>
-
-<b>📋 세부 감지 현황:</b>
-- 🚨 중요 뉴스: <b>{self.exception_stats['news_alerts']}건</b>
-- 📊 가격 변동: <b>{self.exception_stats['price_alerts']}건</b>
-- 📈 거래량 급증: <b>{self.exception_stats['volume_alerts']}건</b>
-- 💰 펀딩비 이상: <b>{self.exception_stats['funding_alerts']}건</b>
-- ⚡ 단기 급변동: <b>{self.exception_stats['short_term_alerts']}건</b>
-
-<b>🔄 미러 트레이딩 상태:</b>
-- 모드: <b>{'활성화' if self.mirror_mode else '비활성화'}</b>
-- 복제 비율: <b>{current_ratio}x</b> (텔레그램 조정 가능)"""
-
-            if self.mirror_mode:
-                stats_msg += f"\n- 미러 명령: <b>{self.command_stats['mirror']}회</b>"
-                stats_msg += f"\n- 배율 조정: <b>{self.command_stats['ratio']}회</b>"  # 🔥🔥🔥 배율 통계 추가
-            
-            stats_msg += f"""
-
-<b>💬 명령어 사용 통계:</b>
-- 리포트: {self.command_stats['report']}회
-- 예측: {self.command_stats['forecast']}회
-- 수익: {self.command_stats['profit']}회
-- 자연어: {self.command_stats['natural_language']}회"""
-
-            if self.mirror_mode:
-                stats_msg += f"\n- 배율 조정: {self.command_stats['ratio']}회"
-
-            stats_msg += f"""
-
-<b>🔧 감지 설정:</b>
-- 가격 변동: ≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%
-- 거래량: ≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
-- 펀딩비: ≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%
-- 단기 변동: ≥{self.exception_detector.short_term_threshold}% (5분)
-- 뉴스 필터링: 강화됨 (크리티컬 전용)
-- 감지 주기: 2분마다 (빠른 감지)
-- 건강 체크 알림: 비활성화됨 ✅
-
-━━━━━━━━━━━━━━━━━━━
-⚡ 비트코인 전용 크리티컬 뉴스 필터링 시스템
-🔄 복제 비율 {current_ratio}x 적용됨 (텔레그램 /ratio로 변경)"""
-            
-            if self.ml_mode and self.ml_predictor:
-                ml_stats = self.ml_predictor.get_stats()
-                stats_msg += f"""
-
-<b>🤖 ML 예측 성능:</b>
-- 총 예측: {ml_stats['total_predictions']}건
-- 방향 정확도: {ml_stats['direction_accuracy']}
-- 크기 정확도: {ml_stats['magnitude_accuracy']}"""
-            
-            await update.message.reply_text(stats_msg, parse_mode='HTML')
-            
-        except Exception as e:
-            self.command_stats['errors'] += 1
-            self.logger.error(f"통계 명령 처리 실패: {str(e)}")
-            await update.message.reply_text("❌ 통계 조회 중 오류가 발생했습니다.", parse_mode='HTML')
-    
-    def _generate_default_response(self, message: str) -> str:
-        """기본 응답 생성"""
-        responses = [
-            "죄송합니다. 이해하지 못했습니다. 🤔",
-            "무엇을 도와드릴까요? 🤔",
-            "더 구체적으로 말씀해주시겠어요? 🤔"
-        ]
-        
-        import random
-        response = random.choice(responses)
-        
-        default_commands = "\n\n다음과 같이 질문해보세요:\n• '오늘 수익은?'\n• '지금 매수해도 돼?'\n• '시장 상황 어때?'\n• '다음 리포트 언제?'\n• '시스템 통계 보여줘'"
-        
-        if self.mirror_mode:
-            default_commands += "\n• '미러 트레이딩 상태는?'\n• '복제 비율 확인'\n• '배율 조정'"
-        
-        default_commands += "\n\n또는 /help 명령어로 전체 기능을 확인하세요."
-        
-        return f"{response}{default_commands}"
     
     async def handle_mirror_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """미러 트레이딩 상태 확인 - 개선된 버전"""
@@ -1023,7 +884,7 @@ class BitcoinPredictionSystem:
             # 미러링 상태 정보
             active_mirrors = len(self.mirror_trading.mirrored_positions)
             failed_count = len(self.mirror_trading.failed_mirrors)
-            current_ratio = self.mirror_trading.mirror_ratio_multiplier  # 🔥🔥🔥 현재 배율
+            current_ratio = self.mirror_trading.mirror_ratio_multiplier
             
             # 계정 정보
             bitget_account = await self.bitget_client.get_account_info()
@@ -1108,6 +969,32 @@ class BitcoinPredictionSystem:
                 parse_mode='HTML'
             )
     
+    async def handle_profit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """수익 명령 처리"""
+        try:
+            self.command_stats['profit'] += 1
+            user_id = update.effective_user.id
+            username = update.effective_user.username or "Unknown"
+            self.logger.info(f"수익 조회 요청 - User: {username}({user_id})")
+            
+            await update.message.reply_text("💰 실시간 수익 현황을 조회중입니다...", parse_mode='HTML')
+            
+            # 새로운 수익 리포트 생성기 사용
+            profit_report = await self.report_manager.generate_profit_report()
+            
+            await update.message.reply_text(profit_report, parse_mode='HTML')
+            
+        except Exception as e:
+            self.command_stats['errors'] += 1
+            self.logger.error(f"수익 명령 처리 실패: {str(e)}")
+            self.logger.debug(f"수익 조회 오류 상세: {traceback.format_exc()}")
+            await update.message.reply_text(
+                "❌ 수익 조회 중 오류가 발생했습니다.\n"
+                "잠시 후 다시 시도해주세요.",
+                parse_mode='HTML'
+            )
+    
+    # 나머지 핸들러들은 기존과 동일...
     async def handle_report_command(self, update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
         """리포트 명령 처리"""
         try:
@@ -1203,31 +1090,6 @@ class BitcoinPredictionSystem:
                 parse_mode='HTML'
             )
     
-    async def handle_profit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """수익 명령 처리"""
-        try:
-            self.command_stats['profit'] += 1
-            user_id = update.effective_user.id
-            username = update.effective_user.username or "Unknown"
-            self.logger.info(f"수익 조회 요청 - User: {username}({user_id})")
-            
-            await update.message.reply_text("💰 실시간 수익 현황을 조회중입니다...", parse_mode='HTML')
-            
-            # 새로운 수익 리포트 생성기 사용
-            profit_report = await self.report_manager.generate_profit_report()
-            
-            await update.message.reply_text(profit_report, parse_mode='HTML')
-            
-        except Exception as e:
-            self.command_stats['errors'] += 1
-            self.logger.error(f"수익 명령 처리 실패: {str(e)}")
-            self.logger.debug(f"수익 조회 오류 상세: {traceback.format_exc()}")
-            await update.message.reply_text(
-                "❌ 수익 조회 중 오류가 발생했습니다.\n"
-                "잠시 후 다시 시도해주세요.",
-                parse_mode='HTML'
-            )
-    
     async def handle_schedule_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일정 명령 처리"""
         try:
@@ -1284,6 +1146,332 @@ class BitcoinPredictionSystem:
             self.logger.error(f"일정 명령 처리 실패: {str(e)}")
             await update.message.reply_text("❌ 일정 조회 중 오류가 발생했습니다.", parse_mode='HTML')
     
+    async def handle_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """통계 명령 처리 - 크리티컬 뉴스 필터링 통계 포함"""
+        try:
+            user_id = update.effective_user.id
+            username = update.effective_user.username or "Unknown"
+            self.logger.info(f"통계 요청 - User: {username}({user_id})")
+            
+            current_time = datetime.now()
+            uptime = current_time - self.startup_time
+            hours = int(uptime.total_seconds() // 3600)
+            minutes = int((uptime.total_seconds() % 3600) // 60)
+            
+            # 예외 감지 통계
+            last_reset = datetime.fromisoformat(self.exception_stats['last_reset'])
+            stats_time = current_time - last_reset
+            stats_hours = stats_time.total_seconds() / 3600
+            
+            total_exceptions = self.exception_stats['total_detected']
+            total_commands = sum(self.command_stats.values())
+            
+            # 🔥🔥 마지막 알림 시간 계산
+            time_since_last_alert = current_time - self.last_successful_alert
+            minutes_since_alert = int(time_since_last_alert.total_seconds() / 60)
+            
+            # 🔥🔥 크리티컬 뉴스 필터링 통계
+            critical_processed = self.exception_stats['critical_news_processed']
+            critical_filtered = self.exception_stats['critical_news_filtered']
+            total_critical_attempts = critical_processed + critical_filtered
+            filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
+            
+            # 🔥🔥 리포트 매니저 통계
+            report_stats = self.report_manager.get_exception_report_stats()
+            
+            # 🔥🔥🔥 현재 배율 정보 가져오기
+            current_ratio = 1.0
+            if self.mirror_mode and self.mirror_trading:
+                current_ratio = self.mirror_trading.mirror_ratio_multiplier
+            
+            stats_msg = f"""<b>📊 시스템 실시간 통계</b>
+🕐 {current_time.strftime('%Y-%m-%d %H:%M')}
+━━━━━━━━━━━━━━━━━━━
+
+<b>⏱️ 시스템 상태:</b>
+- 가동 시간: <b>{hours}시간 {minutes}분</b>
+- 총 명령 처리: <b>{total_commands}건</b>
+- 오류 발생: <b>{self.command_stats['errors']}건</b>
+- 마지막 알림: <b>{minutes_since_alert}분 전</b>
+
+<b>🚨 예외 감지 성과 (최근 {stats_hours:.1f}시간):</b>
+- 총 감지: <b>{total_exceptions}건</b>
+- 시간당 평균: <b>{total_exceptions/max(stats_hours, 0.1):.1f}건</b>
+
+<b>🔥 크리티컬 뉴스 필터링:</b>
+- 처리됨: <b>{critical_processed}건</b>
+- 필터됨: <b>{critical_filtered}건</b>
+- 필터 효율: <b>{filter_efficiency:.0f}%</b>
+- 정확도 우선 모드 활성화
+
+<b>📄 예외 리포트 시스템:</b>
+- 전송 완료: <b>{self.exception_stats['exception_reports_sent']}건</b>
+- 리포트 생성 시도: <b>{report_stats['total_attempts']}건</b>
+- 리포트 생성 성공: <b>{report_stats['successful_reports']}건</b>
+- 리포트 성공률: <b>{report_stats['success_rate']:.0f}%</b>
+
+<b>📋 세부 감지 현황:</b>
+- 🚨 중요 뉴스: <b>{self.exception_stats['news_alerts']}건</b>
+- 📊 가격 변동: <b>{self.exception_stats['price_alerts']}건</b>
+- 📈 거래량 급증: <b>{self.exception_stats['volume_alerts']}건</b>
+- 💰 펀딩비 이상: <b>{self.exception_stats['funding_alerts']}건</b>
+- ⚡ 단기 급변동: <b>{self.exception_stats['short_term_alerts']}건</b>
+
+<b>🔄 미러 트레이딩 상태:</b>
+- 모드: <b>{'활성화' if self.mirror_mode else '비활성화'}</b>
+- 복제 비율: <b>{current_ratio}x</b> (텔레그램 조정 가능)"""
+
+            if self.mirror_mode:
+                stats_msg += f"\n- 미러 명령: <b>{self.command_stats['mirror']}회</b>"
+                stats_msg += f"\n- 배율 조정: <b>{self.command_stats['ratio']}회</b>"
+            
+            stats_msg += f"""
+
+<b>💬 명령어 사용 통계:</b>
+- 리포트: {self.command_stats['report']}회
+- 예측: {self.command_stats['forecast']}회
+- 수익: {self.command_stats['profit']}회
+- 자연어: {self.command_stats['natural_language']}회"""
+
+            if self.mirror_mode:
+                stats_msg += f"\n- 배율 조정: {self.command_stats['ratio']}회"
+
+            stats_msg += f"""
+
+<b>🔧 감지 설정:</b>
+- 가격 변동: ≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%
+- 거래량: ≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
+- 펀딩비: ≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%
+- 단기 변동: ≥{self.exception_detector.short_term_threshold}% (5분)
+- 뉴스 필터링: 강화됨 (크리티컬 전용)
+- 감지 주기: 2분마다 (빠른 감지)
+- 건강 체크 알림: 비활성화됨 ✅
+
+━━━━━━━━━━━━━━━━━━━
+⚡ 비트코인 전용 크리티컬 뉴스 필터링 시스템
+🔄 복제 비율 {current_ratio}x 적용됨 (텔레그램 /ratio로 변경)"""
+            
+            if self.ml_mode and self.ml_predictor:
+                ml_stats = self.ml_predictor.get_stats()
+                stats_msg += f"""
+
+<b>🤖 ML 예측 성능:</b>
+- 총 예측: {ml_stats['total_predictions']}건
+- 방향 정확도: {ml_stats['direction_accuracy']}
+- 크기 정확도: {ml_stats['magnitude_accuracy']}"""
+            
+            await update.message.reply_text(stats_msg, parse_mode='HTML')
+            
+        except Exception as e:
+            self.command_stats['errors'] += 1
+            self.logger.error(f"통계 명령 처리 실패: {str(e)}")
+            await update.message.reply_text("❌ 통계 조회 중 오류가 발생했습니다.", parse_mode='HTML')
+    
+    def _generate_default_response(self, message: str) -> str:
+        """기본 응답 생성"""
+        responses = [
+            "죄송합니다. 이해하지 못했습니다. 🤔",
+            "무엇을 도와드릴까요? 🤔",
+            "더 구체적으로 말씀해주시겠어요? 🤔"
+        ]
+        
+        import random
+        response = random.choice(responses)
+        
+        default_commands = "\n\n다음과 같이 질문해보세요:\n• '오늘 수익은?'\n• '지금 매수해도 돼?'\n• '시장 상황 어때?'\n• '다음 리포트 언제?'\n• '시스템 통계 보여줘'"
+        
+        if self.mirror_mode:
+            default_commands += "\n• '미러 트레이딩 상태는?'\n• '복제 비율 확인'\n• '배율 조정'"
+        
+        default_commands += "\n\n또는 /help 명령어로 전체 기능을 확인하세요."
+        
+        return f"{response}{default_commands}"
+    
+    async def handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시작 명령 처리 - 간소화된 도움말"""
+        try:
+            user_id = update.effective_user.id
+            username = update.effective_user.username or "Unknown"
+            self.logger.info(f"시작 명령 - User: {username}({user_id})")
+            
+            # 🔥🔥🔥 현재 배율 정보 가져오기
+            current_ratio = 1.0
+            if self.mirror_mode and self.mirror_trading:
+                current_ratio = self.mirror_trading.mirror_ratio_multiplier
+            
+            mode_text = f"🔄 미러 트레이딩 모드 ({current_ratio}x)" if self.mirror_mode else "📊 분석 전용 모드"
+            if self.ml_mode:
+                mode_text += " + 🤖 ML 예측"
+            
+            welcome_message = f"""<b>🚀 비트코인 예측 시스템에 오신 것을 환영합니다!</b>
+
+현재 모드: {mode_text}
+
+<b>📊 주요 명령어:</b>
+- /report - 전체 분석 리포트
+- /forecast - 단기 예측 요약
+- /profit - 실시간 수익 현황
+- /schedule - 자동 일정 안내
+- /stats - 시스템 통계"""
+            
+            if self.mirror_mode:
+                welcome_message += f"\n• /mirror [on/off] - 미러 트레이딩 제어\n• /ratio - 복제 비율 조정 (현재 {current_ratio}x)"
+            
+            welcome_message += """
+
+<b>💬 자연어 질문 예시:</b>
+- "오늘 수익은?"
+- "지금 매수해도 돼?"
+- "시장 상황 어때?"
+- "다음 리포트 언제?"
+- "시스템 통계 보여줘"
+"""
+            
+            if self.mirror_mode:
+                welcome_message += f'• "미러 트레이딩 상태는?"\n• "복제 비율 확인" (현재 {current_ratio}x)\n• "배율 조정"\n'
+            
+            welcome_message += f"""
+<b>🔔 자동 기능:</b>
+- 정기 리포트: 09:00, 13:00, 18:00, 23:00
+- 예외 감지: 2분마다 (빠른 감지)
+- 급속 변동: 1분마다 (즉시 감지)
+- 뉴스 수집: 15초마다 (RSS)
+- 시스템 체크: 2시간마다 (심각한 오류만 알림)"""
+            
+            if self.ml_mode:
+                welcome_message += "\n• ML 예측 검증: 30분마다"
+            
+            welcome_message += f"""
+
+<b>⚡ 실시간 알림 (비트코인 전용):</b>
+- 가격 급변동 (≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%)
+- 단기 급변동 (5분 내 ≥{self.exception_detector.short_term_threshold}%)
+- 비트코인 크리티컬 뉴스 (강화된 필터링)
+- 펀딩비 이상 (≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%)
+- 거래량 급증 (≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배)
+"""
+            
+            if self.mirror_mode:
+                welcome_message += f"""
+<b>🔄 미러 트레이딩 ({current_ratio}x):</b>
+- 비트겟 → 게이트 자동 복제
+- 총 자산 대비 동일 비율 × {current_ratio}
+- 예약 주문도 동일 비율 복제
+- 실시간 가격 조정
+- 예약 주문 취소 동기화
+- 텔레그램으로 복제 비율 실시간 조정 (/ratio)
+- 텔레그램으로 미러링 활성화/비활성화 (/mirror on/off)
+"""
+            
+            if self.ml_mode:
+                welcome_message += f"""
+<b>🤖 ML 예측 시스템:</b>
+- 과거 데이터 학습
+- 실시간 예측
+- 자동 성능 개선
+"""
+            
+            # 시스템 상태 추가
+            uptime = datetime.now() - self.startup_time
+            hours = int(uptime.total_seconds() // 3600)
+            minutes = int((uptime.total_seconds() % 3600) // 60)
+            
+            total_exceptions = self.exception_stats['total_detected']
+            minutes_since_alert = int((datetime.now() - self.last_successful_alert).total_seconds() / 60)
+            
+            # 🔥🔥 크리티컬 뉴스 필터링 통계 추가
+            critical_processed = self.exception_stats['critical_news_processed']
+            critical_filtered = self.exception_stats['critical_news_filtered']
+            total_critical_attempts = critical_processed + critical_filtered
+            filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
+            
+            # 🔥🔥 리포트 통계 추가
+            report_stats = self.report_manager.get_exception_report_stats()
+            
+            welcome_message += f"""
+<b>📊 시스템 상태:</b>
+- 가동 시간: {hours}시간 {minutes}분
+- 총 명령 처리: {sum(self.command_stats.values())}건
+- 오류 발생: {self.command_stats['errors']}건
+- 마지막 알림: {minutes_since_alert}분 전
+- 크리티컬 뉴스 필터링: <b>{filter_efficiency:.0f}%</b> 효율
+- 예외 리포트 생성: <b>{report_stats['success_rate']:.0f}%</b> 성공률
+- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
+- 건강 체크: 심각한 오류 시에만 알림 ✅
+- 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'}
+- 복제 비율: {current_ratio}x (텔레그램 조정 가능)
+
+📈 정확한 비트코인 분석을 제공합니다.
+🔥 크리티컬 뉴스만 엄선하여 전달합니다.
+📄 전문적인 예외 리포트를 자동 생성합니다.
+🔕 불필요한 알림은 완전히 제거했습니다.
+🔄 복제 비율을 텔레그램으로 실시간 조정할 수 있습니다!
+🎮 미러 트레이딩을 텔레그램으로 즉시 제어할 수 있습니다!
+
+도움이 필요하시면 언제든 질문해주세요! 😊"""
+            
+            if self.ml_mode and self.ml_predictor:
+                ml_stats = self.ml_predictor.get_stats()
+                welcome_message += f"""
+
+<b>🤖 ML 예측 성능:</b>
+- 총 예측: {ml_stats['total_predictions']}건
+- 방향 정확도: {ml_stats['direction_accuracy']}
+- 크기 정확도: {ml_stats['magnitude_accuracy']}"""
+            
+            await update.message.reply_text(welcome_message, parse_mode='HTML')
+            
+        except Exception as e:
+            self.logger.error(f"시작 명령 처리 실패: {e}")
+            await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
+    
+    async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """🔥🔥🔥 미러 트레이딩 명령 - 텔레그램 봇에 위임"""
+        try:
+            self.command_stats['mirror'] += 1
+            
+            if not self.mirror_mode or not self.mirror_trading:
+                await update.message.reply_text(
+                    "❌ 미러 트레이딩이 활성화되지 않았습니다.\n"
+                    "환경변수 MIRROR_TRADING_MODE=O로 설정 후 시스템을 재시작해주세요.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 텔레그램 봇의 mirror 핸들러에 위임
+            await self.telegram_bot.handle_mirror_command(update, context)
+            
+        except Exception as e:
+            self.command_stats['errors'] += 1
+            self.logger.error(f"미러 명령어 처리 실패: {e}")
+            await update.message.reply_text(
+                "❌ 미러 명령어 처리 중 오류가 발생했습니다.",
+                parse_mode='HTML'
+            )
+    
+    # 나머지 메서드들은 기존과 동일하게 유지...
+    def _split_message(self, message: str, max_length: int = 4000) -> List[str]:
+        """긴 메시지 분할"""
+        if len(message) <= max_length:
+            return [message]
+        
+        parts = []
+        lines = message.split('\n')
+        current_part = ""
+        
+        for line in lines:
+            if len(current_part) + len(line) + 1 > max_length:
+                if current_part:
+                    parts.append(current_part.strip())
+                current_part = line + '\n'
+            else:
+                current_part += line + '\n'
+        
+        if current_part:
+            parts.append(current_part.strip())
+        
+        return parts
+    
     async def _get_market_data_for_ml(self) -> Dict:
         """ML을 위한 시장 데이터 수집"""
         market_data = {
@@ -1310,10 +1498,7 @@ class BitcoinPredictionSystem:
                     # 거래량 비율 (평균 대비)
                     volume = float(ticker.get('baseVolume', 0))
                     market_data['volume_ratio'] = volume / 50000 if volume > 0 else 1.0
-            
-            # 기술 지표는 실제 구현 필요
-            # 여기서는 기본값 사용
-            
+        
         except Exception as e:
             self.logger.error(f"시장 데이터 수집 실패: {e}")
         
@@ -1610,9 +1795,11 @@ class BitcoinPredictionSystem:
 - 건강 체크: 심각한 오류 시에만 알림 ✅
 - 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'}
 - 복제 비율: {current_ratio}x (텔레그램 /ratio로 변경)
+- 미러링 제어: 텔레그램 /mirror on/off
 
 ━━━━━━━━━━━━━━━━━━━
-⚡ 비트코인 전용 시스템이 완벽히 작동했습니다!"""
+⚡ 비트코인 전용 시스템이 완벽히 작동했습니다!
+🎮 텔레그램으로 미러링과 배율을 실시간 제어 가능!"""
             
             await self.telegram_bot.send_message(report, parse_mode='HTML')
             
@@ -1638,159 +1825,6 @@ class BitcoinPredictionSystem:
             
         except Exception as e:
             self.logger.error(f"일일 통계 리포트 생성 실패: {e}")
-    
-    def _split_message(self, message: str, max_length: int = 4000) -> List[str]:
-        """긴 메시지 분할"""
-        if len(message) <= max_length:
-            return [message]
-        
-        parts = []
-        lines = message.split('\n')
-        current_part = ""
-        
-        for line in lines:
-            if len(current_part) + len(line) + 1 > max_length:
-                if current_part:
-                    parts.append(current_part.strip())
-                current_part = line + '\n'
-            else:
-                current_part += line + '\n'
-        
-        if current_part:
-            parts.append(current_part.strip())
-        
-        return parts
-    
-    async def handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """시작 명령 처리 - 간소화된 도움말"""
-        try:
-            user_id = update.effective_user.id
-            username = update.effective_user.username or "Unknown"
-            self.logger.info(f"시작 명령 - User: {username}({user_id})")
-            
-            # 🔥🔥🔥 현재 배율 정보 가져오기
-            current_ratio = 1.0
-            if self.mirror_mode and self.mirror_trading:
-                current_ratio = self.mirror_trading.mirror_ratio_multiplier
-            
-            mode_text = f"🔄 미러 트레이딩 모드 ({current_ratio}x)" if self.mirror_mode else "📊 분석 전용 모드"
-            if self.ml_mode:
-                mode_text += " + 🤖 ML 예측"
-            
-            welcome_message = f"""<b>🚀 비트코인 예측 시스템에 오신 것을 환영합니다!</b>
-
-현재 모드: {mode_text}
-
-<b>📊 주요 명령어:</b>
-- /report - 전체 분석 리포트
-- /forecast - 단기 예측 요약
-- /profit - 실시간 수익 현황
-- /schedule - 자동 일정 안내
-- /stats - 시스템 통계"""
-            
-            if self.mirror_mode:
-                welcome_message += f"\n• /mirror - 미러 트레이딩 상태\n• /ratio - 복제 비율 조정 (현재 {current_ratio}x)"
-            
-            welcome_message += """
-
-<b>💬 자연어 질문 예시:</b>
-- "오늘 수익은?"
-- "지금 매수해도 돼?"
-- "시장 상황 어때?"
-- "다음 리포트 언제?"
-- "시스템 통계 보여줘"
-"""
-            
-            if self.mirror_mode:
-                welcome_message += f'• "미러 트레이딩 상태는?"\n• "복제 비율 확인" (현재 {current_ratio}x)\n• "배율 조정"\n'
-            
-            welcome_message += f"""
-<b>🔔 자동 기능:</b>
-- 정기 리포트: 09:00, 13:00, 18:00, 23:00
-- 예외 감지: 2분마다 (빠른 감지)
-- 급속 변동: 1분마다 (즉시 감지)
-- 뉴스 수집: 15초마다 (RSS)
-- 시스템 체크: 2시간마다 (심각한 오류만 알림)"""
-            
-            if self.ml_mode:
-                welcome_message += "\n• ML 예측 검증: 30분마다"
-            
-            welcome_message += f"""
-
-<b>⚡ 실시간 알림 (비트코인 전용):</b>
-- 가격 급변동 (≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%)
-- 단기 급변동 (5분 내 ≥{self.exception_detector.short_term_threshold}%)
-- 비트코인 크리티컬 뉴스 (강화된 필터링)
-- 펀딩비 이상 (≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%)
-- 거래량 급증 (≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배)
-"""
-            
-            if self.mirror_mode:
-                welcome_message += f"""
-<b>🔄 미러 트레이딩 ({current_ratio}x):</b>
-- 비트겟 → 게이트 자동 복제
-- 총 자산 대비 동일 비율 × {current_ratio}
-- 예약 주문도 동일 비율 복제
-- 실시간 가격 조정
-- 예약 주문 취소 동기화
-- 텔레그램으로 복제 비율 실시간 조정 (/ratio)
-"""
-            
-            if self.ml_mode:
-                welcome_message += f"""
-<b>🤖 ML 예측 시스템:</b>
-- 과거 데이터 학습
-- 실시간 예측
-- 자동 성능 개선
-"""
-            
-            # 시스템 상태 추가
-            uptime = datetime.now() - self.startup_time
-            hours = int(uptime.total_seconds() // 3600)
-            minutes = int((uptime.total_seconds() % 3600) // 60)
-            
-            total_exceptions = self.exception_stats['total_detected']
-            minutes_since_alert = int((datetime.now() - self.last_successful_alert).total_seconds() / 60)
-            
-            # 🔥🔥 크리티컬 뉴스 필터링 통계 추가
-            critical_processed = self.exception_stats['critical_news_processed']
-            critical_filtered = self.exception_stats['critical_news_filtered']
-            total_critical_attempts = critical_processed + critical_filtered
-            filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
-            
-            # 🔥🔥 리포트 통계 추가
-            report_stats = self.report_manager.get_exception_report_stats()
-            
-            welcome_message += f"""
-<b>📊 시스템 상태:</b>
-- 가동 시간: {hours}시간 {minutes}분
-- 총 명령 처리: {sum(self.command_stats.values())}건
-- 오류 발생: {self.command_stats['errors']}건
-- 마지막 알림: {minutes_since_alert}분 전
-- 크리티컬 뉴스 필터링: <b>{filter_efficiency:.0f}%</b> 효율
-- 예외 리포트 생성: <b>{report_stats['success_rate']:.0f}%</b> 성공률
-- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
-- 건강 체크: 심각한 오류 시에만 알림 ✅
-- 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'}
-- 복제 비율: {current_ratio}x (텔레그램 조정 가능)
-
-📈 정확한 비트코인 분석을 제공합니다.
-🔥 크리티컬 뉴스만 엄선하여 전달합니다.
-📄 전문적인 예외 리포트를 자동 생성합니다.
-🔕 불필요한 알림은 완전히 제거했습니다.
-🔄 복제 비율을 텔레그램으로 실시간 조정할 수 있습니다!
-
-도움이 필요하시면 언제든 질문해주세요! 😊"""
-            
-            await update.message.reply_text(welcome_message, parse_mode='HTML')
-            
-        except Exception as e:
-            self.logger.error(f"시작 명령 처리 실패: {e}")
-            await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
-    
-    async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """미러 트레이딩 상태 명령"""
-        await self.handle_mirror_status(update, context)
     
     async def start(self):
         """시스템 시작"""
@@ -1832,11 +1866,11 @@ class BitcoinPredictionSystem:
             self.telegram_bot.add_handler('profit', self.handle_profit_command)
             self.telegram_bot.add_handler('schedule', self.handle_schedule_command)
             self.telegram_bot.add_handler('stats', self.handle_stats_command)
-            self.telegram_bot.add_handler('help', self.handle_start_command)  # 🔥🔥🔥 help 핸들러 추가
+            self.telegram_bot.add_handler('help', self.handle_start_command)
             
             if self.mirror_mode:
                 self.telegram_bot.add_handler('mirror', self.handle_mirror_command)
-                self.telegram_bot.add_handler('ratio', self.handle_ratio_command)  # 🔥🔥🔥 ratio 핸들러 추가
+                self.telegram_bot.add_handler('ratio', self.handle_ratio_command)
             
             # 자연어 메시지 핸들러 추가
             self.telegram_bot.add_message_handler(self.handle_natural_language)
@@ -1856,27 +1890,25 @@ class BitcoinPredictionSystem:
             
             self.logger.info(f"✅ 비트코인 예측 시스템 시작 완료 (모드: {mode_text})")
             
-            # 🔥🔥 시작 메시지 전송 - 텔레그램 배율 조정 기능 강조
+            # 🔥🔥 시작 메시지 전송 - 텔레그램 제어 기능 강조
             startup_msg = f"""<b>🚀 비트코인 예측 시스템이 시작되었습니다!</b>
 
 <b>📊 운영 모드:</b> {mode_text}
 <b>🕐 시작 시각:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-<b>🔥 버전:</b> 4.0 - 텔레그램 복제 비율 실시간 조정
+<b>🔥 버전:</b> 4.0 - 텔레그램 실시간 제어
 
-<b>🎯 텔레그램 복제 비율 조정 (NEW!):</b>
+<b>🎮 텔레그램 실시간 제어 (NEW!):</b>
+- 미러링 활성화: /mirror on
+- 미러링 비활성화: /mirror off
 - 현재 복제 비율: <b>{current_ratio}x</b>
-- 실시간 조정: /ratio 명령어
+- 복제 비율 조정: /ratio [숫자]
+- 상태 확인: /mirror status
+
+<b>🔄 복제 비율 조정:</b>
 - 사용법: /ratio 1.5 (1.5배로 변경)
 - 허용 범위: 0.1배 ~ 10.0배
 - 확인 절차: 안전한 변경 확인
 - 즉시 적용: 새로운 주문부터 바로 반영
-
-<b>🚨 예약 주문 취소 동기화 (강화):</b>
-- 비트겟 예약 주문 취소 감지 → 게이트 자동 취소
-- 45초마다 동기화 체크
-- 3회 재시도 시스템
-- 확실한 고아 주문만 삭제
-- 의심스러운 주문은 안전상 보존
 
 <b>⚡ 비트코인 전용 기능 (더 빠르게):</b>
 - 예외 감지: 2분마다 (5분 → 2분)
@@ -1885,16 +1917,13 @@ class BitcoinPredictionSystem:
 - 크리티컬 뉴스만 전용 처리 ✨
 - 예외 리포트 자동 생성/전송 🚨
 
-<b>🔧 환경변수 설정 (O/X 지원):</b>
-- MIRROR_TRADING_MODE: <b>O</b> (활성화), <b>X</b> (비활성화)
-- 현재 설정: 미러링 {'활성화' if self.mirror_mode else '비활성화'}
-- 복제 비율: 환경변수 제거, 텔레그램으로만 조정
-
 <b>💬 텔레그램 명령어:</b>
+- /mirror on/off - 미러링 즉시 제어
 - /ratio - 현재 복제 비율 확인
 - /ratio 1.5 - 1.5배로 변경
 - /ratio 0.5 - 절반으로 축소
 - /ratio 2.0 - 2배로 확대
+- /profit - 수익 현황 조회
 - /help - 전체 도움말
 
 <b>🔥 크리티컬 뉴스 전용 시스템:</b>
@@ -1904,9 +1933,8 @@ class BitcoinPredictionSystem:
 - 가격 영향도 0.1% 이상만 처리
 - 강화된 예외 리포트 자동 생성
 
-이제 복제 비율을 텔레그램으로 실시간 조정할 수 있습니다!
-예약 주문 취소도 완벽하게 동기화됩니다!
-/ratio 명령어를 사용해보세요!"""
+이제 미러링과 복제 비율을 텔레그램으로 실시간 제어할 수 있습니다!
+/mirror 명령어와 /ratio 명령어를 사용해보세요!"""
             
             await self.telegram_bot.send_message(startup_msg, parse_mode='HTML')
             
@@ -1979,7 +2007,8 @@ class BitcoinPredictionSystem:
 <b>❌ 발생한 오류:</b> {self.command_stats['errors']}건
 <b>🔧 시스템 최적화:</b> 불필요한 알림 완전 제거 완료 ✅
 <b>🔄 미러 트레이딩:</b> {'활성화' if self.mirror_mode else '비활성화'} ({current_ratio}x)
-<b>🎯 배율 조정:</b> {self.command_stats['ratio']}회 (텔레그램)"""
+<b>🎯 배율 조정:</b> {self.command_stats['ratio']}회 (텔레그램)
+<b>🎮 미러링 제어:</b> {self.command_stats['mirror']}회 (텔레그램)"""
                 
                 if self.ml_mode and self.ml_predictor:
                     stats = self.ml_predictor.get_stats()
@@ -1992,7 +2021,7 @@ class BitcoinPredictionSystem:
                 
                 if self.mirror_mode:
                     shutdown_msg += f"\n미러 트레이딩({current_ratio}x)도 함께 종료됩니다."
-                    shutdown_msg += f"\n텔레그램 배율 조정 기능도 종료됩니다."
+                    shutdown_msg += f"\n텔레그램 실시간 제어 기능도 종료됩니다."
                 
                 await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
             except:
@@ -2032,7 +2061,7 @@ class BitcoinPredictionSystem:
                 self.ml_predictor.save_predictions()
             
             self.logger.info("=" * 50)
-            self.logger.info("✅ 비트코인 전용 + 크리티컬 뉴스 전용 + 텔레그램 배율 조정 시스템이 안전하게 종료되었습니다")
+            self.logger.info("✅ 비트코인 전용 + 크리티컬 뉴스 전용 + 텔레그램 실시간 제어 시스템이 안전하게 종료되었습니다")
             self.logger.info("=" * 50)
             
         except Exception as e:
@@ -2043,7 +2072,7 @@ async def main():
     """메인 함수"""
     try:
         print("\n" + "=" * 50)
-        print("🚀 비트코인 예측 시스템 v4.0 - 텔레그램 복제 비율 실시간 조정")
+        print("🚀 비트코인 예측 시스템 v4.0 - 텔레그램 실시간 제어")
         print("=" * 50 + "\n")
         
         system = BitcoinPredictionSystem()
