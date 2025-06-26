@@ -21,7 +21,7 @@ from data_collector import RealTimeDataCollector
 from trading_indicators import AdvancedTradingIndicators
 from report_generators import ReportGeneratorManager
 
-# 미러 트레이딩 관련 임포트
+# 미러 트레이딩 관련 임포트 - 수정된 부분
 try:
     from gateio_client import GateioMirrorClient as GateClient
     from mirror_trading import MirrorTradingSystem
@@ -29,9 +29,8 @@ try:
     print("✅ 미러 트레이딩 모듈 import 성공")
 except ImportError as e:
     MIRROR_TRADING_AVAILABLE = False
-    print(f"❌ 미러 트레이딩 모듈을 찾을 수 없습니다: {e}")
-    print("시스템을 종료합니다. Gate.io API 설정이 필요합니다.")
-    sys.exit(1)
+    print(f"⚠️ 미러 트레이딩 모듈을 찾을 수 없습니다: {e}")
+    print("분석 전용 모드로 실행됩니다.")
 
 # ML 예측기 임포트
 try:
@@ -64,27 +63,28 @@ except ImportError:
 class BitcoinPredictionSystem:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.logger.info("=" * 80)
-        self.logger.info("🔥 비트코인 예측 시스템 초기화 시작 - 텔레그램 봇 연결 문제 해결 모드")
-        self.logger.info("=" * 80)
+        self.logger.info("=" * 50)
+        self.logger.info("비트코인 예측 시스템 초기화 시작 - 크리티컬 뉴스 전용")
+        self.logger.info("=" * 50)
         
+        # 설정 로드
         try:
             self.config = Config()
-            self.logger.info("✅ 설정 로드 완료")
         except Exception as e:
-            self.logger.error(f"❌ 설정 로드 실패: {e}")
+            self.logger.error(f"설정 로드 실패: {e}")
             raise
         
-        # 환경변수 사전 검증
-        self._verify_environment_variables()
+        # 🔥🔥🔥 미러 트레이딩 모드 확인 - O/X 지원
+        self.mirror_mode = self._parse_mirror_trading_mode()
         
-        # 미러 트레이딩 모드는 시스템에서 관리
-        self.mirror_mode = self.config.MIRROR_TRADING_DEFAULT
-        
-        self.logger.info(f"🔥 환경변수 기본값: {self.config.MIRROR_TRADING_DEFAULT}")
-        self.logger.info(f"🔥 초기 미러링 모드: {'활성화' if self.mirror_mode else '비활성화'}")
-        self.logger.info(f"🔥 제어 방식: 텔레그램 실시간 제어 (/mirror on/off)")
+        self.logger.info(f"🔥 환경변수 MIRROR_TRADING_MODE: '{os.getenv('MIRROR_TRADING_MODE', 'not_set')}'")
+        self.logger.info(f"🔥 파싱 결과: 미러 트레이딩 모드={'활성화' if self.mirror_mode else '비활성화'}")
         self.logger.info(f"🔥 미러 트레이딩 모듈 가용성: {'사용 가능' if MIRROR_TRADING_AVAILABLE else '사용 불가'}")
+        
+        # Gate.io API 키 확인
+        gate_api_key = os.getenv('GATE_API_KEY', '')
+        gate_api_secret = os.getenv('GATE_API_SECRET', '')
+        self.logger.info(f"🔥 Gate.io API 키 설정 상태: {'설정됨' if gate_api_key and gate_api_secret else '미설정'}")
         
         # ML 예측기 모드 확인
         self.ml_mode = ML_PREDICTOR_AVAILABLE
@@ -100,10 +100,6 @@ class BitcoinPredictionSystem:
                 self.logger.error(f"ML 예측기 초기화 실패: {e}")
                 self.ml_mode = False
         
-        # 디버깅을 위한 상태 추적
-        self.debug_mode = True
-        self.command_test_count = 0
-        
         # 시스템 상태 관리
         self.is_running = False
         self.startup_time = datetime.now()
@@ -113,10 +109,8 @@ class BitcoinPredictionSystem:
             'profit': 0,
             'schedule': 0,
             'mirror': 0,
-            'ratio': 0,
+            'ratio': 0,  # 🔥🔥🔥 배율 명령어 통계 추가
             'natural_language': 0,
-            'debug': 0,
-            'test': 0,
             'errors': 0
         }
         
@@ -134,15 +128,12 @@ class BitcoinPredictionSystem:
             'last_reset': datetime.now().isoformat()
         }
         
-        # 예외 감지 강화 변수
+        # 🔥🔥 예외 감지 강화 변수
         self.last_successful_alert = datetime.now()
         self.min_alert_interval = timedelta(minutes=15)
         
-        # 건강 체크 완전 비활성화 플래그
+        # 🔥🔥 건강 체크 완전 비활성화 플래그
         self.disable_health_check_alerts = True
-        
-        # 일일 통계 초기화
-        self.daily_stats = {'errors': []}
         
         # 클라이언트 초기화
         self._initialize_clients()
@@ -158,139 +149,111 @@ class BitcoinPredictionSystem:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
-        self.logger.info(f"✅ 시스템 초기화 완료 (미러: {'활성' if self.mirror_mode else '비활성'}, ML: {'활성' if self.ml_mode else '비활성'})")
+        self.logger.info(f"시스템 초기화 완료 (미러: {'활성' if self.mirror_mode else '비활성'}, ML: {'활성' if self.ml_mode else '비활성'})")
 
-    def _verify_environment_variables(self):
-        """환경변수 사전 검증 - 텔레그램 봇 관련 특히 상세히"""
+    def _parse_mirror_trading_mode(self) -> bool:
+        """🔥🔥🔥 미러링 모드 파싱 - O/X 정확한 구분"""
         try:
-            self.logger.info("🔍 환경변수 사전 검증 시작:")
+            raw_mode = os.getenv('MIRROR_TRADING_MODE', 'X')  # 기본값 X (비활성화)
             
-            # 텔레그램 관련 환경변수 검증
-            telegram_token = getattr(self.config, 'TELEGRAM_BOT_TOKEN', None)
-            telegram_chat_id = getattr(self.config, 'TELEGRAM_CHAT_ID', None)
+            # 문자열로 변환하되 원본 보존
+            mode_str_original = str(raw_mode).strip()
+            mode_str_upper = mode_str_original.upper()
             
-            self.logger.info(f"📋 텔레그램 환경변수 확인:")
-            self.logger.info(f"  - TELEGRAM_BOT_TOKEN: {'설정됨' if telegram_token else '❌ 없음'}")
-            if telegram_token:
-                self.logger.info(f"    길이: {len(telegram_token)}자")
-                self.logger.info(f"    형식: {'유효' if ':' in telegram_token and len(telegram_token.split(':')) == 2 else '❌ 의심스러움'}")
-                if ':' in telegram_token:
-                    bot_id = telegram_token.split(':')[0]
-                    self.logger.info(f"    봇 ID: {bot_id}")
+            self.logger.info(f"🔍 미러링 모드 파싱: 원본='{mode_str_original}', 대문자='{mode_str_upper}'")
             
-            self.logger.info(f"  - TELEGRAM_CHAT_ID: {'설정됨' if telegram_chat_id else '❌ 없음'}")
-            if telegram_chat_id:
-                self.logger.info(f"    값: {telegram_chat_id}")
-                self.logger.info(f"    타입: {type(telegram_chat_id)}")
+            # 🔥🔥🔥 영어 O, X 우선 처리 (숫자 0과 구분)
+            if mode_str_upper == 'O':
+                self.logger.info("✅ 영어 대문자 O 감지 → 활성화")
+                return True
+            elif mode_str_upper == 'X':
+                self.logger.info("✅ 영어 대문자 X 감지 → 비활성화")
+                return False
+            
+            # 기타 활성화 키워드
+            elif mode_str_upper in ['ON', 'OPEN', 'TRUE', 'Y', 'YES']:
+                self.logger.info(f"✅ 활성화 키워드 감지: '{mode_str_upper}' → 활성화")
+                return True
+            
+            # 기타 비활성화 키워드 (숫자 0 포함)
+            elif mode_str_upper in ['OFF', 'CLOSE', 'FALSE', 'N', 'NO'] or mode_str_original == '0':
+                self.logger.info(f"✅ 비활성화 키워드 감지: '{mode_str_upper}' → 비활성화")
+                return False
+            
+            # 숫자 1은 활성화
+            elif mode_str_original == '1':
+                self.logger.info("✅ 숫자 1 감지 → 활성화")
+                return True
+            
+            else:
+                self.logger.warning(f"⚠️ 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(비활성화) 사용")
+                return False
                 
-                # Chat ID 형식 검증
-                try:
-                    if isinstance(telegram_chat_id, str):
-                        if telegram_chat_id.lstrip('-').isdigit():
-                            chat_id_int = int(telegram_chat_id)
-                            self.logger.info(f"    정수 변환: 성공 ({chat_id_int})")
-                        else:
-                            self.logger.error(f"    ❌ 잘못된 형식: 숫자가 아님")
-                    elif isinstance(telegram_chat_id, (int, float)):
-                        chat_id_int = int(telegram_chat_id)
-                        self.logger.info(f"    이미 숫자: {chat_id_int}")
-                    else:
-                        self.logger.error(f"    ❌ 잘못된 타입: {type(telegram_chat_id)}")
-                except Exception as chat_error:
-                    self.logger.error(f"    ❌ Chat ID 검증 실패: {chat_error}")
-            
-            # 기타 필수 환경변수 검증
-            essential_vars = [
-                'BITGET_APIKEY',
-                'BITGET_APISECRET', 
-                'BITGET_PASSPHRASE',
-                'GATE_API_KEY',
-                'GATE_API_SECRET'
-            ]
-            
-            self.logger.info(f"📋 기타 필수 환경변수 확인:")
-            missing_vars = []
-            for var in essential_vars:
-                value = getattr(self.config, var, None)
-                if value:
-                    self.logger.info(f"  ✅ {var}: 설정됨 ({len(str(value))}자)")
-                else:
-                    self.logger.error(f"  ❌ {var}: 없음")
-                    missing_vars.append(var)
-            
-            if missing_vars:
-                self.logger.error(f"❌ 누락된 환경변수: {', '.join(missing_vars)}")
-                raise ValueError(f"필수 환경변수가 누락됨: {missing_vars}")
-            
-            # 텔레그램 환경변수가 없으면 중단
-            if not telegram_token:
-                raise ValueError("❌ TELEGRAM_BOT_TOKEN 환경변수가 설정되지 않았습니다.")
-            
-            if not telegram_chat_id:
-                raise ValueError("❌ TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
-            
-            self.logger.info("✅ 환경변수 사전 검증 완료")
-            
         except Exception as e:
-            self.logger.error(f"❌ 환경변수 검증 실패: {e}")
-            raise
+            self.logger.error(f"미러링 모드 파싱 실패: {e}, 기본값(비활성화) 사용")
+            return False
     
     def _initialize_clients(self):
-        """클라이언트 초기화 - Gate.io 항상 초기화"""
+        """클라이언트 초기화 - 개선된 버전"""
         try:
-            self.logger.info("=" * 50)
-            self.logger.info("🔄 클라이언트 초기화 시작")
-            self.logger.info("=" * 50)
-            
             # Bitget 클라이언트
-            self.logger.info("1️⃣ Bitget 클라이언트 초기화 중...")
             self.bitget_client = BitgetClient(self.config)
             self.logger.info("✅ Bitget 클라이언트 초기화 완료")
             
-            # Telegram 봇 - 더 상세한 초기화
-            self.logger.info("2️⃣ Telegram 봇 초기화 중...")
-            try:
-                self.telegram_bot = TelegramBot(self.config)
-                self.logger.info("✅ Telegram 봇 인스턴스 생성 완료")
-            except Exception as tg_error:
-                self.logger.error(f"❌ Telegram 봇 생성 실패: {tg_error}")
-                self.logger.error(f"Telegram 봇 오류 상세: {traceback.format_exc()}")
-                raise
+            # Telegram 봇
+            self.telegram_bot = TelegramBot(self.config)
+            self.logger.info("✅ Telegram 봇 초기화 완료")
             
-            # Gate.io 클라이언트는 항상 초기화
+            # Gate.io 클라이언트 (미러 모드일 때만) - 개선된 로직
             self.gate_client = None
             self.mirror_trading = None
             
-            self.logger.info("3️⃣ Gate.io 클라이언트 초기화 중...")
-            
-            try:
-                self.gate_client = GateClient(self.config)
-                self.logger.info("✅ Gate.io 클라이언트 생성 완료")
+            # 🔥🔥🔥 미러 트레이딩 활성화 조건 체크 강화
+            if self.mirror_mode:
+                self.logger.info("🔄 미러 트레이딩 모드가 활성화됨, Gate.io 클라이언트 초기화 시작...")
                 
-                self.mirror_trading = MirrorTradingSystem(
-                    self.config,
-                    self.bitget_client,
-                    self.gate_client,
-                    self.telegram_bot
-                )
-                self.logger.info("✅ 미러 트레이딩 시스템 생성 완료")
+                if not MIRROR_TRADING_AVAILABLE:
+                    self.logger.error("❌ 미러 트레이딩 모듈을 찾을 수 없음")
+                    self.mirror_mode = False
+                    return
                 
-                # 텔레그램 봇에 참조 설정
-                self.telegram_bot.set_mirror_trading_system(self.mirror_trading)
-                self.logger.info("🔗 텔레그램 봇에 미러 트레이딩 시스템 참조 설정 완료")
+                # Gate.io API 키 확인
+                gate_api_key = os.getenv('GATE_API_KEY', '')
+                gate_api_secret = os.getenv('GATE_API_SECRET', '')
                 
-                self.telegram_bot.set_system_reference(self)
-                self.logger.info("🔗 텔레그램 봇에 시스템 참조 설정 완료")
+                if not gate_api_key or not gate_api_secret:
+                    self.logger.error("❌ Gate.io API 키가 설정되지 않음")
+                    self.logger.error("GATE_API_KEY와 GATE_API_SECRET 환경변수를 설정해주세요")
+                    self.mirror_mode = False
+                    return
                 
-            except Exception as e:
-                self.logger.error(f"❌ Gate.io 클라이언트 또는 미러 트레이딩 초기화 실패: {e}")
-                self.logger.error(f"상세 오류: {traceback.format_exc()}")
-                raise
-            
-            self.logger.info("✅ 모든 클라이언트 초기화 완료")
+                try:
+                    self.logger.info("🔄 Gate.io 클라이언트 생성 중...")
+                    self.gate_client = GateClient(self.config)
+                    self.logger.info("✅ Gate.io 클라이언트 생성 완료")
+                    
+                    self.logger.info("🔄 미러 트레이딩 시스템 생성 중...")
+                    self.mirror_trading = MirrorTradingSystem(
+                        self.config,
+                        self.bitget_client,
+                        self.gate_client,
+                        self.telegram_bot
+                    )
+                    self.logger.info("✅ Gate.io 클라이언트 및 미러 트레이딩 초기화 완료")
+                    
+                    # 🔥🔥🔥 텔레그램 봇에 미러 트레이딩 시스템 참조 설정
+                    self.telegram_bot.set_mirror_trading_system(self.mirror_trading)
+                    self.logger.info("🔗 텔레그램 봇에 미러 트레이딩 시스템 참조 설정 완료")
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ 미러 트레이딩 초기화 실패: {e}")
+                    self.logger.error(f"상세 오류: {traceback.format_exc()}")
+                    self.mirror_mode = False
+            else:
+                self.logger.info("📊 분석 전용 모드로 실행")
                     
         except Exception as e:
-            self.logger.error(f"❌ 클라이언트 초기화 실패: {e}")
+            self.logger.error(f"클라이언트 초기화 실패: {e}")
             raise
     
     def _initialize_components(self):
@@ -305,7 +268,7 @@ class BitcoinPredictionSystem:
             self.indicator_system = AdvancedTradingIndicators()
             self.logger.info("✅ 지표 시스템 초기화 완료")
             
-            # 통합 리포트 생성기 (강화된 버전)
+            # 🔥🔥 통합 리포트 생성기 (강화된 버전)
             self.report_manager = ReportGeneratorManager(
                 self.config,
                 self.data_collector,
@@ -313,8 +276,8 @@ class BitcoinPredictionSystem:
             )
             self.report_manager.set_bitget_client(self.bitget_client)
             
-            # Gate.io 클라이언트 설정
-            if self.gate_client:
+            # Gate.io 클라이언트 설정 (미러 모드일 때만)
+            if self.mirror_mode and self.gate_client:
                 self.report_manager.set_gateio_client(self.gate_client)
                 self.logger.info("✅ ReportManager에 Gate.io 클라이언트 설정 완료")
             
@@ -327,7 +290,7 @@ class BitcoinPredictionSystem:
             )
             self.logger.info("✅ 분석 엔진 초기화 완료")
             
-            # 예외 감지기
+            # 🔥🔥 예외 감지기 - 강화된 필터링 적용
             self.exception_detector = ExceptionDetector(
                 bitget_client=self.bitget_client,
                 telegram_bot=self.telegram_bot
@@ -362,7 +325,7 @@ class BitcoinPredictionSystem:
             )
             self.logger.info(f"📅 정기 리포트 스케줄 등록: {hour:02d}:{minute:02d}")
         
-        # 예외 감지 (2분마다로 단축)
+        # 🔥🔥 예외 감지 (2분마다로 단축 - 더 빠른 감지)
         self.scheduler.add_job(
             func=self.check_exceptions,
             trigger="interval",
@@ -373,7 +336,7 @@ class BitcoinPredictionSystem:
         )
         self.logger.info("📅 예외 감지 스케줄 등록: 2분마다 (빠른 감지)")
         
-        # 급속 변동 감지 (1분마다로 단축)
+        # 🔥🔥 급속 변동 감지 (1분마다로 단축)
         self.scheduler.add_job(
             func=self.rapid_exception_check,
             trigger="interval",
@@ -384,7 +347,7 @@ class BitcoinPredictionSystem:
         )
         self.logger.info("📅 급속 변동 감지 스케줄 등록: 1분마다 (즉시 감지)")
         
-        # 시스템 상태 체크 (2시간마다로 줄임)
+        # 🔥🔥 시스템 상태 체크 (2시간마다로 줄임 - 불필요한 알림 방지)
         self.scheduler.add_job(
             func=self.system_health_check,
             trigger="interval",
@@ -394,7 +357,7 @@ class BitcoinPredictionSystem:
             replace_existing=True
         )
         
-        # ML 예측 검증 (30분마다)
+        # ML 예측 검증 (30분마다) - ML 모드일 때만
         if self.ml_mode and self.ml_predictor:
             self.scheduler.add_job(
                 func=self.verify_ml_predictions,
@@ -434,32 +397,12 @@ class BitcoinPredictionSystem:
         self.logger.info(f"시그널 {signum} 수신 - 시스템 종료 시작")
         asyncio.create_task(self.stop())
     
-    # 텔레그램 제어를 위한 미러링 모드 getter/setter
-    def get_mirror_mode(self) -> bool:
-        """현재 미러링 모드 반환"""
-        return self.mirror_mode
-    
-    def set_mirror_mode(self, enabled: bool) -> bool:
-        """미러링 모드 설정"""
-        try:
-            old_mode = self.mirror_mode
-            self.mirror_mode = enabled
-            
-            if self.mirror_trading:
-                asyncio.create_task(self.mirror_trading.set_mirror_mode(enabled))
-            
-            self.logger.info(f"🔄 미러링 모드 변경: {'활성화' if old_mode else '비활성화'} → {'활성화' if enabled else '비활성화'}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"미러링 모드 설정 실패: {e}")
-            return False
-    
     async def rapid_exception_check(self):
         """급속 변동 감지 - 1분마다 실행"""
         try:
             self.logger.debug("급속 변동 감지 시작")
             
+            # 단기 변동성 체크
             try:
                 anomalies = await self.exception_detector.detect_all_anomalies()
                 
@@ -478,13 +421,15 @@ class BitcoinPredictionSystem:
             self.logger.error(f"급속 변동 감지 실패: {str(e)}")
     
     async def check_exceptions(self):
-        """예외 상황 감지"""
+        """🔥🔥 예외 상황 감지 - 크리티컬 뉴스만 전용 처리 (더 빈번하게)"""
         try:
             self.logger.debug("예외 상황 체크 시작")
             
+            # 기존 예외 감지 (가격, 거래량, 펀딩비)
             anomalies = await self.exception_detector.detect_all_anomalies()
             
             for anomaly in anomalies:
+                # 통계 업데이트
                 anomaly_type = anomaly.get('type', '')
                 if anomaly_type == 'price_anomaly':
                     self.exception_stats['price_alerts'] += 1
@@ -499,10 +444,11 @@ class BitcoinPredictionSystem:
                 self.logger.warning(f"이상 징후 감지: {anomaly}")
                 await self.exception_detector.send_alert(anomaly)
             
-            # 크리티컬 뉴스만 처리
+            # 🔥🔥 크리티컬 뉴스만 처리 - 강화된 필터링 + 더 많은 처리
             try:
                 critical_events = []
                 
+                # 크리티컬 이벤트만 필터링 (더 많이 처리)
                 for event in self.data_collector.events_buffer:
                     try:
                         severity = None
@@ -511,24 +457,28 @@ class BitcoinPredictionSystem:
                         elif isinstance(event, dict):
                             severity = event.get('severity')
                         
+                        # 오직 크리티컬 이벤트만 처리
                         if severity in ['critical', 'high']:
                             critical_events.append(event)
                     except Exception as e:
                         self.logger.error(f"이벤트 처리 오류: {e}")
                         continue
                 
+                # 🔥🔥 크리티컬 이벤트 처리 (최대 5개로 증가)
                 for event in critical_events[:5]:
                     await self._process_critical_event_with_filtering(event)
                 
+                # 버퍼 클리어 (처리된 이벤트 제거)
                 self.data_collector.events_buffer = []
                 
+                # 🔥🔥 더 많은 크리티컬 이벤트가 있다면 로그에 남김
                 if len(critical_events) > 5:
                     self.logger.info(f"🔥 추가 크리티컬 이벤트 {len(critical_events)-5}개 대기 중 (다음 주기에 처리)")
                 
             except Exception as e:
                 self.logger.error(f"이벤트 처리 중 오류: {e}")
             
-            # 미러 트레이딩 상태 체크
+            # 미러 트레이딩 상태 체크 (활성화된 경우)
             if self.mirror_mode and self.mirror_trading:
                 await self._check_mirror_health()
                 
@@ -537,45 +487,51 @@ class BitcoinPredictionSystem:
             self.logger.debug(traceback.format_exc())
     
     async def _process_critical_event_with_filtering(self, event):
-        """크리티컬 이벤트 처리"""
+        """🔥🔥 크리티컬 이벤트 처리 - 강화된 필터링 적용 + 리포트 전송 보장"""
         try:
             if hasattr(event, '__dict__'):
                 event_data = event.__dict__
             else:
                 event_data = event
             
+            # 🔥🔥 크리티컬 뉴스 여부 재검증
             if event_data.get('type') in ['critical_news', 'forced_news_alert']:
+                # ExceptionDetector의 강화된 필터링 적용
                 if not self.exception_detector._is_critical_bitcoin_news(event_data):
                     self.logger.info(f"🔄 크리티컬 뉴스 기준 미달로 처리 취소: {event_data.get('title', '')[:50]}...")
                     self.exception_stats['critical_news_filtered'] += 1
                     return
                 
+                # 예상 가격 영향도 검증 (기준 더 완화)
                 expected_impact = self.exception_detector._calculate_expected_price_impact(event_data)
-                if expected_impact < 0.1:
+                if expected_impact < 0.1:  # 0.3% → 0.1%로 완화
                     self.logger.info(f"🔄 예상 가격 영향도 미달로 처리 취소: {expected_impact:.1f}%")
                     self.exception_stats['critical_news_filtered'] += 1
                     return
                 
+                # 검증 통과한 크리티컬 뉴스
                 self.exception_stats['critical_news_processed'] += 1
                 event_data['expected_impact'] = expected_impact
             
+            # 비트코인 관련성 체크
             impact = event_data.get('impact', '')
             if '무관' in impact or '알트코인' in impact:
                 self.logger.info(f"🔄 비트코인 무관 뉴스 스킵: {event_data.get('title', '')[:50]}...")
                 return
             
+            # 뉴스 이벤트 통계
             if event_data.get('type') in ['critical_news']:
                 self.exception_stats['news_alerts'] += 1
                 self.exception_stats['total_detected'] += 1
                 self.last_successful_alert = datetime.now()
             
-            # ML 예측 기록
+            # ML 예측 기록 (ML 모드일 때만)
             if self.ml_mode and self.ml_predictor and event_data.get('type') == 'critical_news':
                 try:
                     ticker = await self.bitget_client.get_ticker('BTCUSDT')
                     if ticker:
                         current_price = float(ticker.get('last', 0))
-                        if current_price > 0:
+                        if current_price > 0:  # 유효한 가격인 경우만
                             market_data = await self._get_market_data_for_ml()
                             prediction = await self.ml_predictor.predict_impact(event_data, market_data)
                             
@@ -589,27 +545,30 @@ class BitcoinPredictionSystem:
                 except Exception as e:
                     self.logger.error(f"ML 예측 기록 실패: {e}")
             
-            # 예외 리포트 생성 및 전송
+            # 🔥🔥 예외 리포트 생성 및 전송 (강화된 버전) - 무조건 시도
             success = False
             try:
                 self.logger.info(f"🚨 예외 리포트 생성 시작: {event_data.get('title', '')[:50]}...")
                 
+                # 🔥🔥 리포트 생성 (더 많은 재시도)
                 report = None
-                for attempt in range(3):
+                for attempt in range(3):  # 3회 재시도
                     try:
                         report = await self.report_manager.generate_exception_report(event_data)
-                        if report and len(report.strip()) > 30:
+                        if report and len(report.strip()) > 30:  # 최소 30자
                             break
                         else:
                             self.logger.warning(f"리포트 생성 재시도 {attempt+1}/3: 리포트가 너무 짧음 ({len(report) if report else 0}자)")
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(1)  # 1초 대기 후 재시도
                     except Exception as e:
                         self.logger.error(f"리포트 생성 시도 {attempt+1} 실패: {e}")
-                        if attempt == 2:
+                        if attempt == 2:  # 마지막 시도
+                            # 🔥🔥 폴백 리포트 생성
                             report = await self._generate_fallback_report(event_data)
                         await asyncio.sleep(1)
                 
                 if report and len(report.strip()) > 30:
+                    # 🔥🔥 리포트 전송 (더 많은 재시도)
                     for send_attempt in range(3):
                         try:
                             await self.telegram_bot.send_message(report, parse_mode='HTML')
@@ -620,7 +579,7 @@ class BitcoinPredictionSystem:
                             break
                         except Exception as e:
                             self.logger.error(f"리포트 전송 시도 {send_attempt+1} 실패: {e}")
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(2)  # 2초 대기 후 재시도
                 else:
                     self.logger.error(f"❌ 예외 리포트가 생성되지 않았거나 너무 짧음: {len(report) if report else 0}자")
                     
@@ -628,6 +587,7 @@ class BitcoinPredictionSystem:
                 self.logger.error(f"예외 리포트 생성/전송 실패: {e}")
                 self.logger.debug(f"예외 리포트 오류 상세: {traceback.format_exc()}")
             
+            # 🔥🔥 실패한 경우 간단한 알림이라도 전송
             if not success:
                 try:
                     simple_alert = await self._generate_simple_alert(event_data)
@@ -642,11 +602,12 @@ class BitcoinPredictionSystem:
             self.logger.debug(f"크리티컬 이벤트 처리 오류 상세: {traceback.format_exc()}")
     
     async def _generate_fallback_report(self, event_data: Dict) -> str:
-        """폴백 리포트 생성"""
+        """🔥🔥 폴백 리포트 생성 (리포트 생성기 실패 시)"""
         try:
             current_time = datetime.now(pytz.timezone('Asia/Seoul'))
             title = event_data.get('title_ko', event_data.get('title', '비트코인 관련 뉴스'))
             
+            # 간단한 폴백 리포트
             report = f"""🚨 **비트코인 긴급 뉴스 감지**
 ━━━━━━━━━━━━━━━━━━━
 🕐 {current_time.strftime('%Y-%m-%d %H:%M')} KST
@@ -678,7 +639,7 @@ class BitcoinPredictionSystem:
             return ""
     
     async def _generate_simple_alert(self, event_data: Dict) -> str:
-        """간단한 알림 생성"""
+        """🔥🔥 간단한 알림 생성 (모든 시도 실패 시)"""
         try:
             title = event_data.get('title_ko', event_data.get('title', '비트코인 뉴스'))
             current_time = datetime.now(pytz.timezone('Asia/Seoul'))
@@ -697,7 +658,7 @@ class BitcoinPredictionSystem:
             return ""
     
     async def exception_stats_report(self):
-        """예외 감지 통계 리포트"""
+        """예외 감지 통계 리포트 - 크리티컬 뉴스 필터링 통계 포함"""
         try:
             current_time = datetime.now()
             last_reset = datetime.fromisoformat(self.exception_stats['last_reset'])
@@ -712,15 +673,20 @@ class BitcoinPredictionSystem:
             critical_filtered = self.exception_stats['critical_news_filtered']
             reports_sent = self.exception_stats['exception_reports_sent']
             
+            # 시간당 평균 계산
             hourly_avg = total / hours_since_reset if hours_since_reset > 0 else 0
             
+            # 필터링 효율성 계산
             total_critical_attempts = critical_processed + critical_filtered
             filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
             
+            # 🔥🔥 리포트 전송 성공률 계산
             report_success_rate = (reports_sent / max(critical_processed, 1) * 100)
             
+            # 🔥🔥 리포트 매니저 통계도 포함
             report_manager_stats = self.report_manager.get_exception_report_stats()
             
+            # 🔥🔥🔥 현재 배율 정보 가져오기
             current_ratio = 1.0
             if self.mirror_mode and self.mirror_trading:
                 current_ratio = self.mirror_trading.mirror_ratio_multiplier
@@ -759,9 +725,8 @@ class BitcoinPredictionSystem:
 - 크리티컬 전용: 활성화
 - 리포트 생성: 정상 작동
 - 건강 체크 알림: 비활성화됨 ✅
-- 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'} (텔레그램 제어)
+- 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'}
 - 복제 비율: {current_ratio}x (텔레그램 조정 가능)
-- Gate.io 마진: Cross 자동 설정됨 💳
 
 ━━━━━━━━━━━━━━━━━━━
 🔥 비트코인 전용 시스템 정상 작동 중"""
@@ -782,6 +747,7 @@ class BitcoinPredictionSystem:
                 'last_reset': current_time.isoformat()
             }
             
+            # 리포트 매니저 통계도 리셋
             self.report_manager.reset_exception_report_stats()
             
             self.logger.info(f"예외 감지 통계 리포트 전송 완료 - 총 {total}건 (필터링 {filter_efficiency:.0f}%, 리포트 {reports_sent}건)")
@@ -789,177 +755,19 @@ class BitcoinPredictionSystem:
         except Exception as e:
             self.logger.error(f"예외 통계 리포트 생성 실패: {e}")
     
-    # 🔥🔥🔥 디버깅 전용 명령어들 추가
-    async def handle_debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """디버깅 명령어 - 시스템 상태 즉시 확인"""
-        try:
-            self.command_stats['debug'] += 1
-            user_id = update.effective_user.id
-            username = update.effective_user.username or "Unknown"
-            
-            self.logger.info(f"🔍 /debug 명령어 수신 - User: {username}({user_id})")
-            
-            # 텔레그램 봇 디버깅 통계 가져오기
-            bot_stats = self.telegram_bot.get_debug_stats()
-            
-            debug_report = f"""🔍 **시스템 디버깅 리포트**
-🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-🤖 **텔레그램 봇 상태:**
-- 초기화됨: {'✅' if bot_stats['is_initialized'] else '❌'}
-- 실행 중: {'✅' if bot_stats['is_running'] else '❌'}
-- 폴링 시작: {'✅' if bot_stats['polling_started'] else '❌'}
-- 핸들러 등록: {'✅' if bot_stats['handlers_registered'] else '❌'}
-- 총 핸들러: {bot_stats['total_handlers']}개
-
-📊 **메시지 처리 통계:**
-- 수신 메시지: {bot_stats['messages_received']}개
-- 수신 명령어: {bot_stats['commands_received']}개
-- 마지막 활동: {bot_stats['last_activity'].strftime('%H:%M:%S') if bot_stats['last_activity'] else '없음'}
-
-🎯 **핸들러 호출 현황:**"""
-            
-            if bot_stats['handler_calls']:
-                for handler_name, count in bot_stats['handler_calls'].items():
-                    debug_report += f"\n- {handler_name}: {count}회"
-            else:
-                debug_report += "\n- 아직 호출된 핸들러 없음 ⚠️"
-            
-            debug_report += f"""
-
-❌ **오류 현황:** {len(bot_stats['errors'])}건"""
-            
-            if bot_stats['errors']:
-                debug_report += "\n\n**최근 오류:**"
-                for error in bot_stats['errors'][-2:]:  # 최근 2개만
-                    debug_report += f"\n- {error['handler']}: {error['error'][:30]}..."
-            
-            debug_report += f"""
-
-💬 **명령어 통계 (main.py):**
-- debug: {self.command_stats['debug']}회
-- test: {self.command_stats['test']}회
-- help/start: {self.command_stats.get('start', 0)}회
-- stats: {self.command_stats.get('stats', 0)}회
-- mirror: {self.command_stats['mirror']}회
-- ratio: {self.command_stats['ratio']}회
-- report: {self.command_stats['report']}회
-
-🔧 **진단 결과:**"""
-            
-            # 문제점 진단
-            issues = []
-            if not bot_stats['is_initialized']:
-                issues.append("봇이 초기화되지 않음")
-            if not bot_stats['is_running']:
-                issues.append("봇이 실행되지 않음")
-            if not bot_stats['polling_started']:
-                issues.append("폴링이 시작되지 않음")
-            if not bot_stats['handlers_registered']:
-                issues.append("핸들러가 등록되지 않음")
-            if bot_stats['total_handlers'] == 0:
-                issues.append("등록된 핸들러가 없음")
-            if bot_stats['commands_received'] == 0:
-                issues.append("명령어가 전혀 수신되지 않음")
-            if len(bot_stats['errors']) > 0:
-                issues.append(f"오류 {len(bot_stats['errors'])}건 발생")
-            
-            if issues:
-                debug_report += "\n❌ **발견된 문제점:**"
-                for issue in issues:
-                    debug_report += f"\n- {issue}"
-            else:
-                debug_report += "\n✅ **문제점 없음 - 정상 작동 중**"
-            
-            debug_report += f"""
-
-💡 **다음 테스트 단계:**
-1. /test 명령어로 응답 테스트
-2. /help 명령어로 기본 기능 확인
-3. /stats 명령어로 전체 상태 확인
-
-🔍 **텔레그램 환경변수 확인:**
-- 봇 토큰: {'설정됨' if self.config.TELEGRAM_BOT_TOKEN else '❌ 없음'}
-- 챗 ID: {'설정됨' if self.config.TELEGRAM_CHAT_ID else '❌ 없음'}
-
-🎯 **이 메시지가 보인다면 텔레그램 봇은 작동 중입니다!**"""
-            
-            await update.message.reply_text(debug_report, parse_mode='HTML')
-            
-        except Exception as e:
-            self.command_stats['errors'] += 1
-            self.logger.error(f"디버깅 명령어 처리 실패: {e}")
-            self.logger.error(f"디버깅 명령어 오류 상세: {traceback.format_exc()}")
-            await update.message.reply_text(
-                f"❌ 디버깅 명령어 처리 실패\n"
-                f"오류: {str(e)[:200]}",
-                parse_mode='HTML'
-            )
-    
-    async def handle_test_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """테스트 명령어 - 간단한 응답 테스트"""
-        try:
-            self.command_stats['test'] += 1
-            self.command_test_count += 1
-            
-            user_id = update.effective_user.id
-            username = update.effective_user.username or "Unknown"
-            
-            self.logger.info(f"🧪 /test 명령어 수신 - User: {username}({user_id}) - 테스트 #{self.command_test_count}")
-            
-            current_time = datetime.now()
-            uptime = current_time - self.startup_time
-            
-            test_response = f"""🧪 **텔레그램 봇 테스트 결과**
-
-✅ **기본 응답 성공!**
-- 테스트 번호: #{self.command_test_count}
-- 사용자: {username} (ID: {user_id})
-- 시간: {current_time.strftime('%H:%M:%S')}
-- 시스템 가동: {int(uptime.total_seconds() // 3600)}시간 {int((uptime.total_seconds() % 3600) // 60)}분
-
-🎯 **다른 명령어도 테스트해보세요:**
-- /help - 도움말
-- /stats - 시스템 통계  
-- /debug - 디버깅 정보
-- /mirror - 미러링 상태
-- /ratio - 복제 비율
-
-💡 **이 메시지가 정상적으로 보인다면 텔레그램 봇이 완벽히 작동하고 있습니다!**"""
-            
-            await update.message.reply_text(test_response, parse_mode='HTML')
-            
-        except Exception as e:
-            self.command_stats['errors'] += 1
-            self.logger.error(f"테스트 명령어 처리 실패: {e}")
-            await update.message.reply_text(
-                f"❌ 테스트 명령어 처리 실패\n"
-                f"오류: {str(e)[:200]}",
-                parse_mode='HTML'
-            )
-    
     async def handle_natural_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """자연어 메시지 처리"""
+        """🔥🔥🔥 자연어 메시지 처리 - 배율 확인 처리 추가"""
         try:
+            # 🔥🔥🔥 배율 확인 메시지 우선 처리
+            if await self.telegram_bot.handle_ratio_confirmation(update, context):
+                return  # 배율 확인 메시지였으면 여기서 종료
+            
             self.command_stats['natural_language'] += 1
             message = update.message.text.lower()
             user_id = update.effective_user.id
             username = update.effective_user.username or "Unknown"
             
             self.logger.info(f"자연어 메시지 수신 - User: {username}({user_id}), Message: {message}")
-            
-            # 디버깅 관련 키워드 체크
-            if any(keyword in message for keyword in ['디버그', 'debug', '문제', '오류', '작동', '테스트']):
-                await update.message.reply_text(
-                    "🔍 **디버깅이 필요하신가요?**\n\n"
-                    "다음 명령어를 사용해보세요:\n"
-                    "• /debug - 시스템 상태 확인\n"
-                    "• /test - 간단한 응답 테스트\n"
-                    "• /stats - 전체 시스템 통계\n\n"
-                    "💡 문제가 지속되면 로그를 확인해주세요!",
-                    parse_mode='HTML'
-                )
-                return
             
             # 명령어 매핑
             command_map = {
@@ -969,10 +777,8 @@ class BitcoinPredictionSystem:
                 'report': ['시장', '상황', '어때', '분석', 'market', '리포트'],
                 'schedule': ['일정', '언제', '시간', 'schedule', '스케줄'],
                 'stats': ['통계', '성과', '감지', 'stats', '예외'],
-                'ratio': ['배율', '비율', '복제', 'ratio', '몇배', '설정'],
-                'help': ['도움', '명령', 'help', '사용법', '안내'],
-                'debug': ['디버그', 'debug', '문제', '오류'],
-                'test': ['테스트', 'test', '확인']
+                'ratio': ['배율', '비율', '복제', 'ratio', '몇배', '설정'],  # 🔥🔥🔥 배율 관련 추가
+                'help': ['도움', '명령', 'help', '사용법', '안내']
             }
             
             # 명령어 찾기
@@ -983,11 +789,7 @@ class BitcoinPredictionSystem:
                     break
             
             # 명령어 실행
-            if detected_command == 'debug':
-                await self.handle_debug_command(update, context)
-            elif detected_command == 'test':
-                await self.handle_test_command(update, context)
-            elif detected_command == 'mirror':
+            if detected_command == 'mirror' and self.mirror_mode:
                 await self.handle_mirror_status(update, context)
             elif detected_command == 'profit':
                 await self.handle_profit_command(update, context)
@@ -999,7 +801,7 @@ class BitcoinPredictionSystem:
                 await self.handle_schedule_command(update, context)
             elif detected_command == 'stats':
                 await self.handle_stats_command(update, context)
-            elif detected_command == 'ratio':
+            elif detected_command == 'ratio':  # 🔥🔥🔥 배율 명령어 처리 추가
                 await self.handle_ratio_command(update, context)
             elif detected_command == 'help':
                 await self.handle_start_command(update, context)
@@ -1015,20 +817,19 @@ class BitcoinPredictionSystem:
             await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.", parse_mode='HTML')
     
     async def handle_ratio_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """배율 명령어 처리 - 텔레그램 봇에 완전 위임"""
+        """🔥🔥🔥 배율 명령어 처리 - 텔레그램 봇에 위임"""
         try:
             self.command_stats['ratio'] += 1
             
-            self.logger.info(f"🔥 main.py에서 ratio 명령어 수신 - 텔레그램 봇으로 완전 위임")
-            
-            if not self.mirror_trading:
+            if not self.mirror_mode or not self.mirror_trading:
                 await update.message.reply_text(
-                    "❌ 미러 트레이딩 시스템이 초기화되지 않았습니다.\n"
-                    "시스템 재시작이 필요할 수 있습니다.",
+                    "❌ 미러 트레이딩이 활성화되지 않았습니다.\n"
+                    "미러 트레이딩 모드에서만 복제 비율을 조정할 수 있습니다.",
                     parse_mode='HTML'
                 )
                 return
             
+            # 텔레그램 봇의 ratio 핸들러에 위임
             await self.telegram_bot.handle_ratio_command(update, context)
             
         except Exception as e:
@@ -1040,7 +841,7 @@ class BitcoinPredictionSystem:
             )
     
     async def handle_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """통계 명령 처리"""
+        """통계 명령 처리 - 크리티컬 뉴스 필터링 통계 포함"""
         try:
             user_id = update.effective_user.id
             username = update.effective_user.username or "Unknown"
@@ -1051,6 +852,7 @@ class BitcoinPredictionSystem:
             hours = int(uptime.total_seconds() // 3600)
             minutes = int((uptime.total_seconds() % 3600) // 60)
             
+            # 예외 감지 통계
             last_reset = datetime.fromisoformat(self.exception_stats['last_reset'])
             stats_time = current_time - last_reset
             stats_hours = stats_time.total_seconds() / 3600
@@ -1058,22 +860,23 @@ class BitcoinPredictionSystem:
             total_exceptions = self.exception_stats['total_detected']
             total_commands = sum(self.command_stats.values())
             
+            # 🔥🔥 마지막 알림 시간 계산
             time_since_last_alert = current_time - self.last_successful_alert
             minutes_since_alert = int(time_since_last_alert.total_seconds() / 60)
             
+            # 🔥🔥 크리티컬 뉴스 필터링 통계
             critical_processed = self.exception_stats['critical_news_processed']
             critical_filtered = self.exception_stats['critical_news_filtered']
             total_critical_attempts = critical_processed + critical_filtered
             filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
             
+            # 🔥🔥 리포트 매니저 통계
             report_stats = self.report_manager.get_exception_report_stats()
             
+            # 🔥🔥🔥 현재 배율 정보 가져오기
             current_ratio = 1.0
-            if self.mirror_trading:
+            if self.mirror_mode and self.mirror_trading:
                 current_ratio = self.mirror_trading.mirror_ratio_multiplier
-            
-            # 텔레그램 봇 디버깅 통계 추가
-            bot_stats = self.telegram_bot.get_debug_stats()
             
             stats_msg = f"""<b>📊 시스템 실시간 통계</b>
 🕐 {current_time.strftime('%Y-%m-%d %H:%M')}
@@ -1084,15 +887,6 @@ class BitcoinPredictionSystem:
 - 총 명령 처리: <b>{total_commands}건</b>
 - 오류 발생: <b>{self.command_stats['errors']}건</b>
 - 마지막 알림: <b>{minutes_since_alert}분 전</b>
-
-<b>🤖 텔레그램 봇 상태:</b>
-- 초기화: {'✅' if bot_stats['is_initialized'] else '❌'}
-- 실행 중: {'✅' if bot_stats['is_running'] else '❌'}
-- 폴링: {'✅' if bot_stats['polling_started'] else '❌'}
-- 핸들러 등록: {'✅' if bot_stats['handlers_registered'] else '❌'}
-- 총 핸들러: <b>{bot_stats['total_handlers']}개</b>
-- 수신 메시지: <b>{bot_stats['messages_received']}개</b>
-- 수신 명령어: <b>{bot_stats['commands_received']}개</b>
 
 <b>🚨 예외 감지 성과 (최근 {stats_hours:.1f}시간):</b>
 - 총 감지: <b>{total_exceptions}건</b>
@@ -1118,637 +912,22 @@ class BitcoinPredictionSystem:
 - ⚡ 단기 급변동: <b>{self.exception_stats['short_term_alerts']}건</b>
 
 <b>🔄 미러 트레이딩 상태:</b>
-- 모드: <b>{'활성화' if self.mirror_mode else '비활성화'}</b> (텔레그램 제어)
-- 복제 비율: <b>{current_ratio}x</b> (텔레그램 조정 가능)
-- Gate.io 마진: Cross 자동 설정됨 💳"""
+- 모드: <b>{'활성화' if self.mirror_mode else '비활성화'}</b>
+- 복제 비율: <b>{current_ratio}x</b> (텔레그램 조정 가능)"""
 
-            if self.mirror_trading:
+            if self.mirror_mode:
                 stats_msg += f"\n- 미러 명령: <b>{self.command_stats['mirror']}회</b>"
-                stats_msg += f"\n- 배율 조정: <b>{self.command_stats['ratio']}회</b>"
+                stats_msg += f"\n- 배율 조정: <b>{self.command_stats['ratio']}회</b>"  # 🔥🔥🔥 배율 통계 추가
             
             stats_msg += f"""
 
 <b>💬 명령어 사용 통계:</b>
 - 리포트: {self.command_stats['report']}회
 - 예측: {self.command_stats['forecast']}회
-- 수익 조회: {self.command_stats['profit']}회
-- 일정 확인: {self.command_stats['schedule']}회
-- 디버그: {self.command_stats['debug']}회
-- 테스트: {self.command_stats['test']}회"""
-
-            if self.mirror_trading:
-                report += f"\n• 미러 상태: {self.command_stats['mirror']}회"
-                report += f"\n• 배율 조정: {self.command_stats['ratio']}회"
-            
-            report += f"""
-- 자연어 입력: {self.command_stats['natural_language']}회
-- 오류 발생: {self.command_stats['errors']}회
-
-<b>💾 메모리 사용량:</b> """
-            
-            try:
-                import psutil
-                process = psutil.Process(os.getpid())
-                memory_mb = process.memory_info().rss / 1024 / 1024
-                report += f"{memory_mb:.1f} MB"
-            except:
-                report += "측정 불가"
-            
-            if self.ml_mode and self.ml_predictor:
-                stats = self.ml_predictor.get_stats()
-                report += f"""
-
-<b>🤖 AI 예측 성능:</b>
-- 총 예측: {stats['total_predictions']}건
-- 검증 완료: {stats['verified_predictions']}건
-- 방향 정확도: {stats['direction_accuracy']}
-- 크기 정확도: {stats['magnitude_accuracy']}"""
-            
-            if self.mirror_trading:
-                mirror_stats = self.mirror_trading.daily_stats
-                report += f"""
-
-<b>🔄 미러 트레이딩 통계:</b>
-- 총 시도: {mirror_stats['total_mirrored']}회
-- 성공: {mirror_stats['successful_mirrors']}회
-- 실패: {mirror_stats['failed_mirrors']}회
-- 예약 주문 미러링: {mirror_stats['plan_order_mirrors']}회
-- 예약 주문 취소: {mirror_stats['plan_order_cancels']}회
-- 부분 청산: {mirror_stats['partial_closes']}회
-- 전체 청산: {mirror_stats['full_closes']}회
-- 총 거래량: ${mirror_stats['total_volume']:,.2f}
-- 배율 조정: {self.command_stats['ratio']}회"""
-            
-            report += f"""
-
-<b>🔧 시스템 설정:</b>
-- 예외 감지: 2분마다 (빠른 감지)
-- 급속 변동: 1분마다 (즉시 감지)
-- 뉴스 수집: 15초마다
-- 가격 임계값: {self.exception_detector.PRICE_CHANGE_THRESHOLD}%
-- 거래량 임계값: {self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
-- 뉴스 필터링: 강화됨 (크리티컬 전용)
-- 건강 체크: 심각한 오류 시에만 알림 ✅
-- 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'} (텔레그램 제어)
-- 복제 비율: {current_ratio}x (텔레그램 /ratio로 변경)
-- Gate.io 마진: Cross 자동 설정됨 💳
-- 디버깅 모드: 활성화됨 🔍
-
-🎮 텔레그램 제어:
-- 미러링 켜기: /mirror on
-- 미러링 끄기: /mirror off
-- 미러링 상태: /mirror status
-- 복제 비율 변경: /ratio 1.5
-- 현재 배율 확인: /ratio
-
-🔍 디버깅 명령어:
-- 시스템 진단: /debug
-- 응답 테스트: /test
-
-💳 Gate.io 마진 모드:
-- 자동 Cross 설정: 활성화됨
-- 청산 방지: 강화됨
-- 시작 시 확인: 매번 실행
-
-━━━━━━━━━━━━━━━━━━━
-⚡ 비트코인 전용 시스템이 완벽히 작동했습니다!
-🎮 텔레그램 실시간 제어 시스템 정상 작동
-💳 Gate.io Cross 마진 자동 설정 완료
-🔍 디버깅 모드로 문제 해결 지원"""
-            
-            if self.daily_stats.get('errors'):
-                report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
-            
-            await self.telegram_bot.send_message(report, parse_mode='HTML')
-            
-            # 통계 초기화
-            self.command_stats = {k: 0 if k != 'errors' else v for k, v in self.command_stats.items()}
-            
-            self.exception_stats = {
-                'total_detected': 0,
-                'news_alerts': 0,
-                'price_alerts': 0,
-                'volume_alerts': 0,
-                'funding_alerts': 0,
-                'short_term_alerts': 0,
-                'critical_news_processed': 0,
-                'critical_news_filtered': 0,
-                'exception_reports_sent': 0,
-                'last_reset': datetime.now().isoformat()
-            }
-            
-            self.report_manager.reset_exception_report_stats()
-            
-        except Exception as e:
-            self.logger.error(f"일일 통계 리포트 생성 실패: {e}")
-    
-    def _split_message(self, message: str, max_length: int = 4000) -> List[str]:
-        """긴 메시지 분할"""
-        if len(message) <= max_length:
-            return [message]
-        
-        parts = []
-        lines = message.split('\n')
-        current_part = ""
-        
-        for line in lines:
-            if len(current_part) + len(line) + 1 > max_length:
-                if current_part:
-                    parts.append(current_part.strip())
-                current_part = line + '\n'
-            else:
-                current_part += line + '\n'
-        
-        if current_part:
-            parts.append(current_part.strip())
-        
-        return parts
-    
-    async def handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """시작 명령 처리"""
-        try:
-            user_id = update.effective_user.id
-            username = update.effective_user.username or "Unknown"
-            self.logger.info(f"시작 명령 - User: {username}({user_id})")
-            
-            current_ratio = 1.0
-            if self.mirror_trading:
-                current_ratio = self.mirror_trading.mirror_ratio_multiplier
-            
-            mode_text = f"🎮 텔레그램 실시간 제어 (미러: {'활성' if self.mirror_mode else '비활성'}, {current_ratio}x)"
-            if self.ml_mode:
-                mode_text += " + 🤖 ML 예측"
-            
-            welcome_message = f"""<b>🚀 비트코인 예측 시스템에 오신 것을 환영합니다!</b>
-
-현재 모드: {mode_text}
-
-<b>🎮 텔레그램 실시간 제어:</b>
-- /mirror on - 미러링 켜기
-- /mirror off - 미러링 끄기  
-- /mirror status - 미러링 상태 확인
-- /ratio 1.5 - 복제 비율 1.5배로 변경
-- /ratio - 현재 배율 확인
-
-<b>📊 주요 명령어:</b>
-- /report - 전체 분석 리포트
-- /forecast - 단기 예측 요약
-- /profit - 실시간 수익 현황
-- /schedule - 자동 일정 안내
-- /stats - 시스템 통계
-
-<b>🔍 디버깅 명령어:</b>
-- /debug - 시스템 진단
-- /test - 응답 테스트
-
-<b>💬 자연어 질문 예시:</b>
-- "오늘 수익은?"
-- "지금 매수해도 돼?"
-- "시장 상황 어때?"
-- "다음 리포트 언제?"
-- "시스템 통계 보여줘"
-- "미러링 켜기/끄기"
-- "복제 비율 확인"
-- "배율 조정"
-- "시스템 문제있어?"
-
-<b>🔔 자동 기능:</b>
-- 정기 리포트: 09:00, 13:00, 18:00, 23:00
-- 예외 감지: 2분마다 (빠른 감지)
-- 급속 변동: 1분마다 (즉시 감지)
-- 뉴스 수집: 15초마다 (RSS)
-- 시스템 체크: 2시간마다 (심각한 오류만 알림)"""
-            
-            if self.ml_mode:
-                welcome_message += "\n• ML 예측 검증: 30분마다"
-            
-            welcome_message += f"""
-
-<b>⚡ 실시간 알림 (비트코인 전용):</b>
-- 가격 급변동 (≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%)
-- 단기 급변동 (5분 내 ≥{self.exception_detector.short_term_threshold}%)
-- 비트코인 크리티컬 뉴스 (강화된 필터링)
-- 펀딩비 이상 (≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%)
-- 거래량 급증 (≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배)
-
-<b>🔄 미러 트레이딩 (텔레그램 제어):</b>
-- 현재 상태: {'활성화' if self.mirror_mode else '비활성화'}
-- 복제 비율: {current_ratio}x
-- 비트겟 → 게이트 자동 복제
-- 총 자산 대비 동일 비율 × {current_ratio}
-- 예약 주문도 동일 비율 복제
-- 실시간 가격 조정
-- 예약 주문 취소 동기화
-- 텔레그램으로 실시간 on/off 제어
-- 복제 비율 실시간 조정 (/ratio)
-
-<b>💳 Gate.io 마진 모드 자동 설정:</b>
-- 시작 시 Cross로 자동 설정
-- Isolated → Cross 자동 변경
-- 청산 방지 강화
-- 매번 확인 및 설정
-"""
-            
-            if self.ml_mode:
-                welcome_message += f"""
-<b>🤖 ML 예측 시스템:</b>
-- 과거 데이터 학습
-- 실시간 예측
-- 자동 성능 개선
-"""
-            
-            uptime = datetime.now() - self.startup_time
-            hours = int(uptime.total_seconds() // 3600)
-            minutes = int((uptime.total_seconds() % 3600) // 60)
-            
-            total_exceptions = self.exception_stats['total_detected']
-            minutes_since_alert = int((datetime.now() - self.last_successful_alert).total_seconds() / 60)
-            
-            critical_processed = self.exception_stats['critical_news_processed']
-            critical_filtered = self.exception_stats['critical_news_filtered']
-            total_critical_attempts = critical_processed + critical_filtered
-            filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
-            
-            report_stats = self.report_manager.get_exception_report_stats()
-            
-            # 디버깅 통계 추가
-            bot_stats = self.telegram_bot.get_debug_stats()
-            
-            welcome_message += f"""
-<b>📊 시스템 상태:</b>
-- 가동 시간: {hours}시간 {minutes}분
-- 총 명령 처리: {sum(self.command_stats.values())}건
-- 오류 발생: {self.command_stats['errors']}건
-- 마지막 알림: {minutes_since_alert}분 전
-- 크리티컬 뉴스 필터링: <b>{filter_efficiency:.0f}%</b> 효율
-- 예외 리포트 생성: <b>{report_stats['success_rate']:.0f}%</b> 성공률
-- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
-- 건강 체크: 심각한 오류 시에만 알림 ✅
-- 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'} (텔레그램 제어)
-- 복제 비율: {current_ratio}x (텔레그램 조정 가능)
-- Gate.io 마진: Cross 자동 설정됨 💳
-
-<b>🤖 텔레그램 봇 상태:</b>
-- 봇 초기화: {'✅' if bot_stats['is_initialized'] else '❌'}
-- 봇 실행: {'✅' if bot_stats['is_running'] else '❌'}
-- 폴링 시작: {'✅' if bot_stats['polling_started'] else '❌'}
-- 핸들러 등록: {'✅' if bot_stats['handlers_registered'] else '❌'}
-- 총 핸들러: {bot_stats['total_handlers']}개
-- 수신 메시지: {bot_stats['messages_received']}개
-- 수신 명령어: {bot_stats['commands_received']}개
-
-🎮 **텔레그램 실시간 제어 시스템**
-- 미러링 켜기/끄기: 즉시 반영
-- 복제 비율 조정: 실시간 변경
-- 환경변수 독립: 렌더 재시작 불필요
-- Cross 마진 모드: 자동 설정/유지
-
-🔍 **디버깅 모드 활성화**
-- 문제 발생 시: /debug로 즉시 진단
-- 응답 테스트: /test로 간단 확인
-- 상세 통계: /stats로 전체 상태 파악
-
-📈 정확한 비트코인 분석을 제공합니다.
-🔥 크리티컬 뉴스만 엄선하여 전달합니다.
-📄 전문적인 예외 리포트를 자동 생성합니다.
-🔕 불필요한 알림은 완전히 제거했습니다.
-🎮 텔레그램으로 모든 기능을 실시간 제어할 수 있습니다!
-💳 Gate.io 마진 모드가 자동으로 Cross로 설정됩니다!
-🔍 문제 발생 시 즉시 디버깅할 수 있습니다!
-
-💡 **즉시 테스트해보세요:**
-- /test 입력 → 응답 확인
-- /debug 입력 → 시스템 상태 확인
-- /stats 입력 → 전체 통계 확인
-
-도움이 필요하시면 언제든 질문해주세요! 😊"""
-            
-            await update.message.reply_text(welcome_message, parse_mode='HTML')
-            
-        except Exception as e:
-            self.logger.error(f"시작 명령 처리 실패: {e}")
-            await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
-    
-    async def _setup_telegram_handlers(self):
-        """텔레그램 핸들러 설정 - 디버깅 명령어 추가"""
-        try:
-            self.logger.info("=" * 60)
-            self.logger.info("🔥 텔레그램 핸들러 설정 시작 - 강화된 디버깅 모드")
-            self.logger.info("=" * 60)
-            
-            # 핸들러 매핑 - main.py의 메서드들을 연결
-            handlers_map = {
-                'start': self.handle_start_command,
-                'help': self.handle_start_command,
-                'debug': self.handle_debug_command,           # 🔥 디버깅 명령어 추가
-                'test': self.handle_test_command,             # 🔥 테스트 명령어 추가
-                'mirror': self.telegram_bot.handle_mirror_command,  # 텔레그램 봇 핸들러 사용
-                'ratio': self.telegram_bot.handle_ratio_command,    # 텔레그램 봇 핸들러 사용
-                'report': self.handle_report_command,
-                'forecast': self.handle_forecast_command,
-                'profit': self.handle_profit_command,
-                'schedule': self.handle_schedule_command,
-                'stats': self.handle_stats_command,
-                'message_handler': self.telegram_bot.handle_universal_message,  # 통합 메시지 핸들러
-            }
-            
-            # 핸들러 유효성 검증
-            self.logger.info("🔍 핸들러 매핑 유효성 검증:")
-            for cmd, handler in handlers_map.items():
-                if handler and callable(handler):
-                    self.logger.info(f"  ✅ {cmd}: 유효한 핸들러")
-                else:
-                    self.logger.error(f"  ❌ {cmd}: 무효한 핸들러 ({type(handler)})")
-            
-            # 텔레그램 봇에 핸들러 등록 (봇 시작 전에 완료)
-            self.telegram_bot.setup_handlers(handlers_map)
-            self.logger.info("✅ 텔레그램 핸들러 설정 완료 (디버깅 명령어 포함)")
-            
-        except Exception as e:
-            self.logger.error(f"❌ 텔레그램 핸들러 설정 실패: {e}")
-            self.logger.error(f"핸들러 설정 오류 상세: {traceback.format_exc()}")
-            raise
-    
-    async def start(self):
-        """시스템 시작 - 디버깅 강화 모드"""
-        try:
-            self.logger.info("=" * 80)
-            self.logger.info("🔥 시스템 시작 프로세스 개시 - 텔레그램 봇 연결 문제 완전 해결 모드")
-            self.logger.info("=" * 80)
-            
-            self.is_running = True
-            self.startup_time = datetime.now()
-            
-            # 1. 먼저 Bitget 클라이언트 초기화
-            self.logger.info("1️⃣ Bitget 클라이언트 초기화 중...")
-            await self.bitget_client.initialize()
-            
-            # 2. Gate.io 클라이언트 초기화
-            self.logger.info("2️⃣ Gate.io 클라이언트 초기화 중...")
-            await self.gate_client.initialize()
-            
-            # 3. Gate.io 마진 모드 Cross 확인 및 설정
-            self.logger.info("3️⃣ Gate.io 마진 모드 최종 확인 및 강제 설정")
-            try:
-                gate_positions = await self.gate_client.get_positions("BTC_USDT")
-                self.logger.info(f"🔥 Gate.io 포지션 조회 성공: {len(gate_positions)}개")
-                
-                if gate_positions:
-                    position = gate_positions[0]
-                    current_mode = position.get('mode', 'unknown')
-                    self.logger.info(f"🔥 포지션을 통한 마진 모드 확인: {current_mode}")
-                    
-                    if current_mode.lower() == 'cross':
-                        self.logger.info("✅ Gate.io 마진 모드가 이미 Cross로 설정되어 있습니다.")
-                    else:
-                        self.logger.warning(f"⚠️ Gate.io 마진 모드가 {current_mode}로 확인됨")
-                else:
-                    self.logger.info("🔥 Gate.io에 활성 포지션이 없어 마진 모드 확인 불가")
-                    
-            except Exception as margin_error:
-                self.logger.error(f"Gate.io 마진 모드 확인 실패: {margin_error}")
-            
-            # 4. 현재 시세 업데이트
-            await self._update_current_prices()
-            
-            # 5. 미러 트레이딩 시스템은 항상 초기화
-            if self.mirror_trading:
-                self.logger.info(f"4️⃣ 미러 트레이딩 시스템 초기화 중... (모드: {'활성화' if self.mirror_mode else '비활성화'})")
-                await self.mirror_trading.start()
-            
-            # 6. 데이터 수집기 시작
-            self.logger.info("5️⃣ 데이터 수집기 시작 중...")
-            asyncio.create_task(self.data_collector.start())
-            
-            # 7. 스케줄러 시작
-            self.logger.info("6️⃣ 스케줄러 시작 중...")
-            self.scheduler.start()
-            
-            # 8. 🔥🔥🔥 텔레그램 핸들러 설정 (봇 시작 전 - 가장 중요!)
-            self.logger.info("7️⃣ 텔레그램 핸들러 설정 중...")
-            await self._setup_telegram_handlers()
-            
-            # 9. 🔥🔥🔥 텔레그램 봇 시작 - 완전 검증 모드
-            self.logger.info("8️⃣ 텔레그램 봇 시작 중 - 완전 검증 모드...")
-            await self.telegram_bot.start()
-            
-            # 10. 텔레그램 봇 시작 후 잠시 대기 - 안정화
-            self.logger.info("9️⃣ 텔레그램 봇 안정화 대기 중...")
-            await asyncio.sleep(10)  # 10초 대기로 늘림
-            
-            # 11. 텔레그램 봇 상태 최종 검증
-            self.logger.info("🔟 텔레그램 봇 상태 최종 검증...")
-            bot_stats = self.telegram_bot.get_debug_stats()
-            
-            self.logger.info("📊 텔레그램 봇 최종 상태:")
-            self.logger.info(f"  - 초기화: {'✅' if bot_stats['is_initialized'] else '❌'}")
-            self.logger.info(f"  - 실행 중: {'✅' if bot_stats['is_running'] else '❌'}")
-            self.logger.info(f"  - 폴링 시작: {'✅' if bot_stats['polling_started'] else '❌'}")
-            self.logger.info(f"  - 핸들러 등록: {'✅' if bot_stats['handlers_registered'] else '❌'}")
-            self.logger.info(f"  - 총 핸들러: {bot_stats['total_handlers']}개")
-            
-            # 문제 감지 시 경고
-            if not bot_stats['is_initialized'] or not bot_stats['is_running'] or not bot_stats['polling_started']:
-                self.logger.error("❌ 텔레그램 봇 상태에 문제가 있습니다!")
-                raise ValueError("텔레그램 봇이 완전히 시작되지 않았습니다.")
-            
-            if bot_stats['total_handlers'] == 0:
-                self.logger.error("❌ 등록된 핸들러가 없습니다!")
-                raise ValueError("텔레그램 핸들러가 등록되지 않았습니다.")
-            
-            # 현재 배율 정보
-            current_ratio = 1.0
-            if self.mirror_trading:
-                current_ratio = self.mirror_trading.mirror_ratio_multiplier
-            
-            mode_text = f"텔레그램 제어 (미러: {'활성' if self.mirror_mode else '비활성'}, {current_ratio}x)"
-            if self.ml_mode:
-                mode_text += " + ML 예측"
-            
-            self.logger.info("=" * 80)
-            self.logger.info(f"✅ 비트코인 예측 시스템 시작 완료! (모드: {mode_text})")
-            self.logger.info("💡 텔레그램 봇이 완전히 작동합니다 - /test 또는 /debug로 확인하세요!")
-            self.logger.info("=" * 80)
-            
-            # 🔥 메인 루프 - 텔레그램 폴링과 함께 실행
-            self.logger.info("메인 루프 시작 - 백그라운드에서 모든 서비스 실행 중")
-            try:
-                while self.is_running:
-                    await asyncio.sleep(10)  # 10초마다 체크
-                    
-                    # 텔레그램 봇 상태 확인
-                    if hasattr(self.telegram_bot, '_is_running') and not self.telegram_bot._is_running:
-                        self.logger.warning("텔레그램 봇이 중지됨 - 재시작 시도")
-                        try:
-                            await self.telegram_bot.start()
-                        except Exception as restart_error:
-                            self.logger.error(f"텔레그램 봇 재시작 실패: {restart_error}")
-                            
-            except KeyboardInterrupt:
-                self.logger.info("키보드 인터럽트 감지 - 시스템 종료 시작")
-                await self.stop()
-                
-        except KeyboardInterrupt:
-            self.logger.info("키보드 인터럽트 감지 - 시스템 종료 시작")
-            await self.stop()
-        except Exception as e:
-            self.logger.error("=" * 80)
-            self.logger.error(f"❌ 시스템 시작 실패: {str(e)}")
-            self.logger.error(f"시작 오류 상세: {traceback.format_exc()}")
-            self.logger.error("=" * 80)
-            
-            try:
-                await self.telegram_bot.send_message(
-                    f"<b>❌ 시스템 시작 실패</b>\n"
-                    f"오류: {str(e)[:200]}\n"
-                    f"렌더 로그를 확인해주세요.",
-                    parse_mode='HTML'
-                )
-            except:
-                pass
-            
-            raise
-    
-    async def _update_current_prices(self):
-        """현재 시세 업데이트"""
-        try:
-            pass
-        except Exception as e:
-            self.logger.error(f"시세 업데이트 실패: {e}")
-    
-    async def stop(self):
-        """시스템 종료"""
-        try:
-            self.logger.info("=" * 50)
-            self.logger.info("시스템 종료 프로세스 시작")
-            self.logger.info("=" * 50)
-            
-            self.is_running = False
-            
-            try:
-                uptime = datetime.now() - self.startup_time
-                hours = int(uptime.total_seconds() // 3600)
-                minutes = int((uptime.total_seconds() % 3600) // 60)
-                
-                total_exceptions = self.exception_stats['total_detected']
-                critical_processed = self.exception_stats['critical_news_processed']
-                critical_filtered = self.exception_stats['critical_news_filtered']
-                reports_sent = self.exception_stats['exception_reports_sent']
-                filter_efficiency = (critical_filtered / (critical_processed + critical_filtered) * 100) if (critical_processed + critical_filtered) > 0 else 0
-                
-                report_stats = self.report_manager.get_exception_report_stats()
-                
-                current_ratio = 1.0
-                if self.mirror_trading:
-                    current_ratio = self.mirror_trading.mirror_ratio_multiplier
-                
-                shutdown_msg = f"""<b>🛑 시스템 종료 중...</b>
-
-<b>⏱️ 총 가동 시간:</b> {hours}시간 {minutes}분
-<b>📊 처리된 명령:</b> {sum(self.command_stats.values())}건
-<b>🚨 감지된 예외:</b> {total_exceptions}건
-<b>🔥 크리티컬 뉴스:</b> 처리 {critical_processed}건, 필터링 {critical_filtered}건
-<b>📄 예외 리포트:</b> 전송 {reports_sent}건, 성공률 {report_stats['success_rate']:.0f}%
-<b>📈 필터링 효율:</b> {filter_efficiency:.0f}% (노이즈 제거)
-<b>❌ 발생한 오류:</b> {self.command_stats['errors']}건
-<b>🔧 시스템 최적화:</b> 불필요한 알림 완전 제거 완료 ✅
-<b>🔄 미러 트레이딩:</b> {'활성화' if self.mirror_mode else '비활성화'} (텔레그램 제어)
-<b>🎯 배율 조정:</b> {self.command_stats['ratio']}회 (텔레그램)
-<b>💳 Gate.io 마진:</b> Cross 권장 안내 완료
-<b>🔍 디버깅 모드:</b> {self.command_stats['debug']}회 사용
-<b>🧪 테스트 명령:</b> {self.command_stats['test']}회 실행"""
-                
-                if self.ml_mode and self.ml_predictor:
-                    stats = self.ml_predictor.get_stats()
-                    shutdown_msg += f"""
-<b>🤖 ML 예측 성능:</b>
-- 총 예측: {stats['total_predictions']}건
-- 정확도: {stats['direction_accuracy']}"""
-                
-                shutdown_msg += "\n\n텔레그램 실시간 제어 시스템이 안전하게 종료됩니다."
-                shutdown_msg += f"\nGate.io Cross 마진 모드 안내 시스템도 함께 종료됩니다."
-                shutdown_msg += f"\n디버깅 모드도 함께 종료됩니다."
-                
-                if self.mirror_trading:
-                    shutdown_msg += f"\n미러 트레이딩({current_ratio}x)도 함께 종료됩니다."
-                
-                await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
-            except:
-                pass
-            
-            # 스케줄러 종료
-            self.logger.info("스케줄러 종료 중...")
-            self.scheduler.shutdown()
-            
-            # 텔레그램 봇 종료
-            self.logger.info("텔레그램 봇 종료 중...")
-            await self.telegram_bot.stop()
-            
-            # 미러 트레이딩 종료
-            if self.mirror_trading:
-                self.logger.info("미러 트레이딩 종료 중...")
-                await self.mirror_trading.stop()
-            
-            # 데이터 수집기 종료
-            self.logger.info("데이터 수집기 종료 중...")
-            if self.data_collector.session:
-                await self.data_collector.close()
-            
-            # Bitget 클라이언트 종료
-            self.logger.info("Bitget 클라이언트 종료 중...")
-            if self.bitget_client.session:
-                await self.bitget_client.close()
-            
-            # Gate.io 클라이언트 종료
-            if self.gate_client and self.gate_client.session:
-                self.logger.info("Gate.io 클라이언트 종료 중...")
-                await self.gate_client.close()
-            
-            # ML 예측기 데이터 저장
-            if self.ml_mode and self.ml_predictor:
-                self.logger.info("ML 예측 데이터 저장 중...")
-                self.ml_predictor.save_predictions()
-            
-            self.logger.info("=" * 50)
-            self.logger.info("✅ 텔레그램 제어 + Gate.io Cross 마진 + 디버깅 시스템이 안전하게 종료되었습니다")
-            self.logger.info("=" * 50)
-            
-        except Exception as e:
-            self.logger.error(f"시스템 종료 중 오류: {str(e)}")
-            self.logger.debug(traceback.format_exc())
-
-async def main():
-    """메인 함수"""
-    try:
-        print("\n" + "=" * 80)
-        print("🚀 비트코인 예측 시스템 v5.0 - 텔레그램 봇 연결 문제 완전 해결")
-        print("🔍 디버깅 모드 + Gate.io Cross 마진 + 실시간 제어")
-        print("=" * 80 + "\n")
-        
-        system = BitcoinPredictionSystem()
-        await system.start()
-        
-    except Exception as e:
-        print(f"\n❌ 치명적 오류 발생: {e}")
-        logging.error(f"치명적 오류: {e}")
-        logging.debug(traceback.format_exc())
-        sys.exit(1)
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\n프로그램이 사용자에 의해 중단되었습니다.")
-    except Exception as e:
-        print(f"\n\n치명적 오류: {e}")
-        logging.error(f"프로그램 실행 실패: {e}")
-        logging.debug(traceback.format_exc())]}회
 - 수익: {self.command_stats['profit']}회
-- 자연어: {self.command_stats['natural_language']}회
-- 디버그: {self.command_stats['debug']}회
-- 테스트: {self.command_stats['test']}회"""
+- 자연어: {self.command_stats['natural_language']}회"""
 
-            if self.mirror_trading:
+            if self.mirror_mode:
                 stats_msg += f"\n- 배율 조정: {self.command_stats['ratio']}회"
 
             stats_msg += f"""
@@ -1762,28 +941,9 @@ if __name__ == "__main__":
 - 감지 주기: 2분마다 (빠른 감지)
 - 건강 체크 알림: 비활성화됨 ✅
 
-🎮 텔레그램 제어:
-- 미러링 켜기: /mirror on
-- 미러링 끄기: /mirror off
-- 미러링 상태: /mirror status
-- 복제 비율 변경: /ratio 1.5
-- 현재 배율 확인: /ratio
-
-🔍 디버깅 명령어:
-- 시스템 진단: /debug
-- 응답 테스트: /test
-
-💳 Gate.io 마진 모드:
-- 자동 Cross 설정: 활성화됨
-- 청산 방지: 강화됨
-- 시작 시 확인: 매번 실행
-
 ━━━━━━━━━━━━━━━━━━━
 ⚡ 비트코인 전용 크리티컬 뉴스 필터링 시스템
-🎮 텔레그램 실시간 제어 활성화
-💳 Gate.io Cross 마진 자동 설정
-🔄 복제 비율 {current_ratio}x 적용됨
-🔍 디버깅 모드 활성화"""
+🔄 복제 비율 {current_ratio}x 적용됨 (텔레그램 /ratio로 변경)"""
             
             if self.ml_mode and self.ml_predictor:
                 ml_stats = self.ml_predictor.get_stats()
@@ -1814,30 +974,129 @@ if __name__ == "__main__":
         
         default_commands = "\n\n다음과 같이 질문해보세요:\n• '오늘 수익은?'\n• '지금 매수해도 돼?'\n• '시장 상황 어때?'\n• '다음 리포트 언제?'\n• '시스템 통계 보여줘'"
         
-        default_commands += "\n• '미러 트레이딩 상태는?'\n• '미러링 켜기/끄기'\n• '복제 비율 확인'\n• '배율 조정'"
-        
-        default_commands += "\n\n🔍 문제 해결:\n• /debug - 시스템 진단\n• /test - 응답 테스트"
+        if self.mirror_mode:
+            default_commands += "\n• '미러 트레이딩 상태는?'\n• '복제 비율 확인'\n• '배율 조정'"
         
         default_commands += "\n\n또는 /help 명령어로 전체 기능을 확인하세요."
         
         return f"{response}{default_commands}"
     
     async def handle_mirror_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """미러 트레이딩 상태 확인 - 텔레그램 봇에 완전 위임"""
+        """미러 트레이딩 상태 확인 - 개선된 버전"""
         try:
             self.command_stats['mirror'] += 1
             
-            self.logger.info(f"🔥 main.py에서 mirror 상태 요청 - 텔레그램 봇으로 완전 위임")
-            
-            if not self.mirror_trading:
+            if not self.mirror_mode or not self.mirror_trading:
+                # 상세한 비활성화 이유 제공
+                reasons = []
+                
+                if not self.mirror_mode:
+                    current_mode = os.getenv('MIRROR_TRADING_MODE', 'not_set')
+                    reasons.append(f"MIRROR_TRADING_MODE='{current_mode}' (O가 아님)")
+                
+                if not MIRROR_TRADING_AVAILABLE:
+                    reasons.append("미러 트레이딩 모듈을 찾을 수 없음")
+                
+                gate_api_key = os.getenv('GATE_API_KEY', '')
+                gate_api_secret = os.getenv('GATE_API_SECRET', '')
+                if not gate_api_key or not gate_api_secret:
+                    reasons.append("Gate.io API 키가 설정되지 않음")
+                
                 await update.message.reply_text(
-                    "❌ 미러 트레이딩 시스템이 초기화되지 않았습니다.\n"
-                    "시스템 재시작이 필요할 수 있습니다.",
+                    f"📊 현재 분석 전용 모드로 실행 중입니다.\n\n"
+                    f"🔍 비활성화 이유:\n" + 
+                    "\n".join(f"• {reason}" for reason in reasons) +
+                    f"\n\n📋 활성화 방법:\n"
+                    f"1. MIRROR_TRADING_MODE=O 환경변수 설정 ✓\n"
+                    f"2. GATE_API_KEY 환경변수 설정 {'✓' if gate_api_key else '❌'}\n"
+                    f"3. GATE_API_SECRET 환경변수 설정 {'✓' if gate_api_secret else '❌'}\n"
+                    f"4. 시스템 재시작\n\n"
+                    f"🔧 현재 환경변수 상태:\n"
+                    f"• MIRROR_TRADING_MODE: {os.getenv('MIRROR_TRADING_MODE', 'not_set')}\n"
+                    f"• 미러 트레이딩 모듈: {'사용 가능' if MIRROR_TRADING_AVAILABLE else '사용 불가'}",
                     parse_mode='HTML'
                 )
                 return
             
-            await self.telegram_bot.handle_mirror_status(update, context)
+            await update.message.reply_text("🔄 미러 트레이딩 상태를 조회중입니다...", parse_mode='HTML')
+            
+            # 미러링 상태 정보
+            active_mirrors = len(self.mirror_trading.mirrored_positions)
+            failed_count = len(self.mirror_trading.failed_mirrors)
+            current_ratio = self.mirror_trading.mirror_ratio_multiplier  # 🔥🔥🔥 현재 배율
+            
+            # 계정 정보
+            bitget_account = await self.bitget_client.get_account_info()
+            gate_account = await self.gate_client.get_account_balance()
+            
+            bitget_equity = float(bitget_account.get('accountEquity', 0))
+            gate_equity = float(gate_account.get('total', 0))
+            
+            # 포지션 정보
+            bitget_positions = await self.bitget_client.get_positions(self.config.symbol)
+            gate_positions = await self.gate_client.get_positions("BTC_USDT")
+            
+            bitget_pos_count = sum(1 for pos in bitget_positions if float(pos.get('total', 0)) > 0)
+            gate_pos_count = sum(1 for pos in gate_positions if pos.get('size', 0) != 0)
+            
+            # 성공률 계산
+            success_rate = 0
+            if self.mirror_trading.daily_stats['total_mirrored'] > 0:
+                success_rate = (self.mirror_trading.daily_stats['successful_mirrors'] / 
+                              self.mirror_trading.daily_stats['total_mirrored']) * 100
+            
+            status_msg = f"""🔄 <b>미러 트레이딩 상태</b>
+
+<b>💰 계정 잔고:</b>
+- 비트겟: ${bitget_equity:,.2f}
+- 게이트: ${gate_equity:,.2f}
+- 잔고 비율: {(gate_equity/bitget_equity*100):.1f}%
+
+<b>🔄 복제 설정:</b>
+- 복제 비율: <b>{current_ratio}x</b> (텔레그램 조정 가능)
+- 모드: {'활성화' if self.mirror_mode else '비활성화'}
+- 조정 방법: /ratio 명령어 사용
+
+<b>📊 포지션 현황:</b>
+- 비트겟: {bitget_pos_count}개
+- 게이트: {gate_pos_count}개
+- 활성 미러: {active_mirrors}개
+
+<b>📈 오늘 통계:</b>
+- 시도: {self.mirror_trading.daily_stats['total_mirrored']}회
+- 성공: {self.mirror_trading.daily_stats['successful_mirrors']}회
+- 실패: {self.mirror_trading.daily_stats['failed_mirrors']}회
+- 성공률: {success_rate:.1f}%
+- 예약 주문 미러링: {self.mirror_trading.daily_stats['plan_order_mirrors']}회
+- 예약 주문 취소: {self.mirror_trading.daily_stats['plan_order_cancels']}회
+- 부분청산: {self.mirror_trading.daily_stats['partial_closes']}회
+- 전체청산: {self.mirror_trading.daily_stats['full_closes']}회
+- 총 거래량: ${self.mirror_trading.daily_stats['total_volume']:,.2f}
+
+<b>🎯 복제 비율 효과:</b>
+- 원본 비율의 {current_ratio}배로 복제
+- 예: 비트겟 10% 투입 시 게이트 {current_ratio*10:.1f}% 투입
+- 실시간 조정: /ratio [숫자] 또는 '배율 조정' 입력
+- 허용 범위: 0.1 ~ 10.0배
+
+<b>⚠️ 최근 오류:</b>
+- 실패 기록: {failed_count}건"""
+            
+            # 최근 실패 내역 추가
+            if failed_count > 0 and self.mirror_trading.failed_mirrors:
+                recent_fail = self.mirror_trading.failed_mirrors[-1]
+                status_msg += f"\n• 마지막 실패: {recent_fail.error[:50]}..."
+            
+            status_msg += "\n\n✅ 시스템 정상 작동 중"
+            
+            # 시스템 가동 시간
+            uptime = datetime.now() - self.startup_time
+            hours = int(uptime.total_seconds() // 3600)
+            minutes = int((uptime.total_seconds() % 3600) // 60)
+            status_msg += f"\n⏱️ 가동 시간: {hours}시간 {minutes}분"
+            status_msg += f"\n🔄 복제 비율: 텔레그램으로 실시간 조정 가능"
+            
+            await update.message.reply_text(status_msg, parse_mode='HTML')
             
         except Exception as e:
             self.command_stats['errors'] += 1
@@ -1849,7 +1108,6 @@ if __name__ == "__main__":
                 parse_mode='HTML'
             )
     
-    # 기존 메서드들은 그대로 유지 (길이 제한으로 생략)
     async def handle_report_command(self, update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
         """리포트 명령 처리"""
         try:
@@ -1864,14 +1122,18 @@ if __name__ == "__main__":
                 self.logger.info("정기 리포트 생성 시작")
                 await self.telegram_bot.send_message("📊 정기 비트코인 분석 리포트를 생성중입니다...", parse_mode='HTML')
             
+            # 리포트 생성 시간 측정
             start_time = datetime.now()
             
+            # 새로운 정기 리포트 생성기 사용
             report = await self.report_manager.generate_regular_report()
             
             generation_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(f"리포트 생성 완료 - 소요시간: {generation_time:.2f}초")
             
+            # 리포트 길이 체크 (텔레그램 메시지 제한)
             if len(report) > 4000:
+                # 긴 리포트는 분할 전송
                 parts = self._split_message(report, 4000)
                 for i, part in enumerate(parts):
                     if update:
@@ -1879,7 +1141,7 @@ if __name__ == "__main__":
                     else:
                         await self.telegram_bot.send_message(part, parse_mode='HTML')
                     if i < len(parts) - 1:
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.5)  # 연속 전송 방지
             else:
                 if update:
                     await update.message.reply_text(report, parse_mode='HTML')
@@ -1912,10 +1174,12 @@ if __name__ == "__main__":
             
             await update.message.reply_text("🔮 단기 예측 분석 중...", parse_mode='HTML')
             
+            # 새로운 예측 리포트 생성기 사용
             report = await self.report_manager.generate_forecast_report()
             
             await update.message.reply_text(report, parse_mode='HTML')
             
+            # 추가 정보 제공
             current_data = await self.bitget_client.get_ticker(self.config.symbol)
             if current_data:
                 current_price = float(current_data.get('last', 0))
@@ -1949,6 +1213,7 @@ if __name__ == "__main__":
             
             await update.message.reply_text("💰 실시간 수익 현황을 조회중입니다...", parse_mode='HTML')
             
+            # 새로운 수익 리포트 생성기 사용
             profit_report = await self.report_manager.generate_profit_report()
             
             await update.message.reply_text(profit_report, parse_mode='HTML')
@@ -1971,19 +1236,23 @@ if __name__ == "__main__":
             username = update.effective_user.username or "Unknown"
             self.logger.info(f"일정 조회 요청 - User: {username}({user_id})")
             
+            # 새로운 일정 리포트 생성기 사용
             schedule_report = await self.report_manager.generate_schedule_report()
             
+            # 추가 일정 정보
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
             
+            # 🔥🔥🔥 현재 배율 정보 추가
             current_ratio = 1.0
-            if self.mirror_trading:
+            if self.mirror_mode and self.mirror_trading:
                 current_ratio = self.mirror_trading.mirror_ratio_multiplier
             
             additional_info = f"\n\n<b>📅 추가 일정 정보:</b>\n"
             additional_info += f"• 현재 시각: {now.strftime('%Y-%m-%d %H:%M')} KST\n"
             additional_info += f"• 다음 정기 리포트: "
             
+            # 다음 리포트 시간 계산
             report_hours = [9, 13, 18, 23]
             next_report_hour = None
             for hour in report_hours:
@@ -2000,9 +1269,8 @@ if __name__ == "__main__":
             additional_info += f"• 급속 변동 감지: 1분마다 자동 실행\n"
             additional_info += f"• 시스템 상태 체크: 2시간마다\n"
             additional_info += f"• 건강 체크 알림: 비활성화됨 ✅\n"
-            additional_info += f"• 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'} (텔레그램 제어)\n"
-            additional_info += f"• 복제 비율: {current_ratio}x (텔레그램 조정 가능)\n"
-            additional_info += f"• Gate.io 마진: Cross 자동 설정됨 💳"
+            additional_info += f"• 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'}\n"
+            additional_info += f"• 복제 비율: {current_ratio}x (텔레그램 조정 가능)"
             
             if self.ml_mode:
                 additional_info += f"\n• ML 예측 검증: 30분마다"
@@ -2028,17 +1296,23 @@ if __name__ == "__main__":
         }
         
         try:
+            # 현재 가격 정보
             if self.bitget_client:
                 ticker = await self.bitget_client.get_ticker('BTCUSDT')
                 if ticker:
+                    # 24시간 변화율로 트렌드 판단
                     change_24h = float(ticker.get('changeUtc', 0))
                     if change_24h > 0.02:
                         market_data['trend'] = 'bullish'
                     elif change_24h < -0.02:
                         market_data['trend'] = 'bearish'
                     
+                    # 거래량 비율 (평균 대비)
                     volume = float(ticker.get('baseVolume', 0))
                     market_data['volume_ratio'] = volume / 50000 if volume > 0 else 1.0
+            
+            # 기술 지표는 실제 구현 필요
+            # 여기서는 기본값 사용
             
         except Exception as e:
             self.logger.error(f"시장 데이터 수집 실패: {e}")
@@ -2053,10 +1327,12 @@ if __name__ == "__main__":
         try:
             self.logger.info("ML 예측 검증 시작")
             
+            # 예측 검증
             verifications = await self.ml_predictor.verify_predictions()
             
+            # 중요한 검증 결과만 알림
             for verification in verifications:
-                if abs(verification['accuracy']) < 50:
+                if abs(verification['accuracy']) < 50:  # 정확도가 50% 미만인 경우
                     msg = f"""<b>🤖 AI 예측 검증 결과</b>
 
 <b>📰 이벤트:</b> {verification['event']['title'][:50]}...
@@ -2077,6 +1353,7 @@ if __name__ == "__main__":
                     
                     await self.telegram_bot.send_message(msg, parse_mode='HTML')
             
+            # 통계 업데이트
             stats = self.ml_predictor.get_stats()
             self.logger.info(f"ML 예측 검증 완료 - 방향 정확도: {stats['direction_accuracy']}, 크기 정확도: {stats['magnitude_accuracy']}")
             
@@ -2086,11 +1363,12 @@ if __name__ == "__main__":
     async def _check_mirror_health(self):
         """미러 트레이딩 건강 상태 체크"""
         try:
+            # 실패율 체크
             if self.mirror_trading.daily_stats['total_mirrored'] > 10:
                 fail_rate = (self.mirror_trading.daily_stats['failed_mirrors'] / 
                            self.mirror_trading.daily_stats['total_mirrored'])
                 
-                if fail_rate > 0.3:
+                if fail_rate > 0.3:  # 30% 이상 실패
                     await self.telegram_bot.send_message(
                         f"<b>⚠️ 미러 트레이딩 경고</b>\n"
                         f"높은 실패율 감지: {fail_rate*100:.1f}%\n"
@@ -2102,7 +1380,7 @@ if __name__ == "__main__":
             self.logger.error(f"미러 건강 체크 실패: {e}")
     
     async def system_health_check(self):
-        """시스템 건강 상태 체크 - 알림 완전 비활성화"""
+        """🔥🔥 시스템 건강 상태 체크 - 알림 완전 비활성화"""
         try:
             self.logger.info("시스템 건강 상태 체크 시작")
             
@@ -2121,8 +1399,8 @@ if __name__ == "__main__":
                 health_status['services']['bitget'] = 'ERROR'
                 health_status['errors'].append(f"Bitget: {str(e)[:50]}")
             
-            # Gate.io 연결 체크
-            if self.gate_client:
+            # Gate.io 연결 체크 (미러 모드일 때만)
+            if self.mirror_mode and self.gate_client:
                 try:
                     balance = await self.gate_client.get_account_balance()
                     health_status['services']['gate'] = 'OK'
@@ -2136,13 +1414,15 @@ if __name__ == "__main__":
             else:
                 health_status['services']['data_collector'] = 'ERROR'
             
-            # ML 예측기 상태
+            # ML 예측기 상태 (ML 모드일 때만)
             if self.ml_mode and self.ml_predictor:
                 health_status['services']['ml_predictor'] = 'OK'
                 health_status['ml_stats'] = self.ml_predictor.get_stats()
             
+            # 예외 감지기 상태
             health_status['services']['exception_detector'] = 'OK'
             
+            # exception_stats 복사
             health_status['exception_stats'] = {
                 'total_detected': self.exception_stats['total_detected'],
                 'news_alerts': self.exception_stats['news_alerts'],
@@ -2162,27 +1442,35 @@ if __name__ == "__main__":
             memory_info = process.memory_info()
             health_status['memory_mb'] = memory_info.rss / 1024 / 1024
             
+            # 명령어 통계
             health_status['command_stats'] = self.command_stats.copy()
             
-            if self.mirror_trading:
+            # 🔥🔥🔥 현재 배율 정보 추가
+            if self.mirror_mode and self.mirror_trading:
                 health_status['current_ratio'] = self.mirror_trading.mirror_ratio_multiplier
             
-            # 건강 체크 알림 완전 비활성화
+            # 🔥🔥 건강 체크 알림 완전 비활성화
             if self.disable_health_check_alerts:
+                # 로그에만 기록, 알림 전송하지 않음
                 self.logger.info(f"건강 체크 완료 (알림 비활성화됨): {json.dumps(health_status, indent=2)}")
                 return
             
+            # 🔥🔥 이 부분은 실행되지 않음 (알림 비활성화)
+            # 심각한 오류가 있을 때만 알림 (매우 제한적)
             critical_errors = []
             
+            # 심각한 서비스 오류만 체크
             if health_status['services']['bitget'] == 'ERROR':
                 critical_errors.append("Bitget API 연결 실패")
             
             if health_status['services']['data_collector'] == 'ERROR':
                 critical_errors.append("데이터 수집기 오류")
             
+            # 메모리 사용량이 1GB를 초과하는 경우만
             if health_status['memory_mb'] > 1000:
                 critical_errors.append(f"메모리 사용량 과다: {health_status['memory_mb']:.1f} MB")
             
+            # 심각한 오류가 있을 때만 알림
             if critical_errors:
                 error_msg = "<b>🚨 시스템 심각한 오류</b>\n"
                 
@@ -2197,6 +1485,7 @@ if __name__ == "__main__":
                 await self.telegram_bot.send_message(error_msg, parse_mode='HTML')
                 self.logger.warning(f"시스템 심각한 오류 알림 전송: {len(critical_errors)}개 이슈")
             
+            # 로그 기록
             self.logger.info(f"시스템 건강 체크 완료: {json.dumps(health_status, indent=2)}")
             
         except Exception as e:
@@ -2207,10 +1496,12 @@ if __name__ == "__main__":
         try:
             self.logger.info("일일 통계 리포트 생성")
             
+            # 시스템 가동 시간
             uptime = datetime.now() - self.startup_time
             days = uptime.days
             hours = int((uptime.total_seconds() % 86400) // 3600)
             
+            # 예외 감지 통계
             total_exceptions = self.exception_stats['total_detected']
             critical_processed = self.exception_stats['critical_news_processed']
             critical_filtered = self.exception_stats['critical_news_filtered']
@@ -2218,10 +1509,12 @@ if __name__ == "__main__":
             filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
             reports_sent = self.exception_stats['exception_reports_sent']
             
+            # 🔥🔥 리포트 매니저 통계
             report_stats = self.report_manager.get_exception_report_stats()
             
+            # 🔥🔥🔥 현재 배율 정보
             current_ratio = 1.0
-            if self.mirror_trading:
+            if self.mirror_mode and self.mirror_trading:
                 current_ratio = self.mirror_trading.mirror_ratio_multiplier
             
             report = f"""<b>📊 일일 시스템 통계 리포트</b>
@@ -2251,10 +1544,523 @@ if __name__ == "__main__":
 - 리포트 생성 성공률: <b>{report_stats['success_rate']:.0f}%</b>
 
 <b>🔄 미러 트레이딩 상태:</b>
-- 모드: <b>{'활성화' if self.mirror_mode else '비활성화'}</b> (텔레그램 제어)
+- 모드: <b>{'활성화' if self.mirror_mode else '비활성화'}</b>
 - 복제 비율: <b>{current_ratio}x</b> (텔레그램 조정 가능)
-- Gate.io 마진: Cross 자동 설정됨 💳
 
 <b>📈 명령어 사용 통계:</b>
 - 리포트: {self.command_stats['report']}회
-- 예측: {self.command_stats['forecast'
+- 예측: {self.command_stats['forecast']}회
+- 수익 조회: {self.command_stats['profit']}회
+- 일정 확인: {self.command_stats['schedule']}회"""
+
+            if self.mirror_mode:
+                report += f"\n• 미러 상태: {self.command_stats['mirror']}회"
+                report += f"\n• 배율 조정: {self.command_stats['ratio']}회"
+            
+            report += f"""
+- 자연어 입력: {self.command_stats['natural_language']}회
+- 오류 발생: {self.command_stats['errors']}회
+
+<b>💾 메모리 사용량:</b> """
+            
+            try:
+                import psutil
+                process = psutil.Process(os.getpid())
+                memory_mb = process.memory_info().rss / 1024 / 1024
+                report += f"{memory_mb:.1f} MB"
+            except:
+                report += "측정 불가"
+            
+            # ML 예측 통계 추가
+            if self.ml_mode and self.ml_predictor:
+                stats = self.ml_predictor.get_stats()
+                report += f"""
+
+<b>🤖 AI 예측 성능:</b>
+- 총 예측: {stats['total_predictions']}건
+- 검증 완료: {stats['verified_predictions']}건
+- 방향 정확도: {stats['direction_accuracy']}
+- 크기 정확도: {stats['magnitude_accuracy']}"""
+            
+            # 미러 트레이딩 통계 추가
+            if self.mirror_mode and self.mirror_trading:
+                mirror_stats = self.mirror_trading.daily_stats
+                report += f"""
+
+<b>🔄 미러 트레이딩 통계:</b>
+- 총 시도: {mirror_stats['total_mirrored']}회
+- 성공: {mirror_stats['successful_mirrors']}회
+- 실패: {mirror_stats['failed_mirrors']}회
+- 예약 주문 미러링: {mirror_stats['plan_order_mirrors']}회
+- 예약 주문 취소: {mirror_stats['plan_order_cancels']}회
+- 부분 청산: {mirror_stats['partial_closes']}회
+- 전체 청산: {mirror_stats['full_closes']}회
+- 총 거래량: ${mirror_stats['total_volume']:,.2f}
+- 배율 조정: {self.command_stats['ratio']}회"""
+            
+            report += f"""
+
+<b>🔧 시스템 설정:</b>
+- 예외 감지: 2분마다 (빠른 감지)
+- 급속 변동: 1분마다 (즉시 감지)
+- 뉴스 수집: 15초마다
+- 가격 임계값: {self.exception_detector.PRICE_CHANGE_THRESHOLD}%
+- 거래량 임계값: {self.exception_detector.VOLUME_SPIKE_THRESHOLD}배
+- 뉴스 필터링: 강화됨 (크리티컬 전용)
+- 건강 체크: 심각한 오류 시에만 알림 ✅
+- 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'}
+- 복제 비율: {current_ratio}x (텔레그램 /ratio로 변경)
+
+━━━━━━━━━━━━━━━━━━━
+⚡ 비트코인 전용 시스템이 완벽히 작동했습니다!"""
+            
+            await self.telegram_bot.send_message(report, parse_mode='HTML')
+            
+            # 통계 초기화
+            self.command_stats = {k: 0 if k != 'errors' else v for k, v in self.command_stats.items()}
+            
+            # 예외 통계 초기화
+            self.exception_stats = {
+                'total_detected': 0,
+                'news_alerts': 0,
+                'price_alerts': 0,
+                'volume_alerts': 0,
+                'funding_alerts': 0,
+                'short_term_alerts': 0,
+                'critical_news_processed': 0,
+                'critical_news_filtered': 0,
+                'exception_reports_sent': 0,
+                'last_reset': datetime.now().isoformat()
+            }
+            
+            # 리포트 매니저 통계 초기화
+            self.report_manager.reset_exception_report_stats()
+            
+        except Exception as e:
+            self.logger.error(f"일일 통계 리포트 생성 실패: {e}")
+    
+    def _split_message(self, message: str, max_length: int = 4000) -> List[str]:
+        """긴 메시지 분할"""
+        if len(message) <= max_length:
+            return [message]
+        
+        parts = []
+        lines = message.split('\n')
+        current_part = ""
+        
+        for line in lines:
+            if len(current_part) + len(line) + 1 > max_length:
+                if current_part:
+                    parts.append(current_part.strip())
+                current_part = line + '\n'
+            else:
+                current_part += line + '\n'
+        
+        if current_part:
+            parts.append(current_part.strip())
+        
+        return parts
+    
+    async def handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시작 명령 처리 - 간소화된 도움말"""
+        try:
+            user_id = update.effective_user.id
+            username = update.effective_user.username or "Unknown"
+            self.logger.info(f"시작 명령 - User: {username}({user_id})")
+            
+            # 🔥🔥🔥 현재 배율 정보 가져오기
+            current_ratio = 1.0
+            if self.mirror_mode and self.mirror_trading:
+                current_ratio = self.mirror_trading.mirror_ratio_multiplier
+            
+            mode_text = f"🔄 미러 트레이딩 모드 ({current_ratio}x)" if self.mirror_mode else "📊 분석 전용 모드"
+            if self.ml_mode:
+                mode_text += " + 🤖 ML 예측"
+            
+            welcome_message = f"""<b>🚀 비트코인 예측 시스템에 오신 것을 환영합니다!</b>
+
+현재 모드: {mode_text}
+
+<b>📊 주요 명령어:</b>
+- /report - 전체 분석 리포트
+- /forecast - 단기 예측 요약
+- /profit - 실시간 수익 현황
+- /schedule - 자동 일정 안내
+- /stats - 시스템 통계"""
+            
+            if self.mirror_mode:
+                welcome_message += f"\n• /mirror - 미러 트레이딩 상태\n• /ratio - 복제 비율 조정 (현재 {current_ratio}x)"
+            
+            welcome_message += """
+
+<b>💬 자연어 질문 예시:</b>
+- "오늘 수익은?"
+- "지금 매수해도 돼?"
+- "시장 상황 어때?"
+- "다음 리포트 언제?"
+- "시스템 통계 보여줘"
+"""
+            
+            if self.mirror_mode:
+                welcome_message += f'• "미러 트레이딩 상태는?"\n• "복제 비율 확인" (현재 {current_ratio}x)\n• "배율 조정"\n'
+            
+            welcome_message += f"""
+<b>🔔 자동 기능:</b>
+- 정기 리포트: 09:00, 13:00, 18:00, 23:00
+- 예외 감지: 2분마다 (빠른 감지)
+- 급속 변동: 1분마다 (즉시 감지)
+- 뉴스 수집: 15초마다 (RSS)
+- 시스템 체크: 2시간마다 (심각한 오류만 알림)"""
+            
+            if self.ml_mode:
+                welcome_message += "\n• ML 예측 검증: 30분마다"
+            
+            welcome_message += f"""
+
+<b>⚡ 실시간 알림 (비트코인 전용):</b>
+- 가격 급변동 (≥{self.exception_detector.PRICE_CHANGE_THRESHOLD}%)
+- 단기 급변동 (5분 내 ≥{self.exception_detector.short_term_threshold}%)
+- 비트코인 크리티컬 뉴스 (강화된 필터링)
+- 펀딩비 이상 (≥{self.exception_detector.FUNDING_RATE_THRESHOLD*100:.1f}%)
+- 거래량 급증 (≥{self.exception_detector.VOLUME_SPIKE_THRESHOLD}배)
+"""
+            
+            if self.mirror_mode:
+                welcome_message += f"""
+<b>🔄 미러 트레이딩 ({current_ratio}x):</b>
+- 비트겟 → 게이트 자동 복제
+- 총 자산 대비 동일 비율 × {current_ratio}
+- 예약 주문도 동일 비율 복제
+- 실시간 가격 조정
+- 예약 주문 취소 동기화
+- 텔레그램으로 복제 비율 실시간 조정 (/ratio)
+"""
+            
+            if self.ml_mode:
+                welcome_message += f"""
+<b>🤖 ML 예측 시스템:</b>
+- 과거 데이터 학습
+- 실시간 예측
+- 자동 성능 개선
+"""
+            
+            # 시스템 상태 추가
+            uptime = datetime.now() - self.startup_time
+            hours = int(uptime.total_seconds() // 3600)
+            minutes = int((uptime.total_seconds() % 3600) // 60)
+            
+            total_exceptions = self.exception_stats['total_detected']
+            minutes_since_alert = int((datetime.now() - self.last_successful_alert).total_seconds() / 60)
+            
+            # 🔥🔥 크리티컬 뉴스 필터링 통계 추가
+            critical_processed = self.exception_stats['critical_news_processed']
+            critical_filtered = self.exception_stats['critical_news_filtered']
+            total_critical_attempts = critical_processed + critical_filtered
+            filter_efficiency = (critical_filtered / total_critical_attempts * 100) if total_critical_attempts > 0 else 0
+            
+            # 🔥🔥 리포트 통계 추가
+            report_stats = self.report_manager.get_exception_report_stats()
+            
+            welcome_message += f"""
+<b>📊 시스템 상태:</b>
+- 가동 시간: {hours}시간 {minutes}분
+- 총 명령 처리: {sum(self.command_stats.values())}건
+- 오류 발생: {self.command_stats['errors']}건
+- 마지막 알림: {minutes_since_alert}분 전
+- 크리티컬 뉴스 필터링: <b>{filter_efficiency:.0f}%</b> 효율
+- 예외 리포트 생성: <b>{report_stats['success_rate']:.0f}%</b> 성공률
+- 활성 서비스: {'미러+분석' if self.mirror_mode else '분석'}{'+ ML' if self.ml_mode else ''}
+- 건강 체크: 심각한 오류 시에만 알림 ✅
+- 미러 트레이딩: {'활성화' if self.mirror_mode else '비활성화'}
+- 복제 비율: {current_ratio}x (텔레그램 조정 가능)
+
+📈 정확한 비트코인 분석을 제공합니다.
+🔥 크리티컬 뉴스만 엄선하여 전달합니다.
+📄 전문적인 예외 리포트를 자동 생성합니다.
+🔕 불필요한 알림은 완전히 제거했습니다.
+🔄 복제 비율을 텔레그램으로 실시간 조정할 수 있습니다!
+
+도움이 필요하시면 언제든 질문해주세요! 😊"""
+            
+            await update.message.reply_text(welcome_message, parse_mode='HTML')
+            
+        except Exception as e:
+            self.logger.error(f"시작 명령 처리 실패: {e}")
+            await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
+    
+    async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """미러 트레이딩 상태 명령"""
+        await self.handle_mirror_status(update, context)
+    
+    async def start(self):
+        """시스템 시작"""
+        try:
+            self.logger.info("=" * 50)
+            self.logger.info("시스템 시작 프로세스 개시 - 비트코인 전용 + 크리티컬 뉴스 전용")
+            self.logger.info("=" * 50)
+            
+            self.is_running = True
+            self.startup_time = datetime.now()
+            
+            # Bitget 클라이언트 초기화
+            self.logger.info("Bitget 클라이언트 초기화 중...")
+            await self.bitget_client.initialize()
+            
+            # Gate.io 클라이언트 초기화 (미러 모드일 때만)
+            if self.mirror_mode and self.gate_client:
+                self.logger.info("Gate.io 클라이언트 초기화 중...")
+                await self.gate_client.initialize()
+            
+            # 데이터 수집기 시작
+            self.logger.info("데이터 수집기 시작 중...")
+            asyncio.create_task(self.data_collector.start())
+            
+            # 미러 트레이딩 시작 (미러 모드일 때만)
+            if self.mirror_mode and self.mirror_trading:
+                self.logger.info("미러 트레이딩 시스템 시작 중...")
+                asyncio.create_task(self.mirror_trading.start())
+            
+            # 스케줄러 시작
+            self.logger.info("스케줄러 시작 중...")
+            self.scheduler.start()
+            
+            # 텔레그램 봇 핸들러 등록
+            self.logger.info("텔레그램 봇 핸들러 등록 중...")
+            self.telegram_bot.add_handler('start', self.handle_start_command)
+            self.telegram_bot.add_handler('report', self.handle_report_command)
+            self.telegram_bot.add_handler('forecast', self.handle_forecast_command)
+            self.telegram_bot.add_handler('profit', self.handle_profit_command)
+            self.telegram_bot.add_handler('schedule', self.handle_schedule_command)
+            self.telegram_bot.add_handler('stats', self.handle_stats_command)
+            self.telegram_bot.add_handler('help', self.handle_start_command)  # 🔥🔥🔥 help 핸들러 추가
+            
+            if self.mirror_mode:
+                self.telegram_bot.add_handler('mirror', self.handle_mirror_command)
+                self.telegram_bot.add_handler('ratio', self.handle_ratio_command)  # 🔥🔥🔥 ratio 핸들러 추가
+            
+            # 자연어 메시지 핸들러 추가
+            self.telegram_bot.add_message_handler(self.handle_natural_language)
+            
+            # 텔레그램 봇 시작
+            self.logger.info("텔레그램 봇 시작 중...")
+            await self.telegram_bot.start()
+            
+            # 🔥🔥🔥 현재 배율 정보
+            current_ratio = 1.0
+            if self.mirror_mode and self.mirror_trading:
+                current_ratio = self.mirror_trading.mirror_ratio_multiplier
+            
+            mode_text = f"미러 트레이딩 ({current_ratio}x)" if self.mirror_mode else "분석 전용"
+            if self.ml_mode:
+                mode_text += " + ML 예측"
+            
+            self.logger.info(f"✅ 비트코인 예측 시스템 시작 완료 (모드: {mode_text})")
+            
+            # 🔥🔥 시작 메시지 전송 - 텔레그램 배율 조정 기능 강조
+            startup_msg = f"""<b>🚀 비트코인 예측 시스템이 시작되었습니다!</b>
+
+<b>📊 운영 모드:</b> {mode_text}
+<b>🕐 시작 시각:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+<b>🔥 버전:</b> 4.0 - 텔레그램 복제 비율 실시간 조정
+
+<b>🎯 텔레그램 복제 비율 조정 (NEW!):</b>
+- 현재 복제 비율: <b>{current_ratio}x</b>
+- 실시간 조정: /ratio 명령어
+- 사용법: /ratio 1.5 (1.5배로 변경)
+- 허용 범위: 0.1배 ~ 10.0배
+- 확인 절차: 안전한 변경 확인
+- 즉시 적용: 새로운 주문부터 바로 반영
+
+<b>🚨 예약 주문 취소 동기화 (강화):</b>
+- 비트겟 예약 주문 취소 감지 → 게이트 자동 취소
+- 45초마다 동기화 체크
+- 3회 재시도 시스템
+- 확실한 고아 주문만 삭제
+- 의심스러운 주문은 안전상 보존
+
+<b>⚡ 비트코인 전용 기능 (더 빠르게):</b>
+- 예외 감지: 2분마다 (5분 → 2분)
+- 급속 변동: 1분마다 (2분 → 1분)
+- 뉴스 수집: 15초마다 (RSS)
+- 크리티컬 뉴스만 전용 처리 ✨
+- 예외 리포트 자동 생성/전송 🚨
+
+<b>🔧 환경변수 설정 (O/X 지원):</b>
+- MIRROR_TRADING_MODE: <b>O</b> (활성화), <b>X</b> (비활성화)
+- 현재 설정: 미러링 {'활성화' if self.mirror_mode else '비활성화'}
+- 복제 비율: 환경변수 제거, 텔레그램으로만 조정
+
+<b>💬 텔레그램 명령어:</b>
+- /ratio - 현재 복제 비율 확인
+- /ratio 1.5 - 1.5배로 변경
+- /ratio 0.5 - 절반으로 축소
+- /ratio 2.0 - 2배로 확대
+- /help - 전체 도움말
+
+<b>🔥 크리티컬 뉴스 전용 시스템:</b>
+- ETF, Fed 금리, 기업 직접 투자만 엄선
+- 구조화 상품, 의견/예측 글 자동 제외
+- 비트코인 직접 영향 뉴스만 전달
+- 가격 영향도 0.1% 이상만 처리
+- 강화된 예외 리포트 자동 생성
+
+이제 복제 비율을 텔레그램으로 실시간 조정할 수 있습니다!
+예약 주문 취소도 완벽하게 동기화됩니다!
+/ratio 명령어를 사용해보세요!"""
+            
+            await self.telegram_bot.send_message(startup_msg, parse_mode='HTML')
+            
+            # 초기 시스템 상태 체크 (알림 없이)
+            await asyncio.sleep(5)
+            await self.system_health_check()
+            
+            # 메인 루프
+            self.logger.info("메인 루프 시작")
+            while self.is_running:
+                await asyncio.sleep(1)
+                
+        except KeyboardInterrupt:
+            self.logger.info("키보드 인터럽트 감지 - 시스템 종료 시작")
+            await self.stop()
+        except Exception as e:
+            self.logger.error(f"시스템 시작 실패: {str(e)}")
+            self.logger.debug(f"시작 오류 상세: {traceback.format_exc()}")
+            
+            # 오류 메시지 전송 시도
+            try:
+                await self.telegram_bot.send_message(
+                    f"<b>❌ 시스템 시작 실패</b>\n"
+                    f"오류: {str(e)[:200]}\n"
+                    f"로그를 확인해주세요.",
+                    parse_mode='HTML'
+                )
+            except:
+                pass
+            
+            raise
+    
+    async def stop(self):
+        """시스템 종료"""
+        try:
+            self.logger.info("=" * 50)
+            self.logger.info("시스템 종료 프로세스 시작")
+            self.logger.info("=" * 50)
+            
+            self.is_running = False
+            
+            # 종료 메시지 전송 시도
+            try:
+                uptime = datetime.now() - self.startup_time
+                hours = int(uptime.total_seconds() // 3600)
+                minutes = int((uptime.total_seconds() % 3600) // 60)
+                
+                total_exceptions = self.exception_stats['total_detected']
+                critical_processed = self.exception_stats['critical_news_processed']
+                critical_filtered = self.exception_stats['critical_news_filtered']
+                reports_sent = self.exception_stats['exception_reports_sent']
+                filter_efficiency = (critical_filtered / (critical_processed + critical_filtered) * 100) if (critical_processed + critical_filtered) > 0 else 0
+                
+                # 리포트 매니저 통계
+                report_stats = self.report_manager.get_exception_report_stats()
+                
+                # 🔥🔥🔥 현재 배율 정보
+                current_ratio = 1.0
+                if self.mirror_mode and self.mirror_trading:
+                    current_ratio = self.mirror_trading.mirror_ratio_multiplier
+                
+                shutdown_msg = f"""<b>🛑 시스템 종료 중...</b>
+
+<b>⏱️ 총 가동 시간:</b> {hours}시간 {minutes}분
+<b>📊 처리된 명령:</b> {sum(self.command_stats.values())}건
+<b>🚨 감지된 예외:</b> {total_exceptions}건
+<b>🔥 크리티컬 뉴스:</b> 처리 {critical_processed}건, 필터링 {critical_filtered}건
+<b>📄 예외 리포트:</b> 전송 {reports_sent}건, 성공률 {report_stats['success_rate']:.0f}%
+<b>📈 필터링 효율:</b> {filter_efficiency:.0f}% (노이즈 제거)
+<b>❌ 발생한 오류:</b> {self.command_stats['errors']}건
+<b>🔧 시스템 최적화:</b> 불필요한 알림 완전 제거 완료 ✅
+<b>🔄 미러 트레이딩:</b> {'활성화' if self.mirror_mode else '비활성화'} ({current_ratio}x)
+<b>🎯 배율 조정:</b> {self.command_stats['ratio']}회 (텔레그램)"""
+                
+                if self.ml_mode and self.ml_predictor:
+                    stats = self.ml_predictor.get_stats()
+                    shutdown_msg += f"""
+<b>🤖 ML 예측 성능:</b>
+- 총 예측: {stats['total_predictions']}건
+- 정확도: {stats['direction_accuracy']}"""
+                
+                shutdown_msg += "\n\n크리티컬 뉴스 전용 시스템이 안전하게 종료됩니다."
+                
+                if self.mirror_mode:
+                    shutdown_msg += f"\n미러 트레이딩({current_ratio}x)도 함께 종료됩니다."
+                    shutdown_msg += f"\n텔레그램 배율 조정 기능도 종료됩니다."
+                
+                await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
+            except:
+                pass
+            
+            # 스케줄러 종료
+            self.logger.info("스케줄러 종료 중...")
+            self.scheduler.shutdown()
+            
+            # 텔레그램 봇 종료
+            self.logger.info("텔레그램 봇 종료 중...")
+            await self.telegram_bot.stop()
+            
+            # 미러 트레이딩 종료
+            if self.mirror_mode and self.mirror_trading:
+                self.logger.info("미러 트레이딩 종료 중...")
+                await self.mirror_trading.stop()
+            
+            # 데이터 수집기 종료
+            self.logger.info("데이터 수집기 종료 중...")
+            if self.data_collector.session:
+                await self.data_collector.close()
+            
+            # Bitget 클라이언트 종료
+            self.logger.info("Bitget 클라이언트 종료 중...")
+            if self.bitget_client.session:
+                await self.bitget_client.close()
+            
+            # Gate.io 클라이언트 종료
+            if self.gate_client and self.gate_client.session:
+                self.logger.info("Gate.io 클라이언트 종료 중...")
+                await self.gate_client.close()
+            
+            # ML 예측기 데이터 저장
+            if self.ml_mode and self.ml_predictor:
+                self.logger.info("ML 예측 데이터 저장 중...")
+                self.ml_predictor.save_predictions()
+            
+            self.logger.info("=" * 50)
+            self.logger.info("✅ 비트코인 전용 + 크리티컬 뉴스 전용 + 텔레그램 배율 조정 시스템이 안전하게 종료되었습니다")
+            self.logger.info("=" * 50)
+            
+        except Exception as e:
+            self.logger.error(f"시스템 종료 중 오류: {str(e)}")
+            self.logger.debug(traceback.format_exc())
+
+async def main():
+    """메인 함수"""
+    try:
+        print("\n" + "=" * 50)
+        print("🚀 비트코인 예측 시스템 v4.0 - 텔레그램 복제 비율 실시간 조정")
+        print("=" * 50 + "\n")
+        
+        system = BitcoinPredictionSystem()
+        await system.start()
+        
+    except Exception as e:
+        print(f"\n❌ 치명적 오류 발생: {e}")
+        logging.error(f"치명적 오류: {e}")
+        logging.debug(traceback.format_exc())
+        sys.exit(1)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n\n프로그램이 사용자에 의해 중단되었습니다.")
+    except Exception as e:
+        print(f"\n\n치명적 오류: {e}")
+        logging.error(f"프로그램 실행 실패: {e}")
+        logging.debug(traceback.format_exc())
