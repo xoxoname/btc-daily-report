@@ -21,6 +21,9 @@ class TelegramBot:
         # 핸들러 등록 여부 추적
         self._handlers_registered = False
         
+        # 🔥🔥🔥 봇 실행 상태 추가
+        self._is_running = False
+        
         self._initialize_bot()
         
     def _initialize_bot(self):
@@ -65,6 +68,7 @@ class TelegramBot:
             self.logger.info("기존 핸들러 모두 제거")
             
             # 명령어 핸들러 등록
+            registered_commands = []
             for command, handler_func in handlers_map.items():
                 if command == 'message_handler':
                     # 자연어 메시지 핸들러
@@ -78,10 +82,11 @@ class TelegramBot:
                     # 명령어 핸들러
                     command_handler = CommandHandler(command, handler_func)
                     self.application.add_handler(command_handler, 0)
+                    registered_commands.append(command)
                     self.logger.info(f"✅ 명령어 핸들러 등록: /{command}")
             
             self._handlers_registered = True
-            self.logger.info("✅ 모든 핸들러 등록 완료")
+            self.logger.info(f"✅ 모든 핸들러 등록 완료 - 명령어 {len(registered_commands)}개, 메시지 핸들러 1개")
             
             # 등록된 핸들러 목록 출력
             self._log_all_handlers()
@@ -118,6 +123,9 @@ class TelegramBot:
             # 핸들러가 등록되지 않았다면 경고
             if not self._handlers_registered:
                 self.logger.warning("⚠️ 핸들러가 등록되지 않았습니다! setup_handlers()를 먼저 호출하세요.")
+            
+            # 🔥🔥🔥 봇 실행 상태를 True로 설정
+            self._is_running = True
             
             # Application 초기화
             self.logger.info("Application 초기화 중...")
@@ -156,6 +164,7 @@ class TelegramBot:
                 self.logger.error(f"테스트 메시지 전송 실패: {test_error}")
             
         except Exception as e:
+            self._is_running = False  # 🔥🔥🔥 실패 시 False로 설정
             self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
             raise
     
@@ -164,6 +173,10 @@ class TelegramBot:
         try:
             if self.application:
                 self.logger.info("텔레그램 봇 정지 중...")
+                
+                # 🔥🔥🔥 봇 실행 상태를 False로 설정
+                self._is_running = False
+                
                 await self.application.updater.stop()
                 await self.application.stop()
                 await self.application.shutdown()
@@ -713,18 +726,41 @@ class TelegramBot:
     async def handle_universal_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """통합 메시지 핸들러 - 확인 메시지들을 우선 처리"""
         try:
+            self.logger.info(f"🔥 통합 메시지 핸들러 수신: {update.message.text[:50]}...")
+            
             # 1. 미러링 모드 확인 처리
             if await self.handle_mirror_confirmation(update, context):
+                self.logger.info("미러링 확인 메시지 처리됨")
                 return
             
             # 2. 배율 확인 처리
             if await self.handle_ratio_confirmation(update, context):
+                self.logger.info("배율 확인 메시지 처리됨")
                 return
             
-            # 3. 기타 메시지는 무시 (자연어 처리 등은 main에서 처리)
+            # 3. 기타 메시지는 main.py로 전달 (자연어 처리)
+            if self.system_reference and hasattr(self.system_reference, 'handle_natural_language'):
+                self.logger.info("자연어 처리를 위해 main.py로 전달")
+                await self.system_reference.handle_natural_language(update, context)
+            else:
+                self.logger.warning("시스템 참조가 없거나 자연어 처리 함수가 없음")
+                await update.message.reply_text(
+                    "죄송합니다. 이해하지 못했습니다. 🤔\n\n"
+                    "사용 가능한 명령어:\n"
+                    "• /help - 도움말\n"
+                    "• /mirror - 미러링 상태\n"
+                    "• /ratio - 복제 비율\n"
+                    "• /report - 분석 리포트\n"
+                    "• /stats - 시스템 통계",
+                    reply_markup=ReplyKeyboardRemove()
+                )
             
         except Exception as e:
             self.logger.error(f"통합 메시지 처리 실패: {e}")
+            await update.message.reply_text(
+                "❌ 메시지 처리 중 오류가 발생했습니다.",
+                reply_markup=ReplyKeyboardRemove()
+            )
     
     def _clean_html_message(self, text: str) -> str:
         """HTML 메시지 정리 및 검증"""
