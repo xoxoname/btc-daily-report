@@ -693,10 +693,6 @@ class BitcoinPredictionSystem:
     async def handle_natural_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """자연어 메시지 처리"""
         try:
-            # 배율 확인 메시지 우선 처리
-            if await self.telegram_bot.handle_ratio_confirmation(update, context):
-                return
-            
             self.command_stats['natural_language'] += 1
             message = update.message.text.lower()
             user_id = update.effective_user.id
@@ -1623,36 +1619,8 @@ class BitcoinPredictionSystem:
             self.logger.error(f"시작 명령 처리 실패: {e}")
             await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
     
-    async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """미러 트레이딩 명령 - 텔레그램 봇에 완전 위임"""
-        try:
-            self.logger.info(f"🔥 main.py에서 mirror 명령어 수신 - 텔레그램 봇으로 완전 위임")
-            
-            await self.telegram_bot.handle_mirror_command(update, context)
-        
-        except Exception as e:
-            self.logger.error(f"미러 명령어 처리 실패: {e}")
-            await update.message.reply_text("❌ 미러링 명령어 처리 실패", parse_mode='HTML')
-    
-    def _setup_telegram_handlers(self):
-        """텔레그램 핸들러 설정 - 단순화된 방식"""
-        handlers_map = {
-            'start': self.handle_start_command,
-            'help': self.handle_start_command,
-            'report': self.handle_report_command,
-            'forecast': self.handle_forecast_command,
-            'profit': self.handle_profit_command,
-            'schedule': self.handle_schedule_command,
-            'stats': self.handle_stats_command,
-            'mirror': self.handle_mirror_command,
-            'ratio': self.handle_ratio_command,
-            'message_handler': self.telegram_bot.handle_universal_message
-        }
-        
-        return handlers_map
-    
     async def start(self):
-        """시스템 시작 - 개선된 방식"""
+        """시스템 시작 - 간단한 방식"""
         try:
             self.logger.info("=" * 50)
             self.logger.info("시스템 시작 프로세스 개시 - 텔레그램 제어 + Gate.io Cross 마진")
@@ -1733,20 +1701,9 @@ class BitcoinPredictionSystem:
             self.logger.info("스케줄러 시작 중...")
             self.scheduler.start()
             
-            # 🔥🔥🔥 핸들러 설정 및 텔레그램 봇 시작 - 새로운 방식
-            self.logger.info("🔥 텔레그램 핸들러 설정 중...")
-            
-            # 핸들러 맵 생성
-            handlers_map = self._setup_telegram_handlers()
-            
-            # 텔레그램 봇에 핸들러 일괄 등록
-            self.telegram_bot.setup_handlers(handlers_map)
-            
-            # 텔레그램 봇 시작
-            self.logger.info("텔레그램 봇 시작 중...")
+            # 텔레그램 봇 시작 - 간단한 방식
+            self.logger.info("🔥 텔레그램 봇 시작 중...")
             await self.telegram_bot.start()
-            
-            self.logger.info("✅ 모든 텔레그램 핸들러 등록 및 봇 시작 완료")
             
             # 현재 배율 정보
             current_ratio = 1.0
