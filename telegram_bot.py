@@ -4,6 +4,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import asyncio
 from typing import Callable
 import re
+import traceback
+from datetime import datetime
 
 class TelegramBot:
     def __init__(self, config):
@@ -13,6 +15,15 @@ class TelegramBot:
         self.application = None
         self.mirror_trading_system = None
         self.system_reference = None
+        
+        # 디버깅을 위한 상태 추적
+        self.debug_stats = {
+            'messages_received': 0,
+            'commands_received': 0,
+            'handler_calls': {},
+            'errors': [],
+            'last_activity': None
+        }
         
         # 배율 설정 관련 상태 관리
         self.pending_ratio_confirmations = {}
@@ -25,46 +36,59 @@ class TelegramBot:
         self._is_running = False
         self._is_initialized = False
         
-        self.logger.info("TelegramBot 인스턴스 생성 완료")
+        self.logger.info("🔥 TelegramBot 인스턴스 생성 완료 - 디버깅 모드 활성화")
         
     def _initialize_bot(self):
-        """봇 초기화 - 단순화된 방식"""
+        """봇 초기화 - 강화된 디버깅"""
         try:
             if self._is_initialized:
                 self.logger.info("봇이 이미 초기화되어 있습니다.")
                 return
                 
             telegram_token = self.config.TELEGRAM_BOT_TOKEN
+            telegram_chat_id = self.config.TELEGRAM_CHAT_ID
+            
+            # 환경변수 상세 검증
+            self.logger.info(f"🔍 환경변수 검증:")
+            self.logger.info(f"  - TELEGRAM_BOT_TOKEN: {'설정됨' if telegram_token else '없음'} ({len(telegram_token) if telegram_token else 0}자)")
+            self.logger.info(f"  - TELEGRAM_CHAT_ID: {'설정됨' if telegram_chat_id else '없음'} ({telegram_chat_id if telegram_chat_id else 'None'})")
+            
             if not telegram_token:
                 raise ValueError("TELEGRAM_BOT_TOKEN 환경변수가 설정되지 않았습니다.")
             
+            if not telegram_chat_id:
+                raise ValueError("TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
+            
             # Bot 인스턴스 생성
             self.bot = Bot(token=telegram_token)
+            self.logger.info("✅ Bot 인스턴스 생성 완료")
             
-            # Application 생성 - 단순화
+            # Application 생성
             self.application = Application.builder().token(telegram_token).build()
+            self.logger.info("✅ Application 인스턴스 생성 완료")
             
             self._is_initialized = True
             self.logger.info("✅ 텔레그램 봇 초기화 완료")
             
         except Exception as e:
-            self.logger.error(f"텔레그램 봇 초기화 실패: {str(e)}")
+            self.logger.error(f"❌ 텔레그램 봇 초기화 실패: {str(e)}")
+            self.logger.error(f"초기화 실패 상세: {traceback.format_exc()}")
             raise
     
     def set_mirror_trading_system(self, mirror_system):
         """미러 트레이딩 시스템 참조 설정"""
         self.mirror_trading_system = mirror_system
-        self.logger.info("미러 트레이딩 시스템 참조 설정 완료")
+        self.logger.info("✅ 미러 트레이딩 시스템 참조 설정 완료")
     
     def set_system_reference(self, system):
         """메인 시스템 참조 설정"""
         self.system_reference = system
-        self.logger.info("메인 시스템 참조 설정 완료")
+        self.logger.info("✅ 메인 시스템 참조 설정 완료")
     
     def setup_handlers(self, handlers_map):
-        """핸들러 일괄 등록 - 개선된 방식"""
+        """핸들러 일괄 등록 - 강화된 디버깅"""
         try:
-            self.logger.info("🔥 핸들러 등록 시작 (개선된 방식)")
+            self.logger.info("🔥 핸들러 등록 시작 (강화된 디버깅)")
             
             if not self._is_initialized:
                 self._initialize_bot()
@@ -72,14 +96,16 @@ class TelegramBot:
             if self.application is None:
                 raise ValueError("Application이 초기화되지 않았습니다.")
             
+            # 전달받은 핸들러 맵 검증
+            self.logger.info(f"🔍 전달받은 핸들러 맵 검증:")
+            for key, handler in handlers_map.items():
+                self.logger.info(f"  - {key}: {type(handler).__name__} ({'함수' if callable(handler) else '함수 아님'})")
+            
             # 기존 핸들러 모두 제거
             self.application.handlers.clear()
-            self.logger.info("기존 핸들러 모두 제거")
+            self.logger.info("🗑️ 기존 핸들러 모두 제거")
             
-            # 명령어 핸들러 등록
-            registered_commands = []
-            
-            # 1. 명령어 핸들러들을 먼저 등록 (높은 우선순위: 0)
+            # 명령어 핸들러들을 먼저 등록 (높은 우선순위: 0)
             command_handlers = [
                 ('start', handlers_map.get('start')),
                 ('help', handlers_map.get('help')),
@@ -92,24 +118,32 @@ class TelegramBot:
                 ('stats', handlers_map.get('stats')),
             ]
             
+            registered_commands = []
             for command, handler_func in command_handlers:
-                if handler_func:
-                    command_handler = CommandHandler(command, handler_func)
+                if handler_func and callable(handler_func):
+                    # 디버깅 래퍼로 핸들러 감싸기
+                    wrapped_handler = self._create_debug_wrapper(command, handler_func)
+                    command_handler = CommandHandler(command, wrapped_handler)
                     self.application.add_handler(command_handler, 0)  # 높은 우선순위
                     registered_commands.append(command)
-                    self.logger.info(f"✅ 명령어 핸들러 등록: /{command}")
+                    self.logger.info(f"✅ 명령어 핸들러 등록 완료: /{command} (우선순위: 0)")
+                elif handler_func:
+                    self.logger.warning(f"⚠️ 핸들러가 함수가 아님: /{command} - {type(handler_func)}")
                 else:
                     self.logger.warning(f"⚠️ 핸들러 함수 없음: /{command}")
             
-            # 2. 메시지 핸들러를 낮은 우선순위로 등록 (낮은 우선순위: 1)
+            # 메시지 핸들러를 낮은 우선순위로 등록 (낮은 우선순위: 1)
             message_handler_func = handlers_map.get('message_handler')
-            if message_handler_func:
+            if message_handler_func and callable(message_handler_func):
+                wrapped_message_handler = self._create_debug_wrapper('message', message_handler_func)
                 message_handler = MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    message_handler_func
+                    wrapped_message_handler
                 )
                 self.application.add_handler(message_handler, 1)  # 낮은 우선순위
                 self.logger.info(f"✅ 메시지 핸들러 등록 완료 (우선순위: 1)")
+            elif message_handler_func:
+                self.logger.warning(f"⚠️ 메시지 핸들러가 함수가 아님: {type(message_handler_func)}")
             else:
                 self.logger.warning("⚠️ 메시지 핸들러 함수 없음")
             
@@ -119,121 +153,314 @@ class TelegramBot:
             # 등록된 핸들러 목록 출력
             self._log_all_handlers()
             
+            # 핸들러 등록 검증
+            self._verify_handlers()
+            
         except Exception as e:
-            self.logger.error(f"핸들러 등록 실패: {str(e)}")
-            import traceback
+            self.logger.error(f"❌ 핸들러 등록 실패: {str(e)}")
             self.logger.error(f"핸들러 등록 오류 상세: {traceback.format_exc()}")
             raise
     
-    def _log_all_handlers(self):
-        """현재 등록된 모든 핸들러 로깅"""
+    def _create_debug_wrapper(self, handler_name: str, original_handler):
+        """핸들러를 디버깅 래퍼로 감싸기"""
+        async def debug_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            try:
+                self.debug_stats['last_activity'] = datetime.now()
+                
+                if handler_name in self.debug_stats['handler_calls']:
+                    self.debug_stats['handler_calls'][handler_name] += 1
+                else:
+                    self.debug_stats['handler_calls'][handler_name] = 1
+                
+                if handler_name == 'message':
+                    self.debug_stats['messages_received'] += 1
+                    self.logger.info(f"🔥 메시지 핸들러 호출됨: '{update.message.text[:50]}...'")
+                else:
+                    self.debug_stats['commands_received'] += 1
+                    self.logger.info(f"🔥 명령어 핸들러 호출됨: /{handler_name}")
+                
+                # 사용자 정보 로깅
+                user = update.effective_user
+                self.logger.info(f"👤 사용자: {user.username or user.first_name} (ID: {user.id})")
+                
+                # 원본 핸들러 실행
+                await original_handler(update, context)
+                
+                self.logger.info(f"✅ 핸들러 실행 완료: {handler_name}")
+                
+            except Exception as e:
+                error_info = {
+                    'handler': handler_name,
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat(),
+                    'message': update.message.text if update.message else 'No message'
+                }
+                self.debug_stats['errors'].append(error_info)
+                
+                self.logger.error(f"❌ 핸들러 실행 오류: {handler_name} - {str(e)}")
+                self.logger.error(f"핸들러 오류 상세: {traceback.format_exc()}")
+                
+                # 오류 응답 전송
+                try:
+                    await update.message.reply_text(
+                        f"❌ 명령어 처리 중 오류가 발생했습니다.\n"
+                        f"핸들러: {handler_name}\n"
+                        f"오류: {str(e)[:100]}",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                except Exception as reply_error:
+                    self.logger.error(f"오류 응답 전송 실패: {reply_error}")
+        
+        return debug_wrapper
+    
+    def _verify_handlers(self):
+        """핸들러 등록 검증"""
         try:
-            self.logger.info("📋 등록된 핸들러 목록:")
+            self.logger.info("🔍 핸들러 등록 검증 시작")
+            
             total_handlers = 0
             for group_idx, group in enumerate(self.application.handlers):
-                self.logger.info(f"  그룹 {group_idx}: {len(group)}개")
+                for handler in group:
+                    total_handlers += 1
+                    if isinstance(handler, CommandHandler):
+                        commands = ', '.join(handler.commands) if hasattr(handler, 'commands') else 'unknown'
+                        self.logger.info(f"  ✅ 명령어 핸들러 검증됨: /{commands}")
+                    elif isinstance(handler, MessageHandler):
+                        self.logger.info(f"  ✅ 메시지 핸들러 검증됨")
+            
+            if total_handlers == 0:
+                self.logger.error("❌ 등록된 핸들러가 없습니다!")
+                raise ValueError("핸들러가 등록되지 않았습니다.")
+            
+            self.logger.info(f"✅ 핸들러 검증 완료: 총 {total_handlers}개")
+            
+        except Exception as e:
+            self.logger.error(f"❌ 핸들러 검증 실패: {e}")
+            raise
+    
+    def _log_all_handlers(self):
+        """현재 등록된 모든 핸들러 로깅 - 상세 버전"""
+        try:
+            self.logger.info("📋 등록된 핸들러 상세 목록:")
+            total_handlers = 0
+            
+            for group_idx, group in enumerate(self.application.handlers):
+                self.logger.info(f"  📁 그룹 {group_idx}: {len(group)}개 핸들러")
+                
                 for idx, handler in enumerate(group):
                     if isinstance(handler, CommandHandler):
                         commands = ', '.join(handler.commands) if hasattr(handler, 'commands') else 'unknown'
-                        self.logger.info(f"    [{idx}] 명령어: /{commands}")
+                        callback_name = handler.callback.__name__ if hasattr(handler.callback, '__name__') else 'unknown'
+                        self.logger.info(f"    🎯 [{idx}] 명령어: /{commands} → {callback_name}")
                         total_handlers += 1
                     elif isinstance(handler, MessageHandler):
-                        self.logger.info(f"    [{idx}] 메시지 핸들러")
+                        callback_name = handler.callback.__name__ if hasattr(handler.callback, '__name__') else 'unknown'
+                        filters_info = str(handler.filters) if hasattr(handler, 'filters') else 'unknown'
+                        self.logger.info(f"    💬 [{idx}] 메시지: {filters_info} → {callback_name}")
                         total_handlers += 1
                     else:
-                        self.logger.info(f"    [{idx}] 기타 핸들러: {type(handler).__name__}")
+                        self.logger.info(f"    ❓ [{idx}] 기타: {type(handler).__name__}")
                         total_handlers += 1
-            self.logger.info(f"총 {total_handlers}개 핸들러 등록됨")
+            
+            self.logger.info(f"📊 총 {total_handlers}개 핸들러 등록됨")
+            
+            if total_handlers == 0:
+                self.logger.error("🚨 경고: 등록된 핸들러가 없습니다!")
+            
         except Exception as e:
             self.logger.error(f"핸들러 목록 로깅 실패: {e}")
     
     async def start(self):
-        """봇 시작 - 완전 동기화 방식"""
+        """봇 시작 - 강화된 디버깅 및 검증"""
         try:
-            self.logger.info("🚀 텔레그램 봇 시작 프로세스 시작")
+            self.logger.info("🚀 텔레그램 봇 시작 프로세스 시작 (디버깅 모드)")
             
             # 1. 봇이 초기화되어 있는지 확인
             if not self._is_initialized:
+                self.logger.info("봇이 초기화되지 않음 - 초기화 시작")
                 self._initialize_bot()
             
             if self.application is None:
                 raise ValueError("Application이 초기화되지 않았습니다.")
             
-            # 2. 핸들러가 등록되지 않았다면 경고
+            # 2. 핸들러가 등록되지 않았다면 오류
             if not self._handlers_registered:
-                self.logger.warning("⚠️ 핸들러가 등록되지 않았습니다! setup_handlers()를 먼저 호출하세요.")
-                raise ValueError("핸들러가 등록되지 않았습니다.")
+                self.logger.error("❌ 핸들러가 등록되지 않았습니다!")
+                raise ValueError("핸들러가 등록되지 않았습니다. setup_handlers()를 먼저 호출하세요.")
             
-            # 3. 봇 실행 상태를 True로 설정
+            # 3. 핸들러 재검증
+            self._verify_handlers()
+            
+            # 4. 봇 실행 상태를 True로 설정
             self._is_running = True
             
-            # 4. Application 초기화
-            self.logger.info("Application 초기화 중...")
+            # 5. Application 초기화
+            self.logger.info("🔄 Application 초기화 중...")
             await self.application.initialize()
+            self.logger.info("✅ Application 초기화 완료")
             
-            # 5. Application 시작
-            self.logger.info("Application 시작 중...")
+            # 6. Application 시작
+            self.logger.info("🔄 Application 시작 중...")
             await self.application.start()
+            self.logger.info("✅ Application 시작 완료")
             
-            # 6. 봇 정보 확인
+            # 7. 봇 정보 확인 및 검증
+            self.logger.info("🔄 봇 정보 확인 중...")
             try:
                 bot_info = await self.bot.get_me()
-                self.logger.info(f"🤖 봇 정보: @{bot_info.username} (ID: {bot_info.id})")
+                self.logger.info(f"🤖 봇 정보:")
+                self.logger.info(f"  - 이름: {bot_info.first_name}")
+                self.logger.info(f"  - 사용자명: @{bot_info.username}")
+                self.logger.info(f"  - ID: {bot_info.id}")
+                self.logger.info(f"  - 봇 여부: {bot_info.is_bot}")
+                
+                # 봇 권한 확인 (채팅방에 메시지 전송 테스트)
+                await self._test_bot_connection()
+                
             except Exception as bot_info_error:
-                self.logger.error(f"봇 정보 조회 실패: {bot_info_error}")
+                self.logger.error(f"❌ 봇 정보 조회 실패: {bot_info_error}")
+                raise
             
-            # 7. 등록된 핸들러 다시 확인
+            # 8. 등록된 핸들러 최종 확인
             self._log_all_handlers()
             
-            # 8. 폴링 시작 - 개선된 설정
+            # 9. 폴링 시작
             self.logger.info("🔄 텔레그램 폴링 시작...")
             
-            # 폴링 설정 최적화
             polling_config = {
                 'allowed_updates': Update.ALL_TYPES,
                 'drop_pending_updates': True,
-                'timeout': 30,        # 서버로부터 응답 대기 시간
-                'read_timeout': 20,   # HTTP 읽기 타임아웃
-                'write_timeout': 20,  # HTTP 쓰기 타임아웃
-                'connect_timeout': 20, # 연결 타임아웃
-                'pool_timeout': 20    # 풀 타임아웃
+                'timeout': 30,
+                'read_timeout': 20,
+                'write_timeout': 20,
+                'connect_timeout': 20,
+                'pool_timeout': 20
             }
             
             await self.application.updater.start_polling(**polling_config)
+            self.logger.info("✅ 텔레그램 폴링 시작 완료")
             
-            self.logger.info("✅ 텔레그램 봇 시작 완료 - 명령어 수신 대기 중")
+            # 10. 최종 성공 메시지
+            self.logger.info("🎉 텔레그램 봇 시작 완료 - 명령어 수신 대기 중")
             
-            # 9. 초기 테스트 메시지 전송
+            # 11. 연결 테스트 메시지 전송
             try:
-                await asyncio.sleep(2)  # 폴링 안정화를 위한 대기
-                test_message = """🚀 텔레그램 봇이 성공적으로 시작되었습니다!
-
-🎮 명령어 테스트:
-- /help - 도움말
-- /stats - 시스템 상태
-- /mirror - 미러링 상태
-- /ratio - 복제 비율
-
-모든 명령어가 정상 작동해야 합니다! 🎯"""
-                
-                await self.send_message(test_message, parse_mode='HTML')
-                self.logger.info("✅ 테스트 메시지 전송 성공 - 봇이 정상 작동 중")
+                await asyncio.sleep(3)  # 폴링 안정화 대기
+                await self._send_startup_test_message()
             except Exception as test_error:
                 self.logger.error(f"테스트 메시지 전송 실패: {test_error}")
-                # 테스트 메시지 실패해도 봇 시작은 계속 진행
             
         except Exception as e:
-            self._is_running = False  # 실패 시 False로 설정
-            self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
-            import traceback
+            self._is_running = False
+            self.logger.error(f"❌ 텔레그램 봇 시작 실패: {str(e)}")
             self.logger.error(f"봇 시작 오류 상세: {traceback.format_exc()}")
             raise
+    
+    async def _test_bot_connection(self):
+        """봇 연결 상태 테스트"""
+        try:
+            self.logger.info("🔍 봇 연결 상태 테스트 중...")
+            
+            # 채팅방 정보 확인
+            chat_id = self.config.TELEGRAM_CHAT_ID
+            chat_info = await self.bot.get_chat(chat_id)
+            
+            self.logger.info(f"💬 채팅방 정보:")
+            self.logger.info(f"  - ID: {chat_info.id}")
+            self.logger.info(f"  - 타입: {chat_info.type}")
+            self.logger.info(f"  - 제목: {getattr(chat_info, 'title', 'N/A')}")
+            
+            self.logger.info("✅ 봇 연결 상태 테스트 완료")
+            
+        except Exception as e:
+            self.logger.error(f"❌ 봇 연결 테스트 실패: {e}")
+            self.logger.error(f"연결 테스트 상세: {traceback.format_exc()}")
+            raise
+    
+    async def _send_startup_test_message(self):
+        """시작 테스트 메시지 전송"""
+        try:
+            self.logger.info("📤 시작 테스트 메시지 전송 중...")
+            
+            test_message = """🔥 텔레그램 봇 디버깅 모드로 시작됨!
+
+🎯 테스트 명령어:
+- /help - 도움말 (가장 기본)
+- /stats - 시스템 상태
+- /mirror - 미러링 상태  
+- /ratio - 복제 비율
+
+💡 명령어 중 하나라도 응답이 없다면 즉시 알려주세요!
+
+🔍 디버깅 정보:
+- 핸들러 등록됨: ✅
+- 봇 연결 상태: ✅  
+- 폴링 활성화: ✅
+
+📋 지금 바로 /help 를 입력해서 테스트해보세요!"""
+
+            await self.send_message(test_message)
+            self.logger.info("✅ 시작 테스트 메시지 전송 완료")
+            
+        except Exception as e:
+            self.logger.error(f"❌ 시작 테스트 메시지 전송 실패: {e}")
+            self.logger.error(f"테스트 메시지 오류 상세: {traceback.format_exc()}")
+    
+    def get_debug_stats(self):
+        """디버깅 통계 반환"""
+        return {
+            **self.debug_stats,
+            'is_running': self._is_running,
+            'is_initialized': self._is_initialized,
+            'handlers_registered': self._handlers_registered,
+            'total_handlers': sum(len(group) for group in self.application.handlers) if self.application else 0
+        }
+    
+    async def send_debug_report(self):
+        """디버깅 리포트 전송"""
+        try:
+            stats = self.get_debug_stats()
+            
+            report = f"""🔍 텔레그램 봇 디버깅 리포트
+
+📊 활동 통계:
+- 수신 메시지: {stats['messages_received']}개
+- 수신 명령어: {stats['commands_received']}개
+- 마지막 활동: {stats['last_activity'].strftime('%H:%M:%S') if stats['last_activity'] else '없음'}
+
+🎯 핸들러 호출 현황:"""
+            
+            for handler_name, count in stats['handler_calls'].items():
+                report += f"\n- {handler_name}: {count}회"
+            
+            if not stats['handler_calls']:
+                report += "\n- 아직 호출된 핸들러 없음 ⚠️"
+            
+            report += f"""
+
+🔧 시스템 상태:
+- 봇 초기화: {'✅' if stats['is_initialized'] else '❌'}
+- 봇 실행 중: {'✅' if stats['is_running'] else '❌'}  
+- 핸들러 등록: {'✅' if stats['handlers_registered'] else '❌'}
+- 총 핸들러: {stats['total_handlers']}개
+
+❌ 오류 현황: {len(stats['errors'])}건"""
+            
+            if stats['errors']:
+                report += "\n\n최근 오류:"
+                for error in stats['errors'][-3:]:  # 최근 3개만
+                    report += f"\n- {error['handler']}: {error['error'][:50]}..."
+            
+            await self.send_message(report)
+            
+        except Exception as e:
+            self.logger.error(f"디버깅 리포트 전송 실패: {e}")
     
     async def stop(self):
         """봇 정지"""
         try:
             if self.application:
-                self.logger.info("텔레그램 봇 정지 중...")
+                self.logger.info("🔄 텔레그램 봇 정지 중...")
                 
                 # 봇 실행 상태를 False로 설정
                 self._is_running = False
@@ -241,21 +468,22 @@ class TelegramBot:
                 # 폴링 중지
                 if self.application.updater:
                     await self.application.updater.stop()
-                    self.logger.info("폴링 중지 완료")
+                    self.logger.info("✅ 폴링 중지 완료")
                 
                 # Application 정지
                 await self.application.stop()
-                self.logger.info("Application 정지 완료")
+                self.logger.info("✅ Application 정지 완료")
                 
                 # Application 종료
                 await self.application.shutdown()
-                self.logger.info("Application 종료 완료")
+                self.logger.info("✅ Application 종료 완료")
                 
-                self.logger.info("✅ 텔레그램 봇 정지됨")
+                self.logger.info("🎉 텔레그램 봇 정지됨")
                 
         except Exception as e:
-            self.logger.error(f"텔레그램 봇 정지 실패: {str(e)}")
+            self.logger.error(f"❌ 텔레그램 봇 정지 실패: {str(e)}")
     
+    # 기존 핸들러 메서드들은 그대로 유지...
     async def handle_mirror_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """미러 트레이딩 상태 확인"""
         try:
@@ -419,7 +647,6 @@ class TelegramBot:
                 
         except Exception as e:
             self.logger.error(f"미러링 명령어 처리 실패: {e}")
-            import traceback
             self.logger.error(f"미러링 명령어 오류 상세: {traceback.format_exc()}")
             await update.message.reply_text(
                 f"❌ 미러링 명령어 처리 실패\n"
@@ -695,7 +922,6 @@ class TelegramBot:
                 
         except Exception as e:
             self.logger.error(f"배율 명령어 처리 실패: {e}")
-            import traceback
             self.logger.error(f"배율 명령어 오류 상세: {traceback.format_exc()}")
             await update.message.reply_text(
                 f"❌ 배율 명령어 처리 실패\n"
@@ -832,7 +1058,6 @@ class TelegramBot:
             
         except Exception as e:
             self.logger.error(f"통합 메시지 처리 실패: {e}")
-            import traceback
             self.logger.error(f"통합 메시지 처리 오류 상세: {traceback.format_exc()}")
             await update.message.reply_text(
                 "❌ 메시지 처리 중 오류가 발생했습니다.",
@@ -995,6 +1220,5 @@ class TelegramBot:
         except Exception as e:
             self.logger.error(f"메시지 전송 최종 실패: {str(e)}")
             self.logger.error(f"원본 메시지 (처음 200자): {str(text)[:200]}")
-            import traceback
             self.logger.error(f"메시지 전송 오류 상세: {traceback.format_exc()}")
             raise
