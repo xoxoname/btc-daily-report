@@ -1619,52 +1619,25 @@ class BitcoinPredictionSystem:
             self.logger.error(f"시작 명령 처리 실패: {e}")
             await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
     
-    def _setup_telegram_handlers(self):
-        """🔥🔥🔥 텔레그램 핸들러 설정 - 핵심 수정 부분"""
-        try:
-            self.logger.info("🔥 텔레그램 핸들러 설정 시작")
-            
-            # 핸들러 매핑 - main.py의 메서드들을 연결
-            handlers_map = {
-                'start': self.handle_start_command,
-                'help': self.handle_start_command,
-                'mirror': self.telegram_bot.handle_mirror_command,  # 텔레그램 봇 핸들러 사용
-                'ratio': self.telegram_bot.handle_ratio_command,    # 텔레그램 봇 핸들러 사용
-                'report': self.handle_report_command,
-                'forecast': self.handle_forecast_command,
-                'profit': self.handle_profit_command,
-                'schedule': self.handle_schedule_command,
-                'stats': self.handle_stats_command,
-                'message_handler': self.telegram_bot.handle_universal_message,  # 통합 메시지 핸들러
-            }
-            
-            # 텔레그램 봇에 핸들러 등록
-            self.telegram_bot.setup_handlers(handlers_map)
-            self.logger.info("✅ 텔레그램 핸들러 설정 완료")
-            
-        except Exception as e:
-            self.logger.error(f"❌ 텔레그램 핸들러 설정 실패: {e}")
-            raise
-    
     async def start(self):
-        """시스템 시작 - 백그라운드 폴링 방식"""
+        """시스템 시작 - 텔레그램 완전 동기 방식"""
         try:
             self.logger.info("=" * 50)
-            self.logger.info("시스템 시작 프로세스 개시 - 텔레그램 제어 + Gate.io Cross 마진")
+            self.logger.info("🔥 시스템 시작 프로세스 개시 - 텔레그램 완전 동기 방식")
             self.logger.info("=" * 50)
             
             self.is_running = True
             self.startup_time = datetime.now()
             
-            # Bitget 클라이언트 초기화
+            # 1. 먼저 Bitget 클라이언트 초기화
             self.logger.info("Bitget 클라이언트 초기화 중...")
             await self.bitget_client.initialize()
             
-            # Gate.io 클라이언트 초기화
+            # 2. Gate.io 클라이언트 초기화
             self.logger.info("Gate.io 클라이언트 초기화 중...")
             await self.gate_client.initialize()
             
-            # Gate.io 마진 모드 Cross 확인 및 설정
+            # 3. Gate.io 마진 모드 Cross 확인 및 설정
             self.logger.info("🔥 Gate.io 마진 모드 최종 확인 및 강제 설정")
             try:
                 gate_positions = await self.gate_client.get_positions("BTC_USDT")
@@ -1685,32 +1658,32 @@ class BitcoinPredictionSystem:
             except Exception as margin_error:
                 self.logger.error(f"Gate.io 마진 모드 확인 실패: {margin_error}")
             
-            # 현재 시세 업데이트
+            # 4. 현재 시세 업데이트
             await self._update_current_prices()
             
-            # 미러 트레이딩 시스템은 항상 초기화
+            # 5. 미러 트레이딩 시스템은 항상 초기화
             if self.mirror_trading:
                 self.logger.info(f"미러 트레이딩 시스템 초기화 중... (모드: {'활성화' if self.mirror_mode else '비활성화'})")
                 await self.mirror_trading.start()
             
-            # 데이터 수집기 시작
+            # 6. 데이터 수집기 시작
             self.logger.info("데이터 수집기 시작 중...")
             asyncio.create_task(self.data_collector.start())
             
-            # 스케줄러 시작
+            # 7. 스케줄러 시작
             self.logger.info("스케줄러 시작 중...")
             self.scheduler.start()
             
-            # 🔥🔥🔥 텔레그램 핸들러 설정 - 핵심 수정 부분
+            # 8. 🔥🔥🔥 텔레그램 핸들러 설정 (봇 시작 전)
             self.logger.info("🔥 텔레그램 핸들러 설정 중...")
-            self._setup_telegram_handlers()
+            await self._setup_telegram_handlers()
             
-            # 🔥 텔레그램 봇을 백그라운드로 시작
-            self.logger.info("🔥 텔레그램 봇을 백그라운드로 시작 중...")
-            asyncio.create_task(self.telegram_bot.start())
+            # 9. 🔥🔥🔥 텔레그램 봇 동기 시작
+            self.logger.info("🔥 텔레그램 봇 동기 시작 중...")
+            await self.telegram_bot.start()
             
-            # 잠시 대기 - 텔레그램 봇 초기화 완료 대기
-            await asyncio.sleep(3)
+            # 10. 잠시 대기 - 텔레그램 봇 완전 초기화 대기
+            await asyncio.sleep(5)
             
             # 현재 배율 정보
             current_ratio = 1.0
@@ -1745,13 +1718,6 @@ class BitcoinPredictionSystem:
 - 수동 설정 안내: API 제한으로 수동 설정 필요
 - 안전 운영: Cross 모드로 안전한 거래
 
-<b>🚨 예약 주문 취소 동기화 (강화):</b>
-- 비트겟 예약 주문 취소 감지 → 게이트 자동 취소
-- 45초마다 동기화 체크
-- 3회 재시도 시스템
-- 확실한 고아 주문만 삭제
-- 의심스러운 주문은 안전상 보존
-
 <b>⚡ 비트코인 전용 기능 (더 빠르게):</b>
 - 예외 감지: 2분마다 (5분 → 2분)
 - 급속 변동: 1분마다 (2분 → 1분)
@@ -1785,7 +1751,7 @@ Gate.io Cross 마진 모드를 수동으로 설정하여 안전하게 운영하�
 
 📱 모든 명령어가 정상 작동합니다!"""
             
-            # 시작 메시지 전송은 텔레그램 봇이 완전히 초기화된 후
+            # 시작 메시지 전송
             await asyncio.sleep(2)
             try:
                 await self.telegram_bot.send_message(startup_msg, parse_mode='HTML')
@@ -1807,7 +1773,7 @@ Gate.io Cross 마진 모드를 수동으로 설정하여 안전하게 운영하�
                     if hasattr(self.telegram_bot, '_is_running') and not self.telegram_bot._is_running:
                         self.logger.warning("텔레그램 봇이 중지됨 - 재시작 시도")
                         try:
-                            asyncio.create_task(self.telegram_bot.start())
+                            await self.telegram_bot.start()
                         except Exception as restart_error:
                             self.logger.error(f"텔레그램 봇 재시작 실패: {restart_error}")
                             
@@ -1832,6 +1798,33 @@ Gate.io Cross 마진 모드를 수동으로 설정하여 안전하게 운영하�
             except:
                 pass
             
+            raise
+    
+    async def _setup_telegram_handlers(self):
+        """🔥🔥🔥 텔레그램 핸들러 설정 - 완전 동기화 방식"""
+        try:
+            self.logger.info("🔥 텔레그램 핸들러 설정 시작 (동기화 방식)")
+            
+            # 핸들러 매핑 - main.py의 메서드들을 연결
+            handlers_map = {
+                'start': self.handle_start_command,
+                'help': self.handle_start_command,
+                'mirror': self.telegram_bot.handle_mirror_command,  # 텔레그램 봇 핸들러 사용
+                'ratio': self.telegram_bot.handle_ratio_command,    # 텔레그램 봇 핸들러 사용
+                'report': self.handle_report_command,
+                'forecast': self.handle_forecast_command,
+                'profit': self.handle_profit_command,
+                'schedule': self.handle_schedule_command,
+                'stats': self.handle_stats_command,
+                'message_handler': self.telegram_bot.handle_universal_message,  # 통합 메시지 핸들러
+            }
+            
+            # 텔레그램 봇에 핸들러 등록 (봇 시작 전에 완료)
+            self.telegram_bot.setup_handlers(handlers_map)
+            self.logger.info("✅ 텔레그램 핸들러 설정 완료 (동기화 방식)")
+            
+        except Exception as e:
+            self.logger.error(f"❌ 텔레그램 핸들러 설정 실패: {e}")
             raise
     
     async def _update_current_prices(self):
