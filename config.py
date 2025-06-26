@@ -6,7 +6,7 @@ load_dotenv()
 
 class Config:
     def __init__(self):
-        # 🔥🔥🔥 미러 트레이딩 모드는 더 이상 환경변수에 의존하지 않음
+        # 미러 트레이딩 모드는 더 이상 환경변수에 의존하지 않음
         # 기본값으로만 사용하고, 텔레그램에서 실시간 제어
         self.MIRROR_TRADING_DEFAULT = self._parse_mirror_trading_default()
         
@@ -32,7 +32,7 @@ class Config:
         
         # 기존 뉴스 API (3개)
         self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
-        self.NEWSDATA_KEY = os.getenv('NEWSDATA_KEY')  # SDATA_KEY 수정
+        self.NEWSDATA_KEY = os.getenv('SDATA_KEY')  # SDATA_KEY 유지
         self.ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')
         
         # 추가 데이터 소스 API
@@ -51,7 +51,7 @@ class Config:
         self._validate_config()
     
     def _parse_mirror_trading_default(self) -> bool:
-        """🔥🔥🔥 미러링 모드 기본값 파싱 - 환경변수는 기본값으로만 사용"""
+        """미러링 모드 기본값 파싱 - 환경변수는 기본값으로만 사용"""
         try:
             # ENABLE_MIRROR_TRADING이 우선
             enable_mirror = os.getenv('ENABLE_MIRROR_TRADING', '').lower()
@@ -88,8 +88,8 @@ class Config:
             'BITGET_API_KEY': self.BITGET_API_KEY,
             'BITGET_SECRET_KEY': self.BITGET_SECRET_KEY,
             'BITGET_PASSPHRASE': self.BITGET_PASSPHRASE,
-            'GATE_API_KEY': self.GATE_API_KEY,  # 🔥🔥🔥 항상 필수
-            'GATE_API_SECRET': self.GATE_API_SECRET  # 🔥🔥🔥 항상 필수
+            'GATE_API_KEY': self.GATE_API_KEY,  # 항상 필수
+            'GATE_API_SECRET': self.GATE_API_SECRET  # 항상 필수
         }
         
         missing_configs = []
@@ -108,7 +108,7 @@ class Config:
         print("\n🔧 API 설정 상태:")
         print("━" * 50)
         
-        # 🔥🔥🔥 미러링 모드는 텔레그램 제어로 변경됨
+        # 미러링 모드는 텔레그램 제어로 변경됨
         print("🎮 운영 모드: 텔레그램 실시간 제어")
         print(f"📊 미러링 기본값: {'활성화' if self.MIRROR_TRADING_DEFAULT else '비활성화'}")
         print("💡 미러링 제어: 텔레그램 /mirror on/off")
@@ -159,7 +159,7 @@ class Config:
         else:
             print(f"\n⚠️  AI 번역 미설정 (번역 기능 제한)")
         
-        # 🔥🔥🔥 텔레그램 제어 안내
+        # 텔레그램 제어 안내
         print("\n🎮 텔레그램 실시간 제어:")
         print("  • 미러링 활성화: /mirror on 또는 '미러링 켜기'")
         print("  • 미러링 비활성화: /mirror off 또는 '미러링 끄기'")
@@ -216,15 +216,15 @@ class Config:
     def get_config_summary(self):
         """설정 요약 정보 - 텔레그램 제어 모드 반영"""
         return {
-            'mode': 'telegram_controlled',  # 🔥🔥🔥 텔레그램 제어 모드
+            'mode': 'telegram_controlled',  # 텔레그램 제어 모드
             'mirror_default': self.MIRROR_TRADING_DEFAULT,
             'exchanges': {
                 'bitget': bool(self.BITGET_API_KEY),
                 'gate': bool(self.GATE_API_KEY)
             },
             'features': {
-                'telegram_control': True,  # 🔥🔥🔥 텔레그램 제어 활성화
-                'margin_mode_auto': True,  # 🔥🔥🔥 마진 모드 자동 설정
+                'telegram_control': True,  # 텔레그램 제어 활성화
+                'margin_mode_auto': True,  # 마진 모드 자동 설정
                 'ai_analysis': bool(self.OPENAI_API_KEY or self.ANTHROPIC_API_KEY),
                 'claude_translation': bool(self.ANTHROPIC_API_KEY),
                 'gpt_analysis': bool(self.OPENAI_API_KEY),
