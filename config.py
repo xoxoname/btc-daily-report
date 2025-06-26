@@ -6,9 +6,8 @@ load_dotenv()
 
 class Config:
     def __init__(self):
-        # 미러 트레이딩 모드는 더 이상 환경변수에 의존하지 않음
-        # 기본값으로만 사용하고, 텔레그램에서 실시간 제어
-        self.MIRROR_TRADING_DEFAULT = self._parse_mirror_trading_default()
+        # 미러 트레이딩 모드 먼저 확인
+        self.MIRROR_TRADING_MODE = os.getenv('MIRROR_TRADING_MODE', 'false').lower() == 'true'
         
         # Telegram 설정
         self.TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -19,7 +18,7 @@ class Config:
         self.BITGET_SECRET_KEY = os.getenv('BITGET_APISECRET')
         self.BITGET_PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
         
-        # Gate.io API 설정 (미러링용 - 항상 필요)
+        # Gate.io API 설정 (선택사항)
         self.GATE_API_KEY = os.getenv('GATE_API_KEY')
         self.GATE_API_SECRET = os.getenv('GATE_API_SECRET')
         
@@ -32,7 +31,7 @@ class Config:
         
         # 기존 뉴스 API (3개)
         self.NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
-        self.NEWSDATA_KEY = os.getenv('SDATA_KEY')  # SDATA_KEY 유지
+        self.NEWSDATA_KEY = os.getenv('NEWSDATA_KEY')
         self.ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')
         
         # 추가 데이터 소스 API
@@ -44,53 +43,34 @@ class Config:
         self.OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
         self.ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')  # Claude API 추가
         
-        # 미러링 체크 간격 설정
-        self.MIRROR_CHECK_INTERVAL = int(os.getenv('MIRROR_CHECK_INTERVAL', '1'))
-        
         # 설정 검증
         self._validate_config()
     
-    def _parse_mirror_trading_default(self) -> bool:
-        """미러링 모드 기본값 파싱 - 환경변수는 기본값으로만 사용"""
-        try:
-            # ENABLE_MIRROR_TRADING이 우선
-            enable_mirror = os.getenv('ENABLE_MIRROR_TRADING', '').lower()
-            if enable_mirror in ['true', '1', 'yes', 'on', 'o']:
-                return True
-            elif enable_mirror in ['false', '0', 'no', 'off', 'x']:
-                return False
-            
-            # MIRROR_TRADING_MODE가 다음 우선순위
-            mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'X').strip().upper()
-            
-            # O = 활성화, X = 비활성화
-            if mirror_mode == 'O':
-                return True
-            elif mirror_mode == 'X':
-                return False
-            elif mirror_mode in ['ON', 'TRUE', 'YES', '1']:
-                return True
-            elif mirror_mode in ['OFF', 'FALSE', 'NO', '0']:
-                return False
-            else:
-                # 기본값: 비활성화 (텔레그램에서 활성화)
-                return False
-                
-        except Exception as e:
-            print(f"⚠️ 미러링 모드 기본값 파싱 실패: {e}, 기본값(비활성화) 사용")
-            return False
-    
     def _validate_config(self):
-        """필수 설정 검증 - Gate.io API는 항상 필수"""
+        """필수 설정 검증"""
+        # 기본 필수 설정 (항상 필요)
         required_configs = {
             'TELEGRAM_BOT_TOKEN': self.TELEGRAM_BOT_TOKEN,
             'TELEGRAM_CHAT_ID': self.TELEGRAM_CHAT_ID,
             'BITGET_API_KEY': self.BITGET_API_KEY,
             'BITGET_SECRET_KEY': self.BITGET_SECRET_KEY,
-            'BITGET_PASSPHRASE': self.BITGET_PASSPHRASE,
-            'GATE_API_KEY': self.GATE_API_KEY,  # 항상 필수
-            'GATE_API_SECRET': self.GATE_API_SECRET  # 항상 필수
+            'BITGET_PASSPHRASE': self.BITGET_PASSPHRASE
         }
+        
+        # 미러 트레이딩 모드일 때만 Gate.io API 필수
+        if self.MIRROR_TRADING_MODE:
+            if not self.GATE_API_KEY or not self.GATE_API_SECRET:
+                print("\n⚠️  미러 트레이딩 모드가 활성화되었지만 Gate.io API가 설정되지 않았습니다.")
+                print("미러 트레이딩을 사용하려면 다음 환경변수를 설정하세요:")
+                print("  GATE_API_KEY=your_gate_api_key")
+                print("  GATE_API_SECRET=your_gate_api_secret")
+                print("\n분석 전용 모드로 전환합니다...")
+                self.MIRROR_TRADING_MODE = False
+            else:
+                required_configs.update({
+                    'GATE_API_KEY': self.GATE_API_KEY,
+                    'GATE_API_SECRET': self.GATE_API_SECRET
+                })
         
         missing_configs = []
         for config_name, config_value in required_configs.items():
@@ -104,19 +84,24 @@ class Config:
         self._print_config_status()
     
     def _print_config_status(self):
-        """설정 상태 출력 - 텔레그램 제어 모드 안내"""
+        """설정 상태 출력"""
         print("\n🔧 API 설정 상태:")
         print("━" * 50)
         
-        # 미러링 모드는 텔레그램 제어로 변경됨
-        print("🎮 운영 모드: 텔레그램 실시간 제어")
-        print(f"📊 미러링 기본값: {'활성화' if self.MIRROR_TRADING_DEFAULT else '비활성화'}")
-        print("💡 미러링 제어: 텔레그램 /mirror on/off")
+        # 운영 모드
+        if self.MIRROR_TRADING_MODE:
+            print("🔄 운영 모드: 미러 트레이딩 모드")
+        else:
+            print("📊 운영 모드: 분석 전용 모드")
         
         print("\n✅ 필수 API:")
         print(f"  • Telegram Bot: {'설정됨' if self.TELEGRAM_BOT_TOKEN else '미설정'}")
         print(f"  • Bitget API: {'설정됨' if self.BITGET_API_KEY else '미설정'}")
-        print(f"  • Gate.io API: {'설정됨' if self.GATE_API_KEY else '미설정'} (미러링용 필수)")
+        
+        if self.MIRROR_TRADING_MODE:
+            print(f"  • Gate.io API: {'설정됨' if self.GATE_API_KEY else '미설정'}")
+        elif self.GATE_API_KEY:
+            print(f"  • Gate.io API: 설정됨 (미사용)")
         
         # 선택 API들
         optional_apis = {
@@ -159,28 +144,28 @@ class Config:
         else:
             print(f"\n⚠️  AI 번역 미설정 (번역 기능 제한)")
         
-        # 텔레그램 제어 안내
-        print("\n🎮 텔레그램 실시간 제어:")
-        print("  • 미러링 활성화: /mirror on 또는 '미러링 켜기'")
-        print("  • 미러링 비활성화: /mirror off 또는 '미러링 끄기'")
-        print("  • 미러링 상태: /mirror status 또는 '미러링 상태'")
-        print("  • 복제 비율 변경: /ratio 1.5 또는 '비율 1.5배'")
-        print("  • 현재 배율 확인: /ratio 또는 '현재 배율'")
-        
-        print("\n💳 Gate.io 설정:")
-        print("  • Margin Mode: 자동으로 Cross 설정됨 (청산 방지)")
-        print("  • 시작 시 항상 Cross 확인 및 설정")
-        print("  • Isolated → Cross 자동 변경")
-        
-        print("\n💡 현재 기능:")
-        print("  • 실시간 가격 모니터링")
-        print("  • 기술적 분석 리포트")
-        print("  • AI 기반 예측")
-        print("  • 뉴스 및 이벤트 추적")
-        print("  • 수익 현황 조회")
-        print("  • 🎮 텔레그램 실시간 미러링 제어")
-        print("  • 💳 Gate.io 마진 모드 자동 Cross 설정")
-        print("  • 📊 복제 비율 실시간 조정")
+        # 운영 모드별 추가 정보
+        if self.MIRROR_TRADING_MODE:
+            print("\n💡 미러 트레이딩 설정:")
+            print("  • 기준 거래소: Bitget")
+            print("  • 미러 거래소: Gate.io")
+            print("  • 미러링 방식: 마진 비율 기반")
+            print("  • 기존 포지션: 복제 제외")
+            print("  • 신규 진입만 미러링")
+        else:
+            print("\n💡 현재 기능:")
+            print("  • 실시간 가격 모니터링")
+            print("  • 기술적 분석 리포트")
+            print("  • AI 기반 예측")
+            print("  • 뉴스 및 이벤트 추적")
+            print("  • 수익 현황 조회")
+            
+            if not self.GATE_API_KEY:
+                print("\n💡 미러 트레이딩 활성화 방법:")
+                print("  환경변수에 다음 추가:")
+                print("  MIRROR_TRADING_MODE=true")
+                print("  GATE_API_KEY=your_gate_key")
+                print("  GATE_API_SECRET=your_gate_secret")
         
         print("\n💡 추가 API 설정 방법:")
         print("  환경변수에 추가:")
@@ -195,6 +180,10 @@ class Config:
             print("  COINGECKO_API_KEY=your_key (시장 데이터 확장)")
         
         print("━" * 50 + "\n")
+    
+    def is_mirror_mode_enabled(self):
+        """미러 트레이딩 모드 활성화 여부"""
+        return self.MIRROR_TRADING_MODE
     
     def get_active_apis(self):
         """활성화된 API 목록 반환"""
@@ -214,17 +203,14 @@ class Config:
         return active_apis
     
     def get_config_summary(self):
-        """설정 요약 정보 - 텔레그램 제어 모드 반영"""
+        """설정 요약 정보"""
         return {
-            'mode': 'telegram_controlled',  # 텔레그램 제어 모드
-            'mirror_default': self.MIRROR_TRADING_DEFAULT,
+            'mode': 'mirror' if self.MIRROR_TRADING_MODE else 'analysis',
             'exchanges': {
                 'bitget': bool(self.BITGET_API_KEY),
-                'gate': bool(self.GATE_API_KEY)
+                'gate': bool(self.GATE_API_KEY) if self.MIRROR_TRADING_MODE else False
             },
             'features': {
-                'telegram_control': True,  # 텔레그램 제어 활성화
-                'margin_mode_auto': True,  # 마진 모드 자동 설정
                 'ai_analysis': bool(self.OPENAI_API_KEY or self.ANTHROPIC_API_KEY),
                 'claude_translation': bool(self.ANTHROPIC_API_KEY),
                 'gpt_analysis': bool(self.OPENAI_API_KEY),
