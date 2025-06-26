@@ -1619,6 +1619,33 @@ class BitcoinPredictionSystem:
             self.logger.error(f"시작 명령 처리 실패: {e}")
             await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
     
+    def _setup_telegram_handlers(self):
+        """🔥🔥🔥 텔레그램 핸들러 설정 - 핵심 수정 부분"""
+        try:
+            self.logger.info("🔥 텔레그램 핸들러 설정 시작")
+            
+            # 핸들러 매핑 - main.py의 메서드들을 연결
+            handlers_map = {
+                'start': self.handle_start_command,
+                'help': self.handle_start_command,
+                'mirror': self.telegram_bot.handle_mirror_command,  # 텔레그램 봇 핸들러 사용
+                'ratio': self.telegram_bot.handle_ratio_command,    # 텔레그램 봇 핸들러 사용
+                'report': self.handle_report_command,
+                'forecast': self.handle_forecast_command,
+                'profit': self.handle_profit_command,
+                'schedule': self.handle_schedule_command,
+                'stats': self.handle_stats_command,
+                'message_handler': self.telegram_bot.handle_universal_message,  # 통합 메시지 핸들러
+            }
+            
+            # 텔레그램 봇에 핸들러 등록
+            self.telegram_bot.setup_handlers(handlers_map)
+            self.logger.info("✅ 텔레그램 핸들러 설정 완료")
+            
+        except Exception as e:
+            self.logger.error(f"❌ 텔레그램 핸들러 설정 실패: {e}")
+            raise
+    
     async def start(self):
         """시스템 시작 - 백그라운드 폴링 방식"""
         try:
@@ -1638,7 +1665,7 @@ class BitcoinPredictionSystem:
             await self.gate_client.initialize()
             
             # Gate.io 마진 모드 Cross 확인 및 설정
-            self.logger.info("🔥 Gate.io 마진 모드 Cross 설정 확인 중...")
+            self.logger.info("🔥 Gate.io 마진 모드 최종 확인 및 강제 설정")
             try:
                 gate_positions = await self.gate_client.get_positions("BTC_USDT")
                 self.logger.info(f"🔥 Gate.io 포지션 조회 성공: {len(gate_positions)}개")
@@ -1673,6 +1700,10 @@ class BitcoinPredictionSystem:
             # 스케줄러 시작
             self.logger.info("스케줄러 시작 중...")
             self.scheduler.start()
+            
+            # 🔥🔥🔥 텔레그램 핸들러 설정 - 핵심 수정 부분
+            self.logger.info("🔥 텔레그램 핸들러 설정 중...")
+            self._setup_telegram_handlers()
             
             # 🔥 텔레그램 봇을 백그라운드로 시작
             self.logger.info("🔥 텔레그램 봇을 백그라운드로 시작 중...")
@@ -1773,7 +1804,7 @@ Gate.io Cross 마진 모드를 수동으로 설정하여 안전하게 운영하�
                     await asyncio.sleep(10)  # 10초마다 체크
                     
                     # 텔레그램 봇 상태 확인
-                    if not self.telegram_bot._is_running:
+                    if hasattr(self.telegram_bot, '_is_running') and not self.telegram_bot._is_running:
                         self.logger.warning("텔레그램 봇이 중지됨 - 재시작 시도")
                         try:
                             asyncio.create_task(self.telegram_bot.start())
