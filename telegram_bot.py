@@ -24,7 +24,7 @@ class TelegramBot:
         self._initialize_bot()
         
     def _initialize_bot(self):
-        """봇 초기화 - 단순화된 방식"""
+        """봇 초기화"""
         try:
             telegram_token = self.config.TELEGRAM_BOT_TOKEN
             if not telegram_token:
@@ -33,7 +33,7 @@ class TelegramBot:
             # Bot 인스턴스 생성
             self.bot = Bot(token=telegram_token)
             
-            # Application 생성 - 단순화
+            # Application 생성
             self.application = Application.builder().token(telegram_token).build()
             
             self.logger.info("✅ 텔레그램 봇 초기화 완료")
@@ -52,72 +52,160 @@ class TelegramBot:
         self.system_reference = system
         self.logger.info("메인 시스템 참조 설정 완료")
     
-    def setup_handlers(self, handlers_map):
-        """핸들러 일괄 등록 - 단순화된 방식"""
+    def setup_handlers(self):
+        """핸들러 직접 등록 - 간단한 방식"""
         try:
             if self.application is None:
                 self._initialize_bot()
             
-            self.logger.info("🔥 핸들러 등록 시작")
+            self.logger.info("🔥 핸들러 직접 등록 시작")
             
             # 기존 핸들러 모두 제거
             self.application.handlers.clear()
             self.logger.info("기존 핸들러 모두 제거")
             
-            # 명령어 핸들러 등록
-            for command, handler_func in handlers_map.items():
-                if command == 'message_handler':
-                    # 자연어 메시지 핸들러
-                    message_handler = MessageHandler(
-                        filters.TEXT & ~filters.COMMAND,
-                        handler_func
-                    )
-                    self.application.add_handler(message_handler, 1)
-                    self.logger.info(f"✅ 메시지 핸들러 등록 완료")
+            # 명령어 핸들러들 등록
+            handlers = [
+                CommandHandler('start', self._handle_start),
+                CommandHandler('help', self._handle_start),
+                CommandHandler('report', self._handle_report),
+                CommandHandler('forecast', self._handle_forecast),
+                CommandHandler('profit', self._handle_profit),
+                CommandHandler('schedule', self._handle_schedule),
+                CommandHandler('stats', self._handle_stats),
+                CommandHandler('mirror', self._handle_mirror),
+                CommandHandler('ratio', self._handle_ratio),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message),
+            ]
+            
+            for handler in handlers:
+                self.application.add_handler(handler)
+                if isinstance(handler, CommandHandler):
+                    commands = ', '.join(handler.commands)
+                    self.logger.info(f"✅ 명령어 핸들러 등록: /{commands}")
                 else:
-                    # 명령어 핸들러
-                    command_handler = CommandHandler(command, handler_func)
-                    self.application.add_handler(command_handler, 0)
-                    self.logger.info(f"✅ 명령어 핸들러 등록: /{command}")
+                    self.logger.info(f"✅ 메시지 핸들러 등록")
             
             self._handlers_registered = True
             self.logger.info("✅ 모든 핸들러 등록 완료")
-            
-            # 등록된 핸들러 목록 출력
-            self._log_all_handlers()
             
         except Exception as e:
             self.logger.error(f"핸들러 등록 실패: {str(e)}")
             raise
     
-    def _log_all_handlers(self):
-        """현재 등록된 모든 핸들러 로깅"""
+    # 내부 핸들러들 - 시스템 메소드 호출
+    async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시작 명령어 처리"""
         try:
-            self.logger.info("📋 등록된 핸들러 목록:")
-            total_handlers = 0
-            for group_idx, group in enumerate(self.application.handlers):
-                self.logger.info(f"  그룹 {group_idx}: {len(group)}개")
-                for idx, handler in enumerate(group):
-                    if isinstance(handler, CommandHandler):
-                        commands = ', '.join(handler.commands)
-                        self.logger.info(f"    [{idx}] 명령어: /{commands}")
-                        total_handlers += 1
-                    elif isinstance(handler, MessageHandler):
-                        self.logger.info(f"    [{idx}] 메시지 핸들러")
-                        total_handlers += 1
-            self.logger.info(f"총 {total_handlers}개 핸들러 등록됨")
+            if self.system_reference:
+                await self.system_reference.handle_start_command(update, context)
+            else:
+                await update.message.reply_text("❌ 시스템이 연결되지 않았습니다.")
         except Exception as e:
-            self.logger.error(f"핸들러 목록 로깅 실패: {e}")
+            self.logger.error(f"start 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 명령어 처리 중 오류가 발생했습니다.")
+    
+    async def _handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """리포트 명령어 처리"""
+        try:
+            if self.system_reference:
+                await self.system_reference.handle_report_command(update, context)
+            else:
+                await update.message.reply_text("❌ 시스템이 연결되지 않았습니다.")
+        except Exception as e:
+            self.logger.error(f"report 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 명령어 처리 중 오류가 발생했습니다.")
+    
+    async def _handle_forecast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """예측 명령어 처리"""
+        try:
+            if self.system_reference:
+                await self.system_reference.handle_forecast_command(update, context)
+            else:
+                await update.message.reply_text("❌ 시스템이 연결되지 않았습니다.")
+        except Exception as e:
+            self.logger.error(f"forecast 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 명령어 처리 중 오류가 발생했습니다.")
+    
+    async def _handle_profit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """수익 명령어 처리"""
+        try:
+            if self.system_reference:
+                await self.system_reference.handle_profit_command(update, context)
+            else:
+                await update.message.reply_text("❌ 시스템이 연결되지 않았습니다.")
+        except Exception as e:
+            self.logger.error(f"profit 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 명령어 처리 중 오류가 발생했습니다.")
+    
+    async def _handle_schedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """일정 명령어 처리"""
+        try:
+            if self.system_reference:
+                await self.system_reference.handle_schedule_command(update, context)
+            else:
+                await update.message.reply_text("❌ 시스템이 연결되지 않았습니다.")
+        except Exception as e:
+            self.logger.error(f"schedule 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 명령어 처리 중 오류가 발생했습니다.")
+    
+    async def _handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """통계 명령어 처리"""
+        try:
+            if self.system_reference:
+                await self.system_reference.handle_stats_command(update, context)
+            else:
+                await update.message.reply_text("❌ 시스템이 연결되지 않았습니다.")
+        except Exception as e:
+            self.logger.error(f"stats 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 명령어 처리 중 오류가 발생했습니다.")
+    
+    async def _handle_mirror(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """미러 명령어 처리"""
+        try:
+            await self.handle_mirror_command(update, context)
+        except Exception as e:
+            self.logger.error(f"mirror 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 명령어 처리 중 오류가 발생했습니다.")
+    
+    async def _handle_ratio(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """배율 명령어 처리"""
+        try:
+            await self.handle_ratio_command(update, context)
+        except Exception as e:
+            self.logger.error(f"ratio 명령어 처리 실패: {e}")
+            await update.message.reply_text("❌ 명령어 처리 중 오류가 발생했습니다.")
+    
+    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """일반 메시지 처리"""
+        try:
+            # 1. 미러링 모드 확인 처리
+            if await self.handle_mirror_confirmation(update, context):
+                return
+            
+            # 2. 배율 확인 처리
+            if await self.handle_ratio_confirmation(update, context):
+                return
+            
+            # 3. 자연어 처리는 시스템에 위임
+            if self.system_reference:
+                await self.system_reference.handle_natural_language(update, context)
+            else:
+                await update.message.reply_text("❌ 시스템이 연결되지 않았습니다.")
+                
+        except Exception as e:
+            self.logger.error(f"메시지 처리 실패: {e}")
+            await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.")
     
     async def start(self):
-        """봇 시작 - 개선된 방식"""
+        """봇 시작"""
         try:
             if self.application is None:
                 self._initialize_bot()
             
-            # 핸들러가 등록되지 않았다면 경고
+            # 핸들러 등록
             if not self._handlers_registered:
-                self.logger.warning("⚠️ 핸들러가 등록되지 않았습니다! setup_handlers()를 먼저 호출하세요.")
+                self.setup_handlers()
             
             # Application 초기화
             self.logger.info("Application 초기화 중...")
@@ -131,10 +219,7 @@ class TelegramBot:
             bot_info = await self.bot.get_me()
             self.logger.info(f"🤖 봇 정보: @{bot_info.username} (ID: {bot_info.id})")
             
-            # 등록된 핸들러 다시 확인
-            self._log_all_handlers()
-            
-            # 폴링 시작 - 개선된 설정
+            # 폴링 시작
             self.logger.info("🔄 텔레그램 폴링 시작...")
             await self.application.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
@@ -150,7 +235,7 @@ class TelegramBot:
             
             # 테스트 메시지 전송
             try:
-                await self.send_message("🚀 텔레그램 봇이 시작되었습니다! 명령어를 테스트해보세요.", parse_mode='HTML')
+                await self.send_message("🚀 텔레그램 봇이 시작되었습니다! /help로 명령어를 확인하세요.")
                 self.logger.info("✅ 테스트 메시지 전송 성공")
             except Exception as test_error:
                 self.logger.error(f"테스트 메시지 전송 실패: {test_error}")
@@ -709,22 +794,6 @@ class TelegramBot:
                 reply_markup=ReplyKeyboardRemove()
             )
             return True
-    
-    async def handle_universal_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """통합 메시지 핸들러 - 확인 메시지들을 우선 처리"""
-        try:
-            # 1. 미러링 모드 확인 처리
-            if await self.handle_mirror_confirmation(update, context):
-                return
-            
-            # 2. 배율 확인 처리
-            if await self.handle_ratio_confirmation(update, context):
-                return
-            
-            # 3. 기타 메시지는 무시 (자연어 처리 등은 main에서 처리)
-            
-        except Exception as e:
-            self.logger.error(f"통합 메시지 처리 실패: {e}")
     
     def _clean_html_message(self, text: str) -> str:
         """HTML 메시지 정리 및 검증"""
