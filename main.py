@@ -1620,7 +1620,7 @@ class BitcoinPredictionSystem:
             await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
     
     async def start(self):
-        """시스템 시작 - 간단한 방식"""
+        """시스템 시작 - 백그라운드 폴링 방식"""
         try:
             self.logger.info("=" * 50)
             self.logger.info("시스템 시작 프로세스 개시 - 텔레그램 제어 + Gate.io Cross 마진")
@@ -1650,40 +1650,13 @@ class BitcoinPredictionSystem:
                     
                     if current_mode.lower() == 'cross':
                         self.logger.info("✅ Gate.io 마진 모드가 이미 Cross로 설정되어 있습니다.")
-                        await self.telegram_bot.send_message(
-                            f"💳 <b>Gate.io 마진 모드 확인 완료</b>\n"
-                            f"현재 설정: CROSS ✅\n"
-                            f"📊 Cross 마진 모드로 안전하게 운영됩니다!",
-                            parse_mode='HTML'
-                        )
                     else:
                         self.logger.warning(f"⚠️ Gate.io 마진 모드가 {current_mode}로 확인됨")
-                        await self.telegram_bot.send_message(
-                            f"💳 <b>Gate.io 마진 모드 확인 결과</b>\n"
-                            f"현재 모드: {current_mode.upper()}\n"
-                            f"⚠️ Cross 모드 사용을 권장합니다.\n"
-                            f"수동으로 Cross 모드로 변경해주세요.",
-                            parse_mode='HTML'
-                        )
                 else:
                     self.logger.info("🔥 Gate.io에 활성 포지션이 없어 마진 모드 확인 불가")
-                    await self.telegram_bot.send_message(
-                        f"💳 <b>Gate.io 마진 모드 안내</b>\n"
-                        f"현재 활성 포지션이 없습니다.\n"
-                        f"💡 포지션 생성 시 Cross 마진 모드 사용을 권장합니다.\n"
-                        f"📊 Cross 모드는 청산 위험을 줄여줍니다.",
-                        parse_mode='HTML'
-                    )
                     
             except Exception as margin_error:
                 self.logger.error(f"Gate.io 마진 모드 확인 실패: {margin_error}")
-                await self.telegram_bot.send_message(
-                    f"⚠️ <b>Gate.io 마진 모드 확인 실패</b>\n"
-                    f"오류: {str(margin_error)[:100]}\n"
-                    f"💡 수동으로 Cross 마진 모드 설정을 권장합니다.\n"
-                    f"📊 Cross 모드는 청산 방지에 도움이 됩니다.",
-                    parse_mode='HTML'
-                )
             
             # 현재 시세 업데이트
             await self._update_current_prices()
@@ -1701,9 +1674,12 @@ class BitcoinPredictionSystem:
             self.logger.info("스케줄러 시작 중...")
             self.scheduler.start()
             
-            # 텔레그램 봇 시작 - 간단한 방식
-            self.logger.info("🔥 텔레그램 봇 시작 중...")
-            await self.telegram_bot.start()
+            # 🔥 텔레그램 봇을 백그라운드로 시작
+            self.logger.info("🔥 텔레그램 봇을 백그라운드로 시작 중...")
+            asyncio.create_task(self.telegram_bot.start())
+            
+            # 잠시 대기 - 텔레그램 봇 초기화 완료 대기
+            await asyncio.sleep(3)
             
             # 현재 배율 정보
             current_ratio = 1.0
@@ -1778,16 +1754,35 @@ Gate.io Cross 마진 모드를 수동으로 설정하여 안전하게 운영하�
 
 📱 모든 명령어가 정상 작동합니다!"""
             
-            await self.telegram_bot.send_message(startup_msg, parse_mode='HTML')
+            # 시작 메시지 전송은 텔레그램 봇이 완전히 초기화된 후
+            await asyncio.sleep(2)
+            try:
+                await self.telegram_bot.send_message(startup_msg, parse_mode='HTML')
+                self.logger.info("✅ 시작 메시지 전송 완료")
+            except Exception as msg_error:
+                self.logger.error(f"⚠️ 시작 메시지 전송 실패: {msg_error}")
             
             # 초기 시스템 상태 체크
             await asyncio.sleep(5)
             await self.system_health_check()
             
-            # 메인 루프
-            self.logger.info("메인 루프 시작 - 텔레그램 명령어 대기 중")
-            while self.is_running:
-                await asyncio.sleep(1)
+            # 🔥 메인 루프 - 텔레그램 폴링과 함께 실행
+            self.logger.info("메인 루프 시작 - 백그라운드에서 모든 서비스 실행 중")
+            try:
+                while self.is_running:
+                    await asyncio.sleep(10)  # 10초마다 체크
+                    
+                    # 텔레그램 봇 상태 확인
+                    if not self.telegram_bot._is_running:
+                        self.logger.warning("텔레그램 봇이 중지됨 - 재시작 시도")
+                        try:
+                            asyncio.create_task(self.telegram_bot.start())
+                        except Exception as restart_error:
+                            self.logger.error(f"텔레그램 봇 재시작 실패: {restart_error}")
+                            
+            except KeyboardInterrupt:
+                self.logger.info("키보드 인터럽트 감지 - 시스템 종료 시작")
+                await self.stop()
                 
         except KeyboardInterrupt:
             self.logger.info("키보드 인터럽트 감지 - 시스템 종료 시작")
