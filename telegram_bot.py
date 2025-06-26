@@ -20,6 +20,7 @@ class TelegramBot:
         
         # 핸들러 등록 여부 추적
         self._handlers_registered = False
+        self._is_running = False
         
         self._initialize_bot()
         
@@ -30,11 +31,9 @@ class TelegramBot:
             if not telegram_token:
                 raise ValueError("TELEGRAM_BOT_TOKEN 환경변수가 설정되지 않았습니다.")
             
-            # Bot 인스턴스 생성
-            self.bot = Bot(token=telegram_token)
-            
-            # Application 생성
+            # Application 생성 - 더 안정적인 방식
             self.application = Application.builder().token(telegram_token).build()
+            self.bot = self.application.bot
             
             self.logger.info("✅ 텔레그램 봇 초기화 완료")
             
@@ -53,12 +52,12 @@ class TelegramBot:
         self.logger.info("메인 시스템 참조 설정 완료")
     
     def setup_handlers(self):
-        """핸들러 직접 등록 - 간단한 방식"""
+        """핸들러 등록"""
         try:
             if self.application is None:
                 self._initialize_bot()
             
-            self.logger.info("🔥 핸들러 직접 등록 시작")
+            self.logger.info("🔥 텔레그램 핸들러 등록 시작")
             
             # 기존 핸들러 모두 제거
             self.application.handlers.clear()
@@ -97,6 +96,7 @@ class TelegramBot:
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시작 명령어 처리"""
         try:
+            self.logger.info(f"start 명령어 수신: {update.effective_user.username}")
             if self.system_reference:
                 await self.system_reference.handle_start_command(update, context)
             else:
@@ -108,6 +108,7 @@ class TelegramBot:
     async def _handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """리포트 명령어 처리"""
         try:
+            self.logger.info(f"report 명령어 수신: {update.effective_user.username}")
             if self.system_reference:
                 await self.system_reference.handle_report_command(update, context)
             else:
@@ -119,6 +120,7 @@ class TelegramBot:
     async def _handle_forecast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """예측 명령어 처리"""
         try:
+            self.logger.info(f"forecast 명령어 수신: {update.effective_user.username}")
             if self.system_reference:
                 await self.system_reference.handle_forecast_command(update, context)
             else:
@@ -130,6 +132,7 @@ class TelegramBot:
     async def _handle_profit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """수익 명령어 처리"""
         try:
+            self.logger.info(f"profit 명령어 수신: {update.effective_user.username}")
             if self.system_reference:
                 await self.system_reference.handle_profit_command(update, context)
             else:
@@ -141,6 +144,7 @@ class TelegramBot:
     async def _handle_schedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일정 명령어 처리"""
         try:
+            self.logger.info(f"schedule 명령어 수신: {update.effective_user.username}")
             if self.system_reference:
                 await self.system_reference.handle_schedule_command(update, context)
             else:
@@ -152,6 +156,7 @@ class TelegramBot:
     async def _handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """통계 명령어 처리"""
         try:
+            self.logger.info(f"stats 명령어 수신: {update.effective_user.username}")
             if self.system_reference:
                 await self.system_reference.handle_stats_command(update, context)
             else:
@@ -163,6 +168,7 @@ class TelegramBot:
     async def _handle_mirror(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """미러 명령어 처리"""
         try:
+            self.logger.info(f"mirror 명령어 수신: {update.effective_user.username}")
             await self.handle_mirror_command(update, context)
         except Exception as e:
             self.logger.error(f"mirror 명령어 처리 실패: {e}")
@@ -171,6 +177,7 @@ class TelegramBot:
     async def _handle_ratio(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """배율 명령어 처리"""
         try:
+            self.logger.info(f"ratio 명령어 수신: {update.effective_user.username}")
             await self.handle_ratio_command(update, context)
         except Exception as e:
             self.logger.error(f"ratio 명령어 처리 실패: {e}")
@@ -179,6 +186,8 @@ class TelegramBot:
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """일반 메시지 처리"""
         try:
+            self.logger.info(f"일반 메시지 수신: {update.effective_user.username} - {update.message.text[:50]}")
+            
             # 1. 미러링 모드 확인 처리
             if await self.handle_mirror_confirmation(update, context):
                 return
@@ -198,7 +207,7 @@ class TelegramBot:
             await update.message.reply_text("❌ 메시지 처리 중 오류가 발생했습니다.")
     
     async def start(self):
-        """봇 시작"""
+        """봇 시작 - 백그라운드 폴링 방식"""
         try:
             if self.application is None:
                 self._initialize_bot()
@@ -207,20 +216,45 @@ class TelegramBot:
             if not self._handlers_registered:
                 self.setup_handlers()
             
-            # Application 초기화
-            self.logger.info("Application 초기화 중...")
-            await self.application.initialize()
+            self.logger.info("🔥 텔레그램 Application 초기화 중...")
             
-            # Application 시작
-            self.logger.info("Application 시작 중...")
+            # Application 초기화
+            await self.application.initialize()
             await self.application.start()
             
             # 봇 정보 확인
             bot_info = await self.bot.get_me()
             self.logger.info(f"🤖 봇 정보: @{bot_info.username} (ID: {bot_info.id})")
             
+            # 백그라운드에서 폴링 시작
+            self.logger.info("🔄 텔레그램 백그라운드 폴링 시작...")
+            
+            # 폴링을 백그라운드 태스크로 실행
+            asyncio.create_task(self._run_polling())
+            
+            self._is_running = True
+            
+            # 잠시 대기 후 테스트 메시지 전송
+            await asyncio.sleep(2)
+            
+            try:
+                await self.send_message("🚀 텔레그램 봇이 시작되었습니다! 명령어 테스트: /help")
+                self.logger.info("✅ 테스트 메시지 전송 성공")
+            except Exception as test_error:
+                self.logger.error(f"⚠️ 테스트 메시지 전송 실패: {test_error}")
+            
+            self.logger.info("✅ 텔레그램 봇 시작 완료 - 백그라운드에서 실행 중")
+            
+        except Exception as e:
+            self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
+            raise
+    
+    async def _run_polling(self):
+        """백그라운드 폴링 실행"""
+        try:
+            self.logger.info("📡 폴링 시작...")
+            
             # 폴링 시작
-            self.logger.info("🔄 텔레그램 폴링 시작...")
             await self.application.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,
@@ -231,28 +265,30 @@ class TelegramBot:
                 pool_timeout=10
             )
             
-            self.logger.info("✅ 텔레그램 봇 시작 완료 - 명령어 수신 대기 중")
-            
-            # 테스트 메시지 전송
-            try:
-                await self.send_message("🚀 텔레그램 봇이 시작되었습니다! /help로 명령어를 확인하세요.")
-                self.logger.info("✅ 테스트 메시지 전송 성공")
-            except Exception as test_error:
-                self.logger.error(f"테스트 메시지 전송 실패: {test_error}")
+            self.logger.info("📡 폴링이 성공적으로 시작되었습니다")
             
         except Exception as e:
-            self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
+            self.logger.error(f"폴링 실행 실패: {e}")
             raise
     
     async def stop(self):
         """봇 정지"""
         try:
+            self._is_running = False
+            
             if self.application:
                 self.logger.info("텔레그램 봇 정지 중...")
-                await self.application.updater.stop()
+                
+                # 폴링 중지
+                if self.application.updater.running:
+                    await self.application.updater.stop()
+                    self.logger.info("폴링 중지됨")
+                
+                # Application 중지
                 await self.application.stop()
                 await self.application.shutdown()
-                self.logger.info("텔레그램 봇 정지됨")
+                
+                self.logger.info("✅ 텔레그램 봇 정지 완료")
                 
         except Exception as e:
             self.logger.error(f"텔레그램 봇 정지 실패: {str(e)}")
