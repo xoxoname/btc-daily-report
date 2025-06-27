@@ -121,6 +121,38 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             total_equity = account_info.get('total_equity', 0)
             
+            # 🔥🔥 사용 증거금 계산 개선 - 포지션 정보와 계정 정보 모두 확인
+            used_margin = 0
+            
+            # 1순위: 계정 정보에서 직접 추출
+            if account_info.get('used_margin', 0) > 0:
+                used_margin = account_info.get('used_margin', 0)
+                self.logger.info(f"Bitget 증거금 (계정정보): ${used_margin:.2f}")
+            
+            # 2순위: 포지션 정보에서 계산
+            elif position_info.get('has_position', False):
+                pos_margin = position_info.get('margin', 0)
+                if pos_margin > 0:
+                    used_margin = pos_margin
+                    self.logger.info(f"Bitget 증거금 (포지션정보): ${used_margin:.2f}")
+                else:
+                    # 3순위: 포지션 크기와 가격으로 계산
+                    size = position_info.get('size', 0)
+                    current_price = position_info.get('current_price', 0)
+                    leverage = position_info.get('leverage', 30)
+                    
+                    if size > 0 and current_price > 0 and leverage > 0:
+                        position_value = size * current_price
+                        used_margin = position_value / leverage
+                        self.logger.info(f"Bitget 증거금 (계산): 사이즈={size}, 가격=${current_price:.2f}, 레버리지={leverage}x, 증거금=${used_margin:.2f}")
+            
+            # 4순위: 가용자산으로 역계산
+            if used_margin == 0:
+                available = account_info.get('available', 0)
+                if available > 0 and total_equity > available:
+                    used_margin = total_equity - available
+                    self.logger.info(f"Bitget 증거금 (역계산): 총자산=${total_equity:.2f} - 가용=${available:.2f} = ${used_margin:.2f}")
+            
             result = {
                 'exchange': 'Bitget',
                 'market_data': market_data,
@@ -141,7 +173,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'total_equity': total_equity,
                 'initial_capital': self.BITGET_INITIAL_CAPITAL,
                 'available': account_info.get('available', 0),
-                'used_margin': account_info.get('used_margin', 0),
+                'used_margin': used_margin,  # 🔥🔥 개선된 증거금 계산
                 'cumulative_data': cumulative_data
             }
             
@@ -149,6 +181,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
             self.logger.info(f"  - 7일 Position PnL: ${weekly_position_pnl.get('total_pnl', 0):.4f}")
             self.logger.info(f"  - 누적 수익: ${cumulative_data.get('total_profit', 0):.2f}")
+            self.logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
             
             return result
             
@@ -288,12 +321,16 @@ class ProfitReportGenerator(BaseReportGenerator):
                 today_position_pnl = 0.0
                 weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'actual_days': 7, 'trading_fees': 0, 'funding_fees': 0, 'net_profit': 0, 'source': 'error_safe_fallback'}
             
-            # 사용 증거금 계산
+            # 🔥🔥 사용 증거금 계산 개선 - Gate.io
             used_margin = 0
             if position_info['has_position']:
                 used_margin = position_info.get('margin', 0)
+                self.logger.info(f"Gate.io 증거금 (포지션): ${used_margin:.2f}")
             else:
-                used_margin = max(0, total_equity - available)
+                # 포지션이 없으면 가용자산으로 역계산
+                if total_equity > 0 and available >= 0:
+                    used_margin = max(0, total_equity - available)
+                    self.logger.info(f"Gate.io 증거금 (역계산): ${used_margin:.2f}")
             
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             has_account = total_equity > 0
@@ -301,6 +338,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.info(f"Gate.io 최종 Position PnL 기준 데이터 (개선된 파싱):")
             self.logger.info(f"  - 계정 존재: {has_account}")
             self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
+            self.logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
             self.logger.info(f"  - 미실현손익: ${unrealized_pnl:.4f}")
             self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
             self.logger.info(f"  - 7일 Position PnL: ${weekly_profit['total_pnl']:.4f}")
@@ -312,7 +350,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'account_info': {
                     'total_equity': total_equity,
                     'available': available,
-                    'used_margin': used_margin,
+                    'used_margin': used_margin,  # 🔥🔥 개선된 증거금 계산
                     'unrealized_pnl': unrealized_pnl
                 },
                 'today_pnl': today_position_pnl,  # Position PnL 기준 (개선된 파싱)
@@ -322,7 +360,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'total_equity': total_equity,
                 'initial_capital': initial_capital,
                 'available': available,
-                'used_margin': used_margin,
+                'used_margin': used_margin,  # 🔥🔥 개선된 증거금 계산
                 'has_account': has_account,
                 'actual_profit': cumulative_profit
             }
@@ -340,7 +378,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         # 가용 자산
         total_available = bitget_data['available'] + gateio_data['available']
         
-        # 사용 증거금
+        # 🔥🔥 사용 증거금 (개선된 계산)
         total_used_margin = bitget_data['used_margin'] + gateio_data['used_margin']
         
         # 🔥🔥 Position PnL 기준 금일 손익 계산
@@ -396,13 +434,14 @@ class ProfitReportGenerator(BaseReportGenerator):
         self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
         self.logger.info(f"  - 7일  Position PnL: ${weekly_total:.4f} ({actual_days:.1f}일)")
         self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
+        self.logger.info(f"  - 총 증거금: ${total_used_margin:.2f}")
         self.logger.info(f"  - 차이: ${seven_vs_cumulative_diff:.2f}")
         self.logger.info(f"  - 정상 분리됨: {'✅' if is_properly_separated else '⚠️'}")
         
         return {
             'total_equity': total_equity,
             'total_available': total_available,
-            'total_used_margin': total_used_margin,
+            'total_used_margin': total_used_margin,  # 🔥🔥 개선된 증거금 계산
             'today_position_pnl': today_position_pnl,  # Position PnL 기준
             'today_unrealized': today_unrealized,
             'today_total': today_total,
@@ -629,23 +668,34 @@ class ProfitReportGenerator(BaseReportGenerator):
                     mark_price = float(position.get('markPrice', 0))
                     margin_mode = position.get('marginMode', '')
                     
-                    # 증거금 추출
+                    # 🔥🔥 증거금 추출 개선 - 더 정확한 계산
                     margin = 0
-                    margin_fields = ['margin', 'initialMargin', 'im', 'holdMargin']
-                    for field in margin_fields:
-                        if field in position and position[field]:
-                            try:
-                                margin = float(position[field])
-                                if margin > 0:
-                                    break
-                            except:
-                                continue
                     
-                    # margin이 0인 경우 계산
-                    if margin == 0:
-                        leverage = float(position.get('leverage', 10))
-                        position_value = total_size * mark_price
-                        margin = position_value / leverage
+                    # 1순위: 계정 정보에서 usedMargin 사용 (가장 정확)
+                    account_info = await self._get_account_info()
+                    if account_info.get('used_margin', 0) > 0:
+                        margin = account_info.get('used_margin', 0)
+                        self.logger.info(f"포지션 증거금 (계정정보): ${margin:.2f}")
+                    else:
+                        # 2순위: 포지션 필드들에서 추출
+                        margin_fields = ['margin', 'initialMargin', 'im', 'holdMargin']
+                        for field in margin_fields:
+                            if field in position and position[field]:
+                                try:
+                                    field_margin = float(position[field])
+                                    if field_margin > 0:
+                                        margin = field_margin
+                                        self.logger.info(f"포지션 증거금 ({field}): ${margin:.2f}")
+                                        break
+                                except:
+                                    continue
+                        
+                        # 3순위: 계산으로 추정
+                        if margin == 0:
+                            leverage = float(position.get('leverage', 10))
+                            position_value = total_size * mark_price
+                            margin = position_value / leverage
+                            self.logger.info(f"포지션 증거금 (계산): ${margin:.2f}")
                     
                     # 미실현 손익
                     unrealized_pnl = float(position.get('unrealizedPL', 0))
@@ -685,7 +735,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                         'entry_price': entry_price,
                         'current_price': mark_price,
                         'margin_mode': margin_mode,
-                        'margin': margin,
+                        'margin': margin,  # 🔥🔥 개선된 증거금 계산
                         'unrealized_pnl': unrealized_pnl,
                         'roe': roe,
                         'liquidation_price': liquidation_price,
@@ -854,18 +904,28 @@ class ProfitReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     def _format_asset_detail(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
-        """자산 정보"""
+        """자산 정보 - 개선된 증거금 표시"""
         lines = []
         
         # 통합 자산
-        lines.append(f"• <b>가용/증거금: ${combined_data['total_available']:,.0f} / ${combined_data['total_used_margin']:,.0f}</b> ({combined_data['total_available'] / combined_data['total_equity'] * 100:.0f}% 가용)")
+        total_available = combined_data['total_available']
+        total_used_margin = combined_data['total_used_margin']  # 🔥🔥 개선된 증거금
+        total_equity = combined_data['total_equity']
+        
+        available_pct = (total_available / total_equity * 100) if total_equity > 0 else 0
+        
+        lines.append(f"• <b>가용/증거금: ${total_available:,.0f} / ${total_used_margin:,.0f}</b> ({available_pct:.0f}% 가용)")
         
         # Bitget 상세
-        lines.append(f"  ├ Bitget: ${bitget_data['available']:,.0f} / ${bitget_data['used_margin']:,.0f}")
+        bitget_available = bitget_data['available']
+        bitget_used_margin = bitget_data['used_margin']  # 🔥🔥 개선된 증거금
+        lines.append(f"  ├ Bitget: ${bitget_available:,.0f} / ${bitget_used_margin:,.0f}")
         
         # Gate 상세
         if gateio_has_data and gateio_data['total_equity'] > 0:
-            lines.append(f"  └ Gate: ${gateio_data['available']:,.0f} / ${gateio_data['used_margin']:,.0f}")
+            gate_available = gateio_data['available']
+            gate_used_margin = gateio_data['used_margin']  # 🔥🔥 개선된 증거금
+            lines.append(f"  └ Gate: ${gate_available:,.0f} / ${gate_used_margin:,.0f}")
         
         return '\n'.join(lines)
     
