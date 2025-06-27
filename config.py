@@ -8,7 +8,7 @@ class Config:
     def __init__(self):
         self.logger = logging.getLogger('config')
         
-        # 🔥🔥🔥 환경변수 키 이름 유지 (사용자 요구사항)
+        # 환경변수 키 이름 유지 (사용자 요구사항)
         self._load_environment_variables()
         self._validate_required_config()
         self._setup_trading_config()
@@ -21,7 +21,7 @@ class Config:
     def _load_environment_variables(self):
         """환경변수 로드 - 키 이름 변경 금지"""
         
-        # 🔥🔥🔥 API 키들 (키 이름 유지)
+        # API 키들 (키 이름 유지)
         self.alpha_vantage_key = os.getenv('ALPHA_VANTAGE_KEY', '')
         self.bitget_apikey = os.getenv('BITGET_APIKEY', '')
         self.bitget_apisecret = os.getenv('BITGET_APISECRET', '')
@@ -36,7 +36,14 @@ class Config:
         self.telegram_bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
         self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
         
-        # 🔥🔥🔥 미러 트레이딩 설정 (키 이름 유지)
+        # 클라이언트에서 참조하는 속성명으로 추가 할당
+        self.bitget_api_key = self.bitget_apikey  # bitget_client.py에서 참조
+        self.bitget_api_secret = self.bitget_apisecret  # bitget_client.py에서 참조
+        self.bitget_base_url = "https://api.bitget.com"  # bitget_client.py에서 참조
+        self.GATE_API_KEY = self.gate_api_key  # gateio_client.py에서 참조
+        self.GATE_API_SECRET = self.gate_api_secret  # gateio_client.py에서 참조
+        
+        # 미러 트레이딩 설정 (키 이름 유지)
         self.enable_mirror_trading = os.getenv('ENABLE_MIRROR_TRADING', '').lower()
         self.mirror_trading_mode = os.getenv('MIRROR_TRADING_MODE', 'O')  # 기본값 O (활성화)
         self.mirror_check_interval = int(os.getenv('MIRROR_CHECK_INTERVAL', '60'))
@@ -83,7 +90,7 @@ class Config:
             self.logger.error(error_msg)
             raise ValueError(error_msg)
         
-        # 🔥🔥🔥 미러 트레이딩 조건 검증 (경고만, 에러 아님)
+        # 미러 트레이딩 조건 검증 (경고만, 에러 아님)
         if self._is_mirror_trading_enabled():
             if not self.gate_api_key or not self.gate_api_secret:
                 self.logger.warning("⚠️ 미러 트레이딩이 활성화되었지만 Gate.io API 키가 설정되지 않았습니다")
