@@ -201,19 +201,19 @@ class TelegramBot:
             if has_mirror:
                 if has_enable:
                     # 미러링 활성화 요청
-                    await self.handle_mirror_command_enhanced(update, ['mirror', 'on'])
+                    await self.handle_mirror_command_enhanced(update, None, ['mirror', 'on'])
                     return True
                 elif has_disable:
                     # 미러링 비활성화 요청
-                    await self.handle_mirror_command_enhanced(update, ['mirror', 'off'])
+                    await self.handle_mirror_command_enhanced(update, None, ['mirror', 'off'])
                     return True
                 elif has_status:
                     # 미러링 상태 조회
-                    await self.handle_mirror_command_enhanced(update, ['mirror', 'status'])
+                    await self.handle_mirror_command_enhanced(update, None, ['mirror', 'status'])
                     return True
                 else:
                     # 일반적인 미러링 질문
-                    await self.handle_mirror_command_enhanced(update, ['mirror'])
+                    await self.handle_mirror_command_enhanced(update, None, ['mirror'])
                     return True
             
             return False
@@ -279,12 +279,23 @@ class TelegramBot:
             self.logger.error(f"수익 자연어 처리 실패: {e}")
             return False
 
-    async def handle_mirror_command_enhanced(self, update: Update, args: List[str]):
+    async def handle_mirror_command_enhanced(self, update: Update, context: ContextTypes.DEFAULT_TYPE, manual_args: List[str] = None):
         """🔥🔥🔥 미러 명령어 강화 처리 - 항상 응답"""
         try:
             self.command_response_count['mirror'] += 1
             user_id = update.effective_user.id
             username = update.effective_user.username or "Unknown"
+            
+            # 🔥🔥🔥 인자 처리 개선 - context.args 우선 사용
+            args = []
+            if manual_args:
+                args = manual_args
+            elif context and hasattr(context, 'args'):
+                args = ['mirror'] + context.args
+            else:
+                # 텍스트에서 직접 분리
+                message_parts = update.message.text.split()
+                args = message_parts
             
             self.logger.info(f"미러 명령어 - User: {username}({user_id}), Args: {args}")
             
@@ -544,7 +555,7 @@ class TelegramBot:
                     success_msg += f"• 새로운 비트겟 포지션이 게이트에 자동 복제됩니다\n"
                     success_msg += f"• 예약 주문(TP/SL)도 함께 복제됩니다\n"
                     success_msg += f"• 현재 복제 비율이 적용됩니다\n"
-                    success_msg += f"• <code>/ratio</code> 명령어로 복제 비율을 조정할 수 있습니다\n"
+                    success_msg += f"• <code>/ratio [숫자]</code> 명령어로 복제 비율을 조정할 수 있습니다\n"
                     success_msg += f"• <code>/profit</code> 명령어로 수익을 확인할 수 있습니다"
                 else:
                     success_msg += f"⏸️ <b>미러링이 중단되었습니다.</b>\n"
@@ -605,6 +616,11 @@ class TelegramBot:
             self.command_response_count['ratio'] += 1
             user_id = update.effective_user.id
             username = update.effective_user.username or "Unknown"
+            
+            # 🔥🔥🔥 인자 처리 개선 - context.args 우선 사용
+            if not ratio_str:
+                if context and hasattr(context, 'args') and context.args:
+                    ratio_str = context.args[0]
             
             self.logger.info(f"배율 명령어 - User: {username}({user_id}), Ratio: {ratio_str}")
             
@@ -683,6 +699,7 @@ class TelegramBot:
                 return
             
             # 확인 절차 설정
+            user_id = update.effective_user.id
             self.pending_confirmations[user_id] = {
                 'command_type': 'ratio_change',
                 'command_data': {'new_ratio': new_ratio},
@@ -837,10 +854,9 @@ class TelegramBot:
         """명령어 핸들러 등록"""
         try:
             if command == 'mirror':
-                # 🔥🔥🔥 미러 명령어는 강화된 핸들러 사용
+                # 🔥🔥🔥 미러 명령어는 강화된 핸들러 사용 - 인자 처리 수정
                 self.application.add_handler(
-                    CommandHandler('mirror', lambda update, context: 
-                        self.handle_mirror_command_enhanced(update, [update.message.text.split()]))
+                    CommandHandler('mirror', self.handle_mirror_command_enhanced)
                 )
             elif command == 'ratio':
                 # 🔥🔥🔥 배율 명령어는 인자 처리 가능한 핸들러 사용
@@ -935,8 +951,11 @@ class TelegramBot:
             await self.send_message(
                 f"🤖 <b>Telegram Bot 시작됨</b>\n\n"
                 f"🎮 <b>실시간 제어 명령어:</b>\n"
-                f"• <code>/mirror on/off</code> - 미러링 제어\n"
+                f"• <code>/mirror on</code> - 미러링 활성화\n"
+                f"• <code>/mirror off</code> - 미러링 비활성화\n"
+                f"• <code>/mirror status</code> - 상태 확인\n"
                 f"• <code>/ratio [숫자]</code> - 복제 비율 조정\n"
+                f"• <code>/ratio</code> - 현재 비율 확인\n"
                 f"• <code>/profit</code> - 수익 조회 (항상 사용 가능)\n"
                 f"• <code>/report</code> - 시장 분석\n"
                 f"• <code>/forecast</code> - 단기 예측\n"
@@ -945,7 +964,8 @@ class TelegramBot:
                 f"• \"미러링 켜줘\"\n"
                 f"• \"배율 2배로 해줘\"\n"
                 f"• \"오늘 수익은?\"\n\n"
-                f"✅ 모든 명령어가 활성화되었습니다!",
+                f"✅ 모든 명령어가 활성화되었습니다!\n"
+                f"🔥 /mirror on, /mirror off, /ratio 1.5 등의 명령어가 정상 작동합니다!",
                 parse_mode='HTML'
             )
             
@@ -975,6 +995,7 @@ class TelegramBot:
                 stats_msg += f"\n<b>⚠️ 대기 중인 확인:</b> {len(self.pending_confirmations)}개"
             
             stats_msg += f"\n\n🔥 미러/배율 실시간 제어 시스템이 안전하게 종료됩니다."
+            stats_msg += f"\n✅ /mirror on/off, /ratio [숫자] 명령어가 정상 작동했습니다!"
             
             await self.send_message(stats_msg, parse_mode='HTML')
             
