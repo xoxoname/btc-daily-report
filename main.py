@@ -1,4 +1,4 @@
- import os
+import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -1938,7 +1938,7 @@ class BitcoinPredictionSystem:
 
 <b>🎮 항상 사용 가능한 명령어:</b>
 - /profit - 수익 현황 조회 ✅
-- /ratio - 복제 비율 확인/조정 ✅
+- /ratio - 복제 비율 확인 및 조정 ✅
 - /mirror - 미러 트레이딩 상태/제어 ✅
 - /report - 전체 분석 리포트
 - /forecast - 단기 예측
@@ -1949,10 +1949,10 @@ class BitcoinPredictionSystem:
                 startup_msg += f"""
 
 <b>🎮 미러 트레이딩 실시간 제어:</b>
-- 현재 상태: <b>{mirror_status}</b>
-- 현재 복제 비율: <b>{current_ratio}x</b>
 - 미러링 활성화: /mirror on
 - 미러링 비활성화: /mirror off
+- 현재 미러링: <b>{mirror_status}</b>
+- 현재 복제 비율: <b>{current_ratio}x</b>
 - 복제 비율 조정: /ratio [숫자]
 - 상태 확인: /mirror status
 
@@ -1964,17 +1964,15 @@ class BitcoinPredictionSystem:
             else:
                 startup_msg += f"""
 
-<b>🔧 미러 트레이딩 준비:</b>
-- 현재 상태: 비활성화 (조건 미충족)
-- /profit 명령어: 수익 현황 조회 가능 ✅
-- /ratio 명령어: 복제 비율 정보 확인 가능 ✅
-- /mirror 명령어: 상태 확인 및 활성화 시도 가능 ✅
-
-<b>💡 미러 트레이딩 활성화 조건:</b>
-- MIRROR_TRADING_MODE=O 환경변수 설정
-- Gate.io API 키 설정 (GATE_API_KEY, GATE_API_SECRET)
-- 미러 트레이딩 모듈 정상 설치
-- 조건 충족 후 /mirror on 명령어 사용"""
+<b>🔧 미러 트레이딩 설정:</b>
+- 현재 상태: 사용 불가 (조건 미충족)
+- /mirror 명령어: 상태 확인 및 활성화 안내
+- /ratio 명령어: 복제 비율 정보 확인
+- 활성화 조건:
+  • MIRROR_TRADING_MODE=O 환경변수 설정
+  • Gate.io API 키 설정 (GATE_API_KEY, GATE_API_SECRET)
+  • 미러 트레이딩 모듈 정상 설치
+- 활성화 후: /mirror on 명령어로 즉시 시작 가능"""
             
             startup_msg += f"""
 
@@ -1988,7 +1986,7 @@ class BitcoinPredictionSystem:
 <b>💬 주요 텔레그램 명령어:</b>
 - /profit - 수익 조회 (항상 사용 가능) ✅
 - /ratio - 복제 비율 확인 (항상 사용 가능) ✅
-- /mirror - 미러링 제어 (항상 사용 가능) ✅"""
+- /mirror - 미러 트레이딩 제어 (항상 사용 가능) ✅"""
             
             if self.can_use_mirror_trading():
                 startup_msg += f"""
@@ -2000,6 +1998,13 @@ class BitcoinPredictionSystem:
             
             startup_msg += f"""
 
+<b>🔥 텔레그램 실시간 제어 시스템:</b>
+- 미러링 활성화/비활성화: 즉시 적용
+- 복제 비율 조정: 0.1 ~ 10.0배 범위
+- 안전한 확인 절차: 실수 방지
+- 상태 실시간 조회: 언제든지 확인
+- 명령어 응답: 미러 모드와 상관없이 작동
+
 <b>🔥 크리티컬 뉴스 전용 시스템:</b>
 - ETF, Fed 금리, 기업 직접 투자만 엄선
 - 구조화 상품, 의견/예측 글 자동 제외
@@ -2007,14 +2012,12 @@ class BitcoinPredictionSystem:
 - 가격 영향도 0.1% 이상만 처리
 - 강화된 예외 리포트 자동 생성
 
-🎮 모든 주요 기능이 텔레그램으로 실시간 제어 가능합니다!
-📱 /profit, /ratio, /mirror 명령어는 조건과 상관없이 항상 사용할 수 있습니다!"""
+🎮 모든 명령어가 항상 사용 가능합니다!"""
             
             if self.can_use_mirror_trading():
-                startup_msg += f"\n💡 이제 미러링과 복제 비율을 텔레그램으로 실시간 제어할 수 있습니다!"
-                startup_msg += f"\n🎯 /mirror on/off 명령어와 /ratio 명령어를 사용해보세요!"
+                startup_msg += f"\n이제 미러링과 복제 비율을 텔레그램으로 실시간 제어할 수 있습니다!\n/mirror 명령어와 /ratio 명령어를 사용해보세요!"
             else:
-                startup_msg += f"\n💡 조건이 충족되면 /mirror on 명령어로 미러 트레이딩을 바로 활성화할 수 있습니다!"
+                startup_msg += f"\n/mirror 명령어로 미러 트레이딩 활성화 방법을 확인할 수 있습니다!\n모든 조건 충족 후 /mirror on으로 즉시 시작 가능합니다!"
             
             await self.telegram_bot.send_message(startup_msg, parse_mode='HTML')
             
@@ -2099,7 +2102,7 @@ class BitcoinPredictionSystem:
 <b>🔄 미러 트레이딩:</b> {mirror_status} ({current_ratio}x)"""
                 
                 if self.can_use_mirror_trading():
-                    shutdown_msg += f"\n<b>🎯 배율 조정:</b> {self.command_stats['ratio']}회 (텔레그램)\n<b>🎮 미러링 제어:</b> {self.command_stats['mirror']}회 (텔레그램)"
+                    shutdown_msg += f"\n<b>🎯 텔레그램 제어:</b> {self.command_stats['ratio'] + self.command_stats['mirror']}회 사용됨"
                 
                 if self.ml_mode and self.ml_predictor:
                     stats = self.ml_predictor.get_stats()
@@ -2112,8 +2115,7 @@ class BitcoinPredictionSystem:
                 shutdown_msg += "\n/profit, /ratio, /mirror 명령어가 정상적으로 작동했습니다! ✅"
                 
                 if self.can_use_mirror_trading():
-                    shutdown_msg += f"\n미러 트레이딩({current_ratio}x)도 함께 종료됩니다."
-                    shutdown_msg += f"\n텔레그램 실시간 제어 기능도 종료됩니다."
+                    shutdown_msg += f"\n미러 트레이딩({current_ratio}x)과 텔레그램 실시간 제어가 함께 종료됩니다."
                 
                 await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
             except:
@@ -2127,7 +2129,7 @@ class BitcoinPredictionSystem:
             self.logger.info("텔레그램 봇 종료 중...")
             await self.telegram_bot.stop()
             
-            # 미러 트레이딩 종료 (실제 미러 시스템일 때만)
+            # 미러 트레이딩 종료 (실제 미러 시스템이 있을 때만)
             if self.can_use_mirror_trading() and self.mirror_trading and hasattr(self.mirror_trading, 'stop'):
                 self.logger.info("미러 트레이딩 종료 중...")
                 await self.mirror_trading.stop()
@@ -2143,7 +2145,7 @@ class BitcoinPredictionSystem:
                 await self.bitget_client.close()
             
             # Gate.io 클라이언트 종료 (실제 미러 모드일 때만)
-            if self.can_use_mirror_trading() and self.gate_client and self.gate_client.session:
+            if self.gate_client and hasattr(self.gate_client, 'session') and self.gate_client.session:
                 self.logger.info("Gate.io 클라이언트 종료 중...")
                 await self.gate_client.close()
             
@@ -2153,7 +2155,7 @@ class BitcoinPredictionSystem:
                 self.ml_predictor.save_predictions()
             
             self.logger.info("=" * 50)
-            self.logger.info("✅ 텔레그램 실시간 제어 시스템이 안전하게 종료되었습니다")
+            self.logger.info("✅ 텔레그램 실시간 제어 + 미러 트레이딩 시스템이 안전하게 종료되었습니다")
             self.logger.info("=" * 50)
             
         except Exception as e:
@@ -2161,50 +2163,67 @@ class BitcoinPredictionSystem:
             self.logger.debug(traceback.format_exc())
 
 
-# 🔥🔥🔥 더미 미러 트레이딩 시스템 클래스 - 텔레그램 응답용
 class DummyMirrorTradingSystem:
+    """🔥🔥🔥 더미 미러 트레이딩 시스템 - 텔레그램 명령어 응답용"""
+    
     def __init__(self, config, telegram_bot):
         self.config = config
         self.telegram_bot = telegram_bot
         self.logger = logging.getLogger('dummy_mirror')
         
-        # 기본 속성들
+        # 기본 설정값들
         self.mirror_trading_enabled = False
         self.mirror_ratio_multiplier = 1.0
         
-        self.logger.info("더미 미러 트레이딩 시스템 초기화 완료 (텔레그램 응답용)")
+        self.logger.info("✅ 더미 미러 트레이딩 시스템 초기화 완료 (텔레그램 응답용)")
     
     async def get_current_mirror_mode(self) -> Dict:
-        """현재 미러링 모드 정보 조회 - 더미 버전"""
+        """현재 미러링 모드 정보 조회"""
         return {
             'enabled': False,
-            'description': '비활성화 (조건 미충족)',
+            'description': '미러 트레이딩 사용 불가 (조건 미충족)',
             'last_updated': datetime.now().isoformat()
         }
     
     async def get_current_ratio_info(self) -> Dict:
-        """현재 복제 비율 정보 조회 - 더미 버전"""
+        """현재 복제 비율 정보 조회"""
         return {
-            'current_ratio': 1.0,
-            'description': '표준 비율 (미러링 시)',
+            'current_ratio': self.mirror_ratio_multiplier,
+            'description': '기본 비율 (미러링 비활성화)',
             'last_updated': datetime.now().isoformat(),
             'is_default': True
         }
     
     async def set_mirror_mode(self, enable: bool) -> Dict:
-        """미러링 모드 변경 시도 - 더미 버전"""
+        """미러링 모드 변경 시도"""
+        # 조건 체크
+        gate_api_available = bool(os.getenv('GATE_API_KEY') and os.getenv('GATE_API_SECRET'))
+        
+        reasons = []
+        if not MIRROR_TRADING_AVAILABLE:
+            reasons.append("미러 트레이딩 모듈을 찾을 수 없음")
+        if not gate_api_available:
+            reasons.append("Gate.io API 키가 설정되지 않음")
+        
         return {
             'success': False,
-            'error': '미러 트레이딩 조건이 충족되지 않았습니다. Gate.io API 키 설정 및 미러 모듈 설치가 필요합니다.',
-            'current_state': False
+            'error': f"미러 트레이딩 사용 불가: {', '.join(reasons)}",
+            'current_state': False,
+            'required_conditions': [
+                "MIRROR_TRADING_MODE=O 환경변수 설정",
+                "Gate.io API 키 설정 (GATE_API_KEY, GATE_API_SECRET)",
+                "미러 트레이딩 모듈 정상 설치",
+                "시스템 재시작"
+            ]
         }
     
     async def set_ratio_multiplier(self, new_ratio: float) -> Dict:
-        """복제 비율 변경 시도 - 더미 버전"""
+        """복제 비율 변경 시도"""
         return {
             'success': False,
-            'error': '미러 트레이딩이 활성화되지 않았습니다. 먼저 미러 트레이딩 조건을 충족해주세요.',
-            'current_ratio': 1.0
+            'error': "미러 트레이딩이 활성화되지 않았습니다",
+            'current_ratio': self.mirror_ratio_multiplier,
+            'message': "미러 트레이딩 활성화 후 복제 비율을 조정할 수 있습니다"
         }
 
 
