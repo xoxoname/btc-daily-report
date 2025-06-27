@@ -97,28 +97,90 @@ class ProfitReportGenerator(BaseReportGenerator):
             return "❌ 수익 현황 조회 중 오류가 발생했습니다."
     
     async def _get_bitget_data_position_pnl(self) -> dict:
-        """🔥🔥 Bitget Position PnL 기준 정확한 데이터 조회 - 수수료 분리"""
+        """🔥🔥 Bitget Position PnL 기준 정확한 데이터 조회 - 수수료 분리 + 강화된 오류 처리"""
         try:
             self.logger.info("🔍 Bitget Position PnL 기준 정확한 데이터 조회 시작...")
             
-            # 기존 데이터
-            market_data = await self._get_market_data()
-            position_info = await self._get_position_info()
-            account_info = await self._get_account_info()
+            # 🔥🔥 단계별 데이터 조회 (오류 격리)
+            market_data = {}
+            position_info = {'has_position': False}
+            account_info = {}
+            today_position_pnl = 0.0
+            weekly_position_pnl = {'total_pnl': 0, 'average_daily': 0, 'actual_days': 7}
+            cumulative_data = {'total_profit': 0, 'roi': 0}
             
-            # 🔥🔥 오늘 Position PnL 기준 실현손익 조회
-            today_position_pnl = await self.bitget_client.get_today_position_pnl()
+            # 1. 시장 데이터 조회 (실패해도 계속)
+            try:
+                market_data = await self._get_market_data()
+                self.logger.info("✅ 시장 데이터 조회 성공")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 시장 데이터 조회 실패: {e}")
+                market_data = {}
             
-            self.logger.info(f"오늘 Position PnL: ${today_position_pnl:.4f}")
+            # 2. 계정 정보 조회 (가장 중요)
+            try:
+                account_info = await self._get_account_info()
+                if account_info:
+                    self.logger.info(f"✅ 계정 정보 조회 성공: ${account_info.get('total_equity', 0):.2f}")
+                else:
+                    self.logger.error("❌ 계정 정보 조회 실패 - 빈 응답")
+                    raise Exception("계정 정보 없음")
+            except Exception as e:
+                self.logger.error(f"❌ 계정 정보 조회 실패: {e}")
+                # 🔥🔥 계정 정보 실패시 기본값 설정
+                account_info = {
+                    'total_equity': 0,
+                    'available': 0,
+                    'used_margin': 0,
+                    'unrealized_pnl': 0,
+                    'margin_balance': 0,
+                    'wallet_balance': 0
+                }
             
-            # 🔥🔥 정확한 7일 Position PnL 조회 - 비트겟 API 7일 제한 준수
-            weekly_position_pnl = await self.bitget_client.get_7day_position_pnl()
+            # 3. 포지션 정보 조회 (실패해도 계속)
+            try:
+                position_info = await self._get_position_info()
+                if position_info.get('has_position'):
+                    self.logger.info(f"✅ 포지션 정보 조회 성공: {position_info.get('side')} 포지션")
+                else:
+                    self.logger.info("ℹ️ 현재 포지션 없음")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 포지션 정보 조회 실패: {e}")
+                position_info = {'has_position': False}
             
-            self.logger.info(f"7일 Position PnL: ${weekly_position_pnl.get('total_pnl', 0):.4f}")
+            # 4. 오늘 Position PnL 조회 (실패해도 계속)
+            try:
+                today_position_pnl = await self.bitget_client.get_today_position_pnl()
+                self.logger.info(f"✅ 오늘 Position PnL: ${today_position_pnl:.4f}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 오늘 Position PnL 조회 실패: {e}")
+                today_position_pnl = 0.0
             
-            # 2025년 5월부터 누적 손익 조회
-            cumulative_data = await self._get_cumulative_profit_since_may()
+            # 5. 7일 Position PnL 조회 (실패해도 계속)
+            try:
+                weekly_position_pnl = await self.bitget_client.get_7day_position_pnl()
+                self.logger.info(f"✅ 7일 Position PnL: ${weekly_position_pnl.get('total_pnl', 0):.4f}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 7일 Position PnL 조회 실패: {e}")
+                weekly_position_pnl = {
+                    'total_pnl': 0,
+                    'average_daily': 0,
+                    'actual_days': 7,
+                    'trading_fees': 0,
+                    'funding_fees': 0,
+                    'net_profit': 0,
+                    'source': 'error_fallback'
+                }
             
+            # 6. 누적 손익 조회 (실패해도 계속)
+            try:
+                cumulative_data = await self._get_cumulative_profit_since_may()
+                self.logger.info(f"✅ 누적 수익: ${cumulative_data.get('total_profit', 0):.2f}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 누적 손익 조회 실패: {e}")
+                cumulative_data = {'total_profit': 0, 'roi': 0}
+            
+            # 총 자산 확인
             total_equity = account_info.get('total_equity', 0)
             
             # 🔥🔥 사용 증거금 계산 개선 - 포지션 정보와 계정 정보 모두 확인
@@ -153,6 +215,9 @@ class ProfitReportGenerator(BaseReportGenerator):
                     used_margin = total_equity - available
                     self.logger.info(f"Bitget 증거금 (역계산): 총자산=${total_equity:.2f} - 가용=${available:.2f} = ${used_margin:.2f}")
             
+            # 🔥🔥 API 연결 상태 체크
+            api_healthy = total_equity > 0 or position_info.get('has_position', False)
+            
             result = {
                 'exchange': 'Bitget',
                 'market_data': market_data,
@@ -174,14 +239,18 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'initial_capital': self.BITGET_INITIAL_CAPITAL,
                 'available': account_info.get('available', 0),
                 'used_margin': used_margin,  # 🔥🔥 개선된 증거금 계산
-                'cumulative_data': cumulative_data
+                'cumulative_data': cumulative_data,
+                'api_healthy': api_healthy  # 🔥🔥 API 연결 상태
             }
             
-            self.logger.info(f"✅ Bitget Position PnL 기준 데이터 조회 완료:")
-            self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
-            self.logger.info(f"  - 7일 Position PnL: ${weekly_position_pnl.get('total_pnl', 0):.4f}")
-            self.logger.info(f"  - 누적 수익: ${cumulative_data.get('total_profit', 0):.2f}")
-            self.logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
+            if api_healthy:
+                self.logger.info(f"✅ Bitget Position PnL 기준 데이터 조회 완료:")
+                self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
+                self.logger.info(f"  - 7일 Position PnL: ${weekly_position_pnl.get('total_pnl', 0):.4f}")
+                self.logger.info(f"  - 누적 수익: ${cumulative_data.get('total_profit', 0):.2f}")
+                self.logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
+            else:
+                self.logger.warning("⚠️ Bitget API 연결 문제 - 기본값으로 설정")
             
             return result
             
@@ -371,59 +440,92 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_exchange_data('Gate')
     
     def _calculate_combined_data_position_pnl(self, bitget_data: dict, gateio_data: dict) -> dict:
-        """Position PnL 기준 통합 데이터 계산"""
-        # 총 자산
-        total_equity = bitget_data['total_equity'] + gateio_data['total_equity']
+        """Position PnL 기준 통합 데이터 계산 - 개선된 오류 처리"""
+        # 🔥🔥 API 연결 상태 체크
+        bitget_healthy = bitget_data.get('api_healthy', True)
+        gateio_healthy = gateio_data.get('has_account', False)
+        
+        self.logger.info(f"🔍 통합 데이터 계산:")
+        self.logger.info(f"  - Bitget 상태: {'정상' if bitget_healthy else '오류'}")
+        self.logger.info(f"  - Gate.io 상태: {'정상' if gateio_healthy else '없음'}")
+        
+        # 총 자산 (정상적인 데이터만 사용)
+        bitget_equity = bitget_data['total_equity'] if bitget_healthy else 0
+        gateio_equity = gateio_data['total_equity'] if gateio_healthy else 0
+        total_equity = bitget_equity + gateio_equity
         
         # 가용 자산
-        total_available = bitget_data['available'] + gateio_data['available']
+        bitget_available = bitget_data['available'] if bitget_healthy else 0
+        gateio_available = gateio_data['available'] if gateio_healthy else 0
+        total_available = bitget_available + gateio_available
         
         # 🔥🔥 사용 증거금 (개선된 계산)
-        total_used_margin = bitget_data['used_margin'] + gateio_data['used_margin']
+        bitget_used_margin = bitget_data['used_margin'] if bitget_healthy else 0
+        gateio_used_margin = gateio_data['used_margin'] if gateio_healthy else 0
+        total_used_margin = bitget_used_margin + gateio_used_margin
         
         # 🔥🔥 Position PnL 기준 금일 손익 계산
-        bitget_unrealized = bitget_data['account_info'].get('unrealized_pnl', 0)
-        gateio_unrealized = gateio_data['account_info'].get('unrealized_pnl', 0)
+        bitget_unrealized = bitget_data['account_info'].get('unrealized_pnl', 0) if bitget_healthy else 0
+        gateio_unrealized = gateio_data['account_info'].get('unrealized_pnl', 0) if gateio_healthy else 0
         
-        today_position_pnl = bitget_data['today_pnl'] + gateio_data['today_pnl']  # Position PnL 기준
+        bitget_today_pnl = bitget_data['today_pnl'] if bitget_healthy else 0
+        gateio_today_pnl = gateio_data['today_pnl'] if gateio_healthy else 0
+        
+        today_position_pnl = bitget_today_pnl + gateio_today_pnl  # Position PnL 기준
         
         # 🔥🔥 최종 안전장치: 비현실적인 값 필터링
         if abs(today_position_pnl) > 100000:  # 10만 달러 이상은 명백한 오류
-            self.logger.error(f"통합 계산에서 비현실적인 금일 PnL 감지, 비트겟만 사용: {today_position_pnl}")
-            today_position_pnl = bitget_data['today_pnl']  # Gate.io 값 무시하고 Bitget만 사용
+            self.logger.error(f"통합 계산에서 비현실적인 금일 PnL 감지, 개별 값 사용")
+            if bitget_healthy:
+                today_position_pnl = bitget_today_pnl
+            elif gateio_healthy:
+                today_position_pnl = gateio_today_pnl
+            else:
+                today_position_pnl = 0
         
         today_unrealized = bitget_unrealized + gateio_unrealized
         today_total = today_position_pnl + today_unrealized
         
         # 🔥🔥 7일 Position PnL (통합)
-        bitget_weekly = bitget_data['weekly_profit']['total']
-        gateio_weekly = gateio_data['weekly_profit']['total_pnl']
+        bitget_weekly = bitget_data['weekly_profit']['total'] if bitget_healthy else 0
+        gateio_weekly = gateio_data['weekly_profit']['total_pnl'] if gateio_healthy else 0
         weekly_total = bitget_weekly + gateio_weekly  # Position PnL 기준
         
         # 🔥🔥 최종 안전장치: 비현실적인 값 필터링
         if abs(weekly_total) > 100000:  # 10만 달러 이상은 명백한 오류
-            self.logger.error(f"통합 계산에서 비현실적인 7일 PnL 감지, 비트겟만 사용: {weekly_total}")
-            weekly_total = bitget_weekly  # Gate.io 값 무시하고 Bitget만 사용
+            self.logger.error(f"통합 계산에서 비현실적인 7일 PnL 감지, 개별 값 사용")
+            if bitget_healthy:
+                weekly_total = bitget_weekly
+            elif gateio_healthy:
+                weekly_total = gateio_weekly
+            else:
+                weekly_total = 0
         
         # 실제 일수 계산
-        actual_days = max(
-            bitget_data['weekly_profit'].get('actual_days', 7),
-            gateio_data['weekly_profit'].get('actual_days', 7)
-        )
+        actual_days = 7.0
+        if bitget_healthy:
+            actual_days = max(actual_days, bitget_data['weekly_profit'].get('actual_days', 7))
+        if gateio_healthy:
+            actual_days = max(actual_days, gateio_data['weekly_profit'].get('actual_days', 7))
+        
         weekly_avg = weekly_total / actual_days if actual_days > 0 else 0
         
         # 누적 수익 (2025년 5월부터)
-        bitget_cumulative = bitget_data['cumulative_profit']
-        gateio_cumulative = gateio_data['cumulative_profit']
+        bitget_cumulative = bitget_data['cumulative_profit'] if bitget_healthy else 0
+        gateio_cumulative = gateio_data['cumulative_profit'] if gateio_healthy else 0
         cumulative_profit = bitget_cumulative + gateio_cumulative
         
-        # 수익률 계산
+        # 수익률 계산 (분모가 0인 경우 방지)
         today_roi = (today_total / total_equity * 100) if total_equity > 0 else 0
         
         initial_7d = total_equity - weekly_total
         weekly_roi = (weekly_total / initial_7d * 100) if initial_7d > 0 else 0
         
-        total_initial = self.BITGET_INITIAL_CAPITAL + gateio_data.get('initial_capital', 750)
+        # 🔥🔥 초기 자본 계산 개선
+        bitget_initial = self.BITGET_INITIAL_CAPITAL if bitget_healthy else 0
+        gateio_initial = gateio_data.get('initial_capital', 750) if gateio_healthy else 0
+        total_initial = bitget_initial + gateio_initial
+        
         cumulative_roi = (cumulative_profit / total_initial * 100) if total_initial > 0 else 0
         
         # 🔥🔥 검증: 7일과 누적이 다른지 확인
@@ -431,6 +533,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         is_properly_separated = seven_vs_cumulative_diff > 50  # $50 이상 차이나야 정상
         
         self.logger.info(f"Position PnL 기준 통합 데이터 계산:")
+        self.logger.info(f"  - 총 자산: ${total_equity:.2f} (B:${bitget_equity:.2f} + G:${gateio_equity:.2f})")
         self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
         self.logger.info(f"  - 7일  Position PnL: ${weekly_total:.4f} ({actual_days:.1f}일)")
         self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
@@ -452,22 +555,29 @@ class ProfitReportGenerator(BaseReportGenerator):
             'actual_days': actual_days,      # 실제 7일 기간
             'cumulative_profit': cumulative_profit,
             'cumulative_roi': cumulative_roi,
-            'bitget_equity': bitget_data['total_equity'],
-            'gateio_equity': gateio_data['total_equity'],
-            'gateio_has_account': gateio_data.get('has_account', False),
+            'bitget_equity': bitget_equity,
+            'gateio_equity': gateio_equity,
+            'gateio_has_account': gateio_healthy,
             'total_initial': total_initial,
             'seven_vs_cumulative_diff': seven_vs_cumulative_diff,
             'is_properly_separated': is_properly_separated,
             # 개별 거래소 미실현/실현 손익
-            'bitget_today_realized': bitget_data['today_pnl'],
+            'bitget_today_realized': bitget_today_pnl,
             'bitget_today_unrealized': bitget_unrealized,
-            'gateio_today_realized': gateio_data['today_pnl'],
-            'gateio_today_unrealized': gateio_unrealized
+            'gateio_today_realized': gateio_today_pnl,
+            'gateio_today_unrealized': gateio_unrealized,
+            # API 연결 상태
+            'bitget_healthy': bitget_healthy,
+            'gateio_healthy': gateio_healthy
         }
     
     def _format_profit_detail_position_pnl_improved(self, bitget_data: dict, gateio_data: dict, combined_data: dict, gateio_has_data: bool) -> str:
-        """🔥🔥 개선된 Position PnL 기준 손익 정보 - 미실현/실현 분리 표시"""
+        """🔥🔥 개선된 Position PnL 기준 손익 정보 - 미실현/실현 분리 표시 + API 연결 상태 고려"""
         lines = []
+        
+        # 🔥🔥 API 연결 상태 확인
+        bitget_healthy = combined_data.get('bitget_healthy', True)
+        gateio_healthy = combined_data.get('gateio_healthy', False)
         
         # 통합 손익 요약
         today_position_pnl = combined_data['today_position_pnl']
@@ -477,22 +587,31 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         lines.append(f"• <b>수익: {self._format_currency_compact(today_total, today_roi)}</b>")
         
-        # Bitget 상세 - 미실현/실현 분리
-        bitget_realized = combined_data['bitget_today_realized']
-        bitget_unrealized = combined_data['bitget_today_unrealized']
-        lines.append(f"  ├ Bitget: 미실현 {self._format_currency_html(bitget_unrealized, False)} | 실현 {self._format_currency_html(bitget_realized, False)}")
+        # Bitget 상세 - 미실현/실현 분리 (API 연결 상태 고려)
+        if bitget_healthy:
+            bitget_realized = combined_data['bitget_today_realized']
+            bitget_unrealized = combined_data['bitget_today_unrealized']
+            lines.append(f"  ├ Bitget: 미실현 {self._format_currency_html(bitget_unrealized, False)} | 실현 {self._format_currency_html(bitget_realized, False)}")
+        else:
+            lines.append(f"  ├ Bitget: API 연결 오류")
         
         # Gate 상세 - 데이터가 있는 경우만, 미실현/실현 분리
-        if gateio_has_data and gateio_data['total_equity'] > 0:
+        if gateio_healthy and gateio_data['total_equity'] > 0:
             gateio_realized = combined_data['gateio_today_realized']
             gateio_unrealized = combined_data['gateio_today_unrealized']
             lines.append(f"  └ Gate: 미실현 {self._format_currency_html(gateio_unrealized, False)} | 실현 {self._format_currency_html(gateio_realized, False)}")
+        elif gateio_has_data:
+            lines.append(f"  └ Gate: ${gateio_data['total_equity']:,.2f} 계정")
         
         return '\n'.join(lines)
     
     def _format_7day_profit_simple(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
-        """🔥🔥 간소화된 7일 수익 표시"""
+        """🔥🔥 간소화된 7일 수익 표시 + API 연결 상태 고려"""
         lines = []
+        
+        # 🔥🔥 API 연결 상태 확인
+        bitget_healthy = combined_data.get('bitget_healthy', True)
+        gateio_healthy = combined_data.get('gateio_healthy', False)
         
         # 실제 기간 표시
         actual_days = combined_data.get('actual_days', 7.0)
@@ -501,16 +620,22 @@ class ProfitReportGenerator(BaseReportGenerator):
         lines.append(f"• <b>수익: {self._format_currency_compact(combined_data['weekly_total'], combined_data['weekly_roi'])}</b>")
         
         # 거래소별 7일 Position PnL
-        if gateio_has_data and gateio_data['total_equity'] > 0:
-            bitget_weekly = bitget_data['weekly_profit']['total']
-            gate_weekly = gateio_data['weekly_profit']['total_pnl']
+        if gateio_healthy and gateio_data['total_equity'] > 0:
+            if bitget_healthy:
+                bitget_weekly = bitget_data['weekly_profit']['total']
+                lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_weekly, False)}")
+            else:
+                lines.append(f"  ├ Bitget: API 연결 오류")
             
-            lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_weekly, False)}")
+            gate_weekly = gateio_data['weekly_profit']['total_pnl']
             lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)}")
         else:
             # Bitget만 있는 경우
-            bitget_weekly = bitget_data['weekly_profit']['total']
-            lines.append(f"  └ Bitget: {self._format_currency_html(bitget_weekly, False)}")
+            if bitget_healthy:
+                bitget_weekly = bitget_data['weekly_profit']['total']
+                lines.append(f"  └ Bitget: {self._format_currency_html(bitget_weekly, False)}")
+            else:
+                lines.append(f"  └ Bitget: API 연결 오류")
         
         # 일평균 (실제 일수 기준)
         lines.append(f"• <b>일평균: {self._format_currency_compact_daily(combined_data['weekly_avg'])}</b>")
@@ -518,8 +643,12 @@ class ProfitReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     def _format_cumulative_performance_position_pnl(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
-        """Position PnL 기준 누적 성과 - 2025년 5월부터"""
+        """Position PnL 기준 누적 성과 - 2025년 5월부터 + API 연결 상태 고려"""
         lines = []
+        
+        # 🔥🔥 API 연결 상태 확인
+        bitget_healthy = combined_data.get('bitget_healthy', True)
+        gateio_healthy = combined_data.get('gateio_healthy', False)
         
         # 통합 누적 수익
         total_cumulative = combined_data['cumulative_profit']
@@ -528,13 +657,19 @@ class ProfitReportGenerator(BaseReportGenerator):
         lines.append(f"• <b>수익: {self._format_currency_compact(total_cumulative, total_cumulative_roi)}</b>")
         
         # 거래소별 상세
-        if gateio_has_data and gateio_data['total_equity'] > 0:
-            lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
+        if gateio_healthy and gateio_data['total_equity'] > 0:
+            if bitget_healthy:
+                lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
+            else:
+                lines.append(f"  ├ Bitget: API 연결 오류")
             
             gate_roi = gateio_data['cumulative_roi']
             lines.append(f"  └ Gate: {self._format_currency_html(gateio_data['cumulative_profit'], False)} ({gate_roi:+.0f}%)")
         else:
-            lines.append(f"  └ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
+            if bitget_healthy:
+                lines.append(f"  └ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
+            else:
+                lines.append(f"  └ Bitget: API 연결 오류")
         
         # 🔥🔥 검증 정보 추가 (개발용)
         if not combined_data.get('is_properly_separated', True):
@@ -823,57 +958,92 @@ class ProfitReportGenerator(BaseReportGenerator):
         }
     
     def _format_asset_summary(self, combined_data: dict, gateio_has_data: bool) -> str:
-        """통합 자산 현황 요약"""
+        """통합 자산 현황 요약 - API 연결 상태 고려"""
         total_equity = combined_data['total_equity']
         bitget_equity = combined_data['bitget_equity']
         gateio_equity = combined_data['gateio_equity']
         
+        # 🔥🔥 API 연결 상태 확인
+        bitget_healthy = combined_data.get('bitget_healthy', True)
+        gateio_healthy = combined_data.get('gateio_healthy', False)
+        
         lines = []
         
         # Gate 계정이 있고 데이터가 있는 경우
-        if gateio_has_data and gateio_equity > 0:
+        if gateio_healthy and gateio_equity > 0:
             lines.append(f"• <b>총 자산: ${total_equity:,.2f}</b> ({int(total_equity * 1350 / 10000)}만원)")
-            lines.append(f"  ├ Bitget: ${bitget_equity:,.2f} ({int(bitget_equity * 1350 / 10000)}만원/{bitget_equity / total_equity * 100:.0f}%)")
-            lines.append(f"  └ Gate: ${gateio_equity:,.2f} ({int(gateio_equity * 1350 / 10000)}만원/{gateio_equity / total_equity * 100:.0f}%)")
+            
+            # Bitget 비율 계산 (API 상태 고려)
+            if bitget_healthy and total_equity > 0:
+                bitget_pct = bitget_equity / total_equity * 100
+                lines.append(f"  ├ Bitget: ${bitget_equity:,.2f} ({int(bitget_equity * 1350 / 10000)}만원/{bitget_pct:.0f}%)")
+            else:
+                lines.append(f"  ├ Bitget: API 연결 오류 (${bitget_equity:,.2f})")
+            
+            # Gate.io 비율 계산
+            if total_equity > 0:
+                gate_pct = gateio_equity / total_equity * 100
+                lines.append(f"  └ Gate: ${gateio_equity:,.2f} ({int(gateio_equity * 1350 / 10000)}만원/{gate_pct:.0f}%)")
+            else:
+                lines.append(f"  └ Gate: ${gateio_equity:,.2f} ({int(gateio_equity * 1350 / 10000)}만원)")
         else:
+            # Gate 계정이 없거나 Bitget만 있는 경우
             lines.append(f"• <b>총 자산: ${total_equity:,.2f}</b> ({int(total_equity * 1350 / 10000)}만원)")
-            lines.append(f"  └ Bitget: ${bitget_equity:,.2f} ({int(bitget_equity * 1350 / 10000)}만원/100%)")
+            
+            if bitget_healthy:
+                lines.append(f"  └ Bitget: ${bitget_equity:,.2f} ({int(bitget_equity * 1350 / 10000)}만원/100%)")
+            else:
+                lines.append(f"  └ Bitget: API 연결 오류")
         
         return '\n'.join(lines)
     
     async def _format_positions_detail(self, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
-        """거래소별 포지션 상세 정보"""
+        """거래소별 포지션 상세 정보 - API 연결 상태 고려"""
         lines = []
         has_any_position = False
         
+        # 🔥🔥 API 연결 상태 확인
+        bitget_healthy = bitget_data.get('api_healthy', True)
+        gateio_healthy = gateio_data.get('has_account', False)
+        
         # Bitget 포지션
-        bitget_pos = bitget_data['position_info']
-        if bitget_pos.get('has_position'):
-            has_any_position = True
-            lines.append("━━━ <b>Bitget</b> ━━━")
-            
-            roe = bitget_pos.get('roe', 0)
-            roe_sign = "+" if roe >= 0 else ""
-            
-            lines.append(f"• BTC {bitget_pos.get('side')} | 진입: ${bitget_pos.get('entry_price', 0):,.2f} ({roe_sign}{roe:.1f}%)")
-            lines.append(f"• 현재가: ${bitget_pos.get('current_price', 0):,.2f} | 증거금: ${bitget_pos.get('margin', 0):.2f}")
-            
-            # 청산가
-            liquidation_price = bitget_pos.get('liquidation_price', 0)
-            if liquidation_price > 0:
-                current = bitget_pos.get('current_price', 0)
-                side = bitget_pos.get('side')
-                if side == '롱':
-                    liq_distance = ((current - liquidation_price) / current * 100)
+        if bitget_healthy:
+            bitget_pos = bitget_data['position_info']
+            if bitget_pos.get('has_position'):
+                has_any_position = True
+                lines.append("━━━ <b>Bitget</b> ━━━")
+                
+                roe = bitget_pos.get('roe', 0)
+                roe_sign = "+" if roe >= 0 else ""
+                
+                lines.append(f"• BTC {bitget_pos.get('side')} | 진입: ${bitget_pos.get('entry_price', 0):,.2f} ({roe_sign}{roe:.1f}%)")
+                lines.append(f"• 현재가: ${bitget_pos.get('current_price', 0):,.2f} | 증거금: ${bitget_pos.get('margin', 0):.2f}")
+                
+                # 청산가
+                liquidation_price = bitget_pos.get('liquidation_price', 0)
+                if liquidation_price > 0:
+                    current = bitget_pos.get('current_price', 0)
+                    side = bitget_pos.get('side')
+                    if side == '롱':
+                        liq_distance = ((current - liquidation_price) / current * 100)
+                    else:
+                        liq_distance = ((liquidation_price - current) / current * 100)
+                    lines.append(f"• <b>청산가: ${liquidation_price:,.2f}</b> ({abs(liq_distance):.0f}% 거리)")
                 else:
-                    liq_distance = ((liquidation_price - current) / current * 100)
-                lines.append(f"• <b>청산가: ${liquidation_price:,.2f}</b> ({abs(liq_distance):.0f}% 거리)")
+                    leverage = bitget_pos.get('leverage', 30)
+                    lines.append(f"• <b>청산가: {leverage}x 레버리지</b> (안전 거리 충분)")
             else:
-                leverage = bitget_pos.get('leverage', 30)
-                lines.append(f"• <b>청산가: {leverage}x 레버리지</b> (안전 거리 충분)")
+                # 포지션이 없는 경우도 표시
+                if gateio_healthy:  # Gate가 있으면 Bitget도 표시
+                    lines.append("━━━ <b>Bitget</b> ━━━")
+                    lines.append("• 현재 포지션 없음")
+        else:
+            # API 연결 오류
+            lines.append("━━━ <b>Bitget</b> ━━━")
+            lines.append("• ⚠️ API 연결 오류")
         
         # Gate 포지션
-        if gateio_has_data and gateio_data['total_equity'] > 0:
+        if gateio_healthy and gateio_data['total_equity'] > 0:
             gateio_pos = gateio_data['position_info']
             if gateio_pos.get('has_position'):
                 has_any_position = True
@@ -897,35 +1067,60 @@ class ProfitReportGenerator(BaseReportGenerator):
                     else:
                         liq_distance = ((liquidation_price - current) / current * 100)
                     lines.append(f"• <b>청산가: ${liquidation_price:,.2f}</b> ({abs(liq_distance):.0f}% 거리)")
+            else:
+                # 포지션이 없는 경우
+                if lines:  # Bitget 정보가 있으면 구분선 추가
+                    lines.append("")
+                lines.append("━━━ <b>Gate</b> ━━━")
+                lines.append("• 현재 포지션 없음")
         
-        if not has_any_position:
+        # 두 거래소 모두 포지션이 없는 경우
+        if not has_any_position and not lines:
             lines.append("• 현재 보유 중인 포지션이 없습니다.")
         
         return '\n'.join(lines)
     
     def _format_asset_detail(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
-        """자산 정보 - 개선된 증거금 표시"""
+        """자산 정보 - 개선된 증거금 표시 + 비율 계산 수정"""
         lines = []
         
-        # 통합 자산
+        # 🔥🔥 API 연결 상태 확인
+        bitget_healthy = combined_data.get('bitget_healthy', True)
+        gateio_healthy = combined_data.get('gateio_healthy', False)
+        
+        # 통합 자산 (정상적인 데이터만 사용)
         total_available = combined_data['total_available']
         total_used_margin = combined_data['total_used_margin']  # 🔥🔥 개선된 증거금
         total_equity = combined_data['total_equity']
         
-        available_pct = (total_available / total_equity * 100) if total_equity > 0 else 0
+        # 🔥🔥 가용자산 비율 계산 수정 (분모가 0인 경우 방지)
+        if total_equity > 0:
+            available_pct = (total_available / total_equity * 100)
+        else:
+            available_pct = 0
+        
+        # 비율이 비현실적인 경우 (100% 초과) 수정
+        if available_pct > 100:
+            self.logger.warning(f"⚠️ 가용자산 비율 이상: {available_pct:.0f}%, 100%로 제한")
+            available_pct = 100
         
         lines.append(f"• <b>가용/증거금: ${total_available:,.0f} / ${total_used_margin:,.0f}</b> ({available_pct:.0f}% 가용)")
         
-        # Bitget 상세
-        bitget_available = bitget_data['available']
-        bitget_used_margin = bitget_data['used_margin']  # 🔥🔥 개선된 증거금
-        lines.append(f"  ├ Bitget: ${bitget_available:,.0f} / ${bitget_used_margin:,.0f}")
+        # Bitget 상세 (API 연결 상태에 따라)
+        if bitget_healthy:
+            bitget_available = bitget_data['available']
+            bitget_used_margin = bitget_data['used_margin']  # 🔥🔥 개선된 증거금
+            lines.append(f"  ├ Bitget: ${bitget_available:,.0f} / ${bitget_used_margin:,.0f}")
+        else:
+            lines.append(f"  ├ Bitget: API 연결 오류")
         
-        # Gate 상세
-        if gateio_has_data and gateio_data['total_equity'] > 0:
+        # Gate 상세 (연결 상태에 따라)
+        if gateio_healthy and gateio_data['total_equity'] > 0:
             gate_available = gateio_data['available']
             gate_used_margin = gateio_data['used_margin']  # 🔥🔥 개선된 증거금
             lines.append(f"  └ Gate: ${gate_available:,.0f} / ${gate_used_margin:,.0f}")
+        elif gateio_has_data:
+            lines.append(f"  └ Gate: ${gateio_data['available']:,.0f} / ${gateio_data['used_margin']:,.0f}")
         
         return '\n'.join(lines)
     
