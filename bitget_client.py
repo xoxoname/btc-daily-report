@@ -583,7 +583,7 @@ class BitgetClient:
             raise
     
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회 (V2 API)"""
+        """🔥🔥 계정 정보 조회 (V2 API) - 사용 증거금 계산 개선"""
         endpoint = "/api/v2/mix/account/accounts"
         params = {
             'productType': 'USDT-FUTURES',
@@ -593,9 +593,91 @@ class BitgetClient:
         try:
             response = await self._request('GET', endpoint, params=params)
             logger.info(f"계정 정보 원본 응답: {response}")
+            
             if isinstance(response, list) and len(response) > 0:
-                return response[0]
-            return response
+                account_data = response[0]
+            elif isinstance(response, dict):
+                account_data = response
+            else:
+                logger.warning("계정 정보 응답 형식이 예상과 다름")
+                return {}
+            
+            # 🔥🔥 사용 증거금 계산 개선
+            used_margin = 0.0
+            total_equity = float(account_data.get('accountEquity', 0))
+            available = float(account_data.get('available', 0))
+            
+            # 1순위: API에서 직접 제공하는 usedMargin 필드
+            if 'usedMargin' in account_data and account_data['usedMargin']:
+                try:
+                    used_margin = float(account_data['usedMargin'])
+                    if used_margin > 0:
+                        logger.info(f"✅ 사용 증거금 (API 직접): ${used_margin:.2f}")
+                    else:
+                        # 2순위: 총자산 - 가용자산으로 계산
+                        if total_equity > available:
+                            used_margin = total_equity - available
+                            logger.info(f"✅ 사용 증거금 (총자산-가용): ${used_margin:.2f}")
+                except (ValueError, TypeError):
+                    logger.warning("usedMargin 필드 변환 실패")
+            else:
+                # 2순위: 총자산 - 가용자산으로 계산
+                if total_equity > available:
+                    used_margin = total_equity - available
+                    logger.info(f"✅ 사용 증거금 (계산): 총자산=${total_equity:.2f} - 가용=${available:.2f} = ${used_margin:.2f}")
+                else:
+                    logger.info("포지션이 없거나 사용 증거금 없음")
+            
+            # 🔥🔥 포지션 정보와 교차 검증
+            try:
+                positions = await self.get_positions()
+                if positions:
+                    position_margin_sum = 0
+                    for pos in positions:
+                        # 포지션별 증거금 계산
+                        size = float(pos.get('total', 0))
+                        if size > 0:
+                            mark_price = float(pos.get('markPrice', 0))
+                            leverage = float(pos.get('leverage', 30))
+                            if mark_price > 0 and leverage > 0:
+                                pos_value = size * mark_price
+                                pos_margin = pos_value / leverage
+                                position_margin_sum += pos_margin
+                                logger.info(f"포지션 증거금 계산: 사이즈={size}, 가격=${mark_price:.2f}, 레버리지={leverage}x, 증거금=${pos_margin:.2f}")
+                    
+                    # 계산된 포지션 증거금과 비교
+                    if position_margin_sum > 0:
+                        margin_diff = abs(used_margin - position_margin_sum)
+                        if margin_diff > 10:  # $10 이상 차이나면 경고
+                            logger.warning(f"⚠️ 증거금 불일치: API={used_margin:.2f}, 계산={position_margin_sum:.2f}, 차이=${margin_diff:.2f}")
+                        
+                        # 계산된 값이 더 정확할 수 있으므로 사용
+                        if used_margin == 0 and position_margin_sum > 0:
+                            used_margin = position_margin_sum
+                            logger.info(f"✅ 포지션 기반 증거금 사용: ${used_margin:.2f}")
+                            
+            except Exception as e:
+                logger.debug(f"포지션 기반 증거금 검증 실패: {e}")
+            
+            # 최종 결과
+            result = {
+                'total_equity': total_equity,
+                'available': available,
+                'used_margin': used_margin,  # 🔥🔥 개선된 증거금 계산
+                'unrealized_pnl': float(account_data.get('unrealizedPL', 0)),
+                'margin_balance': float(account_data.get('marginBalance', 0)),
+                'wallet_balance': float(account_data.get('walletBalance', 0)),
+                '_original': account_data
+            }
+            
+            logger.info(f"✅ 최종 계정 정보:")
+            logger.info(f"  - 총 자산: ${total_equity:.2f}")
+            logger.info(f"  - 가용 자산: ${available:.2f}")
+            logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
+            logger.info(f"  - 미실현 손익: ${result['unrealized_pnl']:.4f}")
+            
+            return result
+            
         except Exception as e:
             logger.error(f"계정 정보 조회 실패: {e}")
             raise
