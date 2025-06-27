@@ -1,886 +1,994 @@
-import logging
-from telegram import Bot, Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import os
 import asyncio
-from typing import Callable
+import logging
+from typing import Dict, List, Optional, Union, Any
+from datetime import datetime, timedelta
+import traceback
 import re
+
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
+
+logger = logging.getLogger(__name__)
 
 class TelegramBot:
     def __init__(self, config):
         self.config = config
+        self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
         self.logger = logging.getLogger('telegram_bot')
-        self.bot = None
-        self.application = None
+        
+        if not self.bot_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN 환경변수가 설정되지 않았습니다")
+        
+        if not self.chat_id:
+            raise ValueError("TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다")
+        
+        self.bot = Bot(token=self.bot_token)
+        self.application = Application.builder().token(self.bot_token).build()
+        
+        # 🔥🔥🔥 미러 트레이딩 시스템 참조 (더미든 실제든)
         self.mirror_trading_system = None
-        self._initialize_bot()
         
-        # 🔥🔥🔥 대기 상태 관리 - 각 기능별로 분리
-        self.pending_ratio_confirmations = {}  # user_id: {'ratio': float, 'timestamp': datetime}
-        self.pending_mirror_confirmations = {}  # user_id: {'action': str, 'timestamp': datetime}
+        # 명령어 핸들러 저장소
+        self.handlers = {}
         
-    def _initialize_bot(self):
-        """봇 초기화"""
-        try:
-            telegram_token = self.config.TELEGRAM_BOT_TOKEN
-            if not telegram_token:
-                raise ValueError("TELEGRAM_BOT_TOKEN 환경변수가 설정되지 않았습니다.")
-            
-            self.bot = Bot(token=telegram_token)
-            self.application = Application.builder().token(telegram_token).build()
-            
-            self.logger.info("텔레그램 봇 초기화 완료")
-            
-        except Exception as e:
-            self.logger.error(f"텔레그램 봇 초기화 실패: {str(e)}")
-            raise
-    
+        # 🔥🔥🔥 확인 대기 중인 명령어들 (보안을 위한 확인 절차)
+        self.pending_confirmations = {}
+        self.confirmation_timeout = 60  # 60초 제한시간
+        
+        # 🔥🔥🔥 텔레그램 명령어 응답 통계
+        self.command_response_count = {
+            'mirror': 0,
+            'ratio': 0,
+            'profit': 0,
+            'report': 0,
+            'forecast': 0,
+            'schedule': 0,
+            'stats': 0,
+            'help': 0,
+            'confirmations': 0,
+            'natural_language': 0
+        }
+        
+        self.logger.info("✅ Telegram Bot 초기화 완료")
+        self.logger.info(f"Chat ID: {self.chat_id}")
+
     def set_mirror_trading_system(self, mirror_system):
-        """🔥🔥🔥 미러 트레이딩 시스템 참조 설정"""
+        """🔥🔥🔥 미러 트레이딩 시스템 설정 (더미든 실제든)"""
         self.mirror_trading_system = mirror_system
-        self.logger.info("미러 트레이딩 시스템 참조 설정 완료")
-    
-    def add_handler(self, command: str, handler_func: Callable):
-        """명령 핸들러 추가"""
+        self.logger.info("🔗 미러 트레이딩 시스템 참조 설정 완료")
+
+    async def handle_natural_language_enhanced(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """🔥🔥🔥 강화된 자연어 처리 - 미러/배율 확인 메시지 우선 처리"""
         try:
-            if self.application is None:
-                self._initialize_bot()
+            message = update.message.text.lower().strip()
+            user_id = update.effective_user.id
+            username = update.effective_user.username or "Unknown"
             
-            command_handler = CommandHandler(command, handler_func)
-            self.application.add_handler(command_handler)
-            self.logger.info(f"핸들러 등록 완료: /{command}")
+            self.logger.info(f"자연어 처리 - User: {username}({user_id}), Message: '{message}'")
+            
+            # 🔥🔥🔥 1순위: 확인 메시지 처리 (Y/N, 예/아니오 등)
+            confirmation_result = await self._handle_confirmation_responses(update, message)
+            if confirmation_result:
+                return True  # 확인 메시지 처리됨
+            
+            # 🔥🔥🔥 2순위: 미러 트레이딩 관련 자연어
+            mirror_handled = await self._handle_mirror_natural_language(update, message)
+            if mirror_handled:
+                return True
+            
+            # 🔥🔥🔥 3순위: 배율 관련 자연어
+            ratio_handled = await self._handle_ratio_natural_language(update, message)
+            if ratio_handled:
+                return True
+            
+            # 🔥🔥🔥 4순위: 수익 관련 자연어
+            profit_handled = await self._handle_profit_natural_language(update, message)
+            if profit_handled:
+                return True
+            
+            # 🔥🔥🔥 5순위: 기타 일반적인 자연어 (기존 main.py로 위임)
+            return False  # main.py에서 처리하도록 위임
             
         except Exception as e:
-            self.logger.error(f"핸들러 등록 실패: {str(e)}")
-            raise
-    
-    def add_message_handler(self, handler_func: Callable):
-        """자연어 메시지 핸들러 추가"""
-        try:
-            if self.application is None:
-                self._initialize_bot()
-            
-            message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handler_func)
-            self.application.add_handler(message_handler)
-            self.logger.info("자연어 메시지 핸들러 등록 완료")
-            
-        except Exception as e:
-            self.logger.error(f"메시지 핸들러 등록 실패: {str(e)}")
-            raise
-    
-    async def start(self):
-        """봇 시작"""
-        try:
-            if self.application is None:
-                self._initialize_bot()
-            
-            await self.application.initialize()
-            await self.application.start()
-            await self.application.updater.start_polling()
-            
-            self.logger.info("텔레그램 봇 시작됨")
-            
-        except Exception as e:
-            self.logger.error(f"텔레그램 봇 시작 실패: {str(e)}")
-            raise
-    
-    async def stop(self):
-        """봇 정지"""
-        try:
-            if self.application:
-                await self.application.updater.stop()
-                await self.application.stop()
-                await self.application.shutdown()
-                self.logger.info("텔레그램 봇 정지됨")
-                
-        except Exception as e:
-            self.logger.error(f"텔레그램 봇 정지 실패: {str(e)}")
-    
-    async def handle_mirror_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🔥🔥🔥 /mirror 명령어 처리 - 미러 트레이딩 활성화/비활성화"""
+            self.logger.error(f"강화된 자연어 처리 실패: {e}")
+            return False
+
+    async def _handle_confirmation_responses(self, update: Update, message: str) -> bool:
+        """🔥🔥🔥 확인 응답 처리 (Y/N, 예/아니오, 네/아니오 등)"""
         try:
             user_id = update.effective_user.id
-            chat_id = update.effective_chat.id
             
-            # 미러 트레이딩 시스템 참조 확인
-            if not self.mirror_trading_system:
+            # 대기 중인 확인이 있는지 체크
+            if user_id not in self.pending_confirmations:
+                return False
+            
+            confirmation_data = self.pending_confirmations[user_id]
+            
+            # 시간 초과 체크
+            if datetime.now() > confirmation_data['expires_at']:
+                del self.pending_confirmations[user_id]
                 await update.message.reply_text(
-                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.\n"
-                    "시스템 관리자에게 문의하세요.",
-                    reply_markup=ReplyKeyboardRemove()
+                    "⏰ 확인 시간이 초과되었습니다. 다시 명령어를 입력해주세요.",
+                    parse_mode='HTML'
                 )
+                return True
+            
+            # 확인/취소 응답 분석
+            positive_responses = ['y', 'yes', '예', '네', '맞습니다', '확인', '좋습니다', 'ok', 'okay', '1']
+            negative_responses = ['n', 'no', '아니오', '아니요', '취소', 'cancel', '그만', '0']
+            
+            is_positive = any(resp in message for resp in positive_responses)
+            is_negative = any(resp in message for resp in negative_responses)
+            
+            if is_positive and not is_negative:
+                # 긍정적 응답 - 명령어 실행
+                await self._execute_confirmed_command(update, confirmation_data)
+                del self.pending_confirmations[user_id]
+                return True
+                
+            elif is_negative and not is_positive:
+                # 부정적 응답 - 취소
+                await update.message.reply_text(
+                    f"❌ {confirmation_data['command_description']} 취소되었습니다.",
+                    parse_mode='HTML'
+                )
+                del self.pending_confirmations[user_id]
+                return True
+                
+            else:
+                # 애매한 응답
+                await update.message.reply_text(
+                    f"🤔 명확하지 않은 응답입니다.\n\n"
+                    f"📋 대기 중인 명령: {confirmation_data['command_description']}\n\n"
+                    f"✅ 실행하려면: **예**, **Y**, **확인**\n"
+                    f"❌ 취소하려면: **아니오**, **N**, **취소**",
+                    parse_mode='HTML'
+                )
+                return True
+            
+        except Exception as e:
+            self.logger.error(f"확인 응답 처리 실패: {e}")
+            return False
+
+    async def _execute_confirmed_command(self, update: Update, confirmation_data: Dict):
+        """🔥🔥🔥 확인된 명령어 실행"""
+        try:
+            command_type = confirmation_data['command_type']
+            command_data = confirmation_data['command_data']
+            
+            self.command_response_count['confirmations'] += 1
+            
+            if command_type == 'mirror_mode_change':
+                # 미러링 모드 변경 실행
+                enable = command_data['enable']
+                await self._execute_mirror_mode_change(update, enable)
+                
+            elif command_type == 'ratio_change':
+                # 배율 변경 실행
+                new_ratio = command_data['new_ratio']
+                await self._execute_ratio_change(update, new_ratio)
+                
+            else:
+                await update.message.reply_text(
+                    "❌ 알 수 없는 명령어 타입입니다.",
+                    parse_mode='HTML'
+                )
+                
+        except Exception as e:
+            self.logger.error(f"확인된 명령어 실행 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 명령어 실행 중 오류가 발생했습니다: {str(e)[:100]}",
+                parse_mode='HTML'
+            )
+
+    async def _handle_mirror_natural_language(self, update: Update, message: str) -> bool:
+        """🔥🔥🔥 미러 트레이딩 관련 자연어 처리"""
+        try:
+            # 미러 트레이딩 키워드들
+            mirror_keywords = ['미러', 'mirror', '동기화', 'sync', '복사', 'copy', '따라가기']
+            status_keywords = ['상태', 'status', '어떻게', '어떤', '현재']
+            enable_keywords = ['켜', '활성화', 'on', 'start', '시작', '실행']
+            disable_keywords = ['꺼', '비활성화', 'off', 'stop', '중지', '정지']
+            
+            has_mirror = any(keyword in message for keyword in mirror_keywords)
+            has_status = any(keyword in message for keyword in status_keywords)
+            has_enable = any(keyword in message for keyword in enable_keywords)
+            has_disable = any(keyword in message for keyword in disable_keywords)
+            
+            if has_mirror:
+                if has_enable:
+                    # 미러링 활성화 요청
+                    await self.handle_mirror_command_enhanced(update, ['mirror', 'on'])
+                    return True
+                elif has_disable:
+                    # 미러링 비활성화 요청
+                    await self.handle_mirror_command_enhanced(update, ['mirror', 'off'])
+                    return True
+                elif has_status:
+                    # 미러링 상태 조회
+                    await self.handle_mirror_command_enhanced(update, ['mirror', 'status'])
+                    return True
+                else:
+                    # 일반적인 미러링 질문
+                    await self.handle_mirror_command_enhanced(update, ['mirror'])
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"미러 자연어 처리 실패: {e}")
+            return False
+
+    async def _handle_ratio_natural_language(self, update: Update, message: str) -> bool:
+        """🔥🔥🔥 배율 관련 자연어 처리"""
+        try:
+            # 배율 키워드들
+            ratio_keywords = ['배율', '비율', 'ratio', '몇배', '배', '복제']
+            number_pattern = r'(\d+(?:\.\d+)?)'
+            
+            has_ratio = any(keyword in message for keyword in ratio_keywords)
+            
+            if has_ratio:
+                # 숫자 추출 시도
+                numbers = re.findall(number_pattern, message)
+                
+                if numbers:
+                    try:
+                        # 첫 번째 숫자를 배율로 사용
+                        ratio_value = float(numbers[0])
+                        if 0.1 <= ratio_value <= 10.0:
+                            await self.handle_ratio_command(update, None, str(ratio_value))
+                            return True
+                    except ValueError:
+                        pass
+                
+                # 숫자가 없거나 잘못된 경우 현재 상태 조회
+                await self.handle_ratio_command(update, None)
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"배율 자연어 처리 실패: {e}")
+            return False
+
+    async def _handle_profit_natural_language(self, update: Update, message: str) -> bool:
+        """🔥🔥🔥 수익 관련 자연어 처리"""
+        try:
+            # 수익 키워드들
+            profit_keywords = ['수익', '얼마', '벌었', '손익', '이익', '손실', 'profit', 'pnl', '돈']
+            
+            has_profit = any(keyword in message for keyword in profit_keywords)
+            
+            if has_profit:
+                # 수익 조회는 항상 사용 가능하므로 바로 처리
+                self.command_response_count['profit'] += 1
+                await update.message.reply_text(
+                    "💰 수익 현황을 조회중입니다... (미러 모드와 상관없이 사용 가능)",
+                    parse_mode='HTML'
+                )
+                # main.py의 handle_profit_command로 처리 위임
+                return False  # 실제 처리는 main.py에서
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"수익 자연어 처리 실패: {e}")
+            return False
+
+    async def handle_mirror_command_enhanced(self, update: Update, args: List[str]):
+        """🔥🔥🔥 미러 명령어 강화 처리 - 항상 응답"""
+        try:
+            self.command_response_count['mirror'] += 1
+            user_id = update.effective_user.id
+            username = update.effective_user.username or "Unknown"
+            
+            self.logger.info(f"미러 명령어 - User: {username}({user_id}), Args: {args}")
+            
+            # 인자가 없으면 상태 조회
+            if len(args) <= 1:
+                await self._show_mirror_status(update)
                 return
             
-            # 현재 미러링 모드 정보 조회
-            current_info = await self.mirror_trading_system.get_current_mirror_mode()
-            current_enabled = current_info['enabled']
-            description = current_info['description']
+            subcommand = args[1].lower() if len(args) > 1 else 'status'
             
-            # 파라미터 확인
-            if context.args:
-                arg = context.args[0].lower()
-                
-                if arg in ['on', 'enable', 'start', '1', 'o', 'true', 'yes']:
-                    # 활성화 요청
-                    if current_enabled:
-                        await update.message.reply_text(
-                            f"💡 이미 미러 트레이딩이 활성화되어 있습니다.\n"
-                            f"현재 상태: {description}",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        return
-                    
-                    await self._request_mirror_confirmation(update, user_id, chat_id, True)
-                    
-                elif arg in ['off', 'disable', 'stop', '0', 'x', 'false', 'no']:
-                    # 비활성화 요청
-                    if not current_enabled:
-                        await update.message.reply_text(
-                            f"💡 이미 미러 트레이딩이 비활성화되어 있습니다.\n"
-                            f"현재 상태: {description}",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        return
-                    
-                    await self._request_mirror_confirmation(update, user_id, chat_id, False)
-                    
-                elif arg in ['status', 'check', 'info']:
-                    # 상태 확인
-                    await self._show_mirror_status(update)
-                    
-                else:
-                    await update.message.reply_text(
-                        f"❌ 올바르지 않은 명령어: '{arg}'\n\n"
-                        f"사용법:\n"
-                        f"• /mirror on - 활성화\n"
-                        f"• /mirror off - 비활성화\n"
-                        f"• /mirror status - 상태 확인",
-                        reply_markup=ReplyKeyboardRemove()
-                    )
-                    
-            else:
-                # 파라미터 없음 - 상태 확인
+            if subcommand in ['status', 'state', '상태']:
                 await self._show_mirror_status(update)
+                
+            elif subcommand in ['on', 'enable', '켜기', '활성화', 'start']:
+                await self._handle_mirror_enable_request(update)
+                
+            elif subcommand in ['off', 'disable', '끄기', '비활성화', 'stop']:
+                await self._handle_mirror_disable_request(update)
+                
+            else:
+                await self._show_mirror_help(update)
                 
         except Exception as e:
             self.logger.error(f"미러 명령어 처리 실패: {e}")
             await update.message.reply_text(
-                f"❌ 미러 명령어 처리 실패\n"
-                f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()
+                f"❌ 미러 명령어 처리 중 오류가 발생했습니다: {str(e)[:100]}",
+                parse_mode='HTML'
             )
-    
-    async def _request_mirror_confirmation(self, update: Update, user_id: int, chat_id: int, enable: bool):
-        """🔥🔥🔥 미러 트레이딩 활성화/비활성화 확인 요청"""
-        try:
-            from datetime import datetime, timedelta
-            
-            # 기존 대기 상태 정리
-            if user_id in self.pending_mirror_confirmations:
-                del self.pending_mirror_confirmations[user_id]
-            
-            action = "활성화" if enable else "비활성화"
-            action_english = "enable" if enable else "disable"
-            
-            # 대기 상태 저장
-            self.pending_mirror_confirmations[user_id] = {
-                'action': action_english,
-                'enable': enable,
-                'timestamp': datetime.now(),
-                'chat_id': chat_id
-            }
-            
-            # 현재 정보
-            current_info = await self.mirror_trading_system.get_current_mirror_mode()
-            ratio_info = await self.mirror_trading_system.get_current_ratio_info()
-            
-            # 확인 키보드 생성
-            keyboard = [
-                [KeyboardButton(f"✅ 예, {action}합니다"), KeyboardButton("❌ 아니오, 취소")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-            
-            warning_text = ""
-            if not enable:
-                warning_text = "\n⚠️ 비활성화하면 새로운 포지션과 예약 주문이 복제되지 않습니다."
-            
-            await update.message.reply_text(
-                f"🔄 미러 트레이딩 {action} 확인\n\n"
-                f"📊 현재 상태:\n"
-                f"• 미러링: {current_info['description']}\n"
-                f"• 복제 비율: {ratio_info['current_ratio']}x\n\n"
-                f"🎯 요청 작업:\n"
-                f"• 미러 트레이딩을 {action}하시겠습니까?\n"
-                f"• 변경은 즉시 적용됩니다{warning_text}\n\n"
-                f"💡 확인해주세요:",
-                reply_markup=reply_markup
-            )
-            
-            # 자동 만료 스케줄링
-            async def cleanup_mirror_confirmation():
-                await asyncio.sleep(60)  # 1분 후 만료
-                if user_id in self.pending_mirror_confirmations:
-                    del self.pending_mirror_confirmations[user_id]
-            
-            asyncio.create_task(cleanup_mirror_confirmation())
-            
-        except Exception as e:
-            self.logger.error(f"미러 확인 요청 실패: {e}")
-            await update.message.reply_text(
-                f"❌ 확인 요청 실패\n오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()
-            )
-    
+
     async def _show_mirror_status(self, update: Update):
-        """미러 트레이딩 상태 표시"""
+        """🔥🔥🔥 미러 트레이딩 상태 표시"""
         try:
-            current_info = await self.mirror_trading_system.get_current_mirror_mode()
+            if not self.mirror_trading_system:
+                await update.message.reply_text(
+                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 현재 상태 조회
+            mirror_info = await self.mirror_trading_system.get_current_mirror_mode()
             ratio_info = await self.mirror_trading_system.get_current_ratio_info()
             
-            status_emoji = "✅" if current_info['enabled'] else "❌"
+            # 상태에 따른 이모지와 설명
+            status_emoji = "✅" if mirror_info['enabled'] else "❌"
+            status_text = mirror_info['description']
             
-            await update.message.reply_text(
-                f"📊 미러 트레이딩 현재 상태\n\n"
-                f"🔄 미러링: {status_emoji} {current_info['description']}\n"
-                f"📈 복제 비율: {ratio_info['current_ratio']}x\n"
-                f"📝 비율 설명: {ratio_info['description']}\n\n"
-                f"💡 제어 명령어:\n"
-                f"• 활성화: /mirror on\n"
-                f"• 비활성화: /mirror off\n"
-                f"• 복제 비율 조정: /ratio [숫자]\n"
-                f"• 수익 조회: /profit\n\n"
-                f"🔥 실시간 제어가 가능합니다!",
-                reply_markup=ReplyKeyboardRemove()
-            )
+            # 기본 상태 메시지
+            status_msg = f"""🔄 <b>미러 트레이딩 현재 상태</b>
+
+<b>🎮 미러링 모드:</b> {status_emoji} {status_text}
+<b>🔢 복제 비율:</b> {ratio_info['current_ratio']}x
+<b>📝 비율 설명:</b> {ratio_info['description']}
+<b>⏰ 마지막 업데이트:</b> {datetime.fromisoformat(mirror_info['last_updated']).strftime('%H:%M:%S')}
+
+<b>🎮 텔레그램 제어 명령어:</b>
+• <code>/mirror on</code> - 미러링 활성화
+• <code>/mirror off</code> - 미러링 비활성화
+• <code>/mirror status</code> - 상태 확인
+• <code>/ratio [숫자]</code> - 복제 비율 조정
+• <code>/profit</code> - 수익 조회 (항상 사용 가능)
+
+<b>📊 사용 가능한 기능:</b>
+• 수익 조회: /profit (미러 모드와 상관없이 사용 가능)
+• 시장 분석: /report  
+• 단기 예측: /forecast
+• 시스템 통계: /stats
+
+<b>⚡ 실시간 제어:</b>
+미러링과 복제 비율을 텔레그램으로 즉시 변경할 수 있습니다!"""
+            
+            # 🔥🔥🔥 미러링이 가능한 경우 추가 정보
+            if hasattr(self.mirror_trading_system, 'can_use_mirror_trading'):
+                try:
+                    # main.py의 can_use_mirror_trading 메서드 호출 시뮬레이션
+                    # 실제로는 mirror_trading_system이 더미인지 실제인지에 따라 다름
+                    if hasattr(self.mirror_trading_system, 'bitget_mirror'):
+                        # 실제 미러 시스템
+                        status_msg += f"""
+
+<b>💰 계정 상태:</b>
+미러링 가능한 상태입니다.
+<code>/profit</code> 명령어로 실시간 수익을 확인하세요."""
+                    else:
+                        # 더미 미러 시스템
+                        status_msg += f"""
+
+<b>⚠️ 미러링 조건:</b>
+현재 미러 트레이딩을 사용할 수 없습니다.
+• Gate.io API 키 설정 필요
+• 미러 트레이딩 모듈 설치 필요
+• 환경변수 설정 필요
+
+<b>✅ 사용 가능한 기능:</b>
+• <code>/profit</code> - 수익 조회 (항상 사용 가능)
+• <code>/ratio</code> - 복제 비율 정보 확인 (항상 사용 가능)"""
+                except:
+                    pass
+            
+            await update.message.reply_text(status_msg, parse_mode='HTML')
             
         except Exception as e:
             self.logger.error(f"미러 상태 표시 실패: {e}")
             await update.message.reply_text(
-                "❌ 상태 조회 실패",
-                reply_markup=ReplyKeyboardRemove()
+                "❌ 미러 상태 조회 중 오류가 발생했습니다.",
+                parse_mode='HTML'
             )
-    
-    async def handle_ratio_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🔥🔥🔥 /ratio 명령어 처리 - 복제 비율 실시간 조정"""
+
+    async def _handle_mirror_enable_request(self, update: Update):
+        """🔥🔥🔥 미러링 활성화 요청 처리"""
         try:
-            user_id = update.effective_user.id
-            chat_id = update.effective_chat.id
-            
-            # 미러 트레이딩 시스템 참조 확인
             if not self.mirror_trading_system:
                 await update.message.reply_text(
-                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.\n"
-                    "시스템 관리자에게 문의하세요.",
-                    reply_markup=ReplyKeyboardRemove()
+                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
+                    parse_mode='HTML'
                 )
                 return
             
-            # 현재 배율 정보 조회
-            current_info = await self.mirror_trading_system.get_current_ratio_info()
-            current_ratio = current_info['current_ratio']
-            description = current_info['description']
+            # 현재 상태 확인
+            current_info = await self.mirror_trading_system.get_current_mirror_mode()
             
-            # 파라미터 확인
-            if context.args:
-                # 배율 변경 시도
-                try:
-                    new_ratio_str = context.args[0]
-                    
-                    # 숫자 유효성 검증
-                    try:
-                        new_ratio = float(new_ratio_str)
-                    except ValueError:
-                        await update.message.reply_text(
-                            f"❌ 올바르지 않은 숫자 형식: '{new_ratio_str}'\n"
-                            f"예시: /ratio 1.5",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        return
-                    
-                    # 범위 확인 (사전 검증)
-                    if new_ratio < 0.1 or new_ratio > 10.0:
-                        await update.message.reply_text(
-                            f"❌ 배율 범위 초과: {new_ratio}\n"
-                            f"허용 범위: 0.1 ~ 10.0\n"
-                            f"현재 설정: {current_ratio}x",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        return
-                    
-                    # 동일한 배율인지 확인
-                    if abs(new_ratio - current_ratio) < 0.01:
-                        await update.message.reply_text(
-                            f"💡 이미 해당 배율로 설정되어 있습니다.\n"
-                            f"현재 배율: {current_ratio}x\n"
-                            f"요청 배율: {new_ratio}x",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        return
-                    
-                    await self._request_ratio_confirmation(update, user_id, chat_id, new_ratio)
-                    
-                except Exception as e:
-                    await update.message.reply_text(
-                        f"❌ 배율 변경 처리 중 오류 발생\n"
-                        f"오류: {str(e)[:200]}\n"
-                        f"현재 배율 유지: {current_ratio}x",
-                        reply_markup=ReplyKeyboardRemove()
-                    )
-                    
-            else:
-                # 현재 배율 정보만 표시
+            if current_info['enabled']:
                 await update.message.reply_text(
-                    f"📊 현재 복제 비율 설정\n\n"
-                    f"🎯 배율: {current_ratio}x\n"
-                    f"📝 설명: {description}\n"
-                    f"🔄 적용 상태: {'기본 비율' if current_ratio == 1.0 else '사용자 지정'}\n\n"
-                    f"💡 사용법:\n"
-                    f"• 현재 상태 확인: /ratio\n"
-                    f"• 배율 변경: /ratio [숫자]\n"
-                    f"• 예시: /ratio 1.5 (1.5배로 확대)\n"
-                    f"• 예시: /ratio 0.5 (절반으로 축소)\n"
-                    f"• 허용 범위: 0.1 ~ 10.0\n\n"
-                    f"🔥 변경 시 새로운 예약 주문부터 즉시 적용됩니다.",
-                    reply_markup=ReplyKeyboardRemove()
+                    "✅ 미러 트레이딩이 이미 활성화되어 있습니다.\n"
+                    "현재 상태를 확인하려면 <code>/mirror status</code>를 사용하세요.",
+                    parse_mode='HTML'
                 )
+                return
+            
+            # 🔥🔥🔥 더미 시스템인지 실제 시스템인지 확인
+            if not hasattr(self.mirror_trading_system, 'bitget_mirror'):
+                # 더미 시스템 - 조건 불충족으로 활성화 불가
+                result = await self.mirror_trading_system.set_mirror_mode(True)
                 
+                if not result['success']:
+                    await update.message.reply_text(
+                        f"❌ <b>미러 트레이딩 활성화 실패</b>\n\n"
+                        f"<b>실패 이유:</b> {result['error']}\n\n"
+                        f"<b>필수 조건:</b>\n"
+                        f"• Gate.io API 키 설정 (GATE_API_KEY, GATE_API_SECRET)\n"
+                        f"• 미러 트레이딩 모듈 정상 설치\n"
+                        f"• 환경변수 설정 완료\n"
+                        f"• 시스템 재시작\n\n"
+                        f"<b>✅ 사용 가능한 기능:</b>\n"
+                        f"• <code>/profit</code> - 수익 조회 (항상 사용 가능)\n"
+                        f"• <code>/ratio</code> - 복제 비율 정보 (항상 사용 가능)\n"
+                        f"• <code>/report</code> - 시장 분석 (항상 사용 가능)",
+                        parse_mode='HTML'
+                    )
+                return
+            
+            # 실제 시스템 - 확인 절차 진행
+            user_id = update.effective_user.id
+            
+            # 확인 절차 설정
+            self.pending_confirmations[user_id] = {
+                'command_type': 'mirror_mode_change',
+                'command_data': {'enable': True},
+                'command_description': '미러 트레이딩 활성화',
+                'expires_at': datetime.now() + timedelta(seconds=self.confirmation_timeout)
+            }
+            
+            await update.message.reply_text(
+                f"🔄 <b>미러 트레이딩 활성화 확인</b>\n\n"
+                f"미러 트레이딩을 활성화하시겠습니까?\n\n"
+                f"<b>⚠️ 주의사항:</b>\n"
+                f"• 비트겟의 모든 새로운 포지션이 게이트에 복제됩니다\n"
+                f"• 예약 주문(TP/SL)도 자동으로 복제됩니다\n"
+                f"• 현재 복제 비율이 적용됩니다\n"
+                f"• 기존 포지션은 복제되지 않습니다\n\n"
+                f"<b>✅ 활성화하려면:</b> <code>예</code>, <code>Y</code>, <code>확인</code>\n"
+                f"<b>❌ 취소하려면:</b> <code>아니오</code>, <code>N</code>, <code>취소</code>\n\n"
+                f"⏰ {self.confirmation_timeout}초 내에 응답해주세요.",
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            self.logger.error(f"미러링 활성화 요청 처리 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 미러링 활성화 요청 처리 중 오류가 발생했습니다: {str(e)[:100]}",
+                parse_mode='HTML'
+            )
+
+    async def _handle_mirror_disable_request(self, update: Update):
+        """🔥🔥🔥 미러링 비활성화 요청 처리"""
+        try:
+            if not self.mirror_trading_system:
+                await update.message.reply_text(
+                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 현재 상태 확인
+            current_info = await self.mirror_trading_system.get_current_mirror_mode()
+            
+            if not current_info['enabled']:
+                await update.message.reply_text(
+                    "✅ 미러 트레이딩이 이미 비활성화되어 있습니다.\n"
+                    "현재 상태를 확인하려면 <code>/mirror status</code>를 사용하세요.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 확인 절차 설정
+            user_id = update.effective_user.id
+            
+            self.pending_confirmations[user_id] = {
+                'command_type': 'mirror_mode_change',
+                'command_data': {'enable': False},
+                'command_description': '미러 트레이딩 비활성화',
+                'expires_at': datetime.now() + timedelta(seconds=self.confirmation_timeout)
+            }
+            
+            await update.message.reply_text(
+                f"⚠️ <b>미러 트레이딩 비활성화 확인</b>\n\n"
+                f"미러 트레이딩을 비활성화하시겠습니까?\n\n"
+                f"<b>📋 비활성화 시:</b>\n"
+                f"• 새로운 포지션 복제가 중단됩니다\n"
+                f"• 기존 게이트 포지션은 유지됩니다\n"
+                f"• 예약 주문 복제가 중단됩니다\n"
+                f"• 언제든 다시 활성화할 수 있습니다\n\n"
+                f"<b>✅ 비활성화하려면:</b> <code>예</code>, <code>Y</code>, <code>확인</code>\n"
+                f"<b>❌ 취소하려면:</b> <code>아니오</code>, <code>N</code>, <code>취소</code>\n\n"
+                f"⏰ {self.confirmation_timeout}초 내에 응답해주세요.",
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            self.logger.error(f"미러링 비활성화 요청 처리 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 미러링 비활성화 요청 처리 중 오류가 발생했습니다: {str(e)[:100]}",
+                parse_mode='HTML'
+            )
+
+    async def _execute_mirror_mode_change(self, update: Update, enable: bool):
+        """🔥🔥🔥 미러링 모드 변경 실행"""
+        try:
+            action_text = "활성화" if enable else "비활성화"
+            await update.message.reply_text(
+                f"🔄 미러 트레이딩 {action_text} 중입니다...",
+                parse_mode='HTML'
+            )
+            
+            # 실제 변경 실행
+            result = await self.mirror_trading_system.set_mirror_mode(enable)
+            
+            if result['success']:
+                state_change = result.get('state_change', '변경 없음')
+                
+                success_msg = f"✅ <b>미러 트레이딩 {action_text} 완료</b>\n\n"
+                success_msg += f"<b>상태 변경:</b> {state_change}\n"
+                success_msg += f"<b>적용 시각:</b> {datetime.fromisoformat(result['applied_time']).strftime('%H:%M:%S')}\n\n"
+                
+                if enable:
+                    success_msg += f"🚀 <b>미러링이 시작되었습니다!</b>\n"
+                    success_msg += f"• 새로운 비트겟 포지션이 게이트에 자동 복제됩니다\n"
+                    success_msg += f"• 예약 주문(TP/SL)도 함께 복제됩니다\n"
+                    success_msg += f"• 현재 복제 비율이 적용됩니다\n"
+                    success_msg += f"• <code>/ratio</code> 명령어로 복제 비율을 조정할 수 있습니다\n"
+                    success_msg += f"• <code>/profit</code> 명령어로 수익을 확인할 수 있습니다"
+                else:
+                    success_msg += f"⏸️ <b>미러링이 중단되었습니다.</b>\n"
+                    success_msg += f"• 새로운 포지션 복제가 중단됩니다\n"
+                    success_msg += f"• 기존 게이트 포지션은 유지됩니다\n"
+                    success_msg += f"• <code>/mirror on</code>으로 언제든 재활성화 가능합니다\n"
+                    success_msg += f"• <code>/profit</code> 명령어는 계속 사용할 수 있습니다"
+                
+                await update.message.reply_text(success_msg, parse_mode='HTML')
+                
+            else:
+                error_msg = f"❌ <b>미러 트레이딩 {action_text} 실패</b>\n\n"
+                error_msg += f"<b>오류:</b> {result['error']}\n"
+                error_msg += f"<b>현재 상태:</b> {'활성화' if result['current_state'] else '비활성화'}"
+                
+                await update.message.reply_text(error_msg, parse_mode='HTML')
+                
+        except Exception as e:
+            self.logger.error(f"미러링 모드 변경 실행 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 미러링 모드 변경 중 오류가 발생했습니다: {str(e)[:100]}",
+                parse_mode='HTML'
+            )
+
+    async def _show_mirror_help(self, update: Update):
+        """🔥🔥🔥 미러 명령어 도움말"""
+        help_msg = f"""🔄 <b>미러 트레이딩 명령어 도움말</b>
+
+<b>📋 사용법:</b>
+• <code>/mirror</code> - 현재 상태 조회
+• <code>/mirror status</code> - 상태 확인  
+• <code>/mirror on</code> - 미러링 활성화
+• <code>/mirror off</code> - 미러링 비활성화
+
+<b>🔢 관련 명령어:</b>
+• <code>/ratio</code> - 복제 비율 확인
+• <code>/ratio [숫자]</code> - 복제 비율 변경
+• <code>/profit</code> - 수익 조회 (항상 사용 가능)
+
+<b>💬 자연어 사용 예시:</b>
+• "미러링 켜줘"
+• "동기화 상태 어때?"
+• "복사 기능 꺼줘"
+
+<b>⚡ 실시간 제어:</b>
+미러링과 복제 비율을 텔레그램으로 즉시 변경할 수 있습니다!
+
+<b>📊 응답 통계:</b>
+• 미러 명령어: {self.command_response_count['mirror']}회 사용
+• 배율 명령어: {self.command_response_count['ratio']}회 사용
+• 확인 처리: {self.command_response_count['confirmations']}회"""
+        
+        await update.message.reply_text(help_msg, parse_mode='HTML')
+
+    async def handle_ratio_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, ratio_str: str = None):
+        """🔥🔥🔥 배율 명령어 처리 - 항상 사용 가능"""
+        try:
+            self.command_response_count['ratio'] += 1
+            user_id = update.effective_user.id
+            username = update.effective_user.username or "Unknown"
+            
+            self.logger.info(f"배율 명령어 - User: {username}({user_id}), Ratio: {ratio_str}")
+            
+            if not self.mirror_trading_system:
+                await update.message.reply_text(
+                    "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 배율 값이 주어지지 않은 경우 현재 상태 조회
+            if not ratio_str:
+                await self._show_current_ratio(update)
+                return
+            
+            # 배율 값 파싱 및 검증
+            try:
+                new_ratio = float(ratio_str)
+            except ValueError:
+                await update.message.reply_text(
+                    f"❌ 잘못된 배율 값입니다: '{ratio_str}'\n\n"
+                    f"<b>올바른 사용법:</b>\n"
+                    f"• <code>/ratio 1.0</code> - 1배 (원본과 동일)\n"
+                    f"• <code>/ratio 0.5</code> - 0.5배 (절반 크기)\n"
+                    f"• <code>/ratio 2.0</code> - 2배 (두 배 크기)\n\n"
+                    f"<b>허용 범위:</b> 0.1 ~ 10.0배",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 배율 범위 검증
+            if new_ratio < 0.1 or new_ratio > 10.0:
+                await update.message.reply_text(
+                    f"❌ 배율이 허용 범위를 벗어났습니다: {new_ratio}\n\n"
+                    f"<b>허용 범위:</b> 0.1배 ~ 10.0배\n\n"
+                    f"<b>권장 설정:</b>\n"
+                    f"• 0.1 ~ 0.9배: 보수적 (리스크 감소)\n"
+                    f"• 1.0배: 표준 (원본과 동일)\n"
+                    f"• 1.1 ~ 3.0배: 적극적 (리스크 증가)\n"
+                    f"• 3.1 ~ 10.0배: 고위험 (신중 사용)",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 🔥🔥🔥 더미 시스템인지 실제 시스템인지 확인
+            if not hasattr(self.mirror_trading_system, 'bitget_mirror'):
+                # 더미 시스템 - 정보만 제공
+                result = await self.mirror_trading_system.set_ratio_multiplier(new_ratio)
+                
+                await update.message.reply_text(
+                    f"📊 <b>복제 비율 정보</b>\n\n"
+                    f"요청된 비율: <b>{new_ratio}x</b>\n"
+                    f"상태: 미러 트레이딩 비활성화\n\n"
+                    f"<b>⚠️ 미러 트레이딩 활성화 필요:</b>\n"
+                    f"• Gate.io API 키 설정\n"
+                    f"• 미러 트레이딩 모듈 설치\n"
+                    f"• 환경변수 설정 완료\n"
+                    f"• <code>/mirror on</code> 명령어로 활성화\n\n"
+                    f"<b>✅ 사용 가능한 기능:</b>\n"
+                    f"• <code>/profit</code> - 수익 조회 (항상 사용 가능)\n"
+                    f"• <code>/ratio</code> - 복제 비율 정보 (항상 사용 가능)",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 실제 시스템 - 현재 배율과 비교
+            current_ratio_info = await self.mirror_trading_system.get_current_ratio_info()
+            current_ratio = current_ratio_info['current_ratio']
+            
+            if abs(current_ratio - new_ratio) < 0.01:  # 거의 동일한 경우
+                await update.message.reply_text(
+                    f"✅ 복제 비율이 이미 {new_ratio}x로 설정되어 있습니다.\n"
+                    f"변경할 필요가 없습니다.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # 확인 절차 설정
+            self.pending_confirmations[user_id] = {
+                'command_type': 'ratio_change',
+                'command_data': {'new_ratio': new_ratio},
+                'command_description': f'복제 비율을 {current_ratio}x → {new_ratio}x로 변경',
+                'expires_at': datetime.now() + timedelta(seconds=self.confirmation_timeout)
+            }
+            
+            # 비율 효과 분석
+            if new_ratio > current_ratio:
+                effect_description = f"📈 <b>증가 효과:</b> 더 큰 포지션 크기 (리스크 증가)"
+            elif new_ratio < current_ratio:
+                effect_description = f"📉 <b>감소 효과:</b> 더 작은 포지션 크기 (리스크 감소)"
+            else:
+                effect_description = f"📊 <b>동일 효과:</b> 변화 없음"
+            
+            await update.message.reply_text(
+                f"🔢 <b>복제 비율 변경 확인</b>\n\n"
+                f"<b>현재 비율:</b> {current_ratio}x\n"
+                f"<b>새로운 비율:</b> {new_ratio}x\n\n"
+                f"{effect_description}\n\n"
+                f"<b>⚠️ 주의사항:</b>\n"
+                f"• 새로운 포지션부터 적용됩니다\n"
+                f"• 기존 포지션은 영향받지 않습니다\n"
+                f"• 예약 주문에도 새 비율이 적용됩니다\n\n"
+                f"<b>✅ 변경하려면:</b> <code>예</code>, <code>Y</code>, <code>확인</code>\n"
+                f"<b>❌ 취소하려면:</b> <code>아니오</code>, <code>N</code>, <code>취소</code>\n\n"
+                f"⏰ {self.confirmation_timeout}초 내에 응답해주세요.",
+                parse_mode='HTML'
+            )
+            
         except Exception as e:
             self.logger.error(f"배율 명령어 처리 실패: {e}")
             await update.message.reply_text(
-                f"❌ 배율 명령어 처리 실패\n"
-                f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()
+                f"❌ 배율 명령어 처리 중 오류가 발생했습니다: {str(e)[:100]}",
+                parse_mode='HTML'
             )
-    
-    async def _request_ratio_confirmation(self, update: Update, user_id: int, chat_id: int, new_ratio: float):
-        """🔥🔥🔥 배율 변경 확인 요청"""
+
+    async def _show_current_ratio(self, update: Update):
+        """🔥🔥🔥 현재 복제 비율 상태 표시"""
         try:
-            from datetime import datetime
+            ratio_info = await self.mirror_trading_system.get_current_ratio_info()
             
-            # 기존 대기 상태 정리
-            if user_id in self.pending_ratio_confirmations:
-                del self.pending_ratio_confirmations[user_id]
+            # 기본 정보
+            current_ratio = ratio_info['current_ratio']
+            description = ratio_info['description']
             
-            # 대기 상태 저장
-            self.pending_ratio_confirmations[user_id] = {
-                'ratio': new_ratio,
-                'timestamp': datetime.now(),
-                'chat_id': chat_id
-            }
+            status_msg = f"""🔢 <b>현재 복제 비율 상태</b>
+
+<b>📊 현재 비율:</b> {current_ratio}x
+<b>📝 설명:</b> {description}
+<b>⏰ 마지막 업데이트:</b> {datetime.fromisoformat(ratio_info['last_updated']).strftime('%H:%M:%S')}
+
+<b>🎮 비율 조정 방법:</b>
+• <code>/ratio 0.5</code> - 절반 크기 (보수적)
+• <code>/ratio 1.0</code> - 원본과 동일 (표준)
+• <code>/ratio 1.5</code> - 1.5배 크기 (적극적)
+• <code>/ratio 2.0</code> - 2배 크기 (고위험)
+
+<b>🔢 허용 범위:</b> 0.1배 ~ 10.0배
+
+<b>💡 비율 가이드:</b>
+• <b>0.1 ~ 0.9배:</b> 보수적 투자 (리스크 감소)
+• <b>1.0배:</b> 표준 미러링 (원본과 동일)
+• <b>1.1 ~ 3.0배:</b> 적극적 투자 (리스크 증가)
+• <b>3.1 ~ 10.0배:</b> 고위험 투자 (신중 사용)"""
             
-            # 현재 정보
-            current_info = await self.mirror_trading_system.get_current_ratio_info()
-            current_ratio = current_info['current_ratio']
-            description = current_info['description']
-            
-            # 새 배율 효과 미리 분석
-            new_description = self.mirror_trading_system.utils.get_ratio_multiplier_description(new_ratio)
-            effect_analysis = self.mirror_trading_system.utils.analyze_ratio_multiplier_effect(
-                new_ratio, 0.1, 0.1 * new_ratio
-            )
-            
-            # 확인 키보드 생성
-            keyboard = [
-                [KeyboardButton("✅ 예, 적용합니다"), KeyboardButton("❌ 아니오, 취소")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-            
-            await update.message.reply_text(
-                f"🔄 복제 비율 변경 확인\n\n"
-                f"📊 현재 설정:\n"
-                f"• 배율: {current_ratio}x\n"
-                f"• 설명: {description}\n\n"
-                f"🎯 새로운 설정:\n"
-                f"• 배율: {new_ratio}x\n"
-                f"• 설명: {new_description}\n"
-                f"• 리스크: {effect_analysis['risk_level']}\n"
-                f"• 영향: {effect_analysis['impact']}\n"
-                f"• 권장사항: {effect_analysis['recommendation']}\n\n"
-                f"💡 이 배율로 설정하시겠습니까?\n"
-                f"새로운 예약 주문부터 즉시 적용됩니다.",
-                reply_markup=reply_markup
-            )
-            
-            # 1분 후 자동 만료
-            async def cleanup_ratio_confirmation():
-                await asyncio.sleep(60)
-                if user_id in self.pending_ratio_confirmations:
-                    del self.pending_ratio_confirmations[user_id]
-            
-            asyncio.create_task(cleanup_ratio_confirmation())
-            
-        except Exception as e:
-            self.logger.error(f"배율 확인 요청 실패: {e}")
-            await update.message.reply_text(
-                f"❌ 확인 요청 실패\n오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()
-            )
-    
-    async def handle_ratio_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🔥🔥🔥 배율 설정 확인 처리"""
-        try:
-            user_id = update.effective_user.id
-            message_text = update.message.text.strip()
-            
-            # 대기 중인 확인이 있는지 확인
-            if user_id not in self.pending_ratio_confirmations:
-                return False  # 이 메시지는 배율 확인과 관련 없음
-            
-            pending_info = self.pending_ratio_confirmations[user_id]
-            new_ratio = pending_info['ratio']
-            
-            # 만료 확인 (1분 제한)
-            from datetime import datetime, timedelta
-            if datetime.now() - pending_info['timestamp'] > timedelta(minutes=1):
-                del self.pending_ratio_confirmations[user_id]
-                await update.message.reply_text(
-                    "⏰ 배율 설정 확인 시간이 만료되었습니다.\n"
-                    "/ratio 명령어를 다시 사용해 주세요.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                return True
-            
-            # 확인 응답 처리
-            if "✅" in message_text or "예" in message_text:
-                # 배율 적용
-                try:
-                    if not self.mirror_trading_system:
-                        await update.message.reply_text(
-                            "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        del self.pending_ratio_confirmations[user_id]
-                        return True
-                    
-                    # 실제 배율 변경 실행
-                    result = await self.mirror_trading_system.set_ratio_multiplier(new_ratio)
-                    
-                    if result['success']:
-                        old_ratio = result['old_ratio']
-                        new_ratio = result['new_ratio']
-                        description = result['description']
-                        effect = result['effect']
-                        
-                        await update.message.reply_text(
-                            f"✅ 복제 비율 변경 완료!\n\n"
-                            f"📊 변경 사항:\n"
-                            f"• 이전: {old_ratio}x → 새로운: {new_ratio}x\n"
-                            f"• 설명: {description}\n"
-                            f"• 리스크 레벨: {effect['risk_level']}\n"
-                            f"• 영향: {effect['impact']}\n\n"
-                            f"🔥 새로운 예약 주문부터 즉시 적용됩니다!\n"
-                            f"⚡ 기존 활성 주문은 영향받지 않습니다.",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        
-                        self.logger.info(f"텔레그램으로 복제 비율 변경: {old_ratio}x → {new_ratio}x (사용자: {user_id})")
-                        
-                    else:
-                        await update.message.reply_text(
-                            f"❌ 배율 변경 실패\n"
-                            f"오류: {result.get('error', '알 수 없는 오류')}\n"
-                            f"현재 배율 유지: {result.get('current_ratio', '불명')}x",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        
-                except Exception as e:
-                    await update.message.reply_text(
-                        f"❌ 배율 적용 중 오류 발생\n"
-                        f"오류: {str(e)[:200]}",
-                        reply_markup=ReplyKeyboardRemove()
-                    )
-                    
-            elif "❌" in message_text or "아니" in message_text:
-                # 취소
-                await update.message.reply_text(
-                    f"🚫 배율 변경이 취소되었습니다.\n"
-                    f"현재 배율 유지: {self.mirror_trading_system.mirror_ratio_multiplier if self.mirror_trading_system else '불명'}x",
-                    reply_markup=ReplyKeyboardRemove()
-                )
+            # 🔥🔥🔥 미러링 활성화 여부에 따른 추가 정보
+            if hasattr(self.mirror_trading_system, 'bitget_mirror'):
+                # 실제 시스템
+                mirror_info = await self.mirror_trading_system.get_current_mirror_mode()
                 
-            else:
-                # 잘못된 응답 - 키보드 다시 표시하지 않고 메시지만
-                await update.message.reply_text(
-                    f"❓ 올바른 응답을 선택해 주세요.\n"
-                    f"'✅ 예, 적용합니다' 또는 '❌ 아니오, 취소'를 선택하거나\n"
-                    f"/ratio 명령어를 다시 입력해주세요.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                del self.pending_ratio_confirmations[user_id]
-                return True
-            
-            # 확인 상태 정리
-            del self.pending_ratio_confirmations[user_id]
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"배율 확인 처리 실패: {e}")
-            await update.message.reply_text(
-                f"❌ 배율 확인 처리 실패\n"
-                f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            # 확인 상태 정리
-            if user_id in self.pending_ratio_confirmations:
-                del self.pending_ratio_confirmations[user_id]
-            return True
-    
-    async def handle_mirror_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🔥🔥🔥 미러 트레이딩 활성화/비활성화 확인 처리"""
-        try:
-            user_id = update.effective_user.id
-            message_text = update.message.text.strip()
-            
-            # 대기 중인 확인이 있는지 확인
-            if user_id not in self.pending_mirror_confirmations:
-                return False  # 이 메시지는 미러 확인과 관련 없음
-            
-            pending_info = self.pending_mirror_confirmations[user_id]
-            action = pending_info['action']
-            enable = pending_info['enable']
-            action_ko = "활성화" if enable else "비활성화"
-            
-            # 만료 확인 (1분 제한)
-            from datetime import datetime, timedelta
-            if datetime.now() - pending_info['timestamp'] > timedelta(minutes=1):
-                del self.pending_mirror_confirmations[user_id]
-                await update.message.reply_text(
-                    "⏰ 미러 트레이딩 설정 확인 시간이 만료되었습니다.\n"
-                    "/mirror 명령어를 다시 사용해 주세요.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                return True
-            
-            # 확인 응답 처리
-            if "✅" in message_text or "예" in message_text:
-                # 미러링 모드 변경 적용
-                try:
-                    if not self.mirror_trading_system:
-                        await update.message.reply_text(
-                            "❌ 미러 트레이딩 시스템이 연결되지 않았습니다.",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        del self.pending_mirror_confirmations[user_id]
-                        return True
-                    
-                    # 실제 미러링 모드 변경 실행
-                    result = await self.mirror_trading_system.set_mirror_mode(enable)
-                    
-                    if result['success']:
-                        old_state = result['old_state']
-                        new_state = result['new_state']
-                        state_change = result['state_change']
-                        
-                        status_emoji = "✅" if new_state else "❌"
-                        old_text = "활성화" if old_state else "비활성화"
-                        new_text = "활성화" if new_state else "비활성화"
-                        
-                        await update.message.reply_text(
-                            f"✅ 미러 트레이딩 {action_ko} 완료!\n\n"
-                            f"📊 변경 사항:\n"
-                            f"• 이전: {old_text} → 새로운: {status_emoji} {new_text}\n"
-                            f"• 변경 내용: {state_change}\n\n"
-                            f"🔥 {'새로운 포지션과 예약 주문이 즉시 복제됩니다!' if new_state else '새로운 복제가 중단되었습니다.'}\n"
-                            f"⚡ 기존 활성 주문과 포지션은 그대로 유지됩니다.",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        
-                        self.logger.info(f"텔레그램으로 미러링 모드 변경: {old_text} → {new_text} (사용자: {user_id})")
-                        
-                    else:
-                        await update.message.reply_text(
-                            f"❌ 미러 트레이딩 {action_ko} 실패\n"
-                            f"오류: {result.get('error', '알 수 없는 오류')}\n"
-                            f"현재 상태 유지",
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        
-                except Exception as e:
-                    await update.message.reply_text(
-                        f"❌ 미러 트레이딩 {action_ko} 중 오류 발생\n"
-                        f"오류: {str(e)[:200]}",
-                        reply_markup=ReplyKeyboardRemove()
-                    )
-                    
-            elif "❌" in message_text or "아니" in message_text:
-                # 취소
-                current_info = await self.mirror_trading_system.get_current_mirror_mode()
-                await update.message.reply_text(
-                    f"🚫 미러 트레이딩 {action_ko}이 취소되었습니다.\n"
-                    f"현재 상태 유지: {current_info['description']}",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                
-            else:
-                # 잘못된 응답 - 키보드 다시 표시하지 않고 메시지만
-                await update.message.reply_text(
-                    f"❓ 올바른 응답을 선택해 주세요.\n"
-                    f"'✅ 예, {action_ko}합니다' 또는 '❌ 아니오, 취소'를 선택하거나\n"
-                    f"/mirror 명령어를 다시 입력해주세요.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                del self.pending_mirror_confirmations[user_id]
-                return True
-            
-            # 확인 상태 정리
-            del self.pending_mirror_confirmations[user_id]
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"미러 확인 처리 실패: {e}")
-            await update.message.reply_text(
-                f"❌ 미러 트레이딩 확인 처리 실패\n"
-                f"오류: {str(e)[:200]}",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            # 확인 상태 정리
-            if user_id in self.pending_mirror_confirmations:
-                del self.pending_mirror_confirmations[user_id]
-            return True
-    
-    async def handle_natural_language_enhanced(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🔥🔥🔥 자연어 처리 강화 - 확인 메시지 우선 처리"""
-        try:
-            # 1순위: 배율 확인 메시지 처리
-            if await self.handle_ratio_confirmation(update, context):
-                return  # 배율 확인 메시지였으면 여기서 종료
-            
-            # 2순위: 미러 확인 메시지 처리
-            if await self.handle_mirror_confirmation(update, context):
-                return  # 미러 확인 메시지였으면 여기서 종료
-            
-            # 3순위: 일반 자연어 처리는 기존 핸들러에 위임
-            # (main.py의 handle_natural_language 호출됨)
-            return False  # 다른 핸들러가 처리하도록
-            
-        except Exception as e:
-            self.logger.error(f"강화된 자연어 처리 실패: {e}")
-            await update.message.reply_text(
-                "❌ 메시지 처리 중 오류가 발생했습니다.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-    
-    async def handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """도움말 명령어 처리"""
-        try:
-            help_text = """🤖 미러 트레이딩 봇 도움말
+                if mirror_info['enabled']:
+                    status_msg += f"""
 
-📊 미러 트레이딩 제어:
-• /mirror - 현재 상태 확인
-• /mirror on - 미러 트레이딩 활성화
-• /mirror off - 미러 트레이딩 비활성화
-• /mirror status - 상세 상태 조회
-
-🎯 복제 비율 조정:
-• /ratio - 현재 복제 비율 확인
-• /ratio [숫자] - 복제 비율 변경
-• 예시: /ratio 1.5 (1.5배로 확대)
-• 예시: /ratio 0.5 (절반으로 축소)
-• 허용 범위: 0.1 ~ 10.0배
-
-💰 수익 및 상태:
-• /profit - 수익 현황 조회
-• /report - 전체 분석 리포트
-• /forecast - 단기 예측 요약
-• /stats - 시스템 통계
-
-📋 복제 비율 설명:
-• 0.1 ~ 0.4배: 매우 보수적 (리스크 최소)
-• 0.5 ~ 0.9배: 보수적 (리스크 감소)
-• 1.0배: 표준 (원본과 동일)
-• 1.1 ~ 2.0배: 적극적 (리스크 증가)
-• 2.1 ~ 5.0배: 공격적 (높은 리스크)
-• 5.1 ~ 10.0배: 매우 공격적 (최고 리스크)
-
-⚡ 실시간 적용:
-• 모든 설정 변경은 즉시 적용
-• 새로운 예약 주문부터 바로 반영
-• 기존 활성 주문은 영향받지 않음
-• 안전한 확인 절차 포함
-
-🔥 시스템이 24시간 안전하게 작동합니다!"""
-            
-            await update.message.reply_text(help_text, reply_markup=ReplyKeyboardRemove())
-            
-        except Exception as e:
-            self.logger.error(f"도움말 명령어 처리 실패: {e}")
-            await update.message.reply_text(
-                "❌ 도움말 표시 실패",
-                reply_markup=ReplyKeyboardRemove()
-            )
-    
-    def _clean_html_message(self, text: str) -> str:
-        """🔥🔥 HTML 메시지 정리 및 검증"""
-        try:
-            if not text:
-                return "빈 메시지"
-            
-            text = str(text)
-            
-            # 빈 태그 제거
-            text = re.sub(r'<\s*>', '', text)
-            text = re.sub(r'<\s*/\s*>', '', text)
-            text = re.sub(r'<\s+/?\s*>', '', text)
-            
-            # 깨진 태그 수정
-            text = re.sub(r'<([^>]*?)(?=<|$)', r'', text)
-            text = re.sub(r'(?<!>)>([^<]*?)>', r'\1', text)
-            
-            # 허용되는 HTML 태그만 유지
-            allowed_tags = ['b', 'i', 'u', 's', 'code', 'pre', 'a']
-            
-            # 허용되지 않는 태그를 일반 텍스트로 변환
-            for tag in ['span', 'div', 'p', 'br', 'em', 'strong']:
-                text = re.sub(f'</?{tag}[^>]*>', '', text)
-            
-            # 중첩된 동일 태그 정리
-            for tag in allowed_tags:
-                pattern = f'<{tag}[^>]*>(<{tag}[^>]*>.*?</{tag}>)</{tag}>'
-                text = re.sub(pattern, r'\1', text)
-            
-            # 빈 태그 제거
-            for tag in allowed_tags:
-                text = re.sub(f'<{tag}[^>]*>\\s*</{tag}>', '', text)
-            
-            # 특수문자 이스케이프
-            text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
-            
-            # 연속된 공백 정리
-            text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
-            text = re.sub(r' {3,}', '  ', text)
-            
-            # 메시지 길이 체크
-            if len(text) > 4000:
-                text = text[:3950] + "\n\n... (메시지가 잘림)"
-            
-            return text.strip()
-            
-        except Exception as e:
-            self.logger.error(f"HTML 메시지 정리 실패: {e}")
-            return re.sub(r'<[^>]+>', '', str(text))
-    
-    def _validate_html_structure(self, text: str) -> bool:
-        """🔥 HTML 구조 검증"""
-        try:
-            if not text or text.isspace():
-                return False
-            
-            allowed_tags = ['b', 'i', 'u', 's', 'code', 'pre']
-            tag_stack = []
-            
-            tag_pattern = r'<(/?)([a-zA-Z]+)[^>]*>'
-            
-            for match in re.finditer(tag_pattern, text):
-                is_closing = bool(match.group(1))
-                tag_name = match.group(2).lower()
-                
-                if tag_name in allowed_tags:
-                    if is_closing:
-                        if tag_stack and tag_stack[-1] == tag_name:
-                            tag_stack.pop()
-                        else:
-                            return False
-                    else:
-                        tag_stack.append(tag_name)
-            
-            return len(tag_stack) == 0
-            
-        except Exception as e:
-            self.logger.debug(f"HTML 구조 검증 오류: {e}")
-            return False
-    
-    async def send_message(self, text: str, chat_id: str = None, parse_mode: str = 'HTML'):
-        """🔥🔥 개선된 메시지 전송 - HTML 파싱 오류 완전 해결"""
-        try:
-            if chat_id is None:
-                chat_id = self.config.TELEGRAM_CHAT_ID
-            
-            if self.bot is None:
-                self._initialize_bot()
-            
-            original_text = str(text)
-            
-            # 1차: HTML 정리
-            if parse_mode == 'HTML':
-                cleaned_text = self._clean_html_message(text)
-                
-                if self._validate_html_structure(cleaned_text):
-                    try:
-                        await self.bot.send_message(
-                            chat_id=chat_id,
-                            text=cleaned_text,
-                            parse_mode='HTML',
-                            reply_markup=ReplyKeyboardRemove()
-                        )
-                        self.logger.info("HTML 메시지 전송 성공")
-                        return
-                    except Exception as html_error:
-                        self.logger.warning(f"정리된 HTML 메시지 전송 실패: {html_error}")
+<b>✅ 미러링 상태:</b> 활성화
+새로운 포지션에 {current_ratio}x 비율이 즉시 적용됩니다!"""
                 else:
-                    self.logger.warning("HTML 구조 검증 실패, 텍스트 모드로 전환")
+                    status_msg += f"""
+
+<b>❌ 미러링 상태:</b> 비활성화
+<code>/mirror on</code>으로 활성화 후 비율이 적용됩니다."""
+            else:
+                # 더미 시스템
+                status_msg += f"""
+
+<b>⚠️ 미러링 상태:</b> 사용 불가
+미러 트레이딩 활성화 후 비율 조정이 가능합니다.
+
+<b>✅ 현재 사용 가능:</b>
+• <code>/profit</code> - 수익 조회 (항상 사용 가능)
+• <code>/ratio</code> - 복제 비율 정보 (항상 사용 가능)"""
             
-            # 2차: 텍스트 모드
-            try:
-                text_only = re.sub(r'<[^>]+>', '', original_text)
-                text_only = text_only.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-                text_only = text_only.replace('&quot;', '"').replace('&#39;', "'")
-                
-                text_only = re.sub(r'\n\s*\n\s*\n', '\n\n', text_only)
-                text_only = re.sub(r' {3,}', '  ', text_only)
-                
-                if len(text_only) > 4000:
-                    text_only = text_only[:3950] + "\n\n... (메시지가 잘림)"
-                
-                await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=text_only.strip(),
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                self.logger.info("텍스트 모드 메시지 전송 성공")
-                return
-                
-            except Exception as text_error:
-                self.logger.error(f"텍스트 모드 전송도 실패: {text_error}")
+            status_msg += f"""
+
+<b>📊 명령어 사용 통계:</b>
+• 배율 명령어: {self.command_response_count['ratio']}회 사용
+• 확인 처리: {self.command_response_count['confirmations']}회 처리"""
             
-            # 3차: 폴백 메시지
-            try:
-                fallback_message = f"""🚨 메시지 전송 오류 발생
-
-원본 메시지가 올바르지 않은 형식을 포함하고 있어 전송에 실패했습니다.
-
-시간: {str(text)[:100]}...
-
-시스템이 정상 작동 중이며, 다음 메시지부터는 정상 전송될 예정입니다."""
-
-                await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=fallback_message,
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                self.logger.warning("폴백 메시지 전송 완료")
-                
-            except Exception as fallback_error:
-                self.logger.error(f"폴백 메시지 전송도 실패: {fallback_error}")
-                raise fallback_error
+            await update.message.reply_text(status_msg, parse_mode='HTML')
             
         except Exception as e:
-            self.logger.error(f"메시지 전송 최종 실패: {str(e)}")
-            self.logger.error(f"원본 메시지 (처음 200자): {str(text)[:200]}")
+            self.logger.error(f"현재 비율 표시 실패: {e}")
+            await update.message.reply_text(
+                "❌ 현재 복제 비율 조회 중 오류가 발생했습니다.",
+                parse_mode='HTML'
+            )
+
+    async def _execute_ratio_change(self, update: Update, new_ratio: float):
+        """🔥🔥🔥 복제 비율 변경 실행"""
+        try:
+            await update.message.reply_text(
+                f"🔄 복제 비율을 {new_ratio}x로 변경 중입니다...",
+                parse_mode='HTML'
+            )
             
-            error_str = str(e).lower()
-            if any(keyword in error_str for keyword in [
-                "can't parse entities", 
-                "unsupported start tag",
-                "can't parse",
-                "bad character",
-                "html parsing"
-            ]):
-                self.logger.error("🚨 HTML 파싱 오류가 계속 발생하고 있습니다!")
-                self.logger.error(f"오류 상세: {str(e)}")
-                if "byte offset" in error_str:
-                    offset_match = re.search(r'byte offset (\d+)', error_str)
-                    if offset_match:
-                        offset = int(offset_match.group(1))
-                        problem_area = str(text)[max(0, offset-50):offset+50]
-                        self.logger.error(f"문제 구간 (offset {offset} 주변): {repr(problem_area)}")
+            # 실제 변경 실행
+            result = await self.mirror_trading_system.set_ratio_multiplier(new_ratio)
             
+            if result['success']:
+                old_ratio = result['old_ratio']
+                applied_ratio = result['new_ratio']
+                description = result['description']
+                
+                success_msg = f"✅ <b>복제 비율 변경 완료</b>\n\n"
+                success_msg += f"<b>이전 비율:</b> {old_ratio}x\n"
+                success_msg += f"<b>새로운 비율:</b> {applied_ratio}x\n"
+                success_msg += f"<b>설명:</b> {description}\n"
+                success_msg += f"<b>적용 시각:</b> {datetime.fromisoformat(result['applied_time']).strftime('%H:%M:%S')}\n\n"
+                success_msg += f"🚀 <b>새로운 포지션부터 {applied_ratio}x 비율이 적용됩니다!</b>\n"
+                success_msg += f"• 기존 포지션은 영향받지 않습니다\n"
+                success_msg += f"• 예약 주문(TP/SL)에도 새 비율 적용됩니다\n"
+                success_msg += f"• <code>/ratio</code>로 언제든 다시 조정 가능합니다\n"
+                success_msg += f"• <code>/profit</code>으로 수익을 확인할 수 있습니다"
+                
+                await update.message.reply_text(success_msg, parse_mode='HTML')
+                
+            else:
+                error_msg = f"❌ <b>복제 비율 변경 실패</b>\n\n"
+                error_msg += f"<b>오류:</b> {result['error']}\n"
+                error_msg += f"<b>현재 비율:</b> {result['current_ratio']}x"
+                
+                await update.message.reply_text(error_msg, parse_mode='HTML')
+                
+        except Exception as e:
+            self.logger.error(f"복제 비율 변경 실행 실패: {e}")
+            await update.message.reply_text(
+                f"❌ 복제 비율 변경 중 오류가 발생했습니다: {str(e)[:100]}",
+                parse_mode='HTML'
+            )
+
+    def add_handler(self, command: str, handler):
+        """명령어 핸들러 등록"""
+        try:
+            if command == 'mirror':
+                # 🔥🔥🔥 미러 명령어는 강화된 핸들러 사용
+                self.application.add_handler(
+                    CommandHandler('mirror', lambda update, context: 
+                        self.handle_mirror_command_enhanced(update, [update.message.text.split()]))
+                )
+            elif command == 'ratio':
+                # 🔥🔥🔥 배율 명령어는 인자 처리 가능한 핸들러 사용
+                self.application.add_handler(
+                    CommandHandler('ratio', self.handle_ratio_command)
+                )
+            else:
+                # 기존 명령어들
+                self.application.add_handler(CommandHandler(command, handler))
+            
+            self.handlers[command] = handler
+            self.logger.info(f"✅ 명령어 핸들러 등록: /{command}")
+            
+        except Exception as e:
+            self.logger.error(f"핸들러 등록 실패: {command} - {e}")
+
+    def add_message_handler(self, handler):
+        """메시지 핸들러 등록"""
+        try:
+            self.application.add_handler(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handler)
+            )
+            self.logger.info("✅ 메시지 핸들러 등록 완료")
+            
+        except Exception as e:
+            self.logger.error(f"메시지 핸들러 등록 실패: {e}")
+
+    async def send_message(self, message: str, parse_mode: str = 'HTML'):
+        """메시지 전송"""
+        try:
+            # 메시지가 너무 긴 경우 분할
+            if len(message) > 4000:
+                parts = self._split_message(message)
+                for i, part in enumerate(parts):
+                    await self.bot.send_message(
+                        chat_id=self.chat_id,
+                        text=part,
+                        parse_mode=parse_mode
+                    )
+                    if i < len(parts) - 1:
+                        await asyncio.sleep(0.5)
+            else:
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message,
+                    parse_mode=parse_mode
+                )
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"메시지 전송 실패: {e}")
+            return False
+
+    def _split_message(self, message: str, max_length: int = 4000) -> List[str]:
+        """긴 메시지 분할"""
+        if len(message) <= max_length:
+            return [message]
+        
+        parts = []
+        lines = message.split('\n')
+        current_part = ""
+        
+        for line in lines:
+            if len(current_part) + len(line) + 1 > max_length:
+                if current_part:
+                    parts.append(current_part.strip())
+                current_part = line + '\n'
+            else:
+                current_part += line + '\n'
+        
+        if current_part:
+            parts.append(current_part.strip())
+        
+        return parts
+
+    async def start(self):
+        """텔레그램 봇 시작"""
+        try:
+            self.logger.info("🚀 Telegram Bot 시작 - 미러/배율 실시간 제어")
+            
+            # 봇 정보 확인
+            bot_info = await self.bot.get_me()
+            self.logger.info(f"Bot 이름: {bot_info.first_name} (@{bot_info.username})")
+            
+            # 애플리케이션 시작
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling()
+            
+            # 시작 메시지 전송
+            await self.send_message(
+                f"🤖 <b>Telegram Bot 시작됨</b>\n\n"
+                f"🎮 <b>실시간 제어 명령어:</b>\n"
+                f"• <code>/mirror on/off</code> - 미러링 제어\n"
+                f"• <code>/ratio [숫자]</code> - 복제 비율 조정\n"
+                f"• <code>/profit</code> - 수익 조회 (항상 사용 가능)\n"
+                f"• <code>/report</code> - 시장 분석\n"
+                f"• <code>/forecast</code> - 단기 예측\n"
+                f"• <code>/stats</code> - 시스템 통계\n\n"
+                f"💬 <b>자연어도 사용 가능:</b>\n"
+                f"• \"미러링 켜줘\"\n"
+                f"• \"배율 2배로 해줘\"\n"
+                f"• \"오늘 수익은?\"\n\n"
+                f"✅ 모든 명령어가 활성화되었습니다!",
+                parse_mode='HTML'
+            )
+            
+            self.logger.info("✅ Telegram Bot 시작 완료")
+            
+        except Exception as e:
+            self.logger.error(f"Telegram Bot 시작 실패: {e}")
             raise
+
+    async def stop(self):
+        """텔레그램 봇 중지"""
+        try:
+            self.logger.info("🛑 Telegram Bot 중지 중...")
+            
+            # 🔥🔥🔥 명령어 응답 통계 전송
+            total_responses = sum(self.command_response_count.values())
+            
+            stats_msg = f"📊 <b>Telegram Bot 종료 통계</b>\n\n"
+            stats_msg += f"<b>총 명령어 응답:</b> {total_responses}회\n\n"
+            stats_msg += f"<b>명령어별 사용량:</b>\n"
+            
+            for command, count in self.command_response_count.items():
+                if count > 0:
+                    stats_msg += f"• /{command}: {count}회\n"
+            
+            if self.pending_confirmations:
+                stats_msg += f"\n<b>⚠️ 대기 중인 확인:</b> {len(self.pending_confirmations)}개"
+            
+            stats_msg += f"\n\n🔥 미러/배율 실시간 제어 시스템이 안전하게 종료됩니다."
+            
+            await self.send_message(stats_msg, parse_mode='HTML')
+            
+            # 애플리케이션 중지
+            await self.application.updater.stop()
+            await self.application.stop()
+            await self.application.shutdown()
+            
+            self.logger.info("✅ Telegram Bot 중지 완료")
+            
+        except Exception as e:
+            self.logger.error(f"Telegram Bot 중지 중 오류: {e}")
+            
+        finally:
+            # 정리 작업
+            self.pending_confirmations.clear()
+            self.handlers.clear()
