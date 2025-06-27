@@ -21,16 +21,7 @@ class MirrorTradingSystem:
         self.logger = logging.getLogger('mirror_trading')
         
         # 🔥🔥🔥 미러링 모드 텔레그램 제어 - 환경변수는 초기값만
-        # 환경변수에서 초기값 읽기 (ENABLE_MIRROR_TRADING이 우선)
-        enable_mirror = os.getenv('ENABLE_MIRROR_TRADING', '').lower()
-        if enable_mirror in ['true', '1', 'yes', 'on']:
-            self.mirror_trading_enabled = True
-        elif enable_mirror in ['false', '0', 'no', 'off']:
-            self.mirror_trading_enabled = False
-        else:
-            # ENABLE_MIRROR_TRADING이 없으면 MIRROR_TRADING_MODE 확인
-            raw_mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'O')
-            self.mirror_trading_enabled = self._parse_mirror_trading_mode(raw_mirror_mode)
+        self.mirror_trading_enabled = self._parse_initial_mirror_mode()
         
         # 🔥🔥🔥 배율은 기본값 1.0으로 시작, 텔레그램으로 실시간 조정
         self.mirror_ratio_multiplier = 1.0
@@ -161,43 +152,53 @@ class MirrorTradingSystem:
         self.logger.info(f"   - 포지션 동기화 강화: 30초마다")
         self.logger.info(f"   - 경고 알림 제한: 각 타입별 최대 {self.MAX_WARNING_COUNT}회")
 
-    def _parse_mirror_trading_mode(self, mode_str: str) -> bool:
-        """🔥🔥🔥 미러링 모드 파싱 - O/X 정확한 구분"""
-        if isinstance(mode_str, bool):
-            return mode_str
-        
-        # 문자열로 변환하되 원본 보존
-        mode_str_original = str(mode_str).strip()
-        mode_str_upper = mode_str_original.upper()
-        
-        self.logger.info(f"🔍 미러링 모드 파싱: 원본='{mode_str_original}', 대문자='{mode_str_upper}'")
-        
-        # 🔥🔥🔥 영어 O, X 우선 처리 (숫자 0과 구분)
-        if mode_str_upper == 'O':
-            self.logger.info("✅ 영어 대문자 O 감지 → 활성화")
-            return True
-        elif mode_str_upper == 'X':
-            self.logger.info("✅ 영어 대문자 X 감지 → 비활성화")
+    def _parse_initial_mirror_mode(self) -> bool:
+        """🔥🔥🔥 초기 미러링 모드 파싱 - 환경변수에서 초기값만 읽기"""
+        try:
+            # ENABLE_MIRROR_TRADING이 우선
+            enable_mirror = os.getenv('ENABLE_MIRROR_TRADING', '').lower()
+            if enable_mirror in ['true', '1', 'yes', 'on']:
+                return True
+            elif enable_mirror in ['false', '0', 'no', 'off']:
+                return False
+            
+            # MIRROR_TRADING_MODE가 다음 우선순위
+            raw_mode = os.getenv('MIRROR_TRADING_MODE', 'X')
+            mode_str_original = str(raw_mode).strip()
+            mode_str_upper = mode_str_original.upper()
+            
+            self.logger.info(f"🔍 초기 미러링 모드 파싱: 원본='{mode_str_original}', 대문자='{mode_str_upper}'")
+            
+            # 🔥🔥🔥 영어 O, X 우선 처리 (숫자 0과 구분)
+            if mode_str_upper == 'O':
+                self.logger.info("✅ 영어 대문자 O 감지 → 활성화")
+                return True
+            elif mode_str_upper == 'X':
+                self.logger.info("✅ 영어 대문자 X 감지 → 비활성화")
+                return False
+            
+            # 기타 활성화 키워드
+            elif mode_str_upper in ['ON', 'OPEN', 'TRUE', 'Y', 'YES']:
+                self.logger.info(f"✅ 활성화 키워드 감지: '{mode_str_upper}' → 활성화")
+                return True
+            
+            # 기타 비활성화 키워드 (숫자 0 포함)
+            elif mode_str_upper in ['OFF', 'CLOSE', 'FALSE', 'N', 'NO'] or mode_str_original == '0':
+                self.logger.info(f"✅ 비활성화 키워드 감지: '{mode_str_upper}' → 비활성화")
+                return False
+            
+            # 숫자 1은 활성화
+            elif mode_str_original == '1':
+                self.logger.info("✅ 숫자 1 감지 → 활성화")
+                return True
+            
+            else:
+                self.logger.warning(f"⚠️ 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(비활성화) 사용")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"초기 미러링 모드 파싱 실패: {e}, 기본값(비활성화) 사용")
             return False
-        
-        # 기타 활성화 키워드
-        elif mode_str_upper in ['ON', 'OPEN', 'TRUE', 'Y', 'YES']:
-            self.logger.info(f"✅ 활성화 키워드 감지: '{mode_str_upper}' → 활성화")
-            return True
-        
-        # 기타 비활성화 키워드 (숫자 0 포함)
-        elif mode_str_upper in ['OFF', 'CLOSE', 'FALSE', 'N', 'NO'] or mode_str_original == '0':
-            self.logger.info(f"✅ 비활성화 키워드 감지: '{mode_str_upper}' → 비활성화")
-            return False
-        
-        # 숫자 1은 활성화
-        elif mode_str_original == '1':
-            self.logger.info("✅ 숫자 1 감지 → 활성화")
-            return True
-        
-        else:
-            self.logger.warning(f"⚠️ 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(활성화) 사용")
-            return True
 
     async def set_mirror_mode(self, enable: bool) -> Dict:
         """🔥🔥🔥 실시간 미러링 모드 변경"""
@@ -1353,7 +1354,7 @@ class MirrorTradingSystem:
                     await self.telegram.send_message(
                         f"📊 12시간 시세 현황 리포트{ratio_info}\n"
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
-                        f"게이트: ${self.gate_current_price:,.2f}\n"
+                        f"게이트: ${self.gate_current_price:.2f}\n"
                         f"차이: ${valid_price_diff:.2f}\n"
                         f"상태: {status_emoji} {status_text}\n\n"
                         f"🔄 미러링 상태: {mirror_status}\n"
