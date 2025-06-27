@@ -550,7 +550,7 @@ class GateioMirrorClient:
             logger.info(f"  - Position PnL: ${total_position_pnl:.4f} (수수료 제외 실제 포지션 손익)")
             logger.info(f"  - 거래 수수료: -${total_trading_fees:.4f} (오픈/클로징 수수료)")
             logger.info(f"  - 펀딩비: ${total_funding_fees:.4f} (거래내역에 포함되지 않음, 별도 조회 필요)")
-            logger.info(f"  - 순 수익: ${net_profit:.4f} (Position PnL - 거래수수료)")
+            logger.info(f"  - 순 수익: ${net_profit:.4f} (Position PnL + 펀딩비 - 거래수수료)")
             logger.info(f"  - 거래 건수: {trade_count}건")
             
             return {
@@ -635,7 +635,7 @@ class GateioMirrorClient:
             return 0.0
     
     async def get_7day_position_pnl(self) -> Dict:
-        """🔥🔥 Gate.io 7일 Position PnL 조회 - 다중 방법 시도"""
+        """🔥🔥 Gate.io 7일 Position PnL 조회 - 다중 방법 시도 개선"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             current_time = datetime.now(kst)
@@ -643,7 +643,7 @@ class GateioMirrorClient:
             # 🔥🔥 현재에서 정확히 7일 전
             seven_days_ago = current_time - timedelta(days=7)
             
-            logger.info(f"🔍 Gate.io 7일 Position PnL 계산 (다중 방법):")
+            logger.info(f"🔍 Gate.io 7일 Position PnL 계산 (개선된 다중 방법):")
             logger.info(f"  - 시작: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} KST")
             logger.info(f"  - 종료: {current_time.strftime('%Y-%m-%d %H:%M')} KST")
             
@@ -654,15 +654,66 @@ class GateioMirrorClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            # 🔥🔥 방법 1: 거래 내역 기반 Position PnL 계산
-            result = await self.get_position_pnl_based_profit(start_timestamp, end_timestamp)
-            position_pnl = result.get('position_pnl', 0.0)
-            trade_count = result.get('trade_count', 0)
+            # 🔥🔥 개선된 조회 방법 - 더 짧은 기간으로 나누어 조회
+            position_pnl = 0.0
+            trade_count = 0
             
-            if position_pnl != 0.0 or trade_count > 0:
-                logger.info(f"✅ 방법 1 성공 - 거래 내역 기반: ${position_pnl:.4f} ({trade_count}건)")
-            else:
-                # 🔥🔥 방법 2: 계정 변동 내역 기반 PnL 추출
+            try:
+                # 🔥🔥 방법 1: 거래 내역 기반 Position PnL 계산 (개선)
+                logger.info("🔍 방법 1 개선: 단계별 거래 내역 조회")
+                
+                # 7일을 3일씩 나누어 조회 (안정성 향상)
+                day_chunks = []
+                current_chunk = current_time
+                
+                while current_chunk > seven_days_ago:
+                    chunk_start = max(current_chunk - timedelta(days=3), seven_days_ago)
+                    chunk_end = current_chunk
+                    
+                    day_chunks.append((chunk_start, chunk_end))
+                    current_chunk = chunk_start
+                
+                logger.info(f"  - 총 {len(day_chunks)}개 청크로 분할하여 조회")
+                
+                for i, (chunk_start, chunk_end) in enumerate(day_chunks):
+                    try:
+                        chunk_start_ts = int(chunk_start.astimezone(pytz.UTC).timestamp() * 1000)
+                        chunk_end_ts = int(chunk_end.astimezone(pytz.UTC).timestamp() * 1000)
+                        
+                        logger.info(f"  청크 {i+1}/{len(day_chunks)}: {chunk_start.strftime('%m-%d %H:%M')} ~ {chunk_end.strftime('%m-%d %H:%M')}")
+                        
+                        chunk_result = await self.get_position_pnl_based_profit(
+                            chunk_start_ts, 
+                            chunk_end_ts
+                        )
+                        
+                        chunk_pnl = chunk_result.get('position_pnl', 0.0)
+                        chunk_trades = chunk_result.get('trade_count', 0)
+                        
+                        # 🔥🔥 안전장치: 비현실적인 값 필터링
+                        if abs(chunk_pnl) > 1000:  # 청크당 1천 달러 이상은 비현실적
+                            logger.warning(f"청크 {i+1} 비현실적 PnL 무시: ${chunk_pnl:.2f}")
+                            continue
+                        
+                        position_pnl += chunk_pnl
+                        trade_count += chunk_trades
+                        
+                        logger.info(f"  청크 {i+1} 결과: PnL=${chunk_pnl:.4f}, 거래={chunk_trades}건")
+                        
+                        # 요청 간격 조절
+                        await asyncio.sleep(0.5)
+                        
+                    except Exception as chunk_error:
+                        logger.warning(f"청크 {i+1} 조회 실패: {chunk_error}")
+                        continue
+                
+                logger.info(f"✅ 개선된 방법 1 완료: PnL=${position_pnl:.4f}, 총 거래={trade_count}건")
+                
+            except Exception as method1_error:
+                logger.error(f"개선된 방법 1 실패: {method1_error}")
+            
+            # 🔥🔥 방법 2: 계정 변동 내역 기반 (백업)
+            if position_pnl == 0.0 and trade_count == 0:
                 try:
                     logger.info("🔍 방법 2 시도: 계정 변동 내역 기반")
                     account_book = await self.get_account_book(
@@ -675,9 +726,11 @@ class GateioMirrorClient:
                     pnl_from_book = 0.0
                     for record in account_book:
                         change = float(record.get('change', 0))
-                        if change != 0:
-                            pnl_from_book += change
-                            logger.debug(f"7일 계정 변동: {change}")
+                        # 🔥🔥 안전장치
+                        if abs(change) > 500:  # 건당 500달러 이상은 비현실적
+                            continue
+                        pnl_from_book += change
+                        logger.debug(f"7일 계정 변동: {change}")
                     
                     if pnl_from_book != 0.0:
                         position_pnl = pnl_from_book
@@ -688,16 +741,23 @@ class GateioMirrorClient:
                 except Exception as e:
                     logger.debug(f"방법 2 실패: {e}")
             
+            # 🔥🔥 최종 안전장치 - 비현실적인 값 확인
+            if abs(position_pnl) > 5000:  # 7일간 5천 달러 이상은 비현실적
+                logger.warning(f"Gate.io 7일 PnL 비현실적 값 감지, 0으로 처리: ${position_pnl:.2f}")
+                position_pnl = 0.0
+                trade_count = 0
+            
             # 7일로 나누어 일평균 계산
             total_days = (current_time - seven_days_ago).total_seconds() / 86400
             actual_days = max(total_days, 1)  # 최소 1일
             
             daily_average = position_pnl / actual_days
             
-            logger.info(f"✅ Gate.io 7일 Position PnL 계산 완료:")
+            logger.info(f"✅ Gate.io 7일 Position PnL 계산 완료 (개선된 방법):")
             logger.info(f"  - 기간: {actual_days:.1f}일")
             logger.info(f"  - Position PnL: ${position_pnl:.4f}")
             logger.info(f"  - 일평균: ${daily_average:.4f}")
+            logger.info(f"  - 거래 건수: {trade_count}건")
             
             return {
                 'total_pnl': position_pnl,           # 수수료 제외한 실제 Position PnL
@@ -705,11 +765,11 @@ class GateioMirrorClient:
                 'average_daily': daily_average,
                 'trade_count': trade_count,
                 'actual_days': actual_days,
-                'trading_fees': result.get('trading_fees', 0),
-                'funding_fees': result.get('funding_fees', 0),
-                'net_profit': result.get('net_profit', position_pnl),
-                'source': 'gate_7days_position_pnl_multi_method',
-                'confidence': 'high' if position_pnl != 0.0 else 'medium'
+                'trading_fees': 0,  # 별도 계산 필요
+                'funding_fees': 0,  # 별도 계산 필요
+                'net_profit': position_pnl,
+                'source': 'gate_7days_position_pnl_improved_chunked',
+                'confidence': 'high' if position_pnl != 0.0 or trade_count > 0 else 'medium'
             }
             
         except Exception as e:
