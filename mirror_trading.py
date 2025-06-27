@@ -20,7 +20,7 @@ class MirrorTradingSystem:
         self.telegram = telegram_bot
         self.logger = logging.getLogger('mirror_trading')
         
-        # 🔥🔥🔥 미러링 모드 텔레그램 제어 - 환경변수는 초기값만, 기본값은 비활성화로 변경
+        # 🔥🔥🔥 미러링 모드 텔레그램 제어 - 환경변수는 초기값만
         # 환경변수에서 초기값 읽기 (ENABLE_MIRROR_TRADING이 우선)
         enable_mirror = os.getenv('ENABLE_MIRROR_TRADING', '').lower()
         if enable_mirror in ['true', '1', 'yes', 'on']:
@@ -29,7 +29,7 @@ class MirrorTradingSystem:
             self.mirror_trading_enabled = False
         else:
             # ENABLE_MIRROR_TRADING이 없으면 MIRROR_TRADING_MODE 확인
-            raw_mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'X')  # 🔥 기본값을 X(비활성화)로 변경
+            raw_mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'O')
             self.mirror_trading_enabled = self._parse_mirror_trading_mode(raw_mirror_mode)
         
         # 🔥🔥🔥 배율은 기본값 1.0으로 시작, 텔레그램으로 실시간 조정
@@ -196,9 +196,8 @@ class MirrorTradingSystem:
             return True
         
         else:
-            # 🔥🔥🔥 기본값을 비활성화로 변경
-            self.logger.warning(f"⚠️ 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(비활성화) 사용")
-            return False
+            self.logger.warning(f"⚠️ 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(활성화) 사용")
+            return True
 
     async def set_mirror_mode(self, enable: bool) -> Dict:
         """🔥🔥🔥 실시간 미러링 모드 변경"""
@@ -1574,10 +1573,10 @@ class MirrorTradingSystem:
 {price_status_info}
 
 🔄 미러링 설정:
-- 미러링 모드: {mirror_status} (텔레그램 /mirror on/off로 변경)
+- 미러링 모드: {mirror_status} (/mirror on/off로 변경)
 - 복제 비율: {self.mirror_ratio_multiplier}x
 - 설명: {ratio_description}
-- 조정 방법: 텔레그램 /ratio 명령어로 실시간 변경
+- 조정 방법: /ratio 명령어로 실시간 변경
 
 💳 마진 모드 강제 관리:
 - 현재 상태: {margin_mode_status}
@@ -1658,7 +1657,7 @@ class MirrorTradingSystem:
 
 ━━━━━━━━━━━━━━━━━━━
 ✅ 미러 트레이딩 시스템 안전하게 작동 중
-🎮 텔레그램으로 실시간 제어 가능 (/mirror on/off, /ratio)
+🎮 텔레그램으로 실시간 제어 가능 (/mirror, /ratio)
 💳 게이트 마진 모드 무조건 Cross 강제 ({margin_mode_status})
 🛡️ 안전 우선 정책으로 잘못된 삭제 방지
 📋 예약 주문 체결/취소가 정확히 구분됨
