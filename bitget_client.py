@@ -523,9 +523,9 @@ class BitgetClient:
                 logger.error("계정 정보 응답이 비어있음")
                 return {}
             
-            # V2 API 정확한 필드 매핑 + 포지션별 증거금 계산
+            # V2 API 정확한 필드 매핑
             result = {
-                'accountEquity': float(response.get('usdtEquity', 0)),     # 총 자산
+                'usdtEquity': float(response.get('usdtEquity', 0)),     # 총 자산
                 'available': float(response.get('available', 0)),         # 가용 자산
                 'unrealizedPL': float(response.get('unrealizedPL', 0)),  # 미실현 손익
                 'marginBalance': float(response.get('marginBalance', 0)), # 증거금 잔고
@@ -538,7 +538,7 @@ class BitgetClient:
             result['usedMargin'] = used_margin
             
             logger.info(f"✅ 계정 정보 파싱 완료:")
-            logger.info(f"  - 총 자산: ${result['accountEquity']:.2f}")
+            logger.info(f"  - 총 자산: ${result['usdtEquity']:.2f}")
             logger.info(f"  - 가용 자산: ${result['available']:.2f}")
             logger.info(f"  - 포지션별 사용 증거금: ${result['usedMargin']:.2f}")
             logger.info(f"  - 미실현 손익: ${result['unrealizedPL']:.4f}")
@@ -558,37 +558,27 @@ class BitgetClient:
             for position in positions:
                 total_size = float(position.get('total', 0))
                 if total_size > 0:
-                    # V2 API에서 포지션별 증거금 필드들 시도
-                    margin_fields = [
-                        'margin',           # 직접적인 증거금 필드
-                        'im',              # Initial Margin
-                        'positionMargin',   # Position Margin
-                        'usedMargin'       # Used Margin
-                    ]
+                    # 포지션별 실제 사용 증거금 계산
+                    mark_price = float(position.get('markPrice', 0))
+                    leverage = float(position.get('leverage', 30))
                     
-                    position_margin = 0.0
-                    for field in margin_fields:
-                        value = position.get(field)
-                        if value is not None:
-                            try:
-                                position_margin = float(value)
-                                if position_margin > 0:
-                                    logger.info(f"포지션 증거금 ({field}): ${position_margin:.2f}")
-                                    break
-                            except (ValueError, TypeError):
-                                continue
+                    # 계약 가치 = 사이즈 * 마크가격 * 계약크기
+                    contract_size = 0.01  # Bitget BTC 계약 크기 (1 계약 = 0.01 BTC)
+                    position_value = total_size * mark_price * contract_size
                     
-                    # API 필드가 없으면 계산
-                    if position_margin <= 0:
-                        mark_price = float(position.get('markPrice', 0))
-                        leverage = float(position.get('leverage', 30))
-                        contract_value = total_size * mark_price * 0.0001  # BTC 계약 크기
-                        position_margin = contract_value / leverage
-                        logger.info(f"계산된 포지션 증거금: ${position_margin:.2f}")
+                    # 초기 증거금 = 포지션 가치 / 레버리지
+                    position_margin = position_value / leverage
                     
                     total_used_margin += position_margin
+                    
+                    logger.info(f"포지션 증거금 계산:")
+                    logger.info(f"  - 사이즈: {total_size}")
+                    logger.info(f"  - 마크가격: ${mark_price:.2f}")
+                    logger.info(f"  - 레버리지: {leverage}x")
+                    logger.info(f"  - 포지션 가치: ${position_value:.2f}")
+                    logger.info(f"  - 계산된 증거금: ${position_margin:.2f}")
             
-            logger.info(f"총 사용 증거금 (포지션별 합계): ${total_used_margin:.2f}")
+            logger.info(f"총 사용 증거금 (정확한 계산): ${total_used_margin:.2f}")
             return total_used_margin
             
         except Exception as e:
