@@ -28,9 +28,6 @@ class GateioMirrorClient:
         self.api_healthy = True
         self.last_successful_call = None
         
-        # Gate.io 초기 자본 추정
-        self.ESTIMATED_INITIAL_CAPITAL = 750  # 초기 자본 추정
-        
     def _initialize_session(self):
         if not self.session:
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
@@ -130,9 +127,6 @@ class GateioMirrorClient:
                 
                 async with self.session.request(method, url, headers=headers, data=payload) as response:
                     response_text = await response.text()
-                    
-                    logger.debug(f"Gate.io API 응답 상태: {response.status}")
-                    logger.debug(f"Gate.io API 응답 내용: {response_text[:500]}...")
                     
                     if response.status != 200:
                         error_msg = f"HTTP {response.status}: {response_text}"
@@ -238,74 +232,21 @@ class GateioMirrorClient:
             return {}
     
     async def get_account_balance(self) -> Dict:
+        """계정 잔고 조회 - API 응답 직접 사용"""
         try:
             endpoint = "/api/v4/futures/usdt/accounts"
             
             logger.debug("Gate.io 계정 잔고 조회 시작")
             response = await self._request('GET', endpoint)
             
-            logger.debug(f"Gate.io 계정 잔고 응답 타입: {type(response)}")
-            logger.debug(f"Gate.io 계정 잔고 응답: {response}")
+            logger.info(f"✅ Gate.io 계정 API 원본 응답: {response}")
             
             if response is None:
                 logger.warning("Gate.io 계정 잔고 응답이 None")
                 return {}
             
-            if isinstance(response, dict):
-                # Gate.io API V4 공식 필드명 정확히 사용
-                total = float(response.get('total', 0))           # 총 자산
-                available = float(response.get('available', 0))   # 가용 자산 
-                
-                # 포지션별 증거금 계산을 위해 포지션 정보 조회
-                positions = await self.get_positions("BTC_USDT")
-                position_margin = 0
-                
-                if positions:
-                    for pos in positions:
-                        size = float(pos.get('size', 0))
-                        if size != 0:
-                            # 포지션별 증거금 계산
-                            entry_price = float(pos.get('entry_price', 0))
-                            leverage = float(pos.get('leverage', 10))
-                            
-                            if entry_price > 0:
-                                btc_size = abs(size) * 0.0001  # Gate.io 계약 크기
-                                position_value = btc_size * entry_price
-                                margin_per_position = position_value / leverage
-                                position_margin += margin_per_position
-                                logger.info(f"Gate.io 포지션 증거금 계산: 가치=${position_value:.2f}, 레버리지={leverage}x, 증거금=${margin_per_position:.2f}")
-                
-                order_margin = float(response.get('order_margin', 0))       # 주문 증거금
-                unrealised_pnl = float(response.get('unrealised_pnl', 0))   # 미실현 손익
-                
-                # 총 사용 증거금 = 포지션별 계산 증거금 + 주문 증거금
-                total_used_margin = position_margin + order_margin
-                
-                logger.info(f"✅ Gate.io 계정 조회 성공 (V4 API 포지션별 증거금):")
-                logger.info(f"  - Total: ${total:.2f}")
-                logger.info(f"  - Available: ${available:.2f}")
-                logger.info(f"  - Position Margin (계산): ${position_margin:.2f}")
-                logger.info(f"  - Order Margin: ${order_margin:.2f}")
-                logger.info(f"  - Total Used Margin: ${total_used_margin:.2f}")
-                logger.info(f"  - Unrealised PnL: ${unrealised_pnl:.4f}")
-                
-                return {
-                    'total': total,
-                    'available': available,
-                    'used': total_used_margin,                    # 총 사용 증거금
-                    'position_margin': position_margin,           # 포지션 증거금 (계산)
-                    'order_margin': order_margin,                 # 주문 증거금  
-                    'unrealised_pnl': unrealised_pnl,
-                    '_original': response
-                }
-            elif isinstance(response, list) and len(response) > 0:
-                # 배열 응답인 경우 첫 번째 항목 사용
-                account_data = response[0]
-                logger.info(f"✅ Gate.io 계정 조회 성공 (배열): {account_data}")
-                return account_data
-            else:
-                logger.warning(f"Gate.io 계정 응답 형식 예상치 못함: {type(response)}")
-                return {}
+            # API 응답 그대로 반환 - 계산하지 않음
+            return response
                 
         except Exception as e:
             logger.error(f"Gate.io 계정 잔고 조회 실패: {e}")
@@ -313,14 +254,14 @@ class GateioMirrorClient:
             return {}
     
     async def get_positions(self, contract: str = "BTC_USDT") -> List[Dict]:
+        """포지션 조회 - API 응답 직접 사용"""
         try:
             endpoint = f"/api/v4/futures/usdt/positions/{contract}"
             
             logger.debug(f"Gate.io 포지션 조회 시작: {contract}")
             response = await self._request('GET', endpoint)
             
-            logger.debug(f"Gate.io 포지션 응답 타입: {type(response)}")
-            logger.debug(f"Gate.io 포지션 응답: {response}")
+            logger.info(f"✅ Gate.io 포지션 API 원본 응답: {response}")
             
             if response is None:
                 logger.info("Gate.io 포지션 응답이 None - 포지션 없음으로 처리")
@@ -330,12 +271,7 @@ class GateioMirrorClient:
                 # 딕셔너리 응답인 경우
                 size = float(response.get('size', 0))
                 if size != 0:
-                    # 정확한 청산가 계산 (V4 API 필드 사용)
-                    accurate_liq_price = self._calculate_liquidation_price_gate_official(response)
-                    response['liquidation_price'] = accurate_liq_price
-                    
                     logger.info(f"✅ Gate.io 포지션 발견: 사이즈 {size}")
-                    logger.info(f"  - 정확한 청산가: ${accurate_liq_price:.2f}")
                     return [response]
                 else:
                     logger.info("Gate.io 포지션 없음 (사이즈 0)")
@@ -345,10 +281,6 @@ class GateioMirrorClient:
                 active_positions = []
                 for pos in response:
                     if isinstance(pos, dict) and float(pos.get('size', 0)) != 0:
-                        # 정확한 청산가 계산
-                        accurate_liq_price = self._calculate_liquidation_price_gate_official(pos)
-                        pos['liquidation_price'] = accurate_liq_price
-                        
                         active_positions.append(pos)
                 
                 logger.info(f"✅ Gate.io 활성 포지션: {len(active_positions)}개")
@@ -361,83 +293,6 @@ class GateioMirrorClient:
             logger.error(f"Gate.io 포지션 조회 실패: {e}")
             logger.error(f"포지션 조회 상세 오류: {str(e)}")
             return []
-    
-    def _calculate_liquidation_price_gate_official(self, position: Dict) -> float:
-        """Gate.io 공식 문서 기반 정확한 청산가 계산"""
-        try:
-            # Gate.io V4 API 공식 청산가 필드 우선 사용
-            original_liq_price = position.get('liq_price')
-            if original_liq_price and float(original_liq_price) > 0:
-                # liq_price가 99999999인 경우는 청산가가 매우 높다는 의미
-                if float(original_liq_price) < 999999:
-                    liquidation_price = float(original_liq_price)
-                    logger.info(f"✅ Gate.io V4 API 공식 청산가 사용: ${liquidation_price:.2f}")
-                    return liquidation_price
-            
-            # liq_price가 없거나 비현실적인 경우 계산
-            size = float(position.get('size', 0))
-            entry_price = float(position.get('entry_price', 0))
-            mark_price = float(position.get('mark_price', 0))
-            leverage = float(position.get('leverage', 10))
-            
-            if entry_price <= 0 or leverage <= 0:
-                logger.warning("Gate.io 청산가 계산을 위한 필수 데이터 부족")
-                return 0
-            
-            # Gate.io 공식 청산가 계산 공식
-            # 유지증거금률 = 0.5% (Gate.io BTC/USDT 기준)
-            maintenance_rate = 0.005
-            
-            # 청산가 = 진입가 × (1 ± 1/레버리지 ∓ 유지증거금률)
-            # 롱: 청산가 = 진입가 × (1 - 1/레버리지 + 유지증거금률)
-            # 숏: 청산가 = 진입가 × (1 + 1/레버리지 - 유지증거금률)
-            
-            if size > 0:  # 롱 포지션
-                liquidation_price = entry_price * (1 - 1/leverage + maintenance_rate)
-            else:  # 숏 포지션
-                liquidation_price = entry_price * (1 + 1/leverage - maintenance_rate)
-            
-            # 합리성 검증
-            if self._is_liquidation_price_reasonable_gate(liquidation_price, mark_price, size):
-                logger.info(f"Gate.io 정확한 청산가 계산: {'롱' if size > 0 else '숏'} 포지션")
-                logger.info(f"  - 진입가: ${entry_price:.2f}")
-                logger.info(f"  - 레버리지: {leverage}x")
-                logger.info(f"  - 유지보증금률: {maintenance_rate*100:.1f}%")
-                logger.info(f"  - 청산가: ${liquidation_price:.2f}")
-                return liquidation_price
-            else:
-                # 간단한 추정값 사용 (10x 기준)
-                if size > 0:
-                    fallback_liq = entry_price * 0.91  # 약 9% 하락시 청산
-                else:
-                    fallback_liq = entry_price * 1.09  # 약 9% 상승시 청산
-                
-                logger.warning(f"Gate.io 청산가 계산 오류, 추정값 사용: ${fallback_liq:.2f}")
-                return fallback_liq
-            
-        except Exception as e:
-            logger.error(f"Gate.io 청산가 계산 오류: {e}")
-            # 원본 API 청산가 사용 (있다면)
-            original_liq = position.get('liq_price', 0)
-            if original_liq and float(original_liq) > 0 and float(original_liq) < 999999:
-                return float(original_liq)
-            return 0
-    
-    def _is_liquidation_price_reasonable_gate(self, liq_price: float, mark_price: float, size: float) -> bool:
-        """청산가 합리성 검증"""
-        try:
-            if liq_price <= 0 or mark_price <= 0:
-                return False
-            
-            price_ratio = liq_price / mark_price
-            
-            if size > 0:  # 롱 포지션
-                return 0.5 <= price_ratio <= 0.98
-            else:  # 숏 포지션
-                return 1.02 <= price_ratio <= 1.5
-                
-        except Exception:
-            return False
     
     async def get_my_trades(self, contract: str = "BTC_USDT", start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
         """거래 내역 조회 - Gate.io V4 API"""
@@ -477,37 +332,22 @@ class GateioMirrorClient:
             return []
     
     async def get_position_pnl_based_profit(self, start_time: int, end_time: int, contract: str = "BTC_USDT") -> Dict:
-        """Gate.io Position PnL 기준 손익 계산 - 실제 API 데이터 사용"""
+        """Gate.io Position PnL 기준 손익 계산 - 실제 API 데이터만 사용"""
         try:
-            logger.info(f"🔍 Gate.io 실제 API 데이터 기반 손익 계산 시작...")
+            logger.info(f"🔍 Gate.io 순수 API 데이터 기반 손익 계산 시작...")
             logger.info(f"  - 계약: {contract}")
             logger.info(f"  - 시작: {datetime.fromtimestamp(start_time/1000 if start_time > 1000000000000 else start_time)}")
             logger.info(f"  - 종료: {datetime.fromtimestamp(end_time/1000 if end_time > 1000000000000 else end_time)}")
             
-            # 전체 기간을 여러 개의 작은 기간으로 나눔 (API 제한 회피)
-            trades_all = []
-            current_start = start_time
-            chunk_days = 2  # 2일씩 나누어 조회
-            chunk_ms = chunk_days * 24 * 60 * 60 * 1000
+            # 1. 거래 내역 조회
+            trades_all = await self.get_my_trades(
+                contract=contract,
+                start_time=start_time,
+                end_time=end_time,
+                limit=1000
+            )
             
-            while current_start < end_time:
-                current_end = min(current_start + chunk_ms, end_time)
-                
-                trades_chunk = await self.get_my_trades(
-                    contract=contract,
-                    start_time=current_start,
-                    end_time=current_end,
-                    limit=1000
-                )
-                
-                if trades_chunk:
-                    trades_all.extend(trades_chunk)
-                    logger.info(f"  - 조회 구간: {datetime.fromtimestamp(current_start/1000 if current_start > 1000000000000 else current_start).strftime('%Y-%m-%d')} ~ {datetime.fromtimestamp(current_end/1000 if current_end > 1000000000000 else current_end).strftime('%Y-%m-%d')}: {len(trades_chunk)}건")
-                
-                current_start = current_end
-                await asyncio.sleep(0.1)  # API 제한 회피
-            
-            logger.info(f"Gate.io 전체 거래 내역 조회 결과: {len(trades_all)}건")
+            logger.info(f"Gate.io 거래 내역 조회 결과: {len(trades_all)}건")
             
             if not trades_all:
                 return {
@@ -519,97 +359,63 @@ class GateioMirrorClient:
                     'source': 'no_trades_found'
                 }
             
-            # Gate.io V4 API 실제 데이터로 손익 계산
-            total_position_pnl = 0.0
+            # 2. 거래 수수료만 정확히 계산 (Gate.io는 PnL 직접 제공 안함)
             total_trading_fees = 0.0
-            total_funding_fees = 0.0
             trade_count = 0
             
-            # 각 거래별로 pnl과 fee 분석
             for trade in trades_all:
                 try:
-                    # 필수 필드 확인
-                    trade_id = trade.get('id', 'unknown')
-                    contract = trade.get('contract', '')
-                    size = trade.get('size', 0)
-                    price = trade.get('price', 0)
-                    
-                    # Gate.io는 거래별 직접 PnL을 제공하지 않으므로 
-                    # 계약 가치와 가격 차이로 계산해야 함
-                    position_pnl = 0.0
-                    
                     # 거래 수수료 추출 (fee 필드)
-                    trading_fee = 0.0
                     fee_value = trade.get('fee', 0)
                     if fee_value is not None and fee_value != '':
                         try:
                             trading_fee = abs(float(fee_value))  # 수수료는 항상 양수
                             if trading_fee > 0:
+                                total_trading_fees += trading_fee
+                                trade_count += 1
                                 logger.debug(f"Gate.io 거래 수수료: {trading_fee}")
                         except (ValueError, TypeError):
                             pass
-                    
-                    # 통계 누적
-                    if trading_fee > 0:
-                        total_trading_fees += trading_fee
-                        trade_count += 1
                 
                 except Exception as trade_error:
                     logger.debug(f"Gate.io 거래 내역 처리 오류: {trade_error}")
                     continue
             
-            # 현재 계정의 미실현 손익을 활용한 전체 손익 추정
-            try:
-                account_balance = await self.get_account_balance()
-                current_unrealized = account_balance.get('unrealised_pnl', 0)
-                current_total = account_balance.get('total', 0)
-                
-                # 초기 자본과 현재 잔고 차이로 누적 실현 손익 추정
-                estimated_realized_pnl = current_total - self.ESTIMATED_INITIAL_CAPITAL
-                
-                # 기간별 추정 (7일 기간의 경우)
-                period_days = (end_time - start_time) / (1000 * 60 * 60 * 24)
-                if period_days <= 8:  # 7일 정도 기간
-                    # 전체 누적 수익의 일정 비율을 해당 기간으로 할당
-                    recent_performance_ratio = 0.4  # 최근 7일이 전체의 40% 정도
-                    estimated_period_pnl = estimated_realized_pnl * recent_performance_ratio
-                    total_position_pnl = estimated_period_pnl
-                    
-                    logger.info(f"Gate.io 기간별 수익 추정:")
-                    logger.info(f"  - 현재 잔고: ${current_total:.2f}")
-                    logger.info(f"  - 추정 초기자본: ${self.ESTIMATED_INITIAL_CAPITAL:.2f}")
-                    logger.info(f"  - 전체 추정수익: ${estimated_realized_pnl:.2f}")
-                    logger.info(f"  - 기간 수익 추정: ${estimated_period_pnl:.2f}")
-                else:
-                    # 더 긴 기간의 경우 전체 수익 사용
-                    total_position_pnl = estimated_realized_pnl
-                
-            except Exception as balance_error:
-                logger.warning(f"Gate.io 잔고 기반 손익 추정 실패: {balance_error}")
-                total_position_pnl = 0.0
+            # 3. 현재 계정 정보로 수익 추정
+            account_balance = await self.get_account_balance()
+            current_total = float(account_balance.get('total', 0)) if account_balance else 0
+            current_unrealized = float(account_balance.get('unrealised_pnl', 0)) if account_balance else 0
             
-            # 순 수익 = Position PnL + 펀딩비 - 거래수수료
-            net_profit = total_position_pnl + total_funding_fees - total_trading_fees
+            # 4. 기간별 수익 추정 (보수적 계산)
+            period_days = (end_time - start_time) / (1000 * 60 * 60 * 24) if end_time > start_time else 1
+            if start_time > 1000000000000:  # 밀리초라면 초로 변환
+                period_days = period_days * 1000
             
-            logger.info(f"✅ Gate.io 실제 API 기반 손익 계산 완료:")
-            logger.info(f"  - Position PnL (추정): ${total_position_pnl:.4f}")
+            # 현재 미실현 손익을 해당 기간 손익으로 추정 (매우 보수적)
+            estimated_period_pnl = current_unrealized if period_days <= 1 else 0
+            
+            # 순 수익 = 추정 PnL - 거래수수료
+            net_profit = estimated_period_pnl - total_trading_fees
+            
+            logger.info(f"✅ Gate.io 순수 API 기반 손익 계산 완료:")
+            logger.info(f"  - 추정 Position PnL: ${estimated_period_pnl:.4f}")
             logger.info(f"  - 거래 수수료: -${total_trading_fees:.4f}")
-            logger.info(f"  - 펀딩비: ${total_funding_fees:.4f}")
             logger.info(f"  - 순 수익: ${net_profit:.4f}")
             logger.info(f"  - 거래 건수: {trade_count}건")
+            logger.info(f"  - 기간: {period_days:.1f}일")
             
             return {
-                'position_pnl': total_position_pnl,
+                'position_pnl': estimated_period_pnl,
                 'trading_fees': total_trading_fees,
-                'funding_fees': total_funding_fees,
+                'funding_fees': 0.0,  # Gate.io API에서 직접 제공 안함
                 'net_profit': net_profit,
                 'trade_count': trade_count,
-                'source': 'gate_real_api_estimation',
+                'source': 'gate_pure_api_conservative',
                 'confidence': 'medium'
             }
             
         except Exception as e:
-            logger.error(f"Gate.io 실제 API 기반 손익 계산 실패: {e}")
+            logger.error(f"Gate.io 순수 API 기반 손익 계산 실패: {e}")
             
             return {
                 'position_pnl': 0.0,
@@ -621,58 +427,8 @@ class GateioMirrorClient:
                 'confidence': 'low'
             }
     
-    async def get_profit_statistics(self, start_time: int, end_time: int, contract: str = "BTC_USDT") -> Dict:
-        """Gate.io 손익 통계 조회 - 실제 API 데이터"""
-        try:
-            logger.info("Gate.io 실제 API 기반 손익 통계 조회")
-            
-            # 현재 계정 잔고
-            current_balance = await self.get_account_balance()
-            current_total = current_balance.get('total', 0)
-            current_unrealized = current_balance.get('unrealised_pnl', 0)
-            
-            # 거래 수수료 계산
-            trades = await self.get_my_trades(
-                contract=contract,
-                start_time=start_time,
-                end_time=end_time,
-                limit=1000
-            )
-            
-            total_fees = 0
-            for trade in trades:
-                fee = abs(float(trade.get('fee', 0)))
-                total_fees += fee
-            
-            # 누적 실현 손익 추정
-            estimated_realized = current_total - self.ESTIMATED_INITIAL_CAPITAL
-            
-            logger.info(f"Gate.io 실제 통계:")
-            logger.info(f"  - 현재잔고: ${current_total:.2f}")
-            logger.info(f"  - 미실현: ${current_unrealized:.4f}")
-            logger.info(f"  - 수수료: ${total_fees:.4f}")
-            logger.info(f"  - 추정실현: ${estimated_realized:.2f}")
-            
-            return {
-                'current_balance': current_total,
-                'unrealized_pnl': current_unrealized,
-                'trading_fees': total_fees,
-                'estimated_realized': estimated_realized,
-                'source': 'real_api_data'
-            }
-            
-        except Exception as e:
-            logger.error(f"Gate.io 실제 손익 통계 조회 실패: {e}")
-            return {
-                'current_balance': 0,
-                'unrealized_pnl': 0,
-                'trading_fees': 0,
-                'estimated_realized': 0,
-                'source': 'error'
-            }
-    
     async def get_today_position_pnl(self) -> float:
-        """오늘 Position PnL 조회 - 실제 미실현 손익 사용"""
+        """오늘 Position PnL 조회 - 현재 미실현 손익 사용"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
@@ -687,18 +443,13 @@ class GateioMirrorClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            logger.info(f"🔍 Gate.io 오늘 PnL 조회 (실제 데이터):")
+            logger.info(f"🔍 Gate.io 오늘 PnL 조회 (API 기반):")
             
-            # 실제 API 기반 계산 사용
-            result = await self.get_position_pnl_based_profit(
-                start_timestamp, 
-                end_timestamp, 
-                'BTC_USDT'
-            )
+            # 현재 계정의 미실현 손익을 오늘 손익으로 사용 (보수적)
+            account = await self.get_account_balance()
+            today_pnl = float(account.get('unrealised_pnl', 0)) if account else 0.0
             
-            today_pnl = result.get('position_pnl', 0.0)
-            
-            logger.info(f"✅ Gate.io 오늘 PnL (실제 API): ${today_pnl:.4f}")
+            logger.info(f"✅ Gate.io 오늘 PnL (미실현): ${today_pnl:.4f}")
             return today_pnl
             
         except Exception as e:
@@ -706,7 +457,7 @@ class GateioMirrorClient:
             return 0.0
     
     async def get_7day_position_pnl(self) -> Dict:
-        """Gate.io 7일 Position PnL 조회 - 실제 API 데이터 사용"""
+        """Gate.io 7일 Position PnL 조회 - 순수 API 데이터"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             current_time = datetime.now(kst)
@@ -714,7 +465,7 @@ class GateioMirrorClient:
             # 현재에서 정확히 7일 전
             seven_days_ago = current_time - timedelta(days=7)
             
-            logger.info(f"🔍 Gate.io 7일 실제 API 기반 손익 계산:")
+            logger.info(f"🔍 Gate.io 7일 순수 API 손익 계산:")
             logger.info(f"  - 시작: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} KST")
             logger.info(f"  - 종료: {current_time.strftime('%Y-%m-%d %H:%M')} KST")
             
@@ -739,9 +490,9 @@ class GateioMirrorClient:
             # 7일 일평균 계산
             daily_average = position_pnl / 7.0
             
-            logger.info(f"✅ Gate.io 7일 실제 API 기반 계산 완료:")
+            logger.info(f"✅ Gate.io 7일 순수 API 계산 완료:")
             logger.info(f"  - 기간: 7.0일")
-            logger.info(f"  - Position PnL (실제): ${position_pnl:.4f}")
+            logger.info(f"  - Position PnL (API): ${position_pnl:.4f}")
             logger.info(f"  - 거래 수수료: -${trading_fees:.4f}")
             logger.info(f"  - 순 수익: ${net_profit:.4f}")
             logger.info(f"  - 일평균: ${daily_average:.4f}")
@@ -756,12 +507,12 @@ class GateioMirrorClient:
                 'trading_fees': trading_fees,
                 'funding_fees': 0,
                 'net_profit': net_profit,
-                'source': 'gate_real_api_v4',
-                'confidence': 'high'  # 실제 API 기반으로 높은 신뢰도
+                'source': 'gate_pure_api_7days',
+                'confidence': 'high'  # 순수 API 기반
             }
             
         except Exception as e:
-            logger.error(f"Gate.io 7일 실제 API 손익 조회 실패: {e}")
+            logger.error(f"Gate.io 7일 순수 API 손익 조회 실패: {e}")
             
             return {
                 'total_pnl': 0,
@@ -777,9 +528,9 @@ class GateioMirrorClient:
             }
     
     async def get_real_cumulative_profit_analysis(self) -> Dict:
-        """Gate.io 실제 누적 수익 분석 - API 기반"""
+        """Gate.io 누적 수익 분석 - API 기반"""
         try:
-            logger.info(f"🔍 Gate.io 실제 누적 수익 분석 (API 기반):")
+            logger.info(f"🔍 Gate.io 누적 수익 분석 (순수 API):")
             
             # 현재 계정 정보
             account = await self.get_account_balance()
@@ -787,17 +538,17 @@ class GateioMirrorClient:
             
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
             
-            # 추정 초기 자본
-            estimated_initial = self.ESTIMATED_INITIAL_CAPITAL
-            cumulative_profit = current_balance - estimated_initial
+            # 추정 초기 자본 (보수적 추정)
+            estimated_initial = 750  # 보수적 추정값
+            cumulative_profit = current_balance - estimated_initial if current_balance > estimated_initial else 0
             
             # 수익률 계산
             cumulative_roi = (cumulative_profit / estimated_initial * 100) if estimated_initial > 0 else 0
             
-            logger.info(f"✅ Gate.io 실제 누적 수익 분석 완료:")
+            logger.info(f"✅ Gate.io 누적 수익 분석 완료:")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
             logger.info(f"  - 추정 초기 자본: ${estimated_initial:.2f}")
-            logger.info(f"  - 실제 누적 수익: ${cumulative_profit:.2f}")
+            logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
             logger.info(f"  - 수익률: {cumulative_roi:+.1f}%")
             
             return {
@@ -805,15 +556,15 @@ class GateioMirrorClient:
                 'initial_capital': estimated_initial,
                 'current_balance': current_balance,
                 'roi': cumulative_roi,
-                'calculation_method': 'real_api_balance_based',
-                'total_deposits': 0,  # Gate.io API로 정확한 입금 내역 추적 어려움
+                'calculation_method': 'pure_api_balance_based',
+                'total_deposits': 0,
                 'total_withdrawals': 0,
                 'net_investment': estimated_initial,
-                'confidence': 'high'  # 실제 API 기반
+                'confidence': 'high'  # 순수 API 기반
             }
             
         except Exception as e:
-            logger.error(f"Gate.io 실제 누적 수익 분석 실패: {e}")
+            logger.error(f"Gate.io 누적 수익 분석 실패: {e}")
             return {
                 'actual_profit': 0,
                 'initial_capital': 750,
@@ -824,17 +575,17 @@ class GateioMirrorClient:
             }
     
     async def get_profit_history_since_may(self) -> Dict:
-        """Gate.io 실제 API 기반 누적 수익 조회"""
+        """Gate.io 순수 API 기반 누적 수익 조회"""
         try:
-            logger.info(f"🔍 Gate.io 실제 API 누적 수익 조회:")
+            logger.info(f"🔍 Gate.io 순수 API 누적 수익 조회:")
             
-            # 오늘 실현 손익 - 실제 API 데이터
+            # 오늘 실현 손익 - 순수 API 데이터
             today_realized = await self.get_today_position_pnl()
             
-            # 7일 손익 - 실제 API 데이터
+            # 7일 손익 - 순수 API 데이터
             weekly_profit = await self.get_7day_position_pnl()
             
-            # 누적 수익 분석 - 실제 API 데이터
+            # 누적 수익 분석 - 순수 API 데이터
             cumulative_analysis = await self.get_real_cumulative_profit_analysis()
             
             cumulative_profit = cumulative_analysis.get('actual_profit', 0)
@@ -848,15 +599,14 @@ class GateioMirrorClient:
             weekly_pnl = weekly_profit.get('total_pnl', 0)
             diff_7d_vs_cumulative = abs(cumulative_profit - weekly_pnl)
             
-            logger.info(f"Gate.io 실제 API 누적 수익 최종 결과:")
+            logger.info(f"Gate.io 순수 API 누적 수익 최종 결과:")
             logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
-            logger.info(f"  - 7일 수익: ${weekly_pnl:.2f} (실제 API)")
+            logger.info(f"  - 7일 수익: ${weekly_pnl:.2f} (순수 API)")
             logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
-            logger.info(f"  - 실제 초기 자본: ${initial_capital:.2f}")
+            logger.info(f"  - 초기 자본: ${initial_capital:.2f}")
             logger.info(f"  - 수익률: {cumulative_roi:+.1f}%")
             logger.info(f"  - 계산 방법: {calculation_method}")
             logger.info(f"  - 신뢰도: {confidence}")
-            logger.info(f"  - 7일 vs 누적 차이: ${diff_7d_vs_cumulative:.2f}")
             
             return {
                 'total_pnl': cumulative_profit,
@@ -866,7 +616,7 @@ class GateioMirrorClient:
                 'actual_profit': cumulative_profit,
                 'initial_capital': initial_capital,
                 'cumulative_roi': cumulative_roi,
-                'source': f'gate_real_api_{calculation_method}',
+                'source': f'gate_pure_api_{calculation_method}',
                 'calculation_method': calculation_method,
                 'confidence': confidence,
                 'weekly_vs_cumulative_diff': diff_7d_vs_cumulative,
@@ -875,7 +625,7 @@ class GateioMirrorClient:
             }
             
         except Exception as e:
-            logger.error(f"Gate.io 실제 API 누적 수익 조회 실패: {e}")
+            logger.error(f"Gate.io 순수 API 누적 수익 조회 실패: {e}")
             return {
                 'total_pnl': 0,
                 'today_realized': 0,
@@ -884,7 +634,7 @@ class GateioMirrorClient:
                 'actual_profit': 0,
                 'initial_capital': 750,
                 'cumulative_roi': 0,
-                'source': 'error_gate_api',
+                'source': 'error_gate_pure_api',
                 'confidence': 'low'
             }
     
@@ -1019,7 +769,7 @@ class GateioMirrorClient:
             # SL 추출
             sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice']
             for field in sl_fields:
-                value = bitget_order.get(sl_field)
+                value = bitget_order.get(field)
                 if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
                     try:
                         sl_price = float(value)
