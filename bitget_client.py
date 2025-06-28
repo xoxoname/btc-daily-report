@@ -435,14 +435,14 @@ class BitgetClient:
             for pos in positions:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
-                    # 청산가 정확한 계산 (V2 API 공식 필드 사용)
-                    liquidation_price = self._calculate_accurate_liquidation_price_v2(pos)
-                    pos['liquidationPrice'] = liquidation_price
+                    # API에서 직접 받은 정확한 청산가 사용
+                    api_liquidation_price = self._get_api_liquidation_price(pos)
+                    pos['liquidationPrice'] = api_liquidation_price
                     
                     active_positions.append(pos)
                     logger.info(f"활성 포지션 발견:")
                     logger.info(f"  - 사이즈: {total_size}")
-                    logger.info(f"  - 정확한 청산가: ${liquidation_price:.2f}")
+                    logger.info(f"  - API 청산가: ${api_liquidation_price:.2f}")
             
             return active_positions
             
@@ -450,70 +450,62 @@ class BitgetClient:
             logger.error(f"포지션 조회 실패: {e}")
             return []
     
-    def _calculate_accurate_liquidation_price_v2(self, position: Dict) -> float:
+    def _get_api_liquidation_price(self, position: Dict) -> float:
+        """API에서 직접 받은 청산가 우선 사용"""
         try:
-            # V2 API 공식 필드명 사용 - liqPrice가 정확한 청산가
-            original_liq_price = position.get('liqPrice')
-            if original_liq_price and float(original_liq_price) > 0:
-                liquidation_price = float(original_liq_price)
-                logger.info(f"✅ V2 API 공식 청산가 사용: ${liquidation_price:.2f}")
-                return liquidation_price
+            # V2 API 청산가 필드들 (우선순위대로)
+            liq_price_fields = [
+                'liqPrice',        # V2 API 공식 청산가
+                'liquidationPrice', # 일반적인 청산가 필드
+                'liq_price',       # 소문자 버전
+                'liquidation_price' # 스네이크 케이스
+            ]
             
-            # liqPrice가 없거나 0인 경우 계산
+            for field in liq_price_fields:
+                value = position.get(field)
+                if value is not None:
+                    try:
+                        liq_price = float(value)
+                        if liq_price > 0 and liq_price < 9999999:  # 현실적인 범위
+                            logger.info(f"✅ API 청산가 발견 ({field}): ${liq_price:.2f}")
+                            return liq_price
+                    except (ValueError, TypeError):
+                        continue
+            
+            # API 청산가가 없거나 비현실적인 경우에만 계산
+            logger.warning("API 청산가 없음 - 계산으로 추정")
+            return self._calculate_liquidation_price_fallback(position)
+            
+        except Exception as e:
+            logger.error(f"청산가 추출 오류: {e}")
+            return 0
+    
+    def _calculate_liquidation_price_fallback(self, position: Dict) -> float:
+        """API 청산가가 없을 때만 사용하는 fallback 계산"""
+        try:
             mark_price = float(position.get('markPrice', 0))
             entry_price = float(position.get('openPriceAvg', 0))
             hold_side = position.get('holdSide', '')
             leverage = float(position.get('leverage', 30))
             
             if mark_price <= 0 or entry_price <= 0:
-                logger.warning("청산가 계산을 위한 필수 데이터 부족")
+                logger.warning("청산가 계산 필수 데이터 부족")
                 return 0
             
-            # 비트겟 V2 공식 청산가 계산
+            # 간단한 추정 (보수적)
+            maintenance_margin_rate = 0.004  # 0.4%
+            
             if hold_side == 'long':
-                # 롱 포지션: 청산가 = 진입가 * (1 - (1 - MMR) / 레버리지)
-                maintenance_margin_rate = 0.004  # 0.4% (BTC 기준)
                 liquidation_price = entry_price * (1 - (1 - maintenance_margin_rate) / leverage)
             else:
-                # 숏 포지션: 청산가 = 진입가 * (1 + (1 - MMR) / 레버리지)
-                maintenance_margin_rate = 0.004  # 0.4% (BTC 기준)
                 liquidation_price = entry_price * (1 + (1 - maintenance_margin_rate) / leverage)
             
-            # 합리성 검증
-            if self._is_liquidation_price_reasonable_v2(liquidation_price, mark_price, hold_side):
-                logger.info(f"계산된 청산가: {hold_side} 포지션")
-                logger.info(f"  - 진입가: ${entry_price:.2f}")
-                logger.info(f"  - 레버리지: {leverage}x")
-                logger.info(f"  - 청산가: ${liquidation_price:.2f}")
-                return liquidation_price
-            else:
-                # 간단한 추정값 사용
-                if hold_side == 'long':
-                    fallback_liq = entry_price * (1 - 0.9/leverage)
-                else:
-                    fallback_liq = entry_price * (1 + 0.9/leverage)
-                
-                logger.warning(f"청산가 계산 오류, 추정값 사용: ${fallback_liq:.2f}")
-                return fallback_liq
+            logger.info(f"계산된 추정 청산가: ${liquidation_price:.2f}")
+            return liquidation_price
             
         except Exception as e:
-            logger.error(f"청산가 계산 오류: {e}")
+            logger.error(f"fallback 청산가 계산 오류: {e}")
             return 0
-    
-    def _is_liquidation_price_reasonable_v2(self, liq_price: float, mark_price: float, hold_side: str) -> bool:
-        try:
-            if liq_price <= 0 or mark_price <= 0:
-                return False
-            
-            price_ratio = liq_price / mark_price
-            
-            if hold_side == 'long':
-                return 0.5 <= price_ratio <= 0.95
-            else:
-                return 1.05 <= price_ratio <= 1.5
-                
-        except Exception:
-            return False
     
     async def get_account_info(self) -> Dict:
         try:
@@ -531,21 +523,24 @@ class BitgetClient:
                 logger.error("계정 정보 응답이 비어있음")
                 return {}
             
-            # V2 API 정확한 필드 매핑
+            # V2 API 정확한 필드 매핑 + 포지션별 증거금 계산
             result = {
                 'accountEquity': float(response.get('usdtEquity', 0)),     # 총 자산
                 'available': float(response.get('available', 0)),         # 가용 자산
-                'usedMargin': float(response.get('locked', 0)),          # 실제 사용 증거금 (locked 필드)
                 'unrealizedPL': float(response.get('unrealizedPL', 0)),  # 미실현 손익
                 'marginBalance': float(response.get('marginBalance', 0)), # 증거금 잔고
                 'walletBalance': float(response.get('walletBalance', 0)), # 지갑 잔고
                 '_original': response
             }
             
-            logger.info(f"✅ 계정 정보 파싱 (V2 API 정확한 필드):")
+            # 포지션별 정확한 사용 증거금 계산
+            used_margin = await self._calculate_accurate_used_margin()
+            result['usedMargin'] = used_margin
+            
+            logger.info(f"✅ 계정 정보 파싱 완료:")
             logger.info(f"  - 총 자산: ${result['accountEquity']:.2f}")
             logger.info(f"  - 가용 자산: ${result['available']:.2f}")
-            logger.info(f"  - 사용 증거금 (locked): ${result['usedMargin']:.2f}")
+            logger.info(f"  - 포지션별 사용 증거금: ${result['usedMargin']:.2f}")
             logger.info(f"  - 미실현 손익: ${result['unrealizedPL']:.4f}")
             
             return result
@@ -553,6 +548,52 @@ class BitgetClient:
         except Exception as e:
             logger.error(f"계정 정보 조회 실패: {e}")
             return {}
+    
+    async def _calculate_accurate_used_margin(self) -> float:
+        """포지션별 정확한 사용 증거금 계산"""
+        try:
+            positions = await self.get_positions(self.config.symbol)
+            total_used_margin = 0.0
+            
+            for position in positions:
+                total_size = float(position.get('total', 0))
+                if total_size > 0:
+                    # V2 API에서 포지션별 증거금 필드들 시도
+                    margin_fields = [
+                        'margin',           # 직접적인 증거금 필드
+                        'im',              # Initial Margin
+                        'positionMargin',   # Position Margin
+                        'usedMargin'       # Used Margin
+                    ]
+                    
+                    position_margin = 0.0
+                    for field in margin_fields:
+                        value = position.get(field)
+                        if value is not None:
+                            try:
+                                position_margin = float(value)
+                                if position_margin > 0:
+                                    logger.info(f"포지션 증거금 ({field}): ${position_margin:.2f}")
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # API 필드가 없으면 계산
+                    if position_margin <= 0:
+                        mark_price = float(position.get('markPrice', 0))
+                        leverage = float(position.get('leverage', 30))
+                        contract_value = total_size * mark_price * 0.0001  # BTC 계약 크기
+                        position_margin = contract_value / leverage
+                        logger.info(f"계산된 포지션 증거금: ${position_margin:.2f}")
+                    
+                    total_used_margin += position_margin
+            
+            logger.info(f"총 사용 증거금 (포지션별 합계): ${total_used_margin:.2f}")
+            return total_used_margin
+            
+        except Exception as e:
+            logger.error(f"포지션별 사용 증거금 계산 실패: {e}")
+            return 0.0
     
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
         symbol = symbol or self.config.symbol
