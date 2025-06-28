@@ -260,7 +260,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_exchange_data('Bitget')
     
     async def _get_gateio_data_position_pnl(self) -> dict:
-        """🔥🔥 Gate.io Position PnL 기준 정확한 손익 계산 - 개선된 거래 내역 파싱"""
+        """🔥🔥 Gate.io Position PnL 기준 정확한 손익 계산 - 강화된 안전장치"""
         try:
             # Gate.io 클라이언트가 없는 경우
             if not self.gateio_client:
@@ -310,8 +310,22 @@ class ProfitReportGenerator(BaseReportGenerator):
                             # ROE 계산
                             roe = (pos_unrealized_pnl / margin_used) * 100 if margin_used > 0 else 0
                             
-                            # 청산가
+                            # 🔥🔥 청산가 안전장치 추가
                             liquidation_price = float(pos.get('liq_price', 0))
+                            
+                            # 청산가 검증
+                            if liquidation_price > 0:
+                                # 청산가가 현재가와 비교해서 말이 되는지 확인
+                                price_ratio = liquidation_price / mark_price if mark_price > 0 else 0
+                                
+                                if size > 0:  # 롱 포지션
+                                    if not (0.5 <= price_ratio <= 0.95):
+                                        self.logger.warning(f"Gate.io 비현실적 청산가 감지 (롱): 현재=${mark_price:.2f}, 청산=${liquidation_price:.2f}")
+                                        liquidation_price = entry_price * 0.8  # 보수적 추정
+                                else:  # 숏 포지션
+                                    if not (1.05 <= price_ratio <= 1.5):
+                                        self.logger.warning(f"Gate.io 비현실적 청산가 감지 (숏): 현재=${mark_price:.2f}, 청산=${liquidation_price:.2f}")
+                                        liquidation_price = entry_price * 1.2  # 보수적 추정
                             
                             position_info = {
                                 'has_position': True,
@@ -334,7 +348,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             except Exception as e:
                 self.logger.error(f"Gate 포지션 조회 실패: {e}")
             
-            # 🔥🔥 Position PnL 기준 손익 계산 - 개선된 버전
+            # 🔥🔥 Position PnL 기준 손익 계산 - 강화된 안전장치
             today_position_pnl = 0.0
             weekly_profit = {'total_pnl': 0, 'average_daily': 0}
             cumulative_profit = 0.0
@@ -343,22 +357,12 @@ class ProfitReportGenerator(BaseReportGenerator):
             try:
                 self.logger.info("🔍 Gate.io Position PnL 기준 손익 API 조회...")
                 
-                # 🔥🔥 오늘 Position PnL 조회 - 개선된 거래 내역 파싱
+                # 🔥🔥 오늘 Position PnL 조회 - 강화된 안전장치
                 today_position_pnl = await self.gateio_client.get_today_position_pnl()
                 
-                # 🔥🔥 비현실적인 값 안전장치 (절댓값 1만 달러 이상은 0으로 처리)
-                if abs(today_position_pnl) > 10000:
-                    self.logger.warning(f"Gate.io 오늘 PnL 비현실적 값 감지, 0으로 처리: {today_position_pnl}")
-                    today_position_pnl = 0.0
-                
-                # 🔥🔥 7일 Position PnL 조회 - 개선된 거래 내역 파싱
+                # 🔥🔥 7일 Position PnL 조회 - 강화된 안전장치
                 weekly_result = await self.gateio_client.get_7day_position_pnl()
                 weekly_pnl_value = weekly_result.get('total_pnl', 0)
-                
-                # 🔥🔥 비현실적인 값 안전장치 (절댓값 1만 달러 이상은 0으로 처리)
-                if abs(weekly_pnl_value) > 10000:
-                    self.logger.warning(f"Gate.io 7일 PnL 비현실적 값 감지, 0으로 처리: {weekly_pnl_value}")
-                    weekly_pnl_value = 0.0
                 
                 weekly_profit = {
                     'total_pnl': weekly_pnl_value,
@@ -367,7 +371,8 @@ class ProfitReportGenerator(BaseReportGenerator):
                     'trading_fees': weekly_result.get('trading_fees', 0),
                     'funding_fees': weekly_result.get('funding_fees', 0),
                     'net_profit': weekly_result.get('net_profit', 0),
-                    'source': weekly_result.get('source', 'gate_position_pnl_based_improved_filtered')
+                    'source': weekly_result.get('source', 'gate_position_pnl_based_enhanced_safety'),
+                    'filtered_count': weekly_result.get('filtered_count', 0)
                 }
                 
                 # 🔥🔥 누적 수익 계산 (잔고 기반 추정)
@@ -377,9 +382,10 @@ class ProfitReportGenerator(BaseReportGenerator):
                     cumulative_profit = total_equity - estimated_initial
                     initial_capital = estimated_initial
                     
-                    self.logger.info(f"✅ Gate.io Position PnL 기준 손익 계산 완료 (개선된 파싱 + 안전장치):")
+                    self.logger.info(f"✅ Gate.io Position PnL 기준 손익 계산 완료 (강화된 안전장치):")
                     self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
                     self.logger.info(f"  - 7일 Position PnL: ${weekly_profit['total_pnl']:.4f}")
+                    self.logger.info(f"  - 필터링된 거래: {weekly_profit.get('filtered_count', 0)}건")
                     self.logger.info(f"  - 누적 수익 (추정): ${cumulative_profit:.2f}")
                 else:
                     self.logger.info("Gate.io 잔고가 0이거나 없음")
@@ -388,7 +394,16 @@ class ProfitReportGenerator(BaseReportGenerator):
                 self.logger.error(f"Gate.io Position PnL 기반 손익 API 실패: {e}")
                 # 오류 발생시 안전하게 0으로 처리
                 today_position_pnl = 0.0
-                weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'actual_days': 7, 'trading_fees': 0, 'funding_fees': 0, 'net_profit': 0, 'source': 'error_safe_fallback'}
+                weekly_profit = {
+                    'total_pnl': 0, 
+                    'average_daily': 0, 
+                    'actual_days': 7, 
+                    'trading_fees': 0, 
+                    'funding_fees': 0, 
+                    'net_profit': 0, 
+                    'source': 'error_safe_fallback',
+                    'filtered_count': 0
+                }
             
             # 🔥🔥 사용 증거금 계산 개선 - Gate.io
             used_margin = 0
@@ -404,7 +419,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             has_account = total_equity > 0
             
-            self.logger.info(f"Gate.io 최종 Position PnL 기준 데이터 (개선된 파싱):")
+            self.logger.info(f"Gate.io 최종 Position PnL 기준 데이터 (강화된 안전장치):")
             self.logger.info(f"  - 계정 존재: {has_account}")
             self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
             self.logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
@@ -422,8 +437,8 @@ class ProfitReportGenerator(BaseReportGenerator):
                     'used_margin': used_margin,  # 🔥🔥 개선된 증거금 계산
                     'unrealized_pnl': unrealized_pnl
                 },
-                'today_pnl': today_position_pnl,  # Position PnL 기준 (개선된 파싱)
-                'weekly_profit': weekly_profit,   # Position PnL 기준 (개선된 파싱)
+                'today_pnl': today_position_pnl,  # Position PnL 기준 (강화된 안전장치)
+                'weekly_profit': weekly_profit,   # Position PnL 기준 (강화된 안전장치)
                 'cumulative_profit': cumulative_profit,
                 'cumulative_roi': cumulative_roi,
                 'total_equity': total_equity,
@@ -440,7 +455,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_exchange_data('Gate')
     
     def _calculate_combined_data_position_pnl(self, bitget_data: dict, gateio_data: dict) -> dict:
-        """Position PnL 기준 통합 데이터 계산 - 개선된 오류 처리"""
+        """Position PnL 기준 통합 데이터 계산 - 강화된 안전장치"""
         # 🔥🔥 API 연결 상태 체크
         bitget_healthy = bitget_data.get('api_healthy', True)
         gateio_healthy = gateio_data.get('has_account', False)
@@ -464,42 +479,40 @@ class ProfitReportGenerator(BaseReportGenerator):
         gateio_used_margin = gateio_data['used_margin'] if gateio_healthy else 0
         total_used_margin = bitget_used_margin + gateio_used_margin
         
-        # 🔥🔥 Position PnL 기준 금일 손익 계산
+        # 🔥🔥 Position PnL 기준 금일 손익 계산 - 강화된 안전장치
         bitget_unrealized = bitget_data['account_info'].get('unrealized_pnl', 0) if bitget_healthy else 0
         gateio_unrealized = gateio_data['account_info'].get('unrealized_pnl', 0) if gateio_healthy else 0
         
         bitget_today_pnl = bitget_data['today_pnl'] if bitget_healthy else 0
         gateio_today_pnl = gateio_data['today_pnl'] if gateio_healthy else 0
         
+        # 🔥🔥 개별 값 안전장치
+        if abs(bitget_today_pnl) > 10000:
+            self.logger.warning(f"Bitget 오늘 PnL 비현실적: ${bitget_today_pnl:.2f}, 0으로 처리")
+            bitget_today_pnl = 0.0
+        
+        if abs(gateio_today_pnl) > 10000:
+            self.logger.warning(f"Gate.io 오늘 PnL 비현실적: ${gateio_today_pnl:.2f}, 0으로 처리")
+            gateio_today_pnl = 0.0
+        
         today_position_pnl = bitget_today_pnl + gateio_today_pnl  # Position PnL 기준
-        
-        # 🔥🔥 최종 안전장치: 비현실적인 값 필터링
-        if abs(today_position_pnl) > 100000:  # 10만 달러 이상은 명백한 오류
-            self.logger.error(f"통합 계산에서 비현실적인 금일 PnL 감지, 개별 값 사용")
-            if bitget_healthy:
-                today_position_pnl = bitget_today_pnl
-            elif gateio_healthy:
-                today_position_pnl = gateio_today_pnl
-            else:
-                today_position_pnl = 0
-        
         today_unrealized = bitget_unrealized + gateio_unrealized
         today_total = today_position_pnl + today_unrealized
         
-        # 🔥🔥 7일 Position PnL (통합)
+        # 🔥🔥 7일 Position PnL (통합) - 강화된 안전장치
         bitget_weekly = bitget_data['weekly_profit']['total'] if bitget_healthy else 0
         gateio_weekly = gateio_data['weekly_profit']['total_pnl'] if gateio_healthy else 0
-        weekly_total = bitget_weekly + gateio_weekly  # Position PnL 기준
         
-        # 🔥🔥 최종 안전장치: 비현실적인 값 필터링
-        if abs(weekly_total) > 100000:  # 10만 달러 이상은 명백한 오류
-            self.logger.error(f"통합 계산에서 비현실적인 7일 PnL 감지, 개별 값 사용")
-            if bitget_healthy:
-                weekly_total = bitget_weekly
-            elif gateio_healthy:
-                weekly_total = gateio_weekly
-            else:
-                weekly_total = 0
+        # 🔥🔥 개별 7일 값 안전장치
+        if abs(bitget_weekly) > 10000:
+            self.logger.warning(f"Bitget 7일 PnL 비현실적: ${bitget_weekly:.2f}, 0으로 처리")
+            bitget_weekly = 0.0
+        
+        if abs(gateio_weekly) > 10000:
+            self.logger.warning(f"Gate.io 7일 PnL 비현실적: ${gateio_weekly:.2f}, 0으로 처리")
+            gateio_weekly = 0.0
+        
+        weekly_total = bitget_weekly + gateio_weekly  # Position PnL 기준
         
         # 실제 일수 계산
         actual_days = 7.0
@@ -532,7 +545,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         seven_vs_cumulative_diff = abs(weekly_total - cumulative_profit)
         is_properly_separated = seven_vs_cumulative_diff > 50  # $50 이상 차이나야 정상
         
-        self.logger.info(f"Position PnL 기준 통합 데이터 계산:")
+        self.logger.info(f"Position PnL 기준 통합 데이터 계산 (강화된 안전장치):")
         self.logger.info(f"  - 총 자산: ${total_equity:.2f} (B:${bitget_equity:.2f} + G:${gateio_equity:.2f})")
         self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
         self.logger.info(f"  - 7일  Position PnL: ${weekly_total:.4f} ({actual_days:.1f}일)")
@@ -628,7 +641,11 @@ class ProfitReportGenerator(BaseReportGenerator):
                 lines.append(f"  ├ Bitget: API 연결 오류")
             
             gate_weekly = gateio_data['weekly_profit']['total_pnl']
-            lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)}")
+            gate_filtered = gateio_data['weekly_profit'].get('filtered_count', 0)
+            gate_display = f"{self._format_currency_html(gate_weekly, False)}"
+            if gate_filtered > 0:
+                gate_display += f" (필터:{gate_filtered}건)"
+            lines.append(f"  └ Gate: {gate_display}")
         else:
             # Bitget만 있는 경우
             if bitget_healthy:
@@ -838,28 +855,34 @@ class ProfitReportGenerator(BaseReportGenerator):
                     # ROE 계산
                     roe = (unrealized_pnl / margin) * 100 if margin > 0 else 0
                     
-                    # 청산가 추출
+                    # 🔥🔥 청산가 추출 및 검증 (개선된 로직)
                     liquidation_price = 0
+                    leverage = float(position.get('leverage', 10))
+                    
+                    # 원본 청산가 필드들 시도
                     liq_fields = ['liquidationPrice', 'liqPrice', 'estimatedLiqPrice']
                     for field in liq_fields:
                         if field in position and position[field]:
                             try:
                                 raw_liq_price = float(position[field])
-                                if raw_liq_price > 0 and raw_liq_price < mark_price * 3:
+                                
+                                # 🔥🔥 청산가 유효성 검증
+                                if self._is_liquidation_price_valid(raw_liq_price, mark_price, hold_side):
                                     liquidation_price = raw_liq_price
+                                    self.logger.info(f"유효한 청산가 ({field}): ${liquidation_price:,.2f}")
                                     break
-                            except:
+                                else:
+                                    self.logger.warning(f"비현실적 청산가 무시 ({field}): ${raw_liq_price:,.2f}")
+                            except (ValueError, TypeError):
                                 continue
                     
-                    # 청산가가 없으면 계산
+                    # 🔥🔥 청산가가 없거나 비현실적이면 계산
                     if liquidation_price <= 0:
-                        leverage = float(position.get('leverage', 10))
-                        if side == '롱':
+                        if hold_side == 'long':
                             liquidation_price = entry_price * (1 - 0.9/leverage)
                         else:
                             liquidation_price = entry_price * (1 + 0.9/leverage)
-                    
-                    leverage = float(position.get('leverage', 10))
+                        self.logger.info(f"청산가 계산: ${liquidation_price:,.2f} ({hold_side}, {leverage}x)")
                     
                     return {
                         'has_position': True,
@@ -873,7 +896,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                         'margin': margin,  # 🔥🔥 개선된 증거금 계산
                         'unrealized_pnl': unrealized_pnl,
                         'roe': roe,
-                        'liquidation_price': liquidation_price,
+                        'liquidation_price': liquidation_price,  # 🔥🔥 검증된 청산가
                         'leverage': leverage
                     }
             
@@ -882,6 +905,34 @@ class ProfitReportGenerator(BaseReportGenerator):
         except Exception as e:
             self.logger.error(f"포지션 정보 조회 실패: {e}")
             return {'has_position': False}
+    
+    def _is_liquidation_price_valid(self, liq_price: float, mark_price: float, hold_side: str) -> bool:
+        """🔥🔥 청산가 유효성 검증"""
+        try:
+            if liq_price <= 0 or mark_price <= 0:
+                return False
+            
+            # 청산가가 현재가와 비교해서 말이 되는지 확인
+            price_ratio = liq_price / mark_price
+            
+            if hold_side == 'long':
+                # 롱 포지션: 청산가는 현재가보다 낮아야 함 (50% ~ 95% 범위)
+                if 0.5 <= price_ratio <= 0.95:
+                    return True
+                else:
+                    self.logger.warning(f"롱 포지션 청산가 비정상: 현재가=${mark_price:,.2f}, 청산가=${liq_price:,.2f} (비율: {price_ratio:.2f})")
+                    return False
+            else:
+                # 숏 포지션: 청산가는 현재가보다 높아야 함 (105% ~ 150% 범위)
+                if 1.05 <= price_ratio <= 1.5:
+                    return True
+                else:
+                    self.logger.warning(f"숏 포지션 청산가 비정상: 현재가=${mark_price:,.2f}, 청산가=${liq_price:,.2f} (비율: {price_ratio:.2f})")
+                    return False
+                    
+        except Exception as e:
+            self.logger.error(f"청산가 유효성 검증 오류: {e}")
+            return False
     
     async def _get_cumulative_profit_since_may(self) -> dict:
         """2025년 5월 1일부터 누적 손익 조회"""
@@ -1019,7 +1070,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                 lines.append(f"• BTC {bitget_pos.get('side')} | 진입: ${bitget_pos.get('entry_price', 0):,.2f} ({roe_sign}{roe:.1f}%)")
                 lines.append(f"• 현재가: ${bitget_pos.get('current_price', 0):,.2f} | 증거금: ${bitget_pos.get('margin', 0):.2f}")
                 
-                # 청산가
+                # 🔥🔥 청산가 - 개선된 표시
                 liquidation_price = bitget_pos.get('liquidation_price', 0)
                 if liquidation_price > 0:
                     current = bitget_pos.get('current_price', 0)
