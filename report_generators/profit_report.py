@@ -324,7 +324,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             except Exception as e:
                 self.logger.error(f"Gate 포지션 조회 실패: {e}")
             
-            # Position PnL 기준 손익 계산 (V4 API 개선)
+            # Position PnL 기준 손익 계산 (V4 API 개선) - 추정값 사용
             today_position_pnl = 0.0
             weekly_profit = {'total_pnl': 0, 'average_daily': 0}
             cumulative_profit = 0.0
@@ -333,10 +333,10 @@ class ProfitReportGenerator(BaseReportGenerator):
             try:
                 self.logger.info("🔍 Gate.io Position PnL 기준 손익 V4 API 조회...")
                 
-                # 오늘 Position PnL 조회
+                # 오늘 Position PnL 조회 - 미실현 손익 사용
                 today_position_pnl = await self.gateio_client.get_today_position_pnl()
                 
-                # 7일 Position PnL 조회 (개선된 V4 API)
+                # 7일 Position PnL 조회 (추정값)
                 weekly_result = await self.gateio_client.get_7day_position_pnl()
                 weekly_pnl_value = weekly_result.get('total_pnl', 0)
                 
@@ -347,7 +347,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                     'trading_fees': weekly_result.get('trading_fees', 0),
                     'funding_fees': weekly_result.get('funding_fees', 0),
                     'net_profit': weekly_result.get('net_profit', 0),
-                    'source': weekly_result.get('source', 'gate_position_pnl_based_v4_api_improved')
+                    'source': weekly_result.get('source', 'gate_estimated')
                 }
                 
                 # 누적 수익 계산 (잔고 기반 추정)
@@ -358,7 +358,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                     
                     self.logger.info(f"✅ Gate.io 정확한 손익 계산 완료 (V4 API):")
                     self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
-                    self.logger.info(f"  - 7일 Position PnL: ${weekly_profit['total_pnl']:.4f}")
+                    self.logger.info(f"  - 7일 Position PnL: ${weekly_profit['total_pnl']:.4f} (추정)")
                     self.logger.info(f"  - 누적 수익 (추정): ${cumulative_profit:.2f}")
                 else:
                     self.logger.info("Gate.io 잔고가 0이거나 없음")
@@ -487,12 +487,17 @@ class ProfitReportGenerator(BaseReportGenerator):
         seven_vs_cumulative_diff = abs(weekly_total - cumulative_profit)
         is_properly_separated = seven_vs_cumulative_diff > 50  # $50 이상 차이나야 정상
         
+        # Gate.io 7일 수익 신뢰도 체크
+        gateio_weekly_source = gateio_data.get('weekly_profit', {}).get('source', 'unknown')
+        gateio_weekly_confidence = 'estimated' if 'estimated' in gateio_weekly_source else 'actual'
+        
         self.logger.info(f"정확한 통합 데이터 계산 완료 (V2/V4):")
         self.logger.info(f"  - 총 자산: ${total_equity:.2f} (B:${bitget_equity:.2f} + G:${gateio_equity:.2f})")
         self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
         self.logger.info(f"  - 7일  Position PnL: ${weekly_total:.4f} ({actual_days:.1f}일)")
         self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
         self.logger.info(f"  - 총 증거금 (포지션별 계산): ${total_used_margin:.2f}")
+        self.logger.info(f"  - Gate.io 7일 수익 타입: {gateio_weekly_confidence}")
         
         return {
             'total_equity': total_equity,
@@ -521,7 +526,10 @@ class ProfitReportGenerator(BaseReportGenerator):
             'gateio_today_unrealized': gateio_unrealized,
             # API 연결 상태
             'bitget_healthy': bitget_healthy,
-            'gateio_healthy': gateio_healthy
+            'gateio_healthy': gateio_healthy,
+            # Gate.io 7일 수익 신뢰도
+            'gateio_weekly_confidence': gateio_weekly_confidence,
+            'gateio_weekly_source': gateio_weekly_source
         }
     
     def _format_profit_detail_accurate(self, bitget_data: dict, gateio_data: dict, combined_data: dict, gateio_has_data: bool) -> str:
@@ -580,7 +588,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             gate_weekly = gateio_data['weekly_profit']['total_pnl']
             gate_source = gateio_data['weekly_profit'].get('source', 'unknown')
-            confidence_indicator = "📈" if "improved" in gate_source else "📊"
+            # Gate.io 수익이 추정값인지 표시
+            confidence_indicator = "📊" if "estimated" in gate_source else "📈"
             lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)} {confidence_indicator}")
         else:
             # Bitget만 있는 경우
