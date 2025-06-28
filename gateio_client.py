@@ -204,7 +204,6 @@ class GateioMirrorClient:
     
     async def get_ticker(self, contract: str = "BTC_USDT") -> Dict:
         try:
-            # Gate.io 공식 문서 기준 정확한 엔드포인트
             endpoint = f"/api/v4/futures/usdt/tickers"
             params = {'contract': contract}
             
@@ -237,7 +236,6 @@ class GateioMirrorClient:
     
     async def get_account_balance(self) -> Dict:
         try:
-            # Gate.io 공식 문서 기준 정확한 엔드포인트
             endpoint = "/api/v4/futures/usdt/accounts"
             
             logger.debug("Gate.io 계정 잔고 조회 시작")
@@ -251,10 +249,10 @@ class GateioMirrorClient:
                 return {}
             
             if isinstance(response, dict):
-                # Gate.io API 공식 필드명 사용
+                # Gate.io API 공식 필드명 사용 (정확한 증거금 포함)
                 total = float(response.get('total', 0))           # 총 자산
                 available = float(response.get('available', 0))   # 가용 자산
-                used = float(response.get('used', 0))            # 사용 증거금
+                used = float(response.get('used', 0))            # 사용 증거금 (실제)
                 unrealised_pnl = float(response.get('unrealised_pnl', 0)) # 미실현 손익
                 position_margin = float(response.get('position_margin', 0)) # 포지션 증거금
                 order_margin = float(response.get('order_margin', 0))       # 주문 증거금
@@ -291,7 +289,6 @@ class GateioMirrorClient:
     
     async def get_positions(self, contract: str = "BTC_USDT") -> List[Dict]:
         try:
-            # Gate.io 공식 문서 기준 정확한 엔드포인트
             endpoint = f"/api/v4/futures/usdt/positions/{contract}"
             
             logger.debug(f"Gate.io 포지션 조회 시작: {contract}")
@@ -400,7 +397,6 @@ class GateioMirrorClient:
     
     async def get_my_trades(self, contract: str = "BTC_USDT", start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
         try:
-            # Gate.io 공식 문서 기준 정확한 엔드포인트
             endpoint = "/api/v4/futures/usdt/my_trades"
             params = {
                 'contract': contract,
@@ -658,7 +654,7 @@ class GateioMirrorClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            # Position PnL 기준 계산
+            # Position PnL 기준 계산 (정확한 API 호출)
             result = await self.get_position_pnl_based_profit(
                 start_timestamp, 
                 end_timestamp
@@ -679,6 +675,10 @@ class GateioMirrorClient:
             logger.info(f"  - 일평균: ${daily_average:.4f}")
             logger.info(f"  - 거래 건수: {trade_count}건")
             
+            # 거래가 실제로 있는지 확인하여 신뢰도 설정
+            confidence = 'high' if trade_count > 0 or position_pnl != 0 else 'low'
+            source = 'gate_7days_position_pnl_official_api' if trade_count > 0 else 'gate_no_trades_7days'
+            
             return {
                 'total_pnl': position_pnl,           # 실제 Position PnL
                 'daily_pnl': {},                     # 일별 분석은 별도 구현 필요시
@@ -688,8 +688,8 @@ class GateioMirrorClient:
                 'trading_fees': result.get('trading_fees', 0),
                 'funding_fees': result.get('funding_fees', 0),
                 'net_profit': result.get('net_profit', 0),
-                'source': 'gate_7days_position_pnl_official_api',
-                'confidence': 'high'
+                'source': source,
+                'confidence': confidence
             }
             
         except Exception as e:
@@ -701,6 +701,9 @@ class GateioMirrorClient:
                 'average_daily': 0,
                 'trade_count': 0,
                 'actual_days': 7,
+                'trading_fees': 0,
+                'funding_fees': 0,
+                'net_profit': 0,
                 'source': 'error',
                 'confidence': 'low'
             }
