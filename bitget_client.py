@@ -415,7 +415,6 @@ class BitgetClient:
         symbol = symbol or self.config.symbol
         
         try:
-            # V2 API 정확한 엔드포인트
             endpoint = "/api/v2/mix/position/all-position"
             params = {
                 'symbol': symbol,
@@ -436,14 +435,14 @@ class BitgetClient:
             for pos in positions:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
-                    # 청산가 정확한 계산
-                    liquidation_price = self._calculate_accurate_liquidation_price(pos)
+                    # 청산가 정확한 계산 (USD로)
+                    liquidation_price = self._calculate_accurate_liquidation_price_usd(pos)
                     pos['liquidationPrice'] = liquidation_price
                     
                     active_positions.append(pos)
                     logger.info(f"활성 포지션 발견:")
                     logger.info(f"  - 사이즈: {total_size}")
-                    logger.info(f"  - 계산된 청산가: ${liquidation_price:.2f}")
+                    logger.info(f"  - 계산된 청산가: ${liquidation_price:.2f} USD")
             
             return active_positions
             
@@ -451,44 +450,46 @@ class BitgetClient:
             logger.error(f"포지션 조회 실패: {e}")
             return []
     
-    def _calculate_accurate_liquidation_price(self, position: Dict) -> float:
+    def _calculate_accurate_liquidation_price_usd(self, position: Dict) -> float:
         try:
             # 필수 데이터 추출
             mark_price = float(position.get('markPrice', 0))
             entry_price = float(position.get('openPriceAvg', 0))
             hold_side = position.get('holdSide', '')
             leverage = float(position.get('leverage', 30))
-            margin_mode = position.get('marginMode', 'isolated')
             
-            # 정확한 청산가 계산 (Bitget 공식)
+            # 비트겟 V2 API 공식 청산가 계산 (USD 기준)
             if hold_side == 'long':
-                # 롱 포지션: 청산가 = 진입가 * (1 - (1 - 유지증거금율) / 레버리지)
+                # 롱 포지션: 청산가 = 진입가 * (1 - (1 - MMR) / 레버리지)
                 maintenance_margin_rate = 0.004  # 0.4% (BTC 기준)
                 liquidation_price = entry_price * (1 - (1 - maintenance_margin_rate) / leverage)
             else:
-                # 숏 포지션: 청산가 = 진입가 * (1 + (1 - 유지증거금율) / 레버리지)
+                # 숏 포지션: 청산가 = 진입가 * (1 + (1 - MMR) / 레버리지)
                 maintenance_margin_rate = 0.004  # 0.4% (BTC 기준)
                 liquidation_price = entry_price * (1 + (1 - maintenance_margin_rate) / leverage)
             
-            # 합리성 검증
-            if self._is_liquidation_price_reasonable(liquidation_price, mark_price, hold_side):
-                logger.info(f"정확한 청산가 계산: {hold_side} 포지션, 진입=${entry_price:.2f}, {leverage}x → ${liquidation_price:.2f}")
+            # 합리성 검증 (USD 기준)
+            if self._is_liquidation_price_reasonable_usd(liquidation_price, mark_price, hold_side):
+                logger.info(f"정확한 청산가 계산 (USD): {hold_side} 포지션")
+                logger.info(f"  - 진입가: ${entry_price:.2f} USD")
+                logger.info(f"  - 레버리지: {leverage}x")
+                logger.info(f"  - 청산가: ${liquidation_price:.2f} USD")
                 return liquidation_price
             else:
-                # 간단한 추정값 사용
+                # 간단한 추정값 사용 (USD)
                 if hold_side == 'long':
                     fallback_liq = entry_price * (1 - 0.9/leverage)
                 else:
                     fallback_liq = entry_price * (1 + 0.9/leverage)
                 
-                logger.warning(f"청산가 계산 오류, 추정값 사용: ${fallback_liq:.2f}")
+                logger.warning(f"청산가 계산 오류, 추정값 사용: ${fallback_liq:.2f} USD")
                 return fallback_liq
             
         except Exception as e:
             logger.error(f"청산가 계산 오류: {e}")
             return 0
     
-    def _is_liquidation_price_reasonable(self, liq_price: float, mark_price: float, hold_side: str) -> bool:
+    def _is_liquidation_price_reasonable_usd(self, liq_price: float, mark_price: float, hold_side: str) -> bool:
         try:
             if liq_price <= 0 or mark_price <= 0:
                 return False
@@ -505,7 +506,6 @@ class BitgetClient:
     
     async def get_account_info(self) -> Dict:
         try:
-            # V2 API 정확한 엔드포인트
             endpoint = "/api/v2/mix/account/account"
             params = {
                 'symbol': self.config.symbol,
@@ -520,11 +520,11 @@ class BitgetClient:
                 logger.error("계정 정보 응답이 비어있음")
                 return {}
             
-            # 정확한 필드 매핑
+            # 정확한 필드 매핑 (V2 API 기준)
             result = {
-                'accountEquity': float(response.get('usdtEquity', 0)),  # 총 자산 (USDT 기준)
+                'accountEquity': float(response.get('usdtEquity', 0)),  # 총 자산 (USDT)
                 'available': float(response.get('available', 0)),      # 가용 자산
-                'usedMargin': float(response.get('used', 0)),          # 사용 증거금
+                'usedMargin': float(response.get('locked', 0)),        # 사용 증거금 (locked 필드)
                 'unrealizedPL': float(response.get('unrealizedPL', 0)), # 미실현 손익
                 'marginBalance': float(response.get('marginBalance', 0)),
                 'walletBalance': float(response.get('walletBalance', 0)),
@@ -547,7 +547,6 @@ class BitgetClient:
         symbol = symbol or self.config.symbol
         
         try:
-            # V2 API 정확한 엔드포인트
             endpoint = "/api/v2/mix/order/fill-history"
             params = {
                 'symbol': symbol,
@@ -620,7 +619,7 @@ class BitgetClient:
             
             for fill in fills:
                 try:
-                    # Bitget V2 API 정확한 필드명
+                    # 비트겟 V2 API 정확한 필드명
                     position_pnl = 0.0
                     
                     # Position PnL 필드들 (V2 API 기준)
