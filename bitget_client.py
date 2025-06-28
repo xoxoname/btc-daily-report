@@ -32,6 +32,14 @@ class BitgetClient:
             "/api/v2/spot/market/tickers",
         ]
         
+        # 🔥🔥 거래 내역 조회 엔드포인트 개선
+        self.trade_fill_endpoints = [
+            "/api/v2/mix/order/fill-history",    # V2 권장
+            "/api/v2/mix/order/fills",           # V2 대안
+            "/api/mix/v1/order/allFills",        # V1 폴백 (더 안정적)
+            "/api/mix/v1/order/fills"            # V1 백업
+        ]
+        
         # API 키 검증 상태
         self.api_keys_validated = False
         
@@ -571,16 +579,100 @@ class BitgetClient:
             for pos in positions:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
+                    # 🔥🔥 청산가 검증 및 보정
+                    liquidation_price = self._validate_and_fix_liquidation_price(pos)
+                    pos['liquidationPrice'] = liquidation_price
+                    
                     active_positions.append(pos)
-                    # 청산가 필드 로깅
                     logger.info(f"포지션 청산가 필드 확인:")
-                    logger.info(f"  - liquidationPrice: {pos.get('liquidationPrice')}")
+                    logger.info(f"  - 보정된 청산가: {liquidation_price}")
                     logger.info(f"  - markPrice: {pos.get('markPrice')}")
             
             return active_positions
         except Exception as e:
             logger.error(f"포지션 조회 실패: {e}")
             raise
+    
+    def _validate_and_fix_liquidation_price(self, position: Dict) -> float:
+        """🔥🔥 청산가 검증 및 보정 - 비현실적인 값 필터링"""
+        try:
+            # 기본 데이터 추출
+            mark_price = float(position.get('markPrice', 0))
+            entry_price = float(position.get('openPriceAvg', 0))
+            hold_side = position.get('holdSide', '')
+            leverage = float(position.get('leverage', 30))
+            
+            # 원본 청산가들 시도
+            liq_fields = ['liquidationPrice', 'liqPrice', 'estimatedLiqPrice']
+            for field in liq_fields:
+                if field in position and position[field]:
+                    try:
+                        raw_liq_price = float(position[field])
+                        
+                        # 🔥🔥 청산가 유효성 검증 강화
+                        if self._is_liquidation_price_valid(raw_liq_price, mark_price, hold_side, leverage):
+                            logger.info(f"유효한 청산가 발견 ({field}): ${raw_liq_price:,.2f}")
+                            return raw_liq_price
+                        else:
+                            logger.warning(f"비현실적 청산가 무시 ({field}): ${raw_liq_price:,.2f}")
+                    except (ValueError, TypeError):
+                        continue
+            
+            # 🔥🔥 모든 API 청산가가 비현실적이면 계산으로 추정
+            if mark_price > 0 and entry_price > 0 and leverage > 0:
+                if hold_side == 'long':
+                    # 롱 포지션: 진입가에서 (1 - 0.9/레버리지) 만큼 하락
+                    calculated_liq = entry_price * (1 - 0.9/leverage)
+                else:
+                    # 숏 포지션: 진입가에서 (1 + 0.9/레버리지) 만큼 상승
+                    calculated_liq = entry_price * (1 + 0.9/leverage)
+                
+                logger.info(f"청산가 계산: {hold_side} 포지션, 진입=${entry_price:,.2f}, {leverage}x → ${calculated_liq:,.2f}")
+                return calculated_liq
+            
+            # 최후 수단: 현재가 기준 추정
+            if mark_price > 0:
+                if hold_side == 'long':
+                    return mark_price * 0.8  # 현재가의 80%
+                else:
+                    return mark_price * 1.2  # 현재가의 120%
+            
+            logger.warning("청산가 계산 불가능, 0 반환")
+            return 0
+            
+        except Exception as e:
+            logger.error(f"청산가 계산 오류: {e}")
+            return 0
+    
+    def _is_liquidation_price_valid(self, liq_price: float, mark_price: float, hold_side: str, leverage: float) -> bool:
+        """🔥🔥 청산가 유효성 검증"""
+        try:
+            if liq_price <= 0 or mark_price <= 0:
+                return False
+            
+            # 청산가가 현재가와 비교해서 말이 되는지 확인
+            price_ratio = liq_price / mark_price
+            
+            if hold_side == 'long':
+                # 롱 포지션: 청산가는 현재가보다 낮아야 함
+                # 일반적으로 현재가의 50% ~ 95% 범위
+                if 0.5 <= price_ratio <= 0.95:
+                    return True
+                else:
+                    logger.warning(f"롱 포지션 청산가 비정상: 현재가=${mark_price:,.2f}, 청산가=${liq_price:,.2f} (비율: {price_ratio:.2f})")
+                    return False
+            else:
+                # 숏 포지션: 청산가는 현재가보다 높아야 함
+                # 일반적으로 현재가의 105% ~ 150% 범위
+                if 1.05 <= price_ratio <= 1.5:
+                    return True
+                else:
+                    logger.warning(f"숏 포지션 청산가 비정상: 현재가=${mark_price:,.2f}, 청산가=${liq_price:,.2f} (비율: {price_ratio:.2f})")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"청산가 유효성 검증 오류: {e}")
+            return False
     
     async def get_account_info(self) -> Dict:
         """🔥🔥 계정 정보 조회 (V2 API) - 사용 증거금 계산 개선"""
@@ -602,7 +694,7 @@ class BitgetClient:
                 logger.warning("계정 정보 응답 형식이 예상과 다름")
                 return {}
             
-            # 🔥🔥 사용 증거금 계산 개선
+            # 🔥🔥 사용 증거금 계산 개선 + 안전장치 강화
             used_margin = 0.0
             total_equity = float(account_data.get('accountEquity', 0))
             available = float(account_data.get('available', 0))
@@ -610,16 +702,21 @@ class BitgetClient:
             # 1순위: API에서 직접 제공하는 usedMargin 필드
             if 'usedMargin' in account_data and account_data['usedMargin']:
                 try:
-                    used_margin = float(account_data['usedMargin'])
-                    if used_margin > 0:
+                    api_used_margin = float(account_data['usedMargin'])
+                    
+                    # 🔥🔥 API 증거금 값 검증 강화
+                    if 0 <= api_used_margin <= total_equity * 1.1:  # 총자산의 110% 이하만 유효
+                        used_margin = api_used_margin
                         logger.info(f"✅ 사용 증거금 (API 직접): ${used_margin:.2f}")
                     else:
-                        # 2순위: 총자산 - 가용자산으로 계산
-                        if total_equity > available:
-                            used_margin = total_equity - available
-                            logger.info(f"✅ 사용 증거금 (총자산-가용): ${used_margin:.2f}")
+                        logger.warning(f"⚠️ API 증거금 값 비정상: ${api_used_margin:.2f}, 계산 방법 사용")
+                        # 2순위로 넘어감
+                        used_margin = max(0, total_equity - available)
+                        logger.info(f"✅ 사용 증거금 (총자산-가용): ${used_margin:.2f}")
                 except (ValueError, TypeError):
                     logger.warning("usedMargin 필드 변환 실패")
+                    # 2순위로 넘어감
+                    used_margin = max(0, total_equity - available)
             else:
                 # 2순위: 총자산 - 가용자산으로 계산
                 if total_equity > available:
@@ -628,7 +725,7 @@ class BitgetClient:
                 else:
                     logger.info("포지션이 없거나 사용 증거금 없음")
             
-            # 🔥🔥 포지션 정보와 교차 검증
+            # 🔥🔥 포지션 정보와 교차 검증 + 안전장치
             try:
                 positions = await self.get_positions()
                 if positions:
@@ -642,19 +739,30 @@ class BitgetClient:
                             if mark_price > 0 and leverage > 0:
                                 pos_value = size * mark_price
                                 pos_margin = pos_value / leverage
-                                position_margin_sum += pos_margin
-                                logger.info(f"포지션 증거금 계산: 사이즈={size}, 가격=${mark_price:.2f}, 레버리지={leverage}x, 증거금=${pos_margin:.2f}")
+                                
+                                # 🔥🔥 포지션별 증거금 안전장치
+                                if pos_margin <= total_equity * 2:  # 총자산의 200% 이하만 유효
+                                    position_margin_sum += pos_margin
+                                    logger.info(f"포지션 증거금 계산: 사이즈={size}, 가격=${mark_price:.2f}, 레버리지={leverage}x, 증거금=${pos_margin:.2f}")
+                                else:
+                                    logger.warning(f"⚠️ 포지션 증거금 비정상: ${pos_margin:.2f}, 무시")
                     
-                    # 계산된 포지션 증거금과 비교
+                    # 🔥🔥 계산된 포지션 증거금과 비교 (개선된 검증)
                     if position_margin_sum > 0:
                         margin_diff = abs(used_margin - position_margin_sum)
-                        if margin_diff > 10:  # $10 이상 차이나면 경고
-                            logger.warning(f"⚠️ 증거금 불일치: API={used_margin:.2f}, 계산={position_margin_sum:.2f}, 차이=${margin_diff:.2f}")
+                        margin_ratio = margin_diff / max(used_margin, position_margin_sum) if max(used_margin, position_margin_sum) > 0 else 0
                         
-                        # 계산된 값이 더 정확할 수 있으므로 사용
+                        if margin_ratio > 0.5:  # 50% 이상 차이나면 경고
+                            logger.warning(f"⚠️ 증거금 큰 불일치: API={used_margin:.2f}, 계산={position_margin_sum:.2f}, 차이={margin_diff:.2f} ({margin_ratio*100:.0f}%)")
+                        
+                        # 🔥🔥 더 신뢰할 수 있는 값 선택
                         if used_margin == 0 and position_margin_sum > 0:
                             used_margin = position_margin_sum
                             logger.info(f"✅ 포지션 기반 증거금 사용: ${used_margin:.2f}")
+                        elif used_margin > 0 and position_margin_sum > 0 and margin_ratio > 0.3:
+                            # 큰 차이가 나면 더 작은 값 사용 (보수적)
+                            used_margin = min(used_margin, position_margin_sum)
+                            logger.info(f"✅ 보수적 증거금 선택: ${used_margin:.2f}")
                             
             except Exception as e:
                 logger.debug(f"포지션 기반 증거금 검증 실패: {e}")
@@ -683,17 +791,10 @@ class BitgetClient:
             raise
     
     async def get_trade_fills(self, symbol: str = None, start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """🔥🔥 거래 내역 조회 - 개선된 V2 API 사용"""
+        """🔥🔥 거래 내역 조회 - 개선된 다중 엔드포인트 시도"""
         symbol = symbol or self.config.symbol
         
-        # 개선된 거래 내역 조회 엔드포인트들
-        fill_endpoints = [
-            "/api/v2/mix/order/fill-history",    # V2 거래 내역 (권장)
-            "/api/v2/mix/order/fills",           # V2 거래 내역 (대안)
-            "/api/mix/v1/order/fills"            # V1 거래 내역 (폴백)
-        ]
-        
-        for endpoint in fill_endpoints:
+        for endpoint in self.trade_fill_endpoints:
             try:
                 logger.debug(f"거래 내역 조회 시도: {endpoint}")
                 
@@ -715,16 +816,19 @@ class BitgetClient:
                     # V1 API 파라미터
                     v1_symbol = f"{symbol}_UMCBL"
                     params = {
-                        'symbol': v1_symbol,
-                        'productType': 'umcbl'
+                        'symbol': v1_symbol
                     }
                     
+                    # V1에서는 다른 파라미터 이름 사용
                     if start_time:
                         params['startTime'] = str(start_time)
                     if end_time:
                         params['endTime'] = str(end_time)
                     if limit:
-                        params['pageSize'] = str(min(limit, 500))
+                        if 'allFills' in endpoint:
+                            params['limit'] = str(min(limit, 500))
+                        else:
+                            params['pageSize'] = str(min(limit, 100))
                 
                 response = await self._request('GET', endpoint, params=params, max_retries=2)
                 
@@ -747,7 +851,11 @@ class BitgetClient:
                     continue
                     
             except Exception as e:
-                logger.debug(f"거래 내역 엔드포인트 {endpoint} 실패: {e}")
+                error_msg = str(e)
+                if "404" in error_msg or "NOT_FOUND" in error_msg:
+                    logger.debug(f"거래 내역 엔드포인트 {endpoint} 404 오류 (예상됨), 다음 시도")
+                else:
+                    logger.debug(f"거래 내역 엔드포인트 {endpoint} 실패: {e}")
                 continue
         
         # 모든 엔드포인트 실패
