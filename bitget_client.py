@@ -435,8 +435,8 @@ class BitgetClient:
             for pos in positions:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
-                    # 청산가 정확한 계산 (V2 API)
-                    liquidation_price = self._calculate_accurate_liquidation_price_v2_fixed(pos)
+                    # 청산가 정확한 계산 (V2 API 공식 필드 사용)
+                    liquidation_price = self._calculate_accurate_liquidation_price_v2(pos)
                     pos['liquidationPrice'] = liquidation_price
                     
                     active_positions.append(pos)
@@ -450,8 +450,7 @@ class BitgetClient:
             logger.error(f"포지션 조회 실패: {e}")
             return []
     
-    def _calculate_accurate_liquidation_price_v2_fixed(self, position: Dict) -> float:
-        """비트겟 V2 API 정확한 청산가 계산 - 30x 레버리지 기준"""
+    def _calculate_accurate_liquidation_price_v2(self, position: Dict) -> float:
         try:
             # V2 API 공식 필드명 사용 - liqPrice가 정확한 청산가
             original_liq_price = position.get('liqPrice')
@@ -464,22 +463,21 @@ class BitgetClient:
             mark_price = float(position.get('markPrice', 0))
             entry_price = float(position.get('openPriceAvg', 0))
             hold_side = position.get('holdSide', '')
-            leverage = float(position.get('leverage', 30))  # 기본 30x
+            leverage = float(position.get('leverage', 30))
             
             if mark_price <= 0 or entry_price <= 0:
                 logger.warning("청산가 계산을 위한 필수 데이터 부족")
                 return 0
             
-            # 비트겟 30x 레버리지 기준 정확한 청산가 계산
-            # 유지증거금률 0.5% (BTC 30x 기준)
-            maintenance_margin_rate = 0.005  
-            
+            # 비트겟 V2 공식 청산가 계산
             if hold_side == 'long':
-                # 롱 포지션: 청산가 = 진입가 * (1 - 1/레버리지 + MMR)
-                liquidation_price = entry_price * (1 - 1/leverage + maintenance_margin_rate)
+                # 롱 포지션: 청산가 = 진입가 * (1 - (1 - MMR) / 레버리지)
+                maintenance_margin_rate = 0.004  # 0.4% (BTC 기준)
+                liquidation_price = entry_price * (1 - (1 - maintenance_margin_rate) / leverage)
             else:
-                # 숏 포지션: 청산가 = 진입가 * (1 + 1/레버리지 - MMR)
-                liquidation_price = entry_price * (1 + 1/leverage - maintenance_margin_rate)
+                # 숏 포지션: 청산가 = 진입가 * (1 + (1 - MMR) / 레버리지)
+                maintenance_margin_rate = 0.004  # 0.4% (BTC 기준)
+                liquidation_price = entry_price * (1 + (1 - maintenance_margin_rate) / leverage)
             
             # 합리성 검증
             if self._is_liquidation_price_reasonable_v2(liquidation_price, mark_price, hold_side):
@@ -489,11 +487,11 @@ class BitgetClient:
                 logger.info(f"  - 청산가: ${liquidation_price:.2f}")
                 return liquidation_price
             else:
-                # 간단한 추정값 사용 (30x 기준)
+                # 간단한 추정값 사용
                 if hold_side == 'long':
-                    fallback_liq = entry_price * 0.97  # 약 3% 하락시 청산
+                    fallback_liq = entry_price * (1 - 0.9/leverage)
                 else:
-                    fallback_liq = entry_price * 1.03  # 약 3% 상승시 청산
+                    fallback_liq = entry_price * (1 + 0.9/leverage)
                 
                 logger.warning(f"청산가 계산 오류, 추정값 사용: ${fallback_liq:.2f}")
                 return fallback_liq
@@ -510,9 +508,9 @@ class BitgetClient:
             price_ratio = liq_price / mark_price
             
             if hold_side == 'long':
-                return 0.5 <= price_ratio <= 0.98
+                return 0.5 <= price_ratio <= 0.95
             else:
-                return 1.02 <= price_ratio <= 1.5
+                return 1.05 <= price_ratio <= 1.5
                 
         except Exception:
             return False
@@ -533,38 +531,21 @@ class BitgetClient:
                 logger.error("계정 정보 응답이 비어있음")
                 return {}
             
-            # 포지션별 증거금 계산을 위해 포지션 정보도 조회
-            positions = await self.get_positions()
-            position_margin = 0
-            
-            if positions:
-                for pos in positions:
-                    # 포지션별 증거금 계산
-                    total_size = float(pos.get('total', 0))
-                    mark_price = float(pos.get('markPrice', 0))
-                    leverage = float(pos.get('leverage', 30))
-                    
-                    if total_size > 0 and mark_price > 0:
-                        position_value = total_size * mark_price
-                        margin_per_position = position_value / leverage
-                        position_margin += margin_per_position
-                        logger.info(f"포지션 증거금 계산: 가치=${position_value:.2f}, 레버리지={leverage}x, 증거금=${margin_per_position:.2f}")
-            
             # V2 API 정확한 필드 매핑
             result = {
                 'accountEquity': float(response.get('usdtEquity', 0)),     # 총 자산
                 'available': float(response.get('available', 0)),         # 가용 자산
-                'usedMargin': position_margin if position_margin > 0 else float(response.get('locked', 0)),  # 포지션별 계산 증거금
+                'usedMargin': float(response.get('locked', 0)),          # 실제 사용 증거금 (locked 필드)
                 'unrealizedPL': float(response.get('unrealizedPL', 0)),  # 미실현 손익
                 'marginBalance': float(response.get('marginBalance', 0)), # 증거금 잔고
                 'walletBalance': float(response.get('walletBalance', 0)), # 지갑 잔고
                 '_original': response
             }
             
-            logger.info(f"✅ 계정 정보 파싱 (V2 API 포지션별 증거금):")
+            logger.info(f"✅ 계정 정보 파싱 (V2 API 정확한 필드):")
             logger.info(f"  - 총 자산: ${result['accountEquity']:.2f}")
             logger.info(f"  - 가용 자산: ${result['available']:.2f}")
-            logger.info(f"  - 사용 증거금 (포지션 계산): ${result['usedMargin']:.2f}")
+            logger.info(f"  - 사용 증거금 (locked): ${result['usedMargin']:.2f}")
             logger.info(f"  - 미실현 손익: ${result['unrealizedPL']:.4f}")
             
             return result
