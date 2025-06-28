@@ -375,8 +375,44 @@ class GateioMirrorClient:
             logger.error(f"Gate.io 거래 내역 조회 실패: {e}")
             return []
     
+    def _is_pnl_value_realistic(self, pnl_value: float, context: str = "") -> bool:
+        """🔥🔥 PnL 값 현실성 검증 - 매우 엄격한 필터링"""
+        try:
+            # 🔥🔥 절댓값 기준 필터링 강화
+            abs_pnl = abs(pnl_value)
+            
+            # 1단계: 천문학적 값 필터링 (1억 달러 이상)
+            if abs_pnl >= 100_000_000:
+                logger.warning(f"🚨 Gate.io 천문학적 PnL 값 감지 ({context}): {pnl_value}")
+                return False
+            
+            # 2단계: 매우 큰 값 필터링 (100만 달러 이상)
+            if abs_pnl >= 1_000_000:
+                logger.warning(f"⚠️ Gate.io 매우 큰 PnL 값 감지 ({context}): {pnl_value}")
+                return False
+            
+            # 3단계: 큰 값 필터링 (10만 달러 이상)
+            if abs_pnl >= 100_000:
+                logger.warning(f"⚠️ Gate.io 큰 PnL 값 감지 ({context}): {pnl_value}")
+                return False
+            
+            # 4단계: 의심스러운 값 필터링 (1만 달러 이상)
+            if abs_pnl >= 10_000:
+                logger.warning(f"⚠️ Gate.io 의심스러운 PnL 값 ({context}): {pnl_value}")
+                return False
+            
+            # 5단계: 일반적으로 큰 값 (1천 달러 이상) - 로그만
+            if abs_pnl >= 1_000:
+                logger.info(f"📊 Gate.io 큰 PnL 값 ({context}): {pnl_value}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"PnL 값 검증 오류: {e}")
+            return False
+    
     async def get_position_pnl_based_profit(self, start_time: int, end_time: int, contract: str = "BTC_USDT") -> Dict:
-        """🔥🔥 Gate.io Position PnL 기준 정확한 손익 계산 - 개선된 거래 내역 파싱"""
+        """🔥🔥 Gate.io Position PnL 기준 정확한 손익 계산 - 강화된 안전장치 + 천문학적 값 필터링"""
         try:
             logger.info(f"🔍 Gate.io Position PnL 기준 정확한 손익 계산 시작...")
             logger.info(f"  - 계약: {contract}")
@@ -403,11 +439,12 @@ class GateioMirrorClient:
                     'source': 'no_trades_found'
                 }
             
-            # 🔥🔥 Position PnL과 수수료 분리 계산 - 개선된 버전
+            # 🔥🔥 Position PnL과 수수료 분리 계산 - 강화된 안전장치
             total_position_pnl = 0.0
             total_trading_fees = 0.0
             total_funding_fees = 0.0
             trade_count = 0
+            filtered_count = 0  # 필터링된 거래 수
             
             # 로깅을 위한 샘플 거래 정보
             logger.info(f"🔍 Gate.io 거래 내역 상세 분석:")
@@ -425,14 +462,15 @@ class GateioMirrorClient:
             for i, trade in enumerate(trades[:3]):
                 logger.info(f"  거래 {i+1} 상세:")
                 for key, value in trade.items():
-                    logger.info(f"    {key}: {value} (타입: {type(value).__name__})")
+                    if key in ['pnl', 'profit', 'profit_loss', 'realized_pnl', 'text']:
+                        logger.info(f"    {key}: {value} (타입: {type(value).__name__})")
             
             for trade in trades:
                 try:
-                    # 🔥🔥 Position PnL 추출 (Gate.io 특화) - 개선된 필드 검색
+                    # 🔥🔥 Position PnL 추출 (Gate.io 특화) - 강화된 안전장치
                     position_pnl = 0.0
                     
-                    # Gate.io Position PnL 관련 필드들 (우선순위 순) - 모든 가능한 필드 포함
+                    # Gate.io Position PnL 관련 필드들 (우선순위 순)
                     pnl_fields = [
                         'pnl',              # 실제 포지션 손익 (가장 일반적)
                         'profit',           # 수익
@@ -440,7 +478,6 @@ class GateioMirrorClient:
                         'realized_pnl',     # 실현 손익
                         'close_pnl',        # 청산 손익
                         'position_profit',  # 포지션 수익
-                        'text'              # 때로는 텍스트에 포함
                     ]
                     
                     for field in pnl_fields:
@@ -448,8 +485,17 @@ class GateioMirrorClient:
                             try:
                                 # 숫자가 아닌 경우 건너뛰기
                                 raw_value = trade[field]
+                                
+                                # 🔥🔥 문자열 처리 개선
                                 if isinstance(raw_value, str):
-                                    # 문자열인 경우 숫자 추출 시도
+                                    # 빈 문자열이나 'null' 처리
+                                    if raw_value.strip() == '' or raw_value.lower() == 'null':
+                                        continue
+                                    # 과학적 표기법 감지
+                                    if 'e+' in raw_value.lower() or 'e-' in raw_value.lower():
+                                        logger.warning(f"🚨 Gate.io 과학적 표기법 PnL 감지: {field} = {raw_value}")
+                                        continue
+                                    # 숫자 추출 시도
                                     import re
                                     numbers = re.findall(r'[-+]?\d*\.?\d+', raw_value)
                                     if numbers:
@@ -459,39 +505,23 @@ class GateioMirrorClient:
                                 else:
                                     position_pnl = float(raw_value)
                                 
-                                # 🔥🔥 비현실적인 값 필터링 완화 (절댓값 50,000 달러 이상만 오류로 간주)
-                                if abs(position_pnl) > 50000:
-                                    logger.warning(f"Gate.io 비현실적인 PnL 값 무시: {field} = {position_pnl}")
+                                # 🔥🔥 PnL 값 현실성 검증
+                                if not self._is_pnl_value_realistic(position_pnl, f"거래 {field}"):
+                                    filtered_count += 1
+                                    logger.warning(f"Gate.io 비현실적 PnL 필터링: {field} = {position_pnl}")
                                     continue
                                 
                                 if position_pnl != 0:
                                     logger.debug(f"Gate.io Position PnL 추출: {field} = {position_pnl}")
                                     break
-                            except (ValueError, TypeError) as e:
+                                    
+                            except (ValueError, TypeError, OverflowError) as e:
                                 logger.debug(f"Gate.io PnL 필드 변환 실패 {field}: {e}")
                                 continue
                     
-                    # 🔥🔥 거래량 기반 간접 PnL 계산 (Position PnL이 없는 경우)
-                    if position_pnl == 0:
-                        try:
-                            size = float(trade.get('size', 0))
-                            price = float(trade.get('price', 0))
-                            
-                            # 거래 방향 확인
-                            is_long = trade.get('side', '').lower() == 'buy'
-                            
-                            # 시장가와 진입가의 차이로 대략적인 PnL 추정 (매우 기본적)
-                            if size != 0 and price != 0:
-                                # 이것은 추정치이므로 실제 PnL과 다를 수 있음
-                                # Gate.io에서는 일반적으로 pnl 필드가 있어야 함
-                                logger.debug(f"Gate.io PnL 추정 시도: size={size}, price={price}")
-                        except Exception as calc_error:
-                            logger.debug(f"Gate.io PnL 계산 실패: {calc_error}")
-                    
-                    # 🔥🔥 거래 수수료 추출 (Gate.io 특화) - 개선된 버전
+                    # 🔥🔥 거래 수수료 추출 - 안전장치 강화
                     trading_fee = 0.0
                     
-                    # Gate.io 거래 수수료 필드들 - 더 포괄적으로
                     fee_fields = [
                         'fee',              # 거래 수수료 (가장 일반적)
                         'taker_fee',        # 테이커 수수료
@@ -506,9 +536,9 @@ class GateioMirrorClient:
                             try:
                                 fee_value = float(trade[field])
                                 
-                                # 🔥🔥 비현실적인 수수료 값 필터링 (절댓값 100 달러 이상은 오류로 간주)
-                                if abs(fee_value) > 100:
-                                    logger.warning(f"Gate.io 비현실적인 수수료 값 무시: {field} = {fee_value}")
+                                # 🔥🔥 수수료 값 현실성 검증
+                                if abs(fee_value) > 1000:  # 1천 달러 이상 수수료는 비현실적
+                                    logger.warning(f"Gate.io 비현실적 수수료 값 무시: {field} = {fee_value}")
                                     continue
                                 
                                 if fee_value != 0:
@@ -519,19 +549,28 @@ class GateioMirrorClient:
                                 continue
                     
                     # 🔥🔥 펀딩비는 별도 API로 조회 (거래 내역에는 포함되지 않음)
-                    # Gate.io는 거래 내역에 펀딩비가 포함되지 않으므로 0으로 설정
                     funding_fee = 0.0
                     
-                    # 통계 누적 - 비현실적인 값 최종 검증
-                    if position_pnl != 0 or trading_fee != 0:
-                        # 🔥🔥 최종 안전장치: 비현실적인 값은 누적하지 않음
-                        if abs(position_pnl) > 10000:
-                            logger.warning(f"Gate.io 거래 처리 건너뜀 - 비현실적인 PnL: {position_pnl}")
-                            continue
-                        if trading_fee > 100:
-                            logger.warning(f"Gate.io 거래 처리 건너뜀 - 비현실적인 수수료: {trading_fee}")
-                            continue
-                        
+                    # 펀딩비 필드들
+                    funding_fields = [
+                        'fundingFee',       # 펀딩 수수료
+                        'funding',          # 펀딩비
+                        'fundFee'           # 펀드 수수료
+                    ]
+                    
+                    for field in funding_fields:
+                        if field in trade and trade[field] is not None:
+                            try:
+                                funding_value = float(trade[field])
+                                if funding_value != 0:
+                                    funding_fee = funding_value  # 펀딩비는 양수/음수 모두 가능
+                                    logger.debug(f"펀딩비 추출: {field} = {funding_fee}")
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # 🔥🔥 통계 누적 - 최종 안전장치
+                    if position_pnl != 0 or trading_fee != 0 or funding_fee != 0:
                         total_position_pnl += position_pnl
                         total_trading_fees += trading_fee
                         total_funding_fees += funding_fee
@@ -546,12 +585,13 @@ class GateioMirrorClient:
             # 🔥🔥 최종 계산
             net_profit = total_position_pnl + total_funding_fees - total_trading_fees
             
-            logger.info(f"✅ Gate.io Position PnL 기준 정확한 손익 계산 완료:")
+            logger.info(f"✅ Gate.io Position PnL 기준 정확한 손익 계산 완료 (강화된 안전장치):")
             logger.info(f"  - Position PnL: ${total_position_pnl:.4f} (수수료 제외 실제 포지션 손익)")
             logger.info(f"  - 거래 수수료: -${total_trading_fees:.4f} (오픈/클로징 수수료)")
-            logger.info(f"  - 펀딩비: ${total_funding_fees:.4f} (거래내역에 포함되지 않음, 별도 조회 필요)")
+            logger.info(f"  - 펀딩비: {total_funding_fees:+.4f} (펀딩 수수료)")
             logger.info(f"  - 순 수익: ${net_profit:.4f} (Position PnL + 펀딩비 - 거래수수료)")
-            logger.info(f"  - 거래 건수: {trade_count}건")
+            logger.info(f"  - 처리된 거래: {trade_count}건")
+            logger.info(f"  - 필터링된 거래: {filtered_count}건 (비현실적 값)")
             
             return {
                 'position_pnl': total_position_pnl,        # 실제 포지션 손익 (수수료 제외)
@@ -559,7 +599,8 @@ class GateioMirrorClient:
                 'funding_fees': total_funding_fees,        # 펀딩비 (별도 조회 필요)
                 'net_profit': net_profit,                  # 순 수익
                 'trade_count': trade_count,
-                'source': 'gate_position_pnl_based_accurate_improved',
+                'filtered_count': filtered_count,          # 필터링된 거래 수
+                'source': 'gate_position_pnl_based_accurate_enhanced_safety',
                 'confidence': 'high'
             }
             
@@ -572,12 +613,13 @@ class GateioMirrorClient:
                 'funding_fees': 0.0,
                 'net_profit': 0.0,
                 'trade_count': 0,
+                'filtered_count': 0,
                 'source': 'error',
                 'confidence': 'low'
             }
     
     async def get_today_position_pnl(self) -> float:
-        """🔥🔥 오늘 Position PnL 기준 실현손익 조회 - 다중 방법 시도"""
+        """🔥🔥 오늘 Position PnL 기준 실현손익 조회 - 강화된 안전장치"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
@@ -592,50 +634,31 @@ class GateioMirrorClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            logger.info(f"🔍 Gate.io 오늘 PnL 조회 시작 (다중 방법):")
+            logger.info(f"🔍 Gate.io 오늘 PnL 조회 시작 (강화된 안전장치):")
             
-            # 🔥🔥 방법 1: 거래 내역 기반 Position PnL 계산
-            result = await self.get_position_pnl_based_profit(start_timestamp, end_timestamp)
+            # Position PnL 기준 계산
+            result = await self.get_position_pnl_based_profit(
+                start_timestamp, 
+                end_timestamp
+            )
+            
             position_pnl = result.get('position_pnl', 0.0)
+            filtered_count = result.get('filtered_count', 0)
             
-            if position_pnl != 0.0:
-                logger.info(f"✅ 방법 1 성공 - 거래 내역 기반: ${position_pnl:.4f}")
-                return position_pnl
+            # 🔥🔥 최종 안전장치
+            if not self._is_pnl_value_realistic(position_pnl, "오늘 총합"):
+                logger.warning(f"Gate.io 오늘 총 PnL도 비현실적, 0으로 처리: {position_pnl}")
+                position_pnl = 0.0
             
-            # 🔥🔥 방법 2: 계정 변동 내역 기반 PnL 추출
-            try:
-                logger.info("🔍 방법 2 시도: 계정 변동 내역 기반")
-                account_book = await self.get_account_book(
-                    start_time=start_timestamp,
-                    end_time=end_timestamp,
-                    limit=100,
-                    type_filter='pnl'  # PnL 타입만 조회
-                )
-                
-                pnl_from_book = 0.0
-                for record in account_book:
-                    change = float(record.get('change', 0))
-                    if change != 0:
-                        pnl_from_book += change
-                        logger.debug(f"계정 변동: {change}")
-                
-                if pnl_from_book != 0.0:
-                    logger.info(f"✅ 방법 2 성공 - 계정 변동 내역: ${pnl_from_book:.4f}")
-                    return pnl_from_book
-                
-            except Exception as e:
-                logger.debug(f"방법 2 실패: {e}")
-            
-            # 🔥🔥 방법 3: 잔고 변화 추정 (임시)
-            logger.info("⚠️ 거래 내역 및 계정 변동 내역 없음, 0 반환")
-            return 0.0
+            logger.info(f"✅ Gate.io 오늘 Position PnL: ${position_pnl:.4f} (필터링: {filtered_count}건)")
+            return position_pnl
             
         except Exception as e:
             logger.error(f"Gate.io 오늘 Position PnL 조회 실패: {e}")
             return 0.0
     
     async def get_7day_position_pnl(self) -> Dict:
-        """🔥🔥 Gate.io 7일 Position PnL 조회 - 다중 방법 시도 개선"""
+        """🔥🔥 Gate.io 7일 Position PnL 조회 - 강화된 안전장치 + 단계별 조회"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             current_time = datetime.now(kst)
@@ -643,7 +666,7 @@ class GateioMirrorClient:
             # 🔥🔥 현재에서 정확히 7일 전
             seven_days_ago = current_time - timedelta(days=7)
             
-            logger.info(f"🔍 Gate.io 7일 Position PnL 계산 (개선된 다중 방법):")
+            logger.info(f"🔍 Gate.io 7일 Position PnL 계산 (강화된 안전장치):")
             logger.info(f"  - 시작: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} KST")
             logger.info(f"  - 종료: {current_time.strftime('%Y-%m-%d %H:%M')} KST")
             
@@ -654,15 +677,15 @@ class GateioMirrorClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            # 🔥🔥 개선된 조회 방법 - 더 짧은 기간으로 나누어 조회
+            # 🔥🔥 단계별 조회로 안정성 향상
             position_pnl = 0.0
             trade_count = 0
+            filtered_count = 0
             
             try:
-                # 🔥🔥 방법 1: 거래 내역 기반 Position PnL 계산 (개선)
-                logger.info("🔍 방법 1 개선: 단계별 거래 내역 조회")
+                logger.info("🔍 7일 Position PnL 계산 (강화된 안전장치)")
                 
-                # 7일을 3일씩 나누어 조회 (안정성 향상)
+                # 🔥🔥 7일을 3일씩 나누어 조회 (안정성 향상)
                 day_chunks = []
                 current_chunk = current_time
                 
@@ -689,16 +712,16 @@ class GateioMirrorClient:
                         
                         chunk_pnl = chunk_result.get('position_pnl', 0.0)
                         chunk_trades = chunk_result.get('trade_count', 0)
+                        chunk_filtered = chunk_result.get('filtered_count', 0)
                         
-                        # 🔥🔥 안전장치: 비현실적인 값 필터링
-                        if abs(chunk_pnl) > 1000:  # 청크당 1천 달러 이상은 비현실적
-                            logger.warning(f"청크 {i+1} 비현실적 PnL 무시: ${chunk_pnl:.2f}")
-                            continue
-                        
-                        position_pnl += chunk_pnl
-                        trade_count += chunk_trades
-                        
-                        logger.info(f"  청크 {i+1} 결과: PnL=${chunk_pnl:.4f}, 거래={chunk_trades}건")
+                        # 🔥🔥 청크별 안전장치
+                        if self._is_pnl_value_realistic(chunk_pnl, f"청크 {i+1}"):
+                            position_pnl += chunk_pnl
+                            trade_count += chunk_trades
+                            filtered_count += chunk_filtered
+                            logger.info(f"  청크 {i+1} 결과: PnL=${chunk_pnl:.4f}, 거래={chunk_trades}건, 필터={chunk_filtered}건")
+                        else:
+                            logger.warning(f"  청크 {i+1} 비현실적 PnL 무시: ${chunk_pnl:.2f}")
                         
                         # 요청 간격 조절
                         await asyncio.sleep(0.5)
@@ -707,45 +730,18 @@ class GateioMirrorClient:
                         logger.warning(f"청크 {i+1} 조회 실패: {chunk_error}")
                         continue
                 
-                logger.info(f"✅ 개선된 방법 1 완료: PnL=${position_pnl:.4f}, 총 거래={trade_count}건")
+                logger.info(f"✅ 7일 Position PnL 완료: PnL=${position_pnl:.4f}, 총 거래={trade_count}건, 필터={filtered_count}건")
                 
             except Exception as method1_error:
-                logger.error(f"개선된 방법 1 실패: {method1_error}")
-            
-            # 🔥🔥 방법 2: 계정 변동 내역 기반 (백업)
-            if position_pnl == 0.0 and trade_count == 0:
-                try:
-                    logger.info("🔍 방법 2 시도: 계정 변동 내역 기반")
-                    account_book = await self.get_account_book(
-                        start_time=start_timestamp,
-                        end_time=end_timestamp,
-                        limit=500,
-                        type_filter='pnl'  # PnL 타입만 조회
-                    )
-                    
-                    pnl_from_book = 0.0
-                    for record in account_book:
-                        change = float(record.get('change', 0))
-                        # 🔥🔥 안전장치
-                        if abs(change) > 500:  # 건당 500달러 이상은 비현실적
-                            continue
-                        pnl_from_book += change
-                        logger.debug(f"7일 계정 변동: {change}")
-                    
-                    if pnl_from_book != 0.0:
-                        position_pnl = pnl_from_book
-                        logger.info(f"✅ 방법 2 성공 - 계정 변동 내역: ${position_pnl:.4f}")
-                    else:
-                        logger.info("⚠️ 거래 내역 및 계정 변동 내역 없음")
-                    
-                except Exception as e:
-                    logger.debug(f"방법 2 실패: {e}")
-            
-            # 🔥🔥 최종 안전장치 - 비현실적인 값 확인
-            if abs(position_pnl) > 5000:  # 7일간 5천 달러 이상은 비현실적
-                logger.warning(f"Gate.io 7일 PnL 비현실적 값 감지, 0으로 처리: ${position_pnl:.2f}")
+                logger.error(f"7일 Position PnL 계산 실패: {method1_error}")
                 position_pnl = 0.0
                 trade_count = 0
+                filtered_count = 0
+            
+            # 🔥🔥 최종 안전장치 - 7일 총합도 검증
+            if not self._is_pnl_value_realistic(position_pnl, "7일 총합"):
+                logger.warning(f"Gate.io 7일 총 PnL도 비현실적, 0으로 처리: {position_pnl}")
+                position_pnl = 0.0
             
             # 7일로 나누어 일평균 계산
             total_days = (current_time - seven_days_ago).total_seconds() / 86400
@@ -753,11 +749,12 @@ class GateioMirrorClient:
             
             daily_average = position_pnl / actual_days
             
-            logger.info(f"✅ Gate.io 7일 Position PnL 계산 완료 (개선된 방법):")
+            logger.info(f"✅ Gate.io 7일 Position PnL 계산 완료 (강화된 안전장치):")
             logger.info(f"  - 기간: {actual_days:.1f}일")
             logger.info(f"  - Position PnL: ${position_pnl:.4f}")
             logger.info(f"  - 일평균: ${daily_average:.4f}")
             logger.info(f"  - 거래 건수: {trade_count}건")
+            logger.info(f"  - 필터링: {filtered_count}건")
             
             return {
                 'total_pnl': position_pnl,           # 수수료 제외한 실제 Position PnL
@@ -768,7 +765,8 @@ class GateioMirrorClient:
                 'trading_fees': 0,  # 별도 계산 필요
                 'funding_fees': 0,  # 별도 계산 필요
                 'net_profit': position_pnl,
-                'source': 'gate_7days_position_pnl_improved_chunked',
+                'filtered_count': filtered_count,
+                'source': 'gate_7days_position_pnl_enhanced_safety_chunked',
                 'confidence': 'high' if position_pnl != 0.0 or trade_count > 0 else 'medium'
             }
             
@@ -781,6 +779,7 @@ class GateioMirrorClient:
                 'average_daily': 0,
                 'trade_count': 0,
                 'actual_days': 7,
+                'filtered_count': 0,
                 'source': 'error',
                 'confidence': 'low'
             }
