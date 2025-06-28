@@ -25,36 +25,36 @@ class ProfitReportGenerator(BaseReportGenerator):
         try:
             current_time = self._get_current_time_kst()
             
-            # Bitget 데이터 조회 - API 기준 정확한 청산가와 증거금
-            bitget_data = await self._get_bitget_data_accurate_api()
+            # Bitget 데이터 조회 - API에서 정확한 증거금 값 사용
+            bitget_data = await self._get_bitget_data_with_api_margin()
             
-            # Gate.io 데이터 조회 - 실제 API 데이터 사용 (하드코딩 제거)
-            gateio_data = await self._get_gateio_data_real_api()
+            # Gate.io 데이터 조회 - 실현/미실현 정확히 분리
+            gateio_data = await self._get_gateio_data_accurate_separation()
             
             # Gate.io 실제 사용 여부 확인
             gateio_has_data = (gateio_data.get('has_account', False) and 
                              gateio_data.get('total_equity', 0) > 0)
             
-            # 통합 데이터 계산 (API 기준 정확한 값들)
-            combined_data = self._calculate_combined_data_api_accurate(bitget_data, gateio_data)
+            # 통합 데이터 계산 (정확한 값들 사용)
+            combined_data = self._calculate_combined_data_accurate_values(bitget_data, gateio_data)
             
             # 통합 자산 현황
             asset_summary = self._format_asset_summary(combined_data, gateio_has_data)
             
-            # 거래소별 포지션 정보 (API 기준 정확한 청산가)
-            positions_text = await self._format_positions_detail_api_accurate(bitget_data, gateio_data, gateio_has_data)
+            # 거래소별 포지션 정보 (API 기준 정확한 청산가와 증거금)
+            positions_text = await self._format_positions_detail_accurate_values(bitget_data, gateio_data, gateio_has_data)
             
-            # 거래소별 손익 정보 - 정확한 계산
-            profit_detail = self._format_profit_detail_accurate(bitget_data, gateio_data, combined_data, gateio_has_data)
+            # 거래소별 손익 정보 - 실현/미실현 정확한 분리
+            profit_detail = self._format_profit_detail_accurate_separation(bitget_data, gateio_data, combined_data, gateio_has_data)
             
             # 통합 자산 정보 (API 기준 정확한 증거금)
-            asset_detail = self._format_asset_detail_api_accurate(combined_data, bitget_data, gateio_data, gateio_has_data)
+            asset_detail = self._format_asset_detail_accurate_margin(combined_data, bitget_data, gateio_data, gateio_has_data)
             
             # 누적 성과 (2025년 5월부터)
             cumulative_text = self._format_cumulative_performance_accurate(combined_data, bitget_data, gateio_data, gateio_has_data)
             
-            # 7일 수익 (실제 API 데이터)
-            seven_day_text = self._format_7day_profit_real_api(combined_data, bitget_data, gateio_data, gateio_has_data)
+            # 7일 수익 (정확한 API 데이터)
+            seven_day_text = self._format_7day_profit_accurate_api(combined_data, bitget_data, gateio_data, gateio_has_data)
             
             # 멘탈 케어 - 통합 데이터 기반
             mental_text = await self._generate_combined_mental_care(combined_data)
@@ -92,9 +92,9 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return "❌ 수익 현황 조회 중 오류가 발생했습니다."
     
-    async def _get_bitget_data_accurate_api(self) -> dict:
+    async def _get_bitget_data_with_api_margin(self) -> dict:
         try:
-            self.logger.info("🔍 Bitget API 기준 정확한 데이터 조회 시작...")
+            self.logger.info("🔍 Bitget API에서 정확한 증거금 값 조회 시작...")
             
             # 단계별 데이터 조회 (오류 격리)
             market_data = {}
@@ -112,12 +112,13 @@ class ProfitReportGenerator(BaseReportGenerator):
                 self.logger.warning(f"⚠️ 시장 데이터 조회 실패: {e}")
                 market_data = {}
             
-            # 2. 계정 정보 조회 (정확한 필드 매핑)
+            # 2. 계정 정보 조회 (API에서 정확한 증거금 값 사용)
             try:
-                account_info = await self._get_account_info_api_accurate()
+                account_info = await self._get_account_info_with_api_margin()
                 if account_info and account_info.get('usdtEquity', 0) > 0:
-                    self.logger.info(f"✅ 계정 정보 조회 성공 (API): ${account_info.get('usdtEquity', 0):.2f}")
-                    self.logger.info(f"  - 정확한 사용 증거금: ${account_info.get('usedMargin', 0):.2f}")
+                    self.logger.info(f"✅ 계정 정보 조회 성공 (API 증거금): ${account_info.get('usdtEquity', 0):.2f}")
+                    api_used_margin = account_info.get('usedMargin', 0)
+                    self.logger.info(f"  - API에서 받은 정확한 사용 증거금: ${api_used_margin:.2f}")
                 else:
                     self.logger.error("❌ 계정 정보 조회 실패 - 빈 응답 또는 0 자산")
                     account_info = {
@@ -187,7 +188,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             # 총 자산 확인 (usdtEquity 필드 사용)
             total_equity = account_info.get('usdtEquity', 0)
             
-            # 정확한 사용 증거금 (포지션별 계산)
+            # API에서 직접 받은 정확한 사용 증거금
             used_margin = account_info.get('usedMargin', 0)
             
             # API 연결 상태 체크
@@ -213,36 +214,36 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'total_equity': total_equity,
                 'initial_capital': self.BITGET_INITIAL_CAPITAL,
                 'available': account_info.get('available', 0),
-                'used_margin': used_margin,
+                'used_margin': used_margin,  # API에서 직접 받은 정확한 값
                 'cumulative_data': cumulative_data,
                 'api_healthy': api_healthy
             }
             
             if api_healthy:
-                self.logger.info(f"✅ Bitget API 기준 정확한 데이터 조회 완료:")
+                self.logger.info(f"✅ Bitget API에서 정확한 증거금 값 조회 완료:")
                 self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
                 self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
                 self.logger.info(f"  - 7일 Position PnL: ${weekly_position_pnl.get('total_pnl', 0):.4f}")
                 self.logger.info(f"  - 누적 수익: ${cumulative_data.get('total_profit', 0):.2f}")
-                self.logger.info(f"  - 정확한 사용 증거금: ${used_margin:.2f}")
+                self.logger.info(f"  - API 정확한 사용 증거금: ${used_margin:.2f}")
             else:
                 self.logger.warning("⚠️ Bitget API 연결 문제 - 기본값으로 설정")
             
             return result
             
         except Exception as e:
-            self.logger.error(f"Bitget API 기준 정확한 데이터 조회 실패: {e}")
+            self.logger.error(f"Bitget API 정확한 증거금 값 조회 실패: {e}")
             self.logger.error(f"상세 오류: {traceback.format_exc()}")
             return self._get_empty_exchange_data('Bitget')
     
-    async def _get_gateio_data_real_api(self) -> dict:
+    async def _get_gateio_data_accurate_separation(self) -> dict:
         try:
             # Gate.io 클라이언트가 없는 경우
             if not self.gateio_client:
                 self.logger.info("Gate.io 클라이언트가 설정되지 않음")
                 return self._get_empty_exchange_data('Gate')
             
-            self.logger.info("🔍 Gate.io 실제 API 데이터 조회 시작...")
+            self.logger.info("🔍 Gate.io 실현/미실현 정확한 분리 조회 시작...")
             
             # Gate 계정 정보 조회 (V4 API 정확한 필드 사용)
             total_equity = 0
@@ -323,30 +324,31 @@ class ProfitReportGenerator(BaseReportGenerator):
             except Exception as e:
                 self.logger.error(f"Gate 포지션 조회 실패: {e}")
             
-            # Position PnL 기준 손익 계산 - 실제 API 데이터 사용
-            today_position_pnl = 0.0
-            weekly_profit = {'total_pnl': 0, 'average_daily': 0}
+            # Position PnL 기준 손익 계산 - 실현/미실현 정확한 분리
+            today_realized_pnl = 0.0
+            weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'unrealized_pnl': 0}
             cumulative_profit = 0.0
             initial_capital = 750
             
             try:
-                self.logger.info("🔍 Gate.io 실제 API 기반 손익 계산...")
+                self.logger.info("🔍 Gate.io 실현/미실현 정확한 분리 계산...")
                 
-                # 오늘 Position PnL 조회 - 실제 API
-                today_position_pnl = await self.gateio_client.get_today_position_pnl()
+                # 오늘 실현 손익 조회 - 정확한 분리
+                today_realized_pnl = await self.gateio_client.get_today_position_pnl()
                 
-                # 7일 Position PnL - 실제 API 데이터
+                # 7일 손익 - 실현/미실현 정확한 분리
                 weekly_result = await self.gateio_client.get_7day_position_pnl()
                 
-                # 실제 API 데이터 사용
+                # 정확한 분리 데이터 사용
                 weekly_profit = {
-                    'total_pnl': weekly_result.get('total_pnl', 0),
+                    'total_pnl': weekly_result.get('total_pnl', 0),  # 실현 손익만
                     'average_daily': weekly_result.get('average_daily', 0),
                     'actual_days': weekly_result.get('actual_days', 7.0),
                     'trading_fees': weekly_result.get('trading_fees', 0),
                     'funding_fees': weekly_result.get('funding_fees', 0),
                     'net_profit': weekly_result.get('net_profit', 0),
-                    'source': weekly_result.get('source', 'gate_real_api')
+                    'unrealized_pnl': weekly_result.get('unrealized_pnl', 0),  # 미실현 손익 별도
+                    'source': weekly_result.get('source', 'gate_accurate_separated')
                 }
                 
                 # 누적 수익 계산 (잔고 기반 추정)
@@ -355,16 +357,17 @@ class ProfitReportGenerator(BaseReportGenerator):
                     cumulative_profit = total_equity - estimated_initial
                     initial_capital = estimated_initial
                     
-                    self.logger.info(f"✅ Gate.io 실제 API 손익 계산 완료:")
-                    self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
-                    self.logger.info(f"  - 7일 Position PnL (실제 API): ${weekly_profit['total_pnl']:.2f}")
+                    self.logger.info(f"✅ Gate.io 실현/미실현 정확한 분리 완료:")
+                    self.logger.info(f"  - 오늘 실현 PnL: ${today_realized_pnl:.4f}")
+                    self.logger.info(f"  - 7일 실현 PnL: ${weekly_profit['total_pnl']:.2f}")
+                    self.logger.info(f"  - 현재 미실현 PnL: ${unrealized_pnl:.4f}")
                     self.logger.info(f"  - 누적 수익 (추정): ${cumulative_profit:.2f}")
                 else:
                     self.logger.info("Gate.io 잔고가 0이거나 없음")
                 
             except Exception as e:
-                self.logger.error(f"Gate.io 실제 API 손익 계산 실패: {e}")
-                today_position_pnl = 0.0
+                self.logger.error(f"Gate.io 실현/미실현 분리 계산 실패: {e}")
+                today_realized_pnl = 0.0
                 weekly_profit = {
                     'total_pnl': 0.0,
                     'average_daily': 0.0,
@@ -372,19 +375,20 @@ class ProfitReportGenerator(BaseReportGenerator):
                     'trading_fees': 0,
                     'funding_fees': 0,
                     'net_profit': 0.0,
+                    'unrealized_pnl': 0.0,
                     'source': 'gate_api_error'
                 }
             
             cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
             has_account = total_equity > 0
             
-            self.logger.info(f"Gate.io 최종 실제 API 데이터:")
+            self.logger.info(f"Gate.io 최종 실현/미실현 분리 데이터:")
             self.logger.info(f"  - 계정 존재: {has_account}")
             self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
             self.logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
             self.logger.info(f"  - 미실현손익: ${unrealized_pnl:.4f}")
-            self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
-            self.logger.info(f"  - 7일 Position PnL (실제 API): ${weekly_profit['total_pnl']:.2f}")
+            self.logger.info(f"  - 오늘 실현 PnL: ${today_realized_pnl:.4f}")
+            self.logger.info(f"  - 7일 실현 PnL: ${weekly_profit['total_pnl']:.2f}")
             self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f} ({cumulative_roi:+.1f}%)")
             
             return {
@@ -396,7 +400,8 @@ class ProfitReportGenerator(BaseReportGenerator):
                     'used_margin': used_margin,
                     'unrealized_pnl': unrealized_pnl
                 },
-                'today_pnl': today_position_pnl,
+                'today_pnl': today_realized_pnl,  # 실현 손익만
+                'today_unrealized': unrealized_pnl,  # 미실현 손익 별도
                 'weekly_profit': weekly_profit,
                 'cumulative_profit': cumulative_profit,
                 'cumulative_roi': cumulative_roi,
@@ -409,16 +414,16 @@ class ProfitReportGenerator(BaseReportGenerator):
             }
             
         except Exception as e:
-            self.logger.error(f"Gate 실제 API 데이터 조회 실패: {e}")
+            self.logger.error(f"Gate 실현/미실현 분리 데이터 조회 실패: {e}")
             self.logger.error(f"Gate 데이터 오류 상세: {traceback.format_exc()}")
             return self._get_empty_exchange_data('Gate')
     
-    def _calculate_combined_data_api_accurate(self, bitget_data: dict, gateio_data: dict) -> dict:
+    def _calculate_combined_data_accurate_values(self, bitget_data: dict, gateio_data: dict) -> dict:
         # API 연결 상태 체크
         bitget_healthy = bitget_data.get('api_healthy', True)
         gateio_healthy = gateio_data.get('has_account', False)
         
-        self.logger.info(f"🔍 API 기준 정확한 통합 데이터 계산:")
+        self.logger.info(f"🔍 정확한 값들로 통합 데이터 계산:")
         self.logger.info(f"  - Bitget 상태: {'정상' if bitget_healthy else '오류'}")
         self.logger.info(f"  - Gate.io 상태: {'정상' if gateio_healthy else '없음'}")
         
@@ -432,23 +437,23 @@ class ProfitReportGenerator(BaseReportGenerator):
         gateio_available = gateio_data['available'] if gateio_healthy else 0
         total_available = bitget_available + gateio_available
         
-        # API 기준 정확한 사용 증거금
+        # API에서 직접 받은 정확한 사용 증거금
         bitget_used_margin = bitget_data['used_margin'] if bitget_healthy else 0
         gateio_used_margin = gateio_data['used_margin'] if gateio_healthy else 0
         total_used_margin = bitget_used_margin + gateio_used_margin
         
-        # Position PnL 기준 금일 손익 계산
+        # 실현/미실현 정확한 분리
         bitget_unrealized = bitget_data['account_info'].get('unrealizedPL', 0) if bitget_healthy else 0
-        gateio_unrealized = gateio_data['account_info'].get('unrealized_pnl', 0) if gateio_healthy else 0
+        gateio_unrealized = gateio_data.get('today_unrealized', 0) if gateio_healthy else 0
         
-        bitget_today_pnl = bitget_data['today_pnl'] if bitget_healthy else 0
-        gateio_today_pnl = gateio_data['today_pnl'] if gateio_healthy else 0
+        bitget_today_realized = bitget_data['today_pnl'] if bitget_healthy else 0
+        gateio_today_realized = gateio_data['today_pnl'] if gateio_healthy else 0
         
-        today_position_pnl = bitget_today_pnl + gateio_today_pnl
-        today_unrealized = bitget_unrealized + gateio_unrealized
-        today_total = today_position_pnl + today_unrealized
+        today_realized_total = bitget_today_realized + gateio_today_realized
+        today_unrealized_total = bitget_unrealized + gateio_unrealized
+        today_total = today_realized_total + today_unrealized_total
         
-        # 7일 Position PnL (실제 API 데이터)
+        # 7일 실현 손익 (정확한 API 데이터)
         bitget_weekly = bitget_data['weekly_profit']['total'] if bitget_healthy else 0
         gateio_weekly = gateio_data['weekly_profit']['total_pnl'] if gateio_healthy else 0
         
@@ -481,18 +486,14 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         cumulative_roi = (cumulative_profit / total_initial * 100) if total_initial > 0 else 0
         
-        # 검증: 7일과 누적이 다른지 확인
-        seven_vs_cumulative_diff = abs(weekly_total - cumulative_profit)
-        is_properly_separated = seven_vs_cumulative_diff > 50  # $50 이상 차이나야 정상
-        
         # Gate.io 7일 수익 신뢰도 체크
         gateio_weekly_source = gateio_data.get('weekly_profit', {}).get('source', 'unknown')
-        gateio_weekly_confidence = 'real_api' if 'real_api' in gateio_weekly_source else 'estimated'
+        gateio_weekly_confidence = 'accurate_separated' if 'accurate' in gateio_weekly_source else 'estimated'
         
-        self.logger.info(f"API 기준 정확한 통합 데이터 계산 완료:")
+        self.logger.info(f"정확한 값들로 통합 데이터 계산 완료:")
         self.logger.info(f"  - 총 자산: ${total_equity:.2f} (B:${bitget_equity:.2f} + G:${gateio_equity:.2f})")
-        self.logger.info(f"  - 오늘 Position PnL: ${today_position_pnl:.4f}")
-        self.logger.info(f"  - 7일  Position PnL: ${weekly_total:.4f} (실제 API)")
+        self.logger.info(f"  - 오늘 실현: ${today_realized_total:.4f}, 미실현: ${today_unrealized_total:.4f}")
+        self.logger.info(f"  - 7일 실현 손익: ${weekly_total:.4f} (정확한 API)")
         self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f}")
         self.logger.info(f"  - API 기준 총 증거금: ${total_used_margin:.2f}")
         self.logger.info(f"  - Gate.io 7일 수익 타입: {gateio_weekly_confidence}")
@@ -501,8 +502,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             'total_equity': total_equity,
             'total_available': total_available,
             'total_used_margin': total_used_margin,
-            'today_position_pnl': today_position_pnl,
-            'today_unrealized': today_unrealized,
+            'today_realized': today_realized_total,
+            'today_unrealized': today_unrealized_total,
             'today_total': today_total,
             'today_roi': today_roi,
             'weekly_total': weekly_total,
@@ -515,12 +516,10 @@ class ProfitReportGenerator(BaseReportGenerator):
             'gateio_equity': gateio_equity,
             'gateio_has_account': gateio_healthy,
             'total_initial': total_initial,
-            'seven_vs_cumulative_diff': seven_vs_cumulative_diff,
-            'is_properly_separated': is_properly_separated,
-            # 개별 거래소 미실현/실현 손익
-            'bitget_today_realized': bitget_today_pnl,
+            # 개별 거래소 실현/미실현 손익
+            'bitget_today_realized': bitget_today_realized,
             'bitget_today_unrealized': bitget_unrealized,
-            'gateio_today_realized': gateio_today_pnl,
+            'gateio_today_realized': gateio_today_realized,
             'gateio_today_unrealized': gateio_unrealized,
             # API 연결 상태
             'bitget_healthy': bitget_healthy,
@@ -530,22 +529,22 @@ class ProfitReportGenerator(BaseReportGenerator):
             'gateio_weekly_source': gateio_weekly_source
         }
     
-    def _format_profit_detail_accurate(self, bitget_data: dict, gateio_data: dict, combined_data: dict, gateio_has_data: bool) -> str:
+    def _format_profit_detail_accurate_separation(self, bitget_data: dict, gateio_data: dict, combined_data: dict, gateio_has_data: bool) -> str:
         lines = []
         
         # API 연결 상태 확인
         bitget_healthy = combined_data.get('bitget_healthy', True)
         gateio_healthy = combined_data.get('gateio_healthy', False)
         
-        # 통합 손익 요약
-        today_position_pnl = combined_data['today_position_pnl']
+        # 통합 손익 요약 (실현/미실현 분리)
+        today_realized = combined_data['today_realized']
         today_unrealized = combined_data['today_unrealized']
         today_total = combined_data['today_total']
         today_roi = combined_data['today_roi']
         
         lines.append(f"• <b>수익: {self._format_currency_compact(today_total, today_roi)}</b>")
         
-        # Bitget 상세 - 미실현/실현 분리 (API 연결 상태 고려)
+        # Bitget 상세 - 미실현/실현 정확한 분리 (API 연결 상태 고려)
         if bitget_healthy:
             bitget_realized = combined_data['bitget_today_realized']
             bitget_unrealized = combined_data['bitget_today_unrealized']
@@ -553,7 +552,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         else:
             lines.append(f"  ├ Bitget: API 연결 오류")
         
-        # Gate 상세 - 데이터가 있는 경우만, 미실현/실현 분리
+        # Gate 상세 - 정확한 실현/미실현 분리
         if gateio_healthy and gateio_data['total_equity'] > 0:
             gateio_realized = combined_data['gateio_today_realized']
             gateio_unrealized = combined_data['gateio_today_unrealized']
@@ -563,7 +562,7 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         return '\n'.join(lines)
     
-    def _format_7day_profit_real_api(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
+    def _format_7day_profit_accurate_api(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
         lines = []
         
         # API 연결 상태 확인
@@ -573,10 +572,10 @@ class ProfitReportGenerator(BaseReportGenerator):
         # 실제 기간 표시
         actual_days = combined_data.get('actual_days', 7.0)
         
-        # 통합 7일 Position PnL (실제 API 데이터)
+        # 통합 7일 실현 손익 (정확한 API 데이터)
         lines.append(f"• <b>수익: {self._format_currency_compact(combined_data['weekly_total'], combined_data['weekly_roi'])}</b>")
         
-        # 거래소별 7일 Position PnL
+        # 거래소별 7일 실현 손익
         if gateio_healthy and gateio_data['total_equity'] > 0:
             if bitget_healthy:
                 bitget_weekly = bitget_data['weekly_profit']['total']
@@ -586,8 +585,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             gate_weekly = gateio_data['weekly_profit']['total_pnl']
             gate_source = gateio_data['weekly_profit'].get('source', 'unknown')
-            # Gate.io 수익이 실제 API인지 표시
-            confidence_indicator = "📊" if "real_api" in gate_source else "🔍"
+            # Gate.io 수익이 정확한 분리인지 표시
+            confidence_indicator = "✅" if "accurate" in gate_source else "🔍"
             lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)} {confidence_indicator}")
         else:
             # Bitget만 있는 경우
@@ -602,134 +601,50 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         return '\n'.join(lines)
     
-    def _format_cumulative_performance_accurate(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
+    def _format_asset_detail_accurate_margin(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
         lines = []
         
         # API 연결 상태 확인
         bitget_healthy = combined_data.get('bitget_healthy', True)
         gateio_healthy = combined_data.get('gateio_healthy', False)
         
-        # 통합 누적 수익
-        total_cumulative = combined_data['cumulative_profit']
-        total_cumulative_roi = combined_data['cumulative_roi']
+        # 통합 자산 (API에서 직접 받은 정확한 증거금)
+        total_available = combined_data['total_available']
+        total_used_margin = combined_data['total_used_margin']  # API에서 직접 받은 정확한 값
+        total_equity = combined_data['total_equity']
         
-        lines.append(f"• <b>수익: {self._format_currency_compact(total_cumulative, total_cumulative_roi)}</b>")
-        
-        # 거래소별 상세
-        if gateio_healthy and gateio_data['total_equity'] > 0:
-            if bitget_healthy:
-                lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
-            else:
-                lines.append(f"  ├ Bitget: API 연결 오류")
-            
-            gate_roi = gateio_data['cumulative_roi']
-            lines.append(f"  └ Gate: {self._format_currency_html(gateio_data['cumulative_profit'], False)} ({gate_roi:+.0f}%)")
+        # 가용자산 비율 계산 (분모가 0인 경우 방지)
+        if total_equity > 0:
+            available_pct = (total_available / total_equity * 100)
         else:
-            if bitget_healthy:
-                lines.append(f"  └ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
-            else:
-                lines.append(f"  └ Bitget: API 연결 오류")
+            available_pct = 0
+        
+        # 비율이 비현실적인 경우 (100% 초과) 수정
+        if available_pct > 100:
+            self.logger.warning(f"⚠️ 가용자산 비율 이상: {available_pct:.0f}%, 100%로 제한")
+            available_pct = 100
+        
+        lines.append(f"• <b>가용/증거금: ${total_available:,.0f} / ${total_used_margin:,.0f}</b> ({available_pct:.0f}% 가용)")
+        
+        # Bitget 상세 (API에서 직접 받은 정확한 증거금)
+        if bitget_healthy:
+            bitget_available = bitget_data['available']
+            bitget_used_margin = bitget_data['used_margin']  # API에서 직접 받은 값
+            lines.append(f"  ├ Bitget: ${bitget_available:,.0f} / ${bitget_used_margin:,.0f}")
+        else:
+            lines.append(f"  ├ Bitget: API 연결 오류")
+        
+        # Gate 상세 (V4 API 정확한 증거금)
+        if gateio_healthy and gateio_data['total_equity'] > 0:
+            gate_available = gateio_data['available']
+            gate_used_margin = gateio_data['used_margin']  # API 기준 값
+            lines.append(f"  └ Gate: ${gate_available:,.0f} / ${gate_used_margin:,.0f}")
+        elif gateio_has_data:
+            lines.append(f"  └ Gate: ${gateio_data['available']:,.0f} / ${gateio_data['used_margin']:,.0f}")
         
         return '\n'.join(lines)
     
-    async def _get_account_info_api_accurate(self) -> dict:
-        try:
-            if not self.bitget_client:
-                return {}
-            
-            account = await self.bitget_client.get_account_info()
-            
-            if not account:
-                return {}
-            
-            # V2 API 정확한 필드 매핑 (usdtEquity 사용)
-            result = {
-                'usdtEquity': float(account.get('usdtEquity', 0)),    # 총 자산 (V2 API)
-                'available': float(account.get('available', 0)),      # 가용 자산
-                'unrealizedPL': float(account.get('unrealizedPL', 0)), # 미실현 손익
-                'marginBalance': float(account.get('marginBalance', 0)), # 증거금 잔고
-                'walletBalance': float(account.get('walletBalance', 0))  # 지갑 잔고
-            }
-            
-            # 정확한 사용 증거금 (포지션별 계산)
-            used_margin = account.get('usedMargin', 0)  # API에서 계산된 값 사용
-            result['usedMargin'] = float(used_margin)
-            
-            self.logger.info(f"✅ API 기준 정확한 계정 정보 파싱:")
-            self.logger.info(f"  - 총 자산 (usdtEquity): ${result['usdtEquity']:.2f}")
-            self.logger.info(f"  - 가용 자산: ${result['available']:.2f}")
-            self.logger.info(f"  - 정확한 사용 증거금: ${result['usedMargin']:.2f}")
-            self.logger.info(f"  - 미실현 손익: ${result['unrealizedPL']:.4f}")
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"API 기준 정확한 계정 정보 조회 실패: {e}")
-            return {}
-    
-    async def _get_position_info_api_accurate(self) -> dict:
-        try:
-            positions = await self.bitget_client.get_positions(self.config.symbol)
-            
-            if not positions:
-                return {'has_position': False}
-            
-            # 활성 포지션 찾기
-            for position in positions:
-                total_size = float(position.get('total', 0))
-                if total_size > 0:
-                    hold_side = position.get('holdSide', '')
-                    side = '롱' if hold_side == 'long' else '숏'
-                    
-                    # 필수 값들 추출
-                    entry_price = float(position.get('openPriceAvg', 0))
-                    mark_price = float(position.get('markPrice', 0))
-                    
-                    # 미실현 손익
-                    unrealized_pnl = float(position.get('unrealizedPL', 0))
-                    
-                    # API에서 직접 받은 정확한 청산가 우선 사용
-                    liquidation_price = position.get('liquidationPrice', 0)
-                    if liquidation_price <= 0:
-                        # liquidationPrice가 없으면 liqPrice 사용
-                        liquidation_price = float(position.get('liqPrice', 0))
-                    
-                    # 포지션별 정확한 증거금 계산
-                    leverage = float(position.get('leverage', 30))
-                    contract_size = 0.01  # Bitget BTC 계약 크기 (1 계약 = 0.01 BTC)
-                    position_value = total_size * mark_price * contract_size
-                    margin = position_value / leverage
-                    
-                    # ROE 계산
-                    roe = (unrealized_pnl / margin) * 100 if margin > 0 else 0
-                    
-                    self.logger.info(f"✅ API 기준 포지션 정보:")
-                    self.logger.info(f"  - API 청산가: ${liquidation_price:.2f}")
-                    self.logger.info(f"  - 정확한 포지션 증거금: ${margin:.2f}")
-                    
-                    return {
-                        'has_position': True,
-                        'symbol': self.config.symbol,
-                        'side': side,
-                        'side_en': hold_side,
-                        'size': total_size,
-                        'entry_price': entry_price,
-                        'current_price': mark_price,
-                        'margin_mode': position.get('marginMode', ''),
-                        'margin': margin,
-                        'unrealized_pnl': unrealized_pnl,
-                        'roe': roe,
-                        'liquidation_price': liquidation_price,
-                        'leverage': leverage
-                    }
-            
-            return {'has_position': False}
-            
-        except Exception as e:
-            self.logger.error(f"API 기준 정확한 포지션 정보 조회 실패: {e}")
-            return {'has_position': False}
-    
-    async def _format_positions_detail_api_accurate(self, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
+    async def _format_positions_detail_accurate_values(self, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
         lines = []
         has_any_position = False
         
@@ -811,46 +726,130 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         return '\n'.join(lines)
     
-    def _format_asset_detail_api_accurate(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
+    async def _get_account_info_with_api_margin(self) -> dict:
+        try:
+            if not self.bitget_client:
+                return {}
+            
+            account = await self.bitget_client.get_account_info()
+            
+            if not account:
+                return {}
+            
+            # V2 API 정확한 필드 매핑 (usdtEquity 사용)
+            result = {
+                'usdtEquity': float(account.get('usdtEquity', 0)),    # 총 자산 (V2 API)
+                'available': float(account.get('available', 0)),      # 가용 자산
+                'unrealizedPL': float(account.get('unrealizedPL', 0)), # 미실현 손익
+                'marginBalance': float(account.get('marginBalance', 0)), # 증거금 잔고
+                'walletBalance': float(account.get('walletBalance', 0))  # 지갑 잔고
+            }
+            
+            # API에서 직접 받은 정확한 사용 증거금 (계산값이 아닌 API 제공값)
+            api_used_margin = account.get('usedMargin', 0)  # API에서 계산된 값
+            result['usedMargin'] = float(api_used_margin)
+            
+            self.logger.info(f"✅ API에서 정확한 증거금 값 파싱:")
+            self.logger.info(f"  - 총 자산 (usdtEquity): ${result['usdtEquity']:.2f}")
+            self.logger.info(f"  - 가용 자산: ${result['available']:.2f}")
+            self.logger.info(f"  - API 제공 사용 증거금: ${result['usedMargin']:.2f}")
+            self.logger.info(f"  - 미실현 손익: ${result['unrealizedPL']:.4f}")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"API 정확한 증거금 값 계정 정보 조회 실패: {e}")
+            return {}
+    
+    async def _get_position_info_api_accurate(self) -> dict:
+        try:
+            positions = await self.bitget_client.get_positions(self.config.symbol)
+            
+            if not positions:
+                return {'has_position': False}
+            
+            # 활성 포지션 찾기
+            for position in positions:
+                total_size = float(position.get('total', 0))
+                if total_size > 0:
+                    hold_side = position.get('holdSide', '')
+                    side = '롱' if hold_side == 'long' else '숏'
+                    
+                    # 필수 값들 추출
+                    entry_price = float(position.get('openPriceAvg', 0))
+                    mark_price = float(position.get('markPrice', 0))
+                    
+                    # 미실현 손익
+                    unrealized_pnl = float(position.get('unrealizedPL', 0))
+                    
+                    # API에서 직접 받은 정확한 청산가 우선 사용
+                    liquidation_price = position.get('liquidationPrice', 0)
+                    if liquidation_price <= 0:
+                        # liquidationPrice가 없으면 liqPrice 사용
+                        liquidation_price = float(position.get('liqPrice', 0))
+                    
+                    # 포지션별 정확한 증거금 계산
+                    leverage = float(position.get('leverage', 30))
+                    contract_size = 0.01  # Bitget BTC 계약 크기 (1 계약 = 0.01 BTC)
+                    position_value = total_size * mark_price * contract_size
+                    margin = position_value / leverage
+                    
+                    # ROE 계산
+                    roe = (unrealized_pnl / margin) * 100 if margin > 0 else 0
+                    
+                    self.logger.info(f"✅ API 기준 포지션 정보:")
+                    self.logger.info(f"  - API 청산가: ${liquidation_price:.2f}")
+                    self.logger.info(f"  - 정확한 포지션 증거금: ${margin:.2f}")
+                    
+                    return {
+                        'has_position': True,
+                        'symbol': self.config.symbol,
+                        'side': side,
+                        'side_en': hold_side,
+                        'size': total_size,
+                        'entry_price': entry_price,
+                        'current_price': mark_price,
+                        'margin_mode': position.get('marginMode', ''),
+                        'margin': margin,
+                        'unrealized_pnl': unrealized_pnl,
+                        'roe': roe,
+                        'liquidation_price': liquidation_price,
+                        'leverage': leverage
+                    }
+            
+            return {'has_position': False}
+            
+        except Exception as e:
+            self.logger.error(f"API 기준 정확한 포지션 정보 조회 실패: {e}")
+            return {'has_position': False}
+    
+    def _format_cumulative_performance_accurate(self, combined_data: dict, bitget_data: dict, gateio_data: dict, gateio_has_data: bool) -> str:
         lines = []
         
         # API 연결 상태 확인
         bitget_healthy = combined_data.get('bitget_healthy', True)
         gateio_healthy = combined_data.get('gateio_healthy', False)
         
-        # 통합 자산 (API 기준 정확한 증거금)
-        total_available = combined_data['total_available']
-        total_used_margin = combined_data['total_used_margin']  # API 기준 정확한 증거금
-        total_equity = combined_data['total_equity']
+        # 통합 누적 수익
+        total_cumulative = combined_data['cumulative_profit']
+        total_cumulative_roi = combined_data['cumulative_roi']
         
-        # 가용자산 비율 계산 (분모가 0인 경우 방지)
-        if total_equity > 0:
-            available_pct = (total_available / total_equity * 100)
-        else:
-            available_pct = 0
+        lines.append(f"• <b>수익: {self._format_currency_compact(total_cumulative, total_cumulative_roi)}</b>")
         
-        # 비율이 비현실적인 경우 (100% 초과) 수정
-        if available_pct > 100:
-            self.logger.warning(f"⚠️ 가용자산 비율 이상: {available_pct:.0f}%, 100%로 제한")
-            available_pct = 100
-        
-        lines.append(f"• <b>가용/증거금: ${total_available:,.0f} / ${total_used_margin:,.0f}</b> ({available_pct:.0f}% 가용)")
-        
-        # Bitget 상세 (정확한 증거금)
-        if bitget_healthy:
-            bitget_available = bitget_data['available']
-            bitget_used_margin = bitget_data['used_margin']  # 정확한 계산값
-            lines.append(f"  ├ Bitget: ${bitget_available:,.0f} / ${bitget_used_margin:,.0f}")
-        else:
-            lines.append(f"  ├ Bitget: API 연결 오류")
-        
-        # Gate 상세 (V4 API 정확한 증거금)
+        # 거래소별 상세
         if gateio_healthy and gateio_data['total_equity'] > 0:
-            gate_available = gateio_data['available']
-            gate_used_margin = gateio_data['used_margin']  # API 기준 값
-            lines.append(f"  └ Gate: ${gate_available:,.0f} / ${gate_used_margin:,.0f}")
-        elif gateio_has_data:
-            lines.append(f"  └ Gate: ${gateio_data['available']:,.0f} / ${gateio_data['used_margin']:,.0f}")
+            if bitget_healthy:
+                lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
+            else:
+                lines.append(f"  ├ Bitget: API 연결 오류")
+            
+            gate_roi = gateio_data['cumulative_roi']
+            lines.append(f"  └ Gate: {self._format_currency_html(gateio_data['cumulative_profit'], False)} ({gate_roi:+.0f}%)")
+        else:
+            if bitget_healthy:
+                lines.append(f"  └ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
+            else:
+                lines.append(f"  └ Bitget: API 연결 오류")
         
         return '\n'.join(lines)
     
@@ -933,7 +932,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             # 현재 잔고에서 초기 자본 차감
             try:
-                account_info = await self._get_account_info_api_accurate()
+                account_info = await self._get_account_info_with_api_margin()
                 current_equity = account_info.get('usdtEquity', 0)
                 
                 # 누적 수익 = 현재 잔고 - 초기 자본
@@ -1054,7 +1053,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             }
             
             mental_text = await self.mental_care.generate_profit_mental_care(
-                account_info, position_info, combined_data['today_position_pnl'], weekly_profit
+                account_info, position_info, combined_data['today_realized'], weekly_profit
             )
             
             return mental_text
