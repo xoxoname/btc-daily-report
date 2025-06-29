@@ -23,7 +23,7 @@ class BitgetClient:
         self.api_connection_healthy = True
         self.consecutive_failures = 0
         self.last_successful_call = datetime.now()
-        self.max_consecutive_failures = 10
+        self.max_consecutive_failures = 5  # 임계값 낮춤
         
         # API 키 검증 상태
         self.api_keys_validated = False
@@ -52,7 +52,7 @@ class BitgetClient:
         try:
             logger.info("비트겟 API 키 유효성 검증 시작...")
             
-            # 간단한 계정 정보 조회로 API 키 검증
+            # 계정 정보 조회로 API 키 검증 (더 안정적인 엔드포인트)
             endpoint = "/api/v2/mix/account/accounts"
             params = {
                 'productType': 'USDT-FUTURES'
@@ -60,13 +60,13 @@ class BitgetClient:
             
             response = await self._request('GET', endpoint, params=params)
             
-            if response is not None:
+            if response is not None and isinstance(response, (list, dict)):
                 self.api_keys_validated = True
                 self.api_connection_healthy = True
                 self.consecutive_failures = 0
                 logger.info("✅ 비트겟 API 키 검증 성공")
             else:
-                logger.error("❌ 비트겟 API 키 검증 실패: 응답 없음")
+                logger.error("❌ 비트겟 API 키 검증 실패: 잘못된 응답")
                 self.api_keys_validated = False
                 
         except Exception as e:
@@ -97,7 +97,7 @@ class BitgetClient:
             'locale': 'en-US'
         }
     
-    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 2) -> Dict:
         if not self.session:
             self._initialize_session()
             
@@ -124,43 +124,43 @@ class BitgetClient:
                         error_msg = f"빈 응답 받음 (상태: {response.status})"
                         logger.warning(error_msg)
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(2 ** attempt)
+                            await asyncio.sleep(1)
                             continue
                         else:
                             self._record_failure(error_msg)
-                            raise Exception(error_msg)
+                            return {}
                     
                     if response.status != 200:
-                        error_msg = f"HTTP {response.status}: {response_text}"
+                        error_msg = f"HTTP {response.status}: {response_text[:200]}"
                         logger.error(f"비트겟 API HTTP 오류: {error_msg}")
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(2 ** attempt)
+                            await asyncio.sleep(1)
                             continue
                         else:
                             self._record_failure(error_msg)
-                            raise Exception(error_msg)
+                            return {}
                     
                     try:
                         response_data = json.loads(response_text)
                     except json.JSONDecodeError as json_error:
-                        error_msg = f"JSON 파싱 실패: {json_error}, 응답: {response_text[:200]}"
+                        error_msg = f"JSON 파싱 실패: {json_error}"
                         logger.error(error_msg)
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(2 ** attempt)
+                            await asyncio.sleep(1)
                             continue
                         else:
                             self._record_failure(error_msg)
-                            raise Exception(error_msg)
+                            return {}
                     
                     if response_data.get('code') != '00000':
-                        error_msg = f"API 응답 오류: {response_data}"
+                        error_msg = f"API 응답 오류: {response_data.get('msg', 'Unknown error')}"
                         logger.error(error_msg)
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(2 ** attempt)
+                            await asyncio.sleep(1)
                             continue
                         else:
                             self._record_failure(error_msg)
-                            raise Exception(error_msg)
+                            return {}
                     
                     self._record_success()
                     return response_data.get('data', {})
@@ -169,35 +169,25 @@ class BitgetClient:
                 error_msg = f"요청 타임아웃 (시도 {attempt + 1})"
                 logger.warning(error_msg)
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(1)
                     continue
                 else:
                     self._record_failure(error_msg)
-                    raise Exception(error_msg)
-                    
-            except aiohttp.ClientError as client_error:
-                error_msg = f"클라이언트 오류 (시도 {attempt + 1}): {client_error}"
-                logger.warning(error_msg)
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-                else:
-                    self._record_failure(error_msg)
-                    raise Exception(error_msg)
+                    return {}
                     
             except Exception as e:
                 error_msg = f"예상치 못한 오류 (시도 {attempt + 1}): {e}"
                 logger.error(error_msg)
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(1)
                     continue
                 else:
                     self._record_failure(error_msg)
-                    raise
+                    return {}
         
         final_error = f"모든 재시도 실패: {max_retries}회 시도"
         self._record_failure(final_error)
-        raise Exception(final_error)
+        return {}
     
     def _record_success(self):
         self.api_connection_healthy = True
@@ -223,7 +213,7 @@ class BitgetClient:
                 'productType': 'USDT-FUTURES'
             }
             
-            response = await self._request('GET', endpoint, params=params, max_retries=2)
+            response = await self._request('GET', endpoint, params=params)
             
             if isinstance(response, list) and len(response) > 0:
                 ticker_data = response[0]
@@ -246,28 +236,22 @@ class BitgetClient:
             return {}
     
     def _validate_ticker_data(self, ticker_data: Dict) -> bool:
-        try:
-            if not isinstance(ticker_data, dict):
-                return False
-            
-            price_fields = ['last', 'lastPr', 'close', 'price', 'mark_price', 'markPrice']
-            
-            for field in price_fields:
-                value = ticker_data.get(field)
-                if value is not None:
-                    try:
-                        price = float(value)
-                        if price > 0:
-                            return True
-                    except:
-                        continue
-            
-            logger.warning(f"유효한 가격 필드 없음: {list(ticker_data.keys())}")
+        if not isinstance(ticker_data, dict):
             return False
-            
-        except Exception as e:
-            logger.error(f"티커 데이터 검증 오류: {e}")
-            return False
+        
+        price_fields = ['last', 'lastPr', 'close', 'price', 'mark_price', 'markPrice']
+        
+        for field in price_fields:
+            value = ticker_data.get(field)
+            if value is not None:
+                try:
+                    price = float(value)
+                    if price > 0:
+                        return True
+                except:
+                    continue
+        
+        return False
     
     def _normalize_ticker_data(self, ticker_data: Dict) -> Dict:
         try:
@@ -322,7 +306,7 @@ class BitgetClient:
                 'productType': 'USDT-FUTURES'
             }
             
-            response = await self._request('GET', endpoint, params=params, max_retries=2)
+            response = await self._request('GET', endpoint, params=params)
             
             if isinstance(response, list) and len(response) > 0:
                 funding_data = response[0]
@@ -332,41 +316,13 @@ class BitgetClient:
                 logger.warning(f"예상치 못한 펀딩비 응답 형식: {type(response)}")
                 return {'fundingRate': 0.0, 'fundingTime': ''}
             
-            if self._validate_funding_data(funding_data):
-                normalized_funding = self._normalize_funding_data(funding_data)
-                logger.info(f"✅ 펀딩비 조회 성공: {normalized_funding.get('fundingRate', 'N/A')}")
-                return normalized_funding
-            else:
-                logger.warning("펀딩비 데이터 검증 실패")
-                return {'fundingRate': 0.0, 'fundingTime': ''}
+            normalized_funding = self._normalize_funding_data(funding_data)
+            logger.info(f"✅ 펀딩비 조회 성공: {normalized_funding.get('fundingRate', 'N/A')}")
+            return normalized_funding
                 
         except Exception as e:
             logger.error(f"펀딩비 조회 실패: {e}")
             return {'fundingRate': 0.0, 'fundingTime': ''}
-    
-    def _validate_funding_data(self, funding_data: Dict) -> bool:
-        try:
-            if not isinstance(funding_data, dict):
-                return False
-            
-            funding_fields = ['fundingRate', 'fundRate', 'rate', 'currentFundingRate', 'fundingFeeRate']
-            
-            for field in funding_fields:
-                value = funding_data.get(field)
-                if value is not None:
-                    try:
-                        rate = float(value)
-                        if -1 <= rate <= 1:
-                            return True
-                    except:
-                        continue
-            
-            logger.debug(f"펀딩비 필드 없음, 하지만 유효한 응답으로 처리: {list(funding_data.keys())}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"펀딩비 데이터 검증 오류: {e}")
-            return False
     
     def _normalize_funding_data(self, funding_data: Dict) -> Dict:
         try:
@@ -406,7 +362,6 @@ class BitgetClient:
             }
     
     async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """포지션 조회 - Bitget V2 API 정확한 구현"""
         symbol = symbol or self.config.symbol
         
         try:
@@ -417,13 +372,11 @@ class BitgetClient:
             }
             
             response = await self._request('GET', endpoint, params=params)
-            logger.info(f"✅ 포지션 API 원본 응답: {response}")
             
             if not response:
                 logger.info("포지션 응답이 비어있음")
                 return []
             
-            # Bitget V2 API 응답 구조 처리
             positions = []
             if isinstance(response, list):
                 positions = response
@@ -432,7 +385,6 @@ class BitgetClient:
             elif isinstance(response, dict):
                 positions = [response]
             
-            # 심볼 필터링 및 활성 포지션만 추출
             active_positions = []
             for pos in positions:
                 if not isinstance(pos, dict):
@@ -448,7 +400,6 @@ class BitgetClient:
                     logger.info(f"  - 심볼: {pos_symbol}")
                     logger.info(f"  - 사이즈: {total_size}")
                     logger.info(f"  - marginSize: ${float(pos.get('marginSize', 0)):.2f}")
-                    logger.info(f"  - liquidationPrice: ${float(pos.get('liquidationPrice', 0)):.2f}")
                     
                     active_positions.append(pos)
             
@@ -459,7 +410,6 @@ class BitgetClient:
             return []
     
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회 - Bitget V2 API 정확한 구현"""
         try:
             endpoint = "/api/v2/mix/account/accounts"
             params = {
@@ -467,30 +417,53 @@ class BitgetClient:
             }
             
             response = await self._request('GET', endpoint, params=params)
-            logger.info(f"✅ 계정 API 원본 응답: {response}")
             
             if not response:
                 logger.error("계정 정보 응답이 비어있음")
                 return {}
             
-            # Bitget V2 API 응답 구조 처리
+            # Bitget V2 API 응답 구조 처리 개선
+            account_data = {}
             if isinstance(response, list) and len(response) > 0:
-                # USDT-FUTURES 계정 찾기
+                # USDT 계정 찾기
                 for account in response:
                     if account.get('marginCoin') == 'USDT':
-                        return account
-                return response[0]  # 첫 번째 계정 반환
+                        account_data = account
+                        break
+                if not account_data:
+                    account_data = response[0]
             elif isinstance(response, dict):
-                return response
+                account_data = response
             
-            return {}
+            # 필수 필드 검증
+            required_fields = ['usdtEquity', 'available']
+            for field in required_fields:
+                if field not in account_data or account_data[field] is None:
+                    logger.warning(f"계정 정보에서 {field} 필드 누락")
+                    account_data[field] = '0'
+            
+            # 데이터 타입 안전성 보장
+            try:
+                equity = float(account_data.get('usdtEquity', 0))
+                available = float(account_data.get('available', 0))
+                unrealized_pl = float(account_data.get('unrealizedPL', 0))
+                
+                logger.info(f"✅ Bitget 계정 정보 조회 성공:")
+                logger.info(f"  - 총 자산: ${equity:.2f}")
+                logger.info(f"  - 가용 자산: ${available:.2f}")
+                logger.info(f"  - 미실현 손익: ${unrealized_pl:.2f}")
+                
+                return account_data
+                
+            except (ValueError, TypeError) as e:
+                logger.error(f"계정 정보 데이터 변환 실패: {e}")
+                return {}
             
         except Exception as e:
             logger.error(f"계정 정보 조회 실패: {e}")
             return {}
     
     async def get_accurate_used_margin(self) -> float:
-        """실제 사용 증거금 합계 - marginSize 직접 사용"""
         try:
             positions = await self.get_positions(self.config.symbol)
             total_margin_size = 0.0
@@ -528,9 +501,8 @@ class BitgetClient:
             if limit:
                 params['limit'] = str(min(limit, 500))
             
-            response = await self._request('GET', endpoint, params=params, max_retries=2)
+            response = await self._request('GET', endpoint, params=params)
             
-            # 응답 처리
             fills = []
             if isinstance(response, dict):
                 for field in ['fillList', 'list', 'data', 'fills']:
@@ -552,7 +524,6 @@ class BitgetClient:
             return []
     
     async def get_position_pnl_based_profit(self, start_time: int, end_time: int, symbol: str = None) -> Dict:
-        """Position PnL 기준 손익 계산 - Bitget V2 API 정확한 구현"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -580,7 +551,6 @@ class BitgetClient:
                     'source': 'no_fills_found'
                 }
             
-            # Position PnL과 수수료 분리 계산
             total_position_pnl = 0.0
             total_trading_fees = 0.0
             total_funding_fees = 0.0
@@ -588,7 +558,6 @@ class BitgetClient:
             
             for fill in fills:
                 try:
-                    # Position PnL 필드들 (Bitget V2 API)
                     position_pnl = 0.0
                     pnl_fields = ['pnl', 'profit', 'realizedPnl', 'closedPnl']
                     
@@ -597,12 +566,10 @@ class BitgetClient:
                             try:
                                 position_pnl = float(fill[field])
                                 if position_pnl != 0:
-                                    logger.debug(f"Position PnL 추출: {field} = {position_pnl}")
                                     break
                             except (ValueError, TypeError):
                                 continue
                     
-                    # 거래 수수료 추출
                     trading_fee = 0.0
                     fee_fields = ['fee', 'tradingFee', 'totalFee']
                     
@@ -612,12 +579,10 @@ class BitgetClient:
                                 fee_value = float(fill[field])
                                 if fee_value != 0:
                                     trading_fee = abs(fee_value)
-                                    logger.debug(f"거래 수수료 추출: {field} = {trading_fee}")
                                     break
                             except (ValueError, TypeError):
                                 continue
                     
-                    # 펀딩비 추출
                     funding_fee = 0.0
                     funding_fields = ['fundingFee', 'funding', 'fundFee']
                     
@@ -627,25 +592,20 @@ class BitgetClient:
                                 funding_value = float(fill[field])
                                 if funding_value != 0:
                                     funding_fee = funding_value
-                                    logger.debug(f"펀딩비 추출: {field} = {funding_fee}")
                                     break
                             except (ValueError, TypeError):
                                 continue
                     
-                    # 통계 누적
                     if position_pnl != 0 or trading_fee != 0 or funding_fee != 0:
                         total_position_pnl += position_pnl
                         total_trading_fees += trading_fee
                         total_funding_fees += funding_fee
                         trade_count += 1
-                        
-                        logger.debug(f"거래 처리: PnL={position_pnl:.4f}, 거래수수료={trading_fee:.4f}, 펀딩비={funding_fee:.4f}")
                 
                 except Exception as fill_error:
                     logger.debug(f"거래 내역 처리 오류: {fill_error}")
                     continue
             
-            # 최종 계산
             net_profit = total_position_pnl + total_funding_fees - total_trading_fees
             
             logger.info(f"✅ Position PnL 기준 손익 계산 완료:")
@@ -667,7 +627,6 @@ class BitgetClient:
             
         except Exception as e:
             logger.error(f"Position PnL 기준 손익 계산 실패: {e}")
-            logger.error(f"상세 오류: {traceback.format_exc()}")
             
             return {
                 'position_pnl': 0.0,
@@ -680,7 +639,6 @@ class BitgetClient:
             }
     
     async def get_today_position_pnl(self) -> float:
-        """오늘 Position PnL 조회"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
@@ -706,7 +664,6 @@ class BitgetClient:
             return 0.0
     
     async def get_7day_position_pnl(self) -> Dict:
-        """7일 Position PnL 조회"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             current_time = datetime.now(kst)
@@ -723,9 +680,13 @@ class BitgetClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            duration_days = (end_timestamp - start_timestamp) / (1000 * 60 * 60 * 24)
+            # 실제 기간 계산 (밀리초 차이를 일수로 변환)
+            duration_ms = end_timestamp - start_timestamp
+            duration_days = duration_ms / (1000 * 60 * 60 * 24)
+            
+            # 7일보다 조금 많으면 정확히 7일로 조정
             if duration_days > 7.1:
-                logger.warning(f"기간이 7일을 초과함: {duration_days:.1f}일, 7일로 조정")
+                logger.info(f"기간이 7일을 초과함: {duration_days:.1f}일, 정확히 7일로 조정")
                 start_timestamp = end_timestamp - (7 * 24 * 60 * 60 * 1000)
                 duration_days = 7.0
             
@@ -758,7 +719,6 @@ class BitgetClient:
             
         except Exception as e:
             logger.error(f"비트겟 7일 Position PnL 조회 실패: {e}")
-            logger.error(f"상세 오류: {traceback.format_exc()}")
             
             return {
                 'total_pnl': 0,
@@ -785,8 +745,6 @@ class BitgetClient:
         
         try:
             response = await self._request('GET', endpoint, params=params)
-            logger.debug(f"주문 조회 응답: {response}")
-            
             orders = response if isinstance(response, list) else []
             return orders
             
@@ -871,7 +829,6 @@ class BitgetClient:
                 params['status'] = status
             
             response = await self._request('GET', endpoint, params=params)
-            logger.debug(f"예약 주문 조회 응답: {response}")
             
             if isinstance(response, dict):
                 if 'orderList' in response:
@@ -883,7 +840,6 @@ class BitgetClient:
             elif isinstance(response, list):
                 return response
             
-            logger.warning(f"예약 주문 응답 형식 예상치 못함: {type(response)}")
             return []
             
         except Exception as e:
@@ -904,7 +860,6 @@ class BitgetClient:
                 params['status'] = status
             
             response = await self._request('GET', endpoint, params=params)
-            logger.debug(f"TP/SL 주문 조회 응답: {response}")
             
             if isinstance(response, dict):
                 if 'orderList' in response:
@@ -916,7 +871,6 @@ class BitgetClient:
             elif isinstance(response, list):
                 return response
             
-            logger.warning(f"TP/SL 주문 응답 형식 예상치 못함: {type(response)}")
             return []
             
         except Exception as e:
@@ -955,52 +909,6 @@ class BitgetClient:
             logger.info(f"   - TP/SL 주문: {tp_sl_count}개")
             logger.info(f"   - 총합: {total_count}개")
             
-            for i, order in enumerate(plan_orders[:3]):
-                order_id = order.get('orderId', order.get('planOrderId', f'unknown_{i}'))
-                side = order.get('side', order.get('tradeSide', 'unknown'))
-                trigger_price = order.get('triggerPrice', order.get('price', 0))
-                
-                tp_price = None
-                sl_price = None
-                
-                for tp_field in ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice']:
-                    value = order.get(tp_field)
-                    if value and str(value) not in ['0', '0.0', '', 'null']:
-                        try:
-                            tp_price = float(value)
-                            if tp_price > 0:
-                                break
-                        except:
-                            continue
-                
-                for sl_field in ['presetStopLossPrice', 'stopLossPrice', 'stopPrice']:
-                    value = order.get(sl_field)
-                    if value and str(value) not in ['0', '0.0', '', 'null']:
-                        try:
-                            sl_price = float(value)
-                            if sl_price > 0:
-                                break
-                        except:
-                            continue
-                
-                tp_display = f"${tp_price:.2f}" if tp_price else "없음"
-                sl_display = f"${sl_price:.2f}" if sl_price else "없음"
-                
-                logger.info(f"🎯 예약주문 {i+1}: ID={order_id}")
-                logger.info(f"   방향: {side}, 트리거: ${trigger_price}")
-                logger.info(f"   TP: {tp_display}")
-                logger.info(f"   SL: {sl_display}")
-            
-            for i, order in enumerate(tp_sl_orders[:3]):
-                order_id = order.get('orderId', order.get('planOrderId', f'tpsl_{i}'))
-                side = order.get('side', order.get('tradeSide', 'unknown'))
-                trigger_price = order.get('triggerPrice', order.get('price', 0))
-                reduce_only = order.get('reduceOnly', False)
-                
-                logger.info(f"🛡️ TP/SL주문 {i+1}: ID={order_id}")
-                logger.info(f"   방향: {side}, 트리거: ${trigger_price}")
-                logger.info(f"   클로즈: {reduce_only}")
-            
             return {
                 'plan_orders': plan_orders or [],
                 'tp_sl_orders': tp_sl_orders or [],
@@ -1011,7 +919,6 @@ class BitgetClient:
             
         except Exception as e:
             logger.error(f"전체 플랜 주문 조회 실패: {e}")
-            logger.error(f"상세 오류: {traceback.format_exc()}")
             return {
                 'plan_orders': [],
                 'tp_sl_orders': [],
