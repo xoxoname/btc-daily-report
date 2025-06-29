@@ -56,21 +56,21 @@ class GateioMirrorClient:
                 self.last_successful_call = datetime.now()
                 logger.info("✅ Gate.io 계정 조회 성공")
                 
-                # 거래 내역 조회 테스트
+                # 거래 내역 조회 테스트 - 더 넓은 범위로 테스트
                 try:
                     now = datetime.now()
-                    seven_days_ago = now - timedelta(days=7)
-                    start_ts = int(seven_days_ago.timestamp())
+                    thirty_days_ago = now - timedelta(days=30)
+                    start_ts = int(thirty_days_ago.timestamp())
                     end_ts = int(now.timestamp())
                     
                     trades = await self.get_my_trades(
                         contract="BTC_USDT",
                         start_time=start_ts,
                         end_time=end_ts,
-                        limit=10
+                        limit=50
                     )
                     
-                    logger.info(f"✅ Gate.io 거래 내역 조회 테스트: {len(trades)}건")
+                    logger.info(f"✅ Gate.io 거래 내역 조회 테스트: {len(trades)}건 (30일간)")
                     
                 except Exception as trade_error:
                     logger.warning(f"⚠️ Gate.io 거래 내역 조회 테스트 실패: {trade_error}")
@@ -300,33 +300,57 @@ class GateioMirrorClient:
             logger.error(f"Gate.io 포지션 조회 실패: {e}")
             return []
     
-    async def get_my_trades(self, contract: str = "BTC_USDT", start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
+    async def get_my_trades(self, contract: str = "BTC_USDT", start_time: int = None, end_time: int = None, limit: int = 1000) -> List[Dict]:
         try:
             endpoint = "/api/v4/futures/usdt/my_trades"
+            
+            # 기본 파라미터 설정
             params = {
                 'contract': contract,
                 'limit': str(min(limit, 1000))
             }
             
-            # Gate.io API는 초 단위 타임스탬프 사용
-            if start_time:
-                if start_time > 1000000000000:  # 밀리초 형태라면
-                    params['from'] = str(int(start_time / 1000))
-                else:  # 이미 초 형태라면
-                    params['from'] = str(start_time)
-            if end_time:
-                if end_time > 1000000000000:  # 밀리초 형태라면
-                    params['to'] = str(int(end_time / 1000))
-                else:  # 이미 초 형태라면
-                    params['to'] = str(end_time)
+            # 시간 파라미터 처리 - Gate.io는 초 단위 사용
+            if start_time is not None:
+                if start_time > 10000000000:  # 밀리초 형태면 초로 변환
+                    start_time_sec = int(start_time / 1000)
+                else:
+                    start_time_sec = int(start_time)
+                params['from'] = str(start_time_sec)
+                
+            if end_time is not None:
+                if end_time > 10000000000:  # 밀리초 형태면 초로 변환
+                    end_time_sec = int(end_time / 1000)
+                else:
+                    end_time_sec = int(end_time)
+                params['to'] = str(end_time_sec)
+            
+            logger.info(f"🔍 Gate.io 거래 내역 조회 요청:")
+            logger.info(f"  - 계약: {contract}")
+            logger.info(f"  - 시작시간: {params.get('from', 'None')}")
+            logger.info(f"  - 종료시간: {params.get('to', 'None')}")
+            logger.info(f"  - 제한: {params['limit']}")
             
             response = await self._request('GET', endpoint, params=params)
             
             if isinstance(response, list):
                 logger.info(f"✅ Gate.io 거래 내역 조회 성공: {len(response)}건")
+                
+                # 응답 데이터 구조 확인을 위한 상세 로깅
+                if len(response) > 0:
+                    sample_trade = response[0]
+                    logger.debug(f"샘플 거래 내역 구조: {sample_trade.keys()}")
+                    
+                    # 중요 필드 존재 여부 확인
+                    important_fields = ['id', 'create_time', 'contract', 'size', 'price', 'fee', 'pnl', 'text']
+                    existing_fields = [field for field in important_fields if field in sample_trade]
+                    logger.debug(f"존재하는 중요 필드: {existing_fields}")
+                
                 return response
             else:
                 logger.warning(f"Gate.io 거래 내역 응답 형식 예상치 못함: {type(response)}")
+                if response:
+                    logger.debug(f"응답 내용: {response}")
                 return []
             
         except Exception as e:
@@ -336,54 +360,81 @@ class GateioMirrorClient:
     async def get_position_pnl_based_profit(self, start_time: int, end_time: int, contract: str = "BTC_USDT") -> Dict:
         try:
             logger.info(f"🔍 Gate.io Position PnL 기준 손익 계산 시작...")
-            logger.info(f"  - 계약: {contract}")
-            logger.info(f"  - 시작: {datetime.fromtimestamp(start_time/1000 if start_time > 1000000000000 else start_time)}")
-            logger.info(f"  - 종료: {datetime.fromtimestamp(end_time/1000 if end_time > 1000000000000 else end_time)}")
             
-            # 거래 내역 조회
-            trades_all = await self.get_my_trades(
-                contract=contract,
-                start_time=start_time,
-                end_time=end_time,
-                limit=1000
-            )
+            # 시간 형식 통일 (밀리초 -> 초)
+            if start_time > 10000000000:
+                start_sec = int(start_time / 1000)
+            else:
+                start_sec = int(start_time)
+                
+            if end_time > 10000000000:
+                end_sec = int(end_time / 1000)
+            else:
+                end_sec = int(end_time)
+            
+            logger.info(f"  - 계약: {contract}")
+            logger.info(f"  - 시작: {datetime.fromtimestamp(start_sec).strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"  - 종료: {datetime.fromtimestamp(end_sec).strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # 거래 내역 조회 - 재시도 로직 추가
+            trades_all = []
+            for attempt in range(3):
+                try:
+                    trades_all = await self.get_my_trades(
+                        contract=contract,
+                        start_time=start_sec,
+                        end_time=end_sec,
+                        limit=1000
+                    )
+                    if trades_all:
+                        break
+                    elif attempt < 2:
+                        logger.warning(f"거래 내역이 없음, 재시도 {attempt + 1}/3")
+                        await asyncio.sleep(1)
+                except Exception as e:
+                    logger.warning(f"거래 내역 조회 시도 {attempt + 1} 실패: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(1)
             
             logger.info(f"Gate.io 거래 내역 조회 결과: {len(trades_all)}건")
             
             if not trades_all:
+                logger.info("Gate.io 거래 내역이 없음 - 기간 내 거래 없음")
                 return {
                     'position_pnl': 0.0,
                     'trading_fees': 0.0,
                     'funding_fees': 0.0,
                     'net_profit': 0.0,
                     'trade_count': 0,
-                    'source': 'no_trades_found'
+                    'source': 'no_trades_found_in_period'
                 }
             
-            # Gate.io V4 API 정확한 필드 사용
+            # 거래 내역 분석 및 PnL 계산
             total_pnl = 0.0
             total_trading_fees = 0.0
             total_funding_fees = 0.0
             trade_count = 0
+            processed_trades = 0
             
             for trade in trades_all:
                 try:
-                    trade_pnl = 0.0
-                    trading_fee = 0.0
-                    funding_fee = 0.0
+                    processed_trades += 1
                     
-                    # PnL 필드 (Gate.io V4)
-                    pnl_fields = ['pnl', 'realized_pnl', 'profit', 'close_pnl']
+                    # PnL 필드 확인 (Gate.io V4 API)
+                    trade_pnl = 0.0
+                    pnl_fields = ['pnl', 'realized_pnl', 'profit', 'close_pnl', 'point']
                     for field in pnl_fields:
                         if field in trade and trade[field] is not None:
                             try:
-                                trade_pnl = float(trade[field])
-                                if trade_pnl != 0:
+                                pnl_value = float(trade[field])
+                                if pnl_value != 0:
+                                    trade_pnl = pnl_value
                                     break
                             except (ValueError, TypeError):
                                 continue
                     
-                    # 거래 수수료 필드 (Gate.io V4)
+                    # 거래 수수료 확인
+                    trading_fee = 0.0
                     fee_fields = ['fee', 'trading_fee', 'total_fee']
                     for field in fee_fields:
                         if field in trade and trade[field] is not None:
@@ -395,7 +446,8 @@ class GateioMirrorClient:
                             except (ValueError, TypeError):
                                 continue
                     
-                    # 펀딩비 필드 (Gate.io V4)
+                    # 펀딩비 확인
+                    funding_fee = 0.0
                     funding_fields = ['funding_fee', 'funding_rate_fee', 'funding_cost']
                     for field in funding_fields:
                         if field in trade and trade[field] is not None:
@@ -407,12 +459,16 @@ class GateioMirrorClient:
                             except (ValueError, TypeError):
                                 continue
                     
-                    # 통계 누적
+                    # 유효한 데이터가 있을 때만 누적
                     if trade_pnl != 0 or trading_fee != 0 or funding_fee != 0:
                         total_pnl += trade_pnl
                         total_trading_fees += trading_fee
                         total_funding_fees += funding_fee
                         trade_count += 1
+                        
+                        # 상세 로깅 (처음 몇 건만)
+                        if trade_count <= 3:
+                            logger.debug(f"거래 {trade_count}: PnL=${trade_pnl:.4f}, 수수료=${trading_fee:.4f}, 펀딩=${funding_fee:.4f}")
                 
                 except Exception as trade_error:
                     logger.debug(f"Gate.io 거래 내역 처리 오류: {trade_error}")
@@ -422,11 +478,11 @@ class GateioMirrorClient:
             net_profit = total_pnl + total_funding_fees - total_trading_fees
             
             logger.info(f"✅ Gate.io Position PnL 계산 완료:")
+            logger.info(f"  - 처리된 거래: {processed_trades}건 중 {trade_count}건 유효")
             logger.info(f"  - Position PnL: ${total_pnl:.4f}")
             logger.info(f"  - 거래 수수료: -${total_trading_fees:.4f}")
             logger.info(f"  - 펀딩비: {total_funding_fees:+.4f}")
             logger.info(f"  - 순 수익: ${net_profit:.4f}")
-            logger.info(f"  - 거래 건수: {trade_count}건")
             
             return {
                 'position_pnl': total_pnl,
@@ -434,8 +490,9 @@ class GateioMirrorClient:
                 'funding_fees': total_funding_fees,
                 'net_profit': net_profit,
                 'trade_count': trade_count,
-                'source': 'gate_v4_api_accurate',
-                'confidence': 'high'
+                'processed_trades': processed_trades,
+                'source': 'gate_v4_api_enhanced',
+                'confidence': 'high' if trade_count > 0 else 'medium'
             }
             
         except Exception as e:
@@ -463,8 +520,8 @@ class GateioMirrorClient:
             start_time_utc = today_start.astimezone(pytz.UTC)
             end_time_utc = now.astimezone(pytz.UTC)
             
-            start_timestamp = int(start_time_utc.timestamp() * 1000)
-            end_timestamp = int(end_time_utc.timestamp() * 1000)
+            start_timestamp = int(start_time_utc.timestamp())
+            end_timestamp = int(end_time_utc.timestamp())
             
             result = await self.get_position_pnl_based_profit(
                 start_timestamp,
@@ -493,26 +550,31 @@ class GateioMirrorClient:
             logger.info(f"  - 시작: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} KST")
             logger.info(f"  - 종료: {current_time.strftime('%Y-%m-%d %H:%M')} KST")
             
+            # UTC로 변환
             start_time_utc = seven_days_ago.astimezone(pytz.UTC)
             end_time_utc = current_time.astimezone(pytz.UTC)
             
-            start_timestamp = int(start_time_utc.timestamp() * 1000)
-            end_timestamp = int(end_time_utc.timestamp() * 1000)
+            # 초 단위 타임스탬프 생성
+            start_timestamp = int(start_time_utc.timestamp())
+            end_timestamp = int(end_time_utc.timestamp())
             
-            # 실제 기간 계산 (밀리초 차이를 일수로 변환)
-            duration_ms = end_timestamp - start_timestamp
-            duration_days = duration_ms / (1000 * 60 * 60 * 24)
+            # 실제 기간 계산
+            duration_seconds = end_timestamp - start_timestamp
+            duration_days = duration_seconds / (24 * 60 * 60)
             
             # 7일보다 조금 많으면 정확히 7일로 조정
             if duration_days > 7.1:
                 logger.info(f"기간이 7일을 초과함: {duration_days:.1f}일, 정확히 7일로 조정")
-                start_timestamp = end_timestamp - (7 * 24 * 60 * 60 * 1000)
+                start_timestamp = end_timestamp - (7 * 24 * 60 * 60)
                 duration_days = 7.0
             
-            # 정확한 API 데이터 기반 계산
+            logger.info(f"실제 계산 기간: {duration_days:.1f}일")
+            logger.info(f"타임스탬프 범위: {start_timestamp} ~ {end_timestamp}")
+            
+            # 강화된 PnL 계산 수행
             result = await self.get_position_pnl_based_profit(
-                start_timestamp, 
-                end_timestamp, 
+                start_timestamp,  # 초 단위로 전달
+                end_timestamp,    # 초 단위로 전달
                 'BTC_USDT'
             )
             
@@ -521,30 +583,34 @@ class GateioMirrorClient:
             funding_fees = result.get('funding_fees', 0.0)
             net_profit = result.get('net_profit', 0.0)
             trade_count = result.get('trade_count', 0)
+            processed_trades = result.get('processed_trades', 0)
+            confidence = result.get('confidence', 'low')
             
             # 일평균 계산
             daily_average = position_pnl / duration_days if duration_days > 0 else 0
             
             logger.info(f"✅ Gate.io 7일 Position PnL 계산 완료:")
             logger.info(f"  - 실제 기간: {duration_days:.1f}일")
+            logger.info(f"  - 처리된 거래: {processed_trades}건 중 {trade_count}건 유효")
             logger.info(f"  - Position PnL: ${position_pnl:.4f}")
             logger.info(f"  - 거래 수수료: -${trading_fees:.4f}")
             logger.info(f"  - 펀딩비: {funding_fees:+.4f}")
             logger.info(f"  - 순 수익: ${net_profit:.4f}")
             logger.info(f"  - 일평균: ${daily_average:.4f}")
-            logger.info(f"  - 거래 건수: {trade_count}건")
+            logger.info(f"  - 신뢰도: {confidence}")
             
             return {
                 'total_pnl': position_pnl,
                 'daily_pnl': {},
                 'average_daily': daily_average,
                 'trade_count': trade_count,
+                'processed_trades': processed_trades,
                 'actual_days': duration_days,
                 'trading_fees': trading_fees,
                 'funding_fees': funding_fees,
                 'net_profit': net_profit,
-                'source': 'gate_v4_api_accurate',
-                'confidence': 'high'
+                'source': 'gate_v4_api_enhanced',
+                'confidence': confidence
             }
             
         except Exception as e:
@@ -555,6 +621,7 @@ class GateioMirrorClient:
                 'daily_pnl': {},
                 'average_daily': 0,
                 'trade_count': 0,
+                'processed_trades': 0,
                 'actual_days': 7,
                 'trading_fees': 0,
                 'funding_fees': 0,
