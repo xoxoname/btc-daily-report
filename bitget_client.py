@@ -53,11 +53,9 @@ class BitgetClient:
             logger.info("비트겟 API 키 유효성 검증 시작...")
             
             # 간단한 계정 정보 조회로 API 키 검증
-            endpoint = "/api/v2/mix/account/account"
+            endpoint = "/api/v2/mix/account/accounts"
             params = {
-                'symbol': 'BTCUSDT',
-                'productType': 'USDT-FUTURES',
-                'marginCoin': 'USDT'
+                'productType': 'USDT-FUTURES'
             }
             
             response = await self._request('GET', endpoint, params=params)
@@ -235,7 +233,6 @@ class BitgetClient:
                 logger.warning(f"예상치 못한 티커 응답 형식: {type(response)}")
                 return {}
             
-            # 응답 데이터 검증
             if self._validate_ticker_data(ticker_data):
                 normalized_ticker = self._normalize_ticker_data(ticker_data)
                 logger.info(f"✅ 티커 조회 성공: ${normalized_ticker.get('last', 'N/A')}")
@@ -409,13 +406,12 @@ class BitgetClient:
             }
     
     async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """포지션 조회 - API 응답 직접 사용"""
+        """포지션 조회 - Bitget V2 API 정확한 구현"""
         symbol = symbol or self.config.symbol
         
         try:
             endpoint = "/api/v2/mix/position/all-position"
             params = {
-                'symbol': symbol,
                 'productType': 'USDT-FUTURES',
                 'marginCoin': 'USDT'
             }
@@ -423,24 +419,36 @@ class BitgetClient:
             response = await self._request('GET', endpoint, params=params)
             logger.info(f"✅ 포지션 API 원본 응답: {response}")
             
-            positions = response if isinstance(response, list) else []
+            if not response:
+                logger.info("포지션 응답이 비어있음")
+                return []
             
-            # 심볼 필터링
-            if symbol and positions:
-                positions = [pos for pos in positions if pos.get('symbol') == symbol]
+            # Bitget V2 API 응답 구조 처리
+            positions = []
+            if isinstance(response, list):
+                positions = response
+            elif isinstance(response, dict) and 'list' in response:
+                positions = response['list']
+            elif isinstance(response, dict):
+                positions = [response]
             
+            # 심볼 필터링 및 활성 포지션만 추출
             active_positions = []
             for pos in positions:
+                if not isinstance(pos, dict):
+                    continue
+                    
+                pos_symbol = pos.get('symbol', '')
+                if symbol and pos_symbol != symbol:
+                    continue
+                
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
-                    # API 응답 그대로 사용 - 계산하지 않음
-                    margin_size = float(pos.get('marginSize', 0))  # 실제 포지션 증거금
-                    liquidation_price = float(pos.get('liquidationPrice', 0))  # 실제 청산가
-                    
-                    logger.info(f"🎯 활성 포지션 발견 (API 직접값):")
+                    logger.info(f"🎯 활성 포지션 발견:")
+                    logger.info(f"  - 심볼: {pos_symbol}")
                     logger.info(f"  - 사이즈: {total_size}")
-                    logger.info(f"  - API 증거금 (marginSize): ${margin_size:.2f}")
-                    logger.info(f"  - API 청산가 (liquidationPrice): ${liquidation_price:.2f}")
+                    logger.info(f"  - marginSize: ${float(pos.get('marginSize', 0)):.2f}")
+                    logger.info(f"  - liquidationPrice: ${float(pos.get('liquidationPrice', 0)):.2f}")
                     
                     active_positions.append(pos)
             
@@ -451,13 +459,11 @@ class BitgetClient:
             return []
     
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회 - API 응답 직접 사용"""
+        """계정 정보 조회 - Bitget V2 API 정확한 구현"""
         try:
-            endpoint = "/api/v2/mix/account/account"
+            endpoint = "/api/v2/mix/account/accounts"
             params = {
-                'symbol': self.config.symbol,
-                'productType': 'USDT-FUTURES',
-                'marginCoin': 'USDT'
+                'productType': 'USDT-FUTURES'
             }
             
             response = await self._request('GET', endpoint, params=params)
@@ -467,15 +473,24 @@ class BitgetClient:
                 logger.error("계정 정보 응답이 비어있음")
                 return {}
             
-            # API 응답 그대로 반환 - 계산하지 않음
-            return response
+            # Bitget V2 API 응답 구조 처리
+            if isinstance(response, list) and len(response) > 0:
+                # USDT-FUTURES 계정 찾기
+                for account in response:
+                    if account.get('marginCoin') == 'USDT':
+                        return account
+                return response[0]  # 첫 번째 계정 반환
+            elif isinstance(response, dict):
+                return response
+            
+            return {}
             
         except Exception as e:
             logger.error(f"계정 정보 조회 실패: {e}")
             return {}
     
     async def get_accurate_used_margin(self) -> float:
-        """포지션별 실제 사용 증거금 합계 - marginSize 직접 사용"""
+        """실제 사용 증거금 합계 - marginSize 직접 사용"""
         try:
             positions = await self.get_positions(self.config.symbol)
             total_margin_size = 0.0
@@ -483,14 +498,13 @@ class BitgetClient:
             for position in positions:
                 total_size = float(position.get('total', 0))
                 if total_size > 0:
-                    # API에서 직접 제공하는 marginSize 사용
                     margin_size = float(position.get('marginSize', 0))
                     total_margin_size += margin_size
                     
-                    logger.info(f"📊 포지션별 증거금 (API 직접):")
+                    logger.info(f"📊 포지션별 증거금:")
                     logger.info(f"  - marginSize: ${margin_size:.2f}")
             
-            logger.info(f"🎯 총 사용 증거금 (marginSize 합계): ${total_margin_size:.2f}")
+            logger.info(f"🎯 총 사용 증거금: ${total_margin_size:.2f}")
             return total_margin_size
             
         except Exception as e:
@@ -538,6 +552,7 @@ class BitgetClient:
             return []
     
     async def get_position_pnl_based_profit(self, start_time: int, end_time: int, symbol: str = None) -> Dict:
+        """Position PnL 기준 손익 계산 - Bitget V2 API 정확한 구현"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -573,16 +588,9 @@ class BitgetClient:
             
             for fill in fills:
                 try:
-                    # 비트겟 V2 API 정확한 필드명
+                    # Position PnL 필드들 (Bitget V2 API)
                     position_pnl = 0.0
-                    
-                    # Position PnL 필드들 (V2 API 기준)
-                    pnl_fields = [
-                        'pnl',              # 실제 포지션 손익
-                        'profit',           # 수익
-                        'realizedPnl',      # 실현 손익
-                        'closedPnl'         # 청산 손익
-                    ]
+                    pnl_fields = ['pnl', 'profit', 'realizedPnl', 'closedPnl']
                     
                     for field in pnl_fields:
                         if field in fill and fill[field] is not None:
@@ -596,19 +604,14 @@ class BitgetClient:
                     
                     # 거래 수수료 추출
                     trading_fee = 0.0
-                    
-                    fee_fields = [
-                        'fee',              # 거래 수수료
-                        'tradingFee',       # 거래 수수료
-                        'totalFee'          # 총 수수료
-                    ]
+                    fee_fields = ['fee', 'tradingFee', 'totalFee']
                     
                     for field in fee_fields:
                         if field in fill and fill[field] is not None:
                             try:
                                 fee_value = float(fill[field])
                                 if fee_value != 0:
-                                    trading_fee = abs(fee_value)  # 수수료는 항상 양수
+                                    trading_fee = abs(fee_value)
                                     logger.debug(f"거래 수수료 추출: {field} = {trading_fee}")
                                     break
                             except (ValueError, TypeError):
@@ -616,12 +619,7 @@ class BitgetClient:
                     
                     # 펀딩비 추출
                     funding_fee = 0.0
-                    
-                    funding_fields = [
-                        'fundingFee',       # 펀딩 수수료
-                        'funding',          # 펀딩비
-                        'fundFee'           # 펀드 수수료
-                    ]
+                    funding_fields = ['fundingFee', 'funding', 'fundFee']
                     
                     for field in funding_fields:
                         if field in fill and fill[field] is not None:
@@ -663,7 +661,7 @@ class BitgetClient:
                 'funding_fees': total_funding_fees,
                 'net_profit': net_profit,
                 'trade_count': trade_count,
-                'source': 'position_pnl_based_accurate',
+                'source': 'bitget_v2_api_accurate',
                 'confidence': 'high'
             }
             
@@ -682,6 +680,7 @@ class BitgetClient:
             }
     
     async def get_today_position_pnl(self) -> float:
+        """오늘 Position PnL 조회"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             now = datetime.now(kst)
@@ -707,6 +706,7 @@ class BitgetClient:
             return 0.0
     
     async def get_7day_position_pnl(self) -> Dict:
+        """7일 Position PnL 조회"""
         try:
             kst = pytz.timezone('Asia/Seoul')
             current_time = datetime.now(kst)
@@ -752,7 +752,7 @@ class BitgetClient:
                 'trading_fees': result.get('trading_fees', 0),
                 'funding_fees': result.get('funding_fees', 0),
                 'net_profit': result.get('net_profit', 0),
-                'source': 'bitget_7days_api_compliant',
+                'source': 'bitget_7days_v2_api',
                 'confidence': 'high'
             }
             
