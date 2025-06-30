@@ -32,8 +32,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             bitget_healthy = self._validate_bitget_data(bitget_data)
             gateio_healthy = self._validate_gateio_data(gateio_data)
             
-            # 통합 데이터 계산 - 순수 수익 기반
-            combined_data = self._calculate_combined_data_pure_profit(bitget_data, gateio_data, bitget_healthy, gateio_healthy)
+            # 통합 데이터 계산 - 순수 거래 수익 기반
+            combined_data = self._calculate_combined_data_real_trading_only(bitget_data, gateio_data, bitget_healthy, gateio_healthy)
             
             # 리포트 구성
             asset_summary = self._format_asset_summary_robust(combined_data, bitget_healthy, gateio_healthy)
@@ -62,7 +62,7 @@ class ProfitReportGenerator(BaseReportGenerator):
 💼 <b>자산 상세</b>
 {asset_detail}
 
-📊 <b>누적 성과 (순수익 기준)</b>
+📊 <b>누적 성과 (순수 거래 수익)</b>
 {cumulative_text}
 
 📈 <b>7일 수익</b>
@@ -180,9 +180,9 @@ class ProfitReportGenerator(BaseReportGenerator):
                 self.logger.warning(f"⚠️ Bitget 7일 PnL 조회 실패: {e}")
                 weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'actual_days': 7}
             
-            # 6. 누적 손익 - Position PnL 기반으로 계산
+            # 6. 누적 손익 - 순수 거래 수익만 계산 (입금 완전 제외)
             try:
-                cumulative_data = await self._get_cumulative_profit_position_based('bitget')
+                cumulative_data = await self._get_cumulative_profit_real_trading_only('bitget')
             except Exception as e:
                 self.logger.warning(f"⚠️ Bitget 누적 손익 조회 실패: {e}")
                 cumulative_data = {'total_profit': 0, 'roi': 0}
@@ -335,8 +335,8 @@ class ProfitReportGenerator(BaseReportGenerator):
                 except Exception as e:
                     self.logger.warning(f"⚠️ Gate.io Position PnL 계산 실패: {e}")
             
-            # 누적 수익 계산 - Position PnL 기반
-            cumulative_data = await self._get_cumulative_profit_position_based('gateio')
+            # 누적 수익 계산 - 순수 거래 수익만 (입금 완전 제외)
+            cumulative_data = await self._get_cumulative_profit_real_trading_only('gateio')
             
             has_account = total_equity > 0
             
@@ -348,6 +348,7 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'weekly_profit': weekly_profit,
                 'cumulative_profit': cumulative_data.get('total_profit', 0),
                 'cumulative_roi': cumulative_data.get('roi', 0),
+                'cumulative_data': cumulative_data,  # 추가
                 'total_equity': total_equity,
                 'available': available,
                 'used_margin': used_margin,
@@ -369,13 +370,14 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_gateio_data()
     
     async def _get_gateio_7day_profit_multiple_methods(self) -> dict:
-        """Gate.io 7일 수익 다중 방식 시도"""
+        """Gate.io 7일 수익 다중 방식 시도 - 강화된 버전"""
         try:
-            self.logger.info("🔍 Gate.io 7일 수익 다중 방식 조회 시작")
+            self.logger.info("🔍 Gate.io 7일 수익 강화된 다중 방식 조회 시작")
             
-            # 방법 1: 기존 7일 PnL 조회 (재시도 강화)
-            for attempt in range(3):
+            # 방법 1: 기존 7일 PnL 조회 (재시도 강화 + 더 긴 대기)
+            for attempt in range(5):  # 3회 -> 5회로 증가
                 try:
+                    self.logger.info(f"방법1 시도 {attempt + 1}/5...")
                     weekly_result = await self.gateio_client.get_7day_position_pnl()
                     
                     if weekly_result and weekly_result.get('trade_count', 0) > 0:
@@ -385,23 +387,81 @@ class ProfitReportGenerator(BaseReportGenerator):
                             'average_daily': weekly_result.get('average_daily', 0),
                             'actual_days': weekly_result.get('actual_days', 7.0),
                             'trade_count': weekly_result.get('trade_count', 0),
-                            'source': f"method1_attempt{attempt+1}",
+                            'source': f"method1_success_attempt{attempt+1}",
                             'confidence': 'high'
                         }
-                    elif attempt < 2:
-                        self.logger.warning(f"방법1 시도 {attempt + 1} 실패 - 재시도")
-                        await asyncio.sleep(3)
+                    elif attempt < 4:
+                        wait_time = 2 + attempt  # 대기 시간 점진적 증가
+                        self.logger.warning(f"방법1 시도 {attempt + 1} 실패 - {wait_time}초 대기 후 재시도")
+                        await asyncio.sleep(wait_time)
                         continue
                         
                 except Exception as e:
                     self.logger.warning(f"방법1 시도 {attempt + 1} 오류: {e}")
-                    if attempt < 2:
-                        await asyncio.sleep(3)
+                    if attempt < 4:
+                        wait_time = 2 + attempt
+                        await asyncio.sleep(wait_time)
                         continue
             
-            # 방법 2: 더 넓은 범위로 거래 내역 조회 (14일)
+            # 방법 2: 1일씩 나누어 7일간 조회
             try:
-                self.logger.info("🔍 방법2: 14일 범위로 거래 내역 조회")
+                self.logger.info("🔍 방법2: 1일씩 나누어 7일간 조회")
+                
+                now = datetime.now()
+                total_pnl = 0.0
+                total_trades = 0
+                
+                for day_offset in range(7):
+                    day_start = now - timedelta(days=day_offset+1)
+                    day_end = now - timedelta(days=day_offset)
+                    
+                    start_ts = int(day_start.timestamp())
+                    end_ts = int(day_end.timestamp())
+                    
+                    try:
+                        day_trades = await self.gateio_client.get_my_trades(
+                            contract="BTC_USDT",
+                            start_time=start_ts,
+                            end_time=end_ts,
+                            limit=200
+                        )
+                        
+                        if day_trades:
+                            day_pnl = 0.0
+                            for trade in day_trades:
+                                pnl = float(trade.get('point', 0))
+                                day_pnl += pnl
+                            
+                            total_pnl += day_pnl
+                            total_trades += len(day_trades)
+                            
+                            if day_pnl != 0:
+                                self.logger.info(f"  Day {day_offset+1}: ${day_pnl:.2f} ({len(day_trades)}건)")
+                        
+                        await asyncio.sleep(0.5)  # API 부하 방지
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Day {day_offset+1} 조회 실패: {e}")
+                        continue
+                
+                if total_trades > 0:
+                    avg_daily = total_pnl / 7
+                    self.logger.info(f"✅ 방법2 성공: ${total_pnl:.2f} (7일간 일별 조회, 총 {total_trades}건)")
+                    return {
+                        'total_pnl': total_pnl,
+                        'average_daily': avg_daily,
+                        'actual_days': 7.0,
+                        'trade_count': total_trades,
+                        'source': 'method2_daily_breakdown',
+                        'confidence': 'high'
+                    }
+                        
+            except Exception as e:
+                self.logger.warning(f"방법2 실패: {e}")
+            
+            # 방법 3: 14일 범위로 조회 후 7일 필터링
+            try:
+                self.logger.info("🔍 방법3: 14일 범위로 거래 내역 조회")
                 
                 now = datetime.now()
                 fourteen_days_ago = now - timedelta(days=14)
@@ -435,22 +495,22 @@ class ProfitReportGenerator(BaseReportGenerator):
                         
                         avg_daily = total_pnl / 7
                         
-                        self.logger.info(f"✅ 방법2 성공: ${total_pnl:.2f} (14일 중 7일 필터링, {len(recent_trades)}건)")
+                        self.logger.info(f"✅ 방법3 성공: ${total_pnl:.2f} (14일 중 7일 필터링, {len(recent_trades)}건)")
                         return {
                             'total_pnl': total_pnl,
                             'average_daily': avg_daily,
                             'actual_days': 7.0,
                             'trade_count': len(recent_trades),
-                            'source': 'method2_14day_filtered',
+                            'source': 'method3_14day_filtered',
                             'confidence': 'medium'
                         }
                         
             except Exception as e:
-                self.logger.warning(f"방법2 실패: {e}")
+                self.logger.warning(f"방법3 실패: {e}")
             
-            # 방법 3: 30일 범위로 조회 후 7일 필터링
+            # 방법 4: 30일 범위로 조회 후 7일 필터링
             try:
-                self.logger.info("🔍 방법3: 30일 범위로 거래 내역 조회")
+                self.logger.info("🔍 방법4: 30일 범위로 거래 내역 조회")
                 
                 now = datetime.now()
                 thirty_days_ago = now - timedelta(days=30)
@@ -484,77 +544,141 @@ class ProfitReportGenerator(BaseReportGenerator):
                         
                         avg_daily = total_pnl / 7
                         
-                        self.logger.info(f"✅ 방법3 성공: ${total_pnl:.2f} (30일 중 7일 필터링, {len(recent_trades)}건)")
+                        self.logger.info(f"✅ 방법4 성공: ${total_pnl:.2f} (30일 중 7일 필터링, {len(recent_trades)}건)")
                         return {
                             'total_pnl': total_pnl,
                             'average_daily': avg_daily,
                             'actual_days': 7.0,
                             'trade_count': len(recent_trades),
-                            'source': 'method3_30day_filtered',
+                            'source': 'method4_30day_filtered',
                             'confidence': 'medium'
                         }
                         
             except Exception as e:
-                self.logger.warning(f"방법3 실패: {e}")
+                self.logger.warning(f"방법4 실패: {e}")
             
-            # 모든 방법 실패 시 기본값
-            self.logger.warning("❌ Gate.io 7일 수익 조회 모든 방법 실패")
+            # 방법 5: 최대 범위 60일로 조회 후 7일 필터링 (최후의 수단)
+            try:
+                self.logger.info("🔍 방법5: 60일 범위로 거래 내역 조회 (최후의 수단)")
+                
+                now = datetime.now()
+                sixty_days_ago = now - timedelta(days=60)
+                start_ts = int(sixty_days_ago.timestamp())
+                end_ts = int(now.timestamp())
+                
+                trades_60days = await self.gateio_client.get_my_trades(
+                    contract="BTC_USDT",
+                    start_time=start_ts,
+                    end_time=end_ts,
+                    limit=3000
+                )
+                
+                if trades_60days and len(trades_60days) > 0:
+                    # 최근 7일간의 거래만 필터링
+                    seven_days_ago = now - timedelta(days=7)
+                    seven_days_ts = int(seven_days_ago.timestamp())
+                    
+                    recent_trades = []
+                    for trade in trades_60days:
+                        trade_time = int(trade.get('create_time', 0))
+                        if trade_time >= seven_days_ts:
+                            recent_trades.append(trade)
+                    
+                    if recent_trades:
+                        # PnL 계산
+                        total_pnl = 0.0
+                        for trade in recent_trades:
+                            pnl = float(trade.get('point', 0))
+                            total_pnl += pnl
+                        
+                        avg_daily = total_pnl / 7
+                        
+                        self.logger.info(f"✅ 방법5 성공: ${total_pnl:.2f} (60일 중 7일 필터링, {len(recent_trades)}건)")
+                        return {
+                            'total_pnl': total_pnl,
+                            'average_daily': avg_daily,
+                            'actual_days': 7.0,
+                            'trade_count': len(recent_trades),
+                            'source': 'method5_60day_filtered_last_resort',
+                            'confidence': 'medium'
+                        }
+                        
+            except Exception as e:
+                self.logger.warning(f"방법5 실패: {e}")
+            
+            # 모든 방법 실패 시 - 명확한 실패 메시지
+            self.logger.error("❌ Gate.io 7일 수익 조회 모든 방법 실패 (5가지 방법 모두 시도함)")
             return {
                 'total_pnl': 0,
                 'average_daily': 0,
                 'actual_days': 7.0,
                 'trade_count': 0,
-                'source': 'all_methods_failed',
-                'confidence': 'low'
+                'source': 'all_5_methods_failed',
+                'confidence': 'none',
+                'error_detail': '5가지 조회 방법 모두 실패'
             }
             
         except Exception as e:
-            self.logger.error(f"Gate.io 7일 수익 다중 방식 조회 실패: {e}")
+            self.logger.error(f"Gate.io 7일 수익 다중 방식 조회 치명적 실패: {e}")
             return {
                 'total_pnl': 0,
                 'average_daily': 0,
                 'actual_days': 7.0,
                 'trade_count': 0,
-                'source': 'error',
-                'confidence': 'low'
+                'source': 'critical_error',
+                'confidence': 'none',
+                'error_detail': str(e)[:100]
             }
     
-    async def _get_cumulative_profit_position_based(self, exchange: str) -> dict:
-        """Position PnL 기반 누적 수익 계산 (입금 제외)"""
+    async def _get_cumulative_profit_real_trading_only(self, exchange: str) -> dict:
+        """실제 거래 수익만 계산 (입금/출금 완전 제외, Position PnL 기반)"""
         try:
-            self.logger.info(f"🔍 {exchange} 누적 순수익 계산 시작 (Position PnL 기반)")
+            self.logger.info(f"🔍 {exchange} 순수 거래 수익 계산 시작 (입금 완전 제외)")
             
-            # 30일간의 긴 기간으로 Position PnL 조회
+            # 더 긴 기간으로 Position PnL 조회 (90일)
             now = datetime.now()
-            start_date = now - timedelta(days=30)
-            
-            start_timestamp = int(start_date.timestamp() * 1000)  # 밀리초
-            end_timestamp = int(now.timestamp() * 1000)  # 밀리초
+            start_date = now - timedelta(days=90)
             
             if exchange == 'bitget':
+                start_timestamp = int(start_date.timestamp() * 1000)  # 밀리초
+                end_timestamp = int(now.timestamp() * 1000)  # 밀리초
+                
+                # 90일간 Position PnL 조회
                 result = await self.bitget_client.get_position_pnl_based_profit(
                     start_timestamp, end_timestamp, self.config.symbol
                 )
                 
-                total_profit = result.get('net_profit', 0)  # 수수료 제외한 순수익
-                current_equity = 0
+                trading_profit = result.get('position_pnl', 0)  # Position PnL만
+                trading_fees = result.get('trading_fees', 0)
+                funding_fees = result.get('funding_fees', 0)
                 
+                # 순 거래 수익 = Position PnL + 펀딩비 - 거래 수수료
+                net_trading_profit = trading_profit + funding_fees - trading_fees
+                
+                # 현재 잔고 기준 대략적 ROI
                 try:
                     account_info = await self.bitget_client.get_account_info()
                     current_equity = float(account_info.get('usdtEquity', 0))
+                    
+                    # ROI는 순 거래 수익을 현재 자산으로 나눈 값
+                    roi = (net_trading_profit / max(current_equity, 1000)) * 100 if current_equity > 0 else 0
                 except:
-                    current_equity = 0
+                    roi = 0
                 
-                # 대략적인 ROI 계산 (현재 자산 기준)
-                roi = (total_profit / max(current_equity - total_profit, 1000)) * 100 if current_equity > 0 else 0
-                
-                self.logger.info(f"✅ Bitget 30일 순수익: ${total_profit:.2f}")
+                self.logger.info(f"✅ Bitget 90일 순수 거래 수익:")
+                self.logger.info(f"  - Position PnL: ${trading_profit:.2f}")
+                self.logger.info(f"  - 거래 수수료: -${trading_fees:.2f}")
+                self.logger.info(f"  - 펀딩비: {funding_fees:+.2f}")
+                self.logger.info(f"  - 순 거래 수익: ${net_trading_profit:.2f}")
                 
                 return {
-                    'total_profit': total_profit,
+                    'total_profit': net_trading_profit,
+                    'position_pnl': trading_profit,
+                    'trading_fees': trading_fees,
+                    'funding_fees': funding_fees,
                     'roi': roi,
-                    'source': 'position_pnl_30days',
-                    'period_days': 30,
+                    'source': 'position_pnl_90days_trading_only',
+                    'period_days': 90,
                     'confidence': 'high'
                 }
                 
@@ -563,44 +687,95 @@ class ProfitReportGenerator(BaseReportGenerator):
                 start_timestamp_sec = int(start_date.timestamp())
                 end_timestamp_sec = int(now.timestamp())
                 
-                result = await self.gateio_client.get_position_pnl_based_profit(
-                    start_timestamp_sec, end_timestamp_sec, 'BTC_USDT'
-                )
+                # 90일간 Position PnL 조회 (여러 번 시도)
+                best_result = None
+                for period_days in [90, 60, 30]:  # 점진적으로 줄여가며 시도
+                    try:
+                        period_start = now - timedelta(days=period_days)
+                        period_start_sec = int(period_start.timestamp())
+                        
+                        result = await self.gateio_client.get_position_pnl_based_profit(
+                            period_start_sec, end_timestamp_sec, 'BTC_USDT'
+                        )
+                        
+                        if result.get('trade_count', 0) > 0:
+                            self.logger.info(f"✅ Gate.io {period_days}일 거래 내역 발견: {result.get('trade_count')}건")
+                            best_result = result
+                            best_result['actual_period_days'] = period_days
+                            break
+                        else:
+                            self.logger.warning(f"Gate.io {period_days}일 기간에 거래 내역 없음")
+                            
+                    except Exception as e:
+                        self.logger.warning(f"Gate.io {period_days}일 조회 실패: {e}")
+                        continue
                 
-                total_profit = result.get('net_profit', 0)  # 수수료 제외한 순수익
-                current_equity = 0
-                
-                try:
-                    account_info = await self.gateio_client.get_account_balance()
-                    current_equity = float(account_info.get('total', 0))
-                except:
-                    current_equity = 0
-                
-                # 대략적인 ROI 계산
-                roi = (total_profit / max(current_equity - total_profit, 750)) * 100 if current_equity > 0 else 0
-                
-                self.logger.info(f"✅ Gate.io 30일 순수익: ${total_profit:.2f}")
-                
-                return {
-                    'total_profit': total_profit,
-                    'roi': roi,
-                    'source': 'position_pnl_30days',
-                    'period_days': 30,
-                    'confidence': 'high'
-                }
+                if best_result:
+                    trading_profit = best_result.get('position_pnl', 0)
+                    trading_fees = best_result.get('trading_fees', 0)
+                    funding_fees = best_result.get('funding_fees', 0)
+                    
+                    # 순 거래 수익
+                    net_trading_profit = trading_profit + funding_fees - trading_fees
+                    
+                    # 현재 잔고 기준 ROI
+                    try:
+                        account_info = await self.gateio_client.get_account_balance()
+                        current_equity = float(account_info.get('total', 0))
+                        roi = (net_trading_profit / max(current_equity, 750)) * 100 if current_equity > 0 else 0
+                    except:
+                        roi = 0
+                    
+                    period_days = best_result.get('actual_period_days', 90)
+                    
+                    self.logger.info(f"✅ Gate.io {period_days}일 순수 거래 수익:")
+                    self.logger.info(f"  - Position PnL: ${trading_profit:.2f}")
+                    self.logger.info(f"  - 거래 수수료: -${trading_fees:.2f}")
+                    self.logger.info(f"  - 펀딩비: {funding_fees:+.2f}")
+                    self.logger.info(f"  - 순 거래 수익: ${net_trading_profit:.2f}")
+                    
+                    return {
+                        'total_profit': net_trading_profit,
+                        'position_pnl': trading_profit,
+                        'trading_fees': trading_fees,
+                        'funding_fees': funding_fees,
+                        'roi': roi,
+                        'source': f'position_pnl_{period_days}days_trading_only',
+                        'period_days': period_days,
+                        'confidence': 'high'
+                    }
+                else:
+                    self.logger.warning("Gate.io 모든 기간에서 거래 내역 조회 실패")
+                    
+                    return {
+                        'total_profit': 0,
+                        'position_pnl': 0,
+                        'trading_fees': 0,
+                        'funding_fees': 0,
+                        'roi': 0,
+                        'source': 'no_trading_history_found',
+                        'period_days': 90,
+                        'confidence': 'low'
+                    }
             
             # 기본값
             return {
                 'total_profit': 0,
+                'position_pnl': 0,
+                'trading_fees': 0,
+                'funding_fees': 0,
                 'roi': 0,
                 'source': 'fallback_zero',
                 'confidence': 'low'
             }
             
         except Exception as e:
-            self.logger.error(f"{exchange} 누적 순수익 계산 실패: {e}")
+            self.logger.error(f"{exchange} 순수 거래 수익 계산 실패: {e}")
             return {
                 'total_profit': 0,
+                'position_pnl': 0,
+                'trading_fees': 0,
+                'funding_fees': 0,
                 'roi': 0,
                 'source': 'error',
                 'confidence': 'low'
@@ -634,10 +809,10 @@ class ProfitReportGenerator(BaseReportGenerator):
         self.logger.info(f"Gate.io 데이터 검증: {valid} (자산: ${total_equity:.2f})")
         return valid
     
-    def _calculate_combined_data_pure_profit(self, bitget_data: dict, gateio_data: dict, 
-                                           bitget_healthy: bool, gateio_healthy: bool) -> dict:
+    def _calculate_combined_data_real_trading_only(self, bitget_data: dict, gateio_data: dict, 
+                                                 bitget_healthy: bool, gateio_healthy: bool) -> dict:
         
-        self.logger.info(f"🔍 순수 수익 기반 통합 계산:")
+        self.logger.info(f"🔍 순수 거래 수익 기반 통합 계산:")
         self.logger.info(f"  - Bitget 상태: {'정상' if bitget_healthy else '오류'}")
         self.logger.info(f"  - Gate.io 상태: {'정상' if gateio_healthy else '없음'}")
         
@@ -706,21 +881,29 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         weekly_avg = weekly_total / actual_days if actual_days > 0 else 0
         
-        # 누적 수익 (Position PnL 기반)
+        # 누적 순수 거래 수익 (Position PnL 기반)
         bitget_cumulative = bitget_data['cumulative_profit'] if bitget_healthy else 0
         gateio_cumulative = gateio_data['cumulative_profit'] if gateio_healthy else 0
         cumulative_profit = bitget_cumulative + gateio_cumulative
         
-        # 누적 수익률 - 추정 초기 자본 대비
-        estimated_initial_capital = max(total_equity - cumulative_profit, 1000)
-        cumulative_roi = (cumulative_profit / estimated_initial_capital * 100) if estimated_initial_capital > 0 else 0
+        # 누적 수익률 - 현재 자산 대비 계산
+        cumulative_roi = (cumulative_profit / total_equity * 100) if total_equity > 0 and cumulative_profit != 0 else 0
         
-        self.logger.info(f"순수 수익 계산 결과:")
+        # 거래 수수료 및 펀딩비 정보
+        bitget_fees_info = bitget_data.get('cumulative_data', {})
+        gateio_fees_info = gateio_data.get('cumulative_data', {})
+        
+        total_trading_fees = bitget_fees_info.get('trading_fees', 0) + gateio_fees_info.get('trading_fees', 0)
+        total_funding_fees = bitget_fees_info.get('funding_fees', 0) + gateio_fees_info.get('funding_fees', 0)
+        
+        self.logger.info(f"순수 거래 수익 통합 계산 결과:")
         self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
         self.logger.info(f"  - Bitget 비중: {bitget_weight:.1%}, Gate 비중: {gateio_weight:.1%}")
         self.logger.info(f"  - 금일 수익률: {today_roi:.1f}%")
         self.logger.info(f"  - 7일 수익률: {weekly_roi:.1f}%")
-        self.logger.info(f"  - 누적 순수익: ${cumulative_profit:.2f}")
+        self.logger.info(f"  - 누적 순수 거래 수익: ${cumulative_profit:.2f}")
+        self.logger.info(f"  - 총 거래 수수료: -${total_trading_fees:.2f}")
+        self.logger.info(f"  - 총 펀딩비: {total_funding_fees:+.2f}")
         self.logger.info(f"  - 7일 총 수익: Bitget ${bitget_weekly:.2f} + Gate ${gateio_weekly:.2f} = ${weekly_total:.2f}")
         
         return {
@@ -741,7 +924,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             'gateio_equity': gateio_equity,
             'bitget_weight': bitget_weight,
             'gateio_weight': gateio_weight,
-            'estimated_initial_capital': estimated_initial_capital,
+            'total_trading_fees': total_trading_fees,
+            'total_funding_fees': total_funding_fees,
             # 개별 거래소 손익
             'bitget_today_realized': bitget_today_pnl,
             'bitget_today_unrealized': bitget_unrealized,
@@ -838,16 +1022,24 @@ class ProfitReportGenerator(BaseReportGenerator):
             gate_trade_count = gateio_data['weekly_profit'].get('trade_count', 0)
             
             # 조회 방식 표시
-            if 'method1' in gate_source:
-                method_indicator = "📊"
-            elif 'method2' in gate_source or 'method3' in gate_source:
-                method_indicator = "🔍"
-            elif 'failed' in gate_source:
-                method_indicator = "❌"
+            if 'method1_success' in gate_source:
+                method_indicator = "📊"  # 원래 방법 성공
+            elif 'method2' in gate_source:
+                method_indicator = "🔍1"  # 일별 조회 성공
+            elif 'method3' in gate_source or 'method4' in gate_source:
+                method_indicator = "🔍2"  # 범위 필터링 성공
+            elif 'method5' in gate_source:
+                method_indicator = "🔍3"  # 최후의 수단 성공
+            elif 'failed' in gate_source or gate_trade_count == 0:
+                method_indicator = "❌"  # 모든 방법 실패
             else:
-                method_indicator = "📊" if gate_trade_count > 0 else "🔍"
-                
-            lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)} {method_indicator}")
+                method_indicator = "📊" if gate_trade_count > 0 else "❌"
+            
+            # 실패한 경우 별도 처리
+            if gate_weekly == 0 and gate_trade_count == 0 and 'failed' in gate_source:
+                lines.append(f"  └ Gate: 조회 실패 {method_indicator}")
+            else:
+                lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)} {method_indicator}")
         else:
             if bitget_healthy:
                 bitget_weekly = bitget_data['weekly_profit']['total']
@@ -867,26 +1059,46 @@ class ProfitReportGenerator(BaseReportGenerator):
         total_cumulative = combined_data['cumulative_profit']
         total_cumulative_roi = combined_data['cumulative_roi']
         
-        lines.append(f"• <b>순수익: {self._format_currency_compact(total_cumulative, total_cumulative_roi)}</b>")
-        lines.append(f"• <b>계산 방식: Position PnL 기반 (입금 제외)</b>")
+        lines.append(f"• <b>순수 거래 수익: {self._format_currency_compact(total_cumulative, total_cumulative_roi)}</b>")
+        lines.append(f"• <b>계산 방식: Position PnL 기반 (입금 완전 제외)</b>")
+        
+        # 거래 수수료 및 펀딩비 정보 추가
+        total_trading_fees = combined_data.get('total_trading_fees', 0)
+        total_funding_fees = combined_data.get('total_funding_fees', 0)
+        
+        if total_trading_fees > 0 or total_funding_fees != 0:
+            lines.append(f"• 거래 수수료: -${total_trading_fees:.2f} | 펀딩비: {total_funding_fees:+.2f}")
         
         # 거래소별 상세
         if gateio_healthy and gateio_data['total_equity'] > 0:
             if bitget_healthy:
                 bitget_profit = bitget_data['cumulative_profit']
                 bitget_roi = bitget_data['cumulative_roi']
-                lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_profit, False)} ({bitget_roi:+.0f}%)")
+                bitget_period = bitget_data.get('cumulative_data', {}).get('period_days', 90)
+                lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_profit, False)} ({bitget_roi:+.1f}%) [{bitget_period}일]")
             else:
                 lines.append(f"  ├ Bitget: API 연결 오류")
             
             gate_profit = gateio_data['cumulative_profit']
             gate_roi = gateio_data['cumulative_roi']
-            lines.append(f"  └ Gate: {self._format_currency_html(gate_profit, False)} ({gate_roi:+.0f}%)")
+            gate_period = gateio_data.get('cumulative_data', {}).get('period_days', 90)
+            gate_source = gateio_data.get('cumulative_data', {}).get('source', 'unknown')
+            
+            # 조회 성공/실패 표시
+            if 'trading_only' in gate_source and gate_profit != 0:
+                success_indicator = "📊"
+            elif 'no_trading_history' in gate_source:
+                success_indicator = "❌"
+            else:
+                success_indicator = "🔍"
+                
+            lines.append(f"  └ Gate: {self._format_currency_html(gate_profit, False)} ({gate_roi:+.1f}%) [{gate_period}일] {success_indicator}")
         else:
             if bitget_healthy:
                 bitget_profit = bitget_data['cumulative_profit']
                 bitget_roi = bitget_data['cumulative_roi']
-                lines.append(f"  └ Bitget: {self._format_currency_html(bitget_profit, False)} ({bitget_roi:+.0f}%)")
+                bitget_period = bitget_data.get('cumulative_data', {}).get('period_days', 90)
+                lines.append(f"  └ Bitget: {self._format_currency_html(bitget_profit, False)} ({bitget_roi:+.1f}%) [{bitget_period}일]")
             else:
                 lines.append(f"  └ Bitget: API 연결 오류")
         
@@ -1133,11 +1345,12 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'average_daily': combined_data['weekly_avg']  # 백업용 필드
             }
             
-            self.logger.info(f"🧠 멘탈 케어 데이터 전달:")
+            self.logger.info(f"🧠 멘탈 케어 데이터 전달 (순수 거래 수익 기준):")
             self.logger.info(f"  - 총 자산: ${account_info['usdtEquity']:,.2f}")
             self.logger.info(f"  - 오늘 실현 PnL: ${combined_data['today_position_pnl']:.2f}")
             self.logger.info(f"  - 오늘 미실현 PnL: ${combined_data['today_unrealized']:.2f}")
             self.logger.info(f"  - 7일 총 수익: ${weekly_profit['total']:.2f}")
+            self.logger.info(f"  - 누적 순수 거래 수익: ${combined_data['cumulative_profit']:.2f}")
             self.logger.info(f"  - 포지션 보유: {position_info['has_position']}")
             
             mental_text = await self.mental_care.generate_profit_mental_care(
@@ -1148,7 +1361,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             
         except Exception as e:
             self.logger.error(f"통합 멘탈 케어 생성 실패: {e}")
-            # 안전한 폴백 메시지 (하드코딩 방지)
+            # 안전한 폴백 메시지
             total_equity = combined_data.get('total_equity', 12000)
+            cumulative_profit = combined_data.get('cumulative_profit', 0)
             krw_amount = int(total_equity * 1350 / 10000)
-            return f"현재 ${total_equity:,.0f} ({krw_amount}만원) 자산을 안정적으로 관리하고 계시네요. 감정적 거래보다는 계획적인 접근이 중요해요. 리스크 관리를 철저히 하면서 꾸준히 나아가세요 💪"
+            return f"현재 ${total_equity:,.0f} ({krw_amount}만원) 자산을 안정적으로 관리하고 계시네요. 순수 거래 수익 ${cumulative_profit:.0f}로 꾸준한 성과를 보이고 있어요. 감정적 거래보다는 계획적인 접근이 중요해요 💪"
