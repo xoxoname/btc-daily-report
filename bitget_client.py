@@ -23,7 +23,7 @@ class BitgetClient:
         self.api_connection_healthy = True
         self.consecutive_failures = 0
         self.last_successful_call = datetime.now()
-        self.max_consecutive_failures = 5  # 임계값 낮춤
+        self.max_consecutive_failures = 5
         
         # API 키 검증 상태
         self.api_keys_validated = False
@@ -52,7 +52,7 @@ class BitgetClient:
         try:
             logger.info("비트겟 API 키 유효성 검증 시작...")
             
-            # 계정 정보 조회로 API 키 검증 (더 안정적인 엔드포인트)
+            # 계정 정보 조회로 API 키 검증
             endpoint = "/api/v2/mix/account/accounts"
             params = {
                 'productType': 'USDT-FUTURES'
@@ -680,11 +680,10 @@ class BitgetClient:
             start_timestamp = int(start_time_utc.timestamp() * 1000)
             end_timestamp = int(end_time_utc.timestamp() * 1000)
             
-            # 실제 기간 계산 (밀리초 차이를 일수로 변환)
+            # 실제 기간 계산
             duration_ms = end_timestamp - start_timestamp
             duration_days = duration_ms / (1000 * 60 * 60 * 24)
             
-            # 7일보다 조금 많으면 정확히 7일로 조정
             if duration_days > 7.1:
                 logger.info(f"기간이 7일을 초과함: {duration_days:.1f}일, 정확히 7일로 조정")
                 start_timestamp = end_timestamp - (7 * 24 * 60 * 60 * 1000)
