@@ -104,7 +104,7 @@ class GateioMirrorClient:
             'Content-Type': 'application/json'
         }
     
-    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 2) -> Dict:
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
         if not self.session:
             self._initialize_session()
         
@@ -331,27 +331,45 @@ class GateioMirrorClient:
             logger.info(f"  - 종료시간: {params.get('to', 'None')}")
             logger.info(f"  - 제한: {params['limit']}")
             
-            response = await self._request('GET', endpoint, params=params)
-            
-            if isinstance(response, list):
-                logger.info(f"✅ Gate.io 거래 내역 조회 성공: {len(response)}건")
-                
-                # 응답 데이터 구조 확인을 위한 상세 로깅
-                if len(response) > 0:
-                    sample_trade = response[0]
-                    logger.debug(f"샘플 거래 내역 구조: {sample_trade.keys()}")
+            # 재시도 로직 강화
+            for attempt in range(3):
+                try:
+                    response = await self._request('GET', endpoint, params=params, max_retries=2)
                     
-                    # 중요 필드 존재 여부 확인
-                    important_fields = ['id', 'create_time', 'contract', 'size', 'price', 'fee', 'pnl', 'text']
-                    existing_fields = [field for field in important_fields if field in sample_trade]
-                    logger.debug(f"존재하는 중요 필드: {existing_fields}")
-                
-                return response
-            else:
-                logger.warning(f"Gate.io 거래 내역 응답 형식 예상치 못함: {type(response)}")
-                if response:
-                    logger.debug(f"응답 내용: {response}")
-                return []
+                    if isinstance(response, list):
+                        logger.info(f"✅ Gate.io 거래 내역 조회 성공: {len(response)}건 (시도 {attempt + 1})")
+                        
+                        # 응답 데이터 구조 확인을 위한 상세 로깅
+                        if len(response) > 0:
+                            sample_trade = response[0]
+                            logger.debug(f"샘플 거래 내역 구조: {list(sample_trade.keys())}")
+                            
+                            # 중요 필드 존재 여부 확인
+                            important_fields = ['id', 'create_time', 'contract', 'size', 'price', 'fee', 'point']
+                            existing_fields = [field for field in important_fields if field in sample_trade]
+                            logger.debug(f"존재하는 중요 필드: {existing_fields}")
+                        
+                        return response
+                    else:
+                        logger.warning(f"Gate.io 거래 내역 응답 형식 예상치 못함 (시도 {attempt + 1}): {type(response)}")
+                        if response:
+                            logger.debug(f"응답 내용 샘플: {str(response)[:200]}")
+                        
+                        if attempt < 2:
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            return []
+                            
+                except Exception as e:
+                    logger.warning(f"Gate.io 거래 내역 조회 시도 {attempt + 1} 실패: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        return []
+            
+            return []
             
         except Exception as e:
             logger.error(f"Gate.io 거래 내역 조회 실패: {e}")
@@ -376,27 +394,44 @@ class GateioMirrorClient:
             logger.info(f"  - 시작: {datetime.fromtimestamp(start_sec).strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info(f"  - 종료: {datetime.fromtimestamp(end_sec).strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # 거래 내역 조회 - 재시도 로직 추가
+            # 더 많은 거래 내역 조회 시도
+            max_trades = 2000
             trades_all = []
-            for attempt in range(3):
+            
+            # 여러 번 시도하여 더 많은 거래 내역 수집
+            for page_attempt in range(3):
                 try:
-                    trades_all = await self.get_my_trades(
+                    batch_trades = await self.get_my_trades(
                         contract=contract,
                         start_time=start_sec,
                         end_time=end_sec,
-                        limit=1000
+                        limit=min(1000, max_trades)
                     )
-                    if trades_all:
+                    
+                    if batch_trades:
+                        logger.info(f"거래 내역 배치 {page_attempt + 1}: {len(batch_trades)}건")
+                        
+                        # 중복 제거하며 추가
+                        existing_ids = {trade.get('id') for trade in trades_all if trade.get('id')}
+                        new_trades = [trade for trade in batch_trades if trade.get('id') not in existing_ids]
+                        trades_all.extend(new_trades)
+                        
+                        # 충분한 거래 내역을 얻었거나 더 이상 새로운 거래가 없으면 중단
+                        if len(new_trades) == 0 or len(trades_all) >= max_trades:
+                            break
+                    else:
+                        if page_attempt == 0:
+                            logger.info("첫 번째 시도에서 거래 내역 없음")
                         break
-                    elif attempt < 2:
-                        logger.warning(f"거래 내역이 없음, 재시도 {attempt + 1}/3")
-                        await asyncio.sleep(1)
+                        
                 except Exception as e:
-                    logger.warning(f"거래 내역 조회 시도 {attempt + 1} 실패: {e}")
-                    if attempt < 2:
+                    logger.warning(f"거래 내역 배치 조회 {page_attempt + 1} 실패: {e}")
+                    if page_attempt < 2:
                         await asyncio.sleep(1)
+                        continue
+                    break
             
-            logger.info(f"Gate.io 거래 내역 조회 결과: {len(trades_all)}건")
+            logger.info(f"Gate.io 총 거래 내역: {len(trades_all)}건")
             
             if not trades_all:
                 logger.info("Gate.io 거래 내역이 없음 - 기간 내 거래 없음")
@@ -409,7 +444,7 @@ class GateioMirrorClient:
                     'source': 'no_trades_found_in_period'
                 }
             
-            # 거래 내역 분석 및 PnL 계산
+            # 거래 내역 분석 및 PnL 계산 - 강화된 로직
             total_pnl = 0.0
             total_trading_fees = 0.0
             total_funding_fees = 0.0
@@ -420,15 +455,16 @@ class GateioMirrorClient:
                 try:
                     processed_trades += 1
                     
-                    # PnL 필드 확인 (Gate.io V4 API)
+                    # Gate.io V4 API에서 point 필드가 실제 PnL을 나타냄
                     trade_pnl = 0.0
-                    pnl_fields = ['pnl', 'realized_pnl', 'profit', 'close_pnl', 'point']
+                    pnl_fields = ['point', 'pnl', 'realized_pnl', 'profit', 'close_pnl']
                     for field in pnl_fields:
                         if field in trade and trade[field] is not None:
                             try:
                                 pnl_value = float(trade[field])
                                 if pnl_value != 0:
                                     trade_pnl = pnl_value
+                                    logger.debug(f"PnL 발견 ({field}): {pnl_value}")
                                     break
                             except (ValueError, TypeError):
                                 continue
@@ -446,7 +482,7 @@ class GateioMirrorClient:
                             except (ValueError, TypeError):
                                 continue
                     
-                    # 펀딩비 확인
+                    # 펀딩비 확인 
                     funding_fee = 0.0
                     funding_fields = ['funding_fee', 'funding_rate_fee', 'funding_cost']
                     for field in funding_fields:
@@ -466,8 +502,8 @@ class GateioMirrorClient:
                         total_funding_fees += funding_fee
                         trade_count += 1
                         
-                        # 상세 로깅 (처음 몇 건만)
-                        if trade_count <= 3:
+                        # 상세 로깅 (처음 5건만)
+                        if trade_count <= 5:
                             logger.debug(f"거래 {trade_count}: PnL=${trade_pnl:.4f}, 수수료=${trading_fee:.4f}, 펀딩=${funding_fee:.4f}")
                 
                 except Exception as trade_error:
@@ -491,7 +527,7 @@ class GateioMirrorClient:
                 'net_profit': net_profit,
                 'trade_count': trade_count,
                 'processed_trades': processed_trades,
-                'source': 'gate_v4_api_enhanced',
+                'source': 'gate_v4_api_enhanced_v2',
                 'confidence': 'high' if trade_count > 0 else 'medium'
             }
             
@@ -609,7 +645,7 @@ class GateioMirrorClient:
                 'trading_fees': trading_fees,
                 'funding_fees': funding_fees,
                 'net_profit': net_profit,
-                'source': 'gate_v4_api_enhanced',
+                'source': 'gate_v4_api_enhanced_v2',
                 'confidence': confidence
             }
             
