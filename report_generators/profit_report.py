@@ -1,6 +1,7 @@
 from .base_generator import BaseReportGenerator
 from .mental_care import MentalCareGenerator
 import traceback
+import asyncio
 from datetime import datetime, timedelta
 import pytz
 
@@ -82,7 +83,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             return "❌ 수익 현황 조회 중 오류가 발생했습니다."
     
     async def _get_bitget_data_robust(self) -> dict:
-        """Bitget 데이터 조회 - 강화된 오류 처리"""
         try:
             self.logger.info("🔍 Bitget 데이터 조회 시작 (강화된 오류 처리)")
             
@@ -233,7 +233,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_bitget_data()
     
     async def _get_gateio_data_robust(self) -> dict:
-        """Gate.io 데이터 조회 - 강화된 오류 처리"""
         try:
             if not self.gateio_client:
                 self.logger.info("Gate.io 클라이언트가 설정되지 않음")
@@ -314,21 +313,70 @@ class ProfitReportGenerator(BaseReportGenerator):
                 except Exception as e:
                     self.logger.warning(f"⚠️ Gate.io 포지션 조회 실패: {e}")
             
-            # Position PnL 기반 손익 계산
+            # Position PnL 기반 손익 계산 - 강화된 로직
             today_position_pnl = 0.0
             weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'actual_days': 7.0}
             
             if total_equity > 0:
                 try:
-                    today_position_pnl = await self.gateio_client.get_today_position_pnl()
-                    weekly_result = await self.gateio_client.get_7day_position_pnl()
+                    # 오늘 PnL 조회 - 재시도 로직 추가
+                    for attempt in range(2):
+                        try:
+                            today_position_pnl = await self.gateio_client.get_today_position_pnl()
+                            if today_position_pnl != 0:
+                                break
+                            elif attempt == 0:
+                                await asyncio.sleep(1)
+                        except Exception as e:
+                            self.logger.warning(f"Gate.io 오늘 PnL 조회 시도 {attempt + 1} 실패: {e}")
+                            if attempt == 0:
+                                await asyncio.sleep(1)
                     
-                    weekly_profit = {
-                        'total_pnl': weekly_result.get('total_pnl', 0),
-                        'average_daily': weekly_result.get('average_daily', 0),
-                        'actual_days': weekly_result.get('actual_days', 7.0),
-                        'source': weekly_result.get('source', 'gate_v4_api_accurate')
-                    }
+                    # 7일 PnL 조회 - 강화된 재시도 로직
+                    for attempt in range(3):
+                        try:
+                            weekly_result = await self.gateio_client.get_7day_position_pnl()
+                            
+                            if weekly_result and weekly_result.get('trade_count', 0) > 0:
+                                self.logger.info(f"✅ Gate.io 7일 PnL 조회 성공 (시도 {attempt + 1}): {weekly_result.get('total_pnl', 0):.2f}달러")
+                                weekly_profit = {
+                                    'total_pnl': weekly_result.get('total_pnl', 0),
+                                    'average_daily': weekly_result.get('average_daily', 0),
+                                    'actual_days': weekly_result.get('actual_days', 7.0),
+                                    'trade_count': weekly_result.get('trade_count', 0),
+                                    'source': weekly_result.get('source', 'gate_v4_api_enhanced_v2'),
+                                    'confidence': weekly_result.get('confidence', 'medium')
+                                }
+                                break
+                            elif attempt < 2:
+                                self.logger.warning(f"Gate.io 7일 PnL이 비어있음, 재시도 {attempt + 1}/3")
+                                await asyncio.sleep(2)
+                                continue
+                            else:
+                                self.logger.warning("Gate.io 7일 PnL 최종 조회 실패 - 기본값 사용")
+                                weekly_profit = {
+                                    'total_pnl': 0,
+                                    'average_daily': 0,
+                                    'actual_days': 7.0,
+                                    'trade_count': 0,
+                                    'source': 'fallback_no_data',
+                                    'confidence': 'low'
+                                }
+                                
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Gate.io 7일 PnL 조회 시도 {attempt + 1} 실패: {e}")
+                            if attempt < 2:
+                                await asyncio.sleep(2)
+                                continue
+                            else:
+                                weekly_profit = {
+                                    'total_pnl': 0,
+                                    'average_daily': 0,
+                                    'actual_days': 7.0,
+                                    'trade_count': 0,
+                                    'source': 'error_fallback',
+                                    'confidence': 'low'
+                                }
                     
                 except Exception as e:
                     self.logger.warning(f"⚠️ Gate.io Position PnL 계산 실패: {e}")
@@ -360,7 +408,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.info(f"✅ Gate.io 데이터 조회 완료:")
             self.logger.info(f"  - 계정 존재: {has_account}")
             self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
-            self.logger.info(f"  - 7일 PnL: ${weekly_profit['total_pnl']:.2f}")
+            self.logger.info(f"  - 7일 PnL: ${weekly_profit['total_pnl']:.2f} (거래: {weekly_profit.get('trade_count', 0)}건)")
             
             return result
             
@@ -369,7 +417,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             return self._get_empty_gateio_data()
     
     def _validate_bitget_data(self, data: dict) -> bool:
-        """Bitget 데이터 유효성 검증"""
         if not data or data.get('exchange') != 'Bitget':
             return False
         
@@ -386,7 +433,6 @@ class ProfitReportGenerator(BaseReportGenerator):
         return valid
     
     def _validate_gateio_data(self, data: dict) -> bool:
-        """Gate.io 데이터 유효성 검증"""
         if not data or data.get('exchange') != 'Gate':
             return False
         
@@ -400,7 +446,6 @@ class ProfitReportGenerator(BaseReportGenerator):
     
     def _calculate_combined_data_proportional(self, bitget_data: dict, gateio_data: dict, 
                                             bitget_healthy: bool, gateio_healthy: bool) -> dict:
-        """자산 비례 기반 통합 계산 - 현실적인 수익률 적용"""
         
         self.logger.info(f"🔍 자산 비례 기반 통합 계산:")
         self.logger.info(f"  - Bitget 상태: {'정상' if bitget_healthy else '오류'}")
@@ -449,23 +494,20 @@ class ProfitReportGenerator(BaseReportGenerator):
         weekly_total = bitget_weekly + gateio_weekly
         
         # 7일 수익률 - 현실적인 계산 방식
-        # 7일 전 자산 = 현재 자산 - 7일 수익
         if total_equity > 0 and weekly_total != 0:
             initial_7d_equity = total_equity - weekly_total
             if initial_7d_equity > 0:
                 weekly_roi = (weekly_total / initial_7d_equity * 100)
             else:
-                # 7일 수익이 현재 자산보다 클 경우 (비현실적)
                 weekly_roi = (weekly_total / total_equity * 100)
         else:
             weekly_roi = 0
         
         # 수익률 상한선 적용 (비현실적인 수익률 방지)
-        if abs(weekly_roi) > 200:  # 200% 이상은 비현실적
+        if abs(weekly_roi) > 200:
             self.logger.warning(f"⚠️ 7일 수익률이 비현실적: {weekly_roi:.1f}%, 계산 재조정")
-            # 전체 자산 대비로 재계산
             weekly_roi = (weekly_total / total_equity * 100) if total_equity > 0 else 0
-            weekly_roi = min(abs(weekly_roi), 50) * (1 if weekly_roi >= 0 else -1)  # 최대 50%로 제한
+            weekly_roi = min(abs(weekly_roi), 50) * (1 if weekly_roi >= 0 else -1)
         
         # 실제 일수 계산
         bitget_days = bitget_data['weekly_profit'].get('actual_days', 7) if bitget_healthy else 7
@@ -490,7 +532,8 @@ class ProfitReportGenerator(BaseReportGenerator):
         self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
         self.logger.info(f"  - Bitget 비중: {bitget_weight:.1%}, Gate 비중: {gateio_weight:.1%}")
         self.logger.info(f"  - 금일 수익률: {today_roi:.1f}%")
-        self.logger.info(f"  - 7일 수익률: {weekly_roi:.1f}% (조정됨)")
+        self.logger.info(f"  - 7일 수익률: {weekly_roi:.1f}%")
+        self.logger.info(f"  - 7일 총 수익: Bitget ${bitget_weekly:.2f} + Gate ${gateio_weekly:.2f} = ${weekly_total:.2f}")
         
         return {
             'total_equity': total_equity,
@@ -522,7 +565,6 @@ class ProfitReportGenerator(BaseReportGenerator):
         }
     
     def _format_asset_summary_robust(self, combined_data: dict, bitget_healthy: bool, gateio_healthy: bool) -> str:
-        """견고한 자산 요약 포맷"""
         total_equity = combined_data['total_equity']
         bitget_equity = combined_data['bitget_equity']
         gateio_equity = combined_data['gateio_equity']
@@ -560,7 +602,6 @@ class ProfitReportGenerator(BaseReportGenerator):
     
     def _format_profit_detail_robust(self, bitget_data: dict, gateio_data: dict, combined_data: dict, 
                                    bitget_healthy: bool, gateio_healthy: bool) -> str:
-        """견고한 손익 상세 포맷"""
         lines = []
         
         today_total = combined_data['today_total']
@@ -588,7 +629,6 @@ class ProfitReportGenerator(BaseReportGenerator):
     
     def _format_7day_profit_robust(self, combined_data: dict, bitget_data: dict, gateio_data: dict, 
                                  bitget_healthy: bool, gateio_healthy: bool) -> str:
-        """견고한 7일 수익 포맷"""
         lines = []
         
         weekly_total = combined_data['weekly_total']
@@ -607,7 +647,8 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             gate_weekly = gateio_data['weekly_profit']['total_pnl']
             gate_source = gateio_data['weekly_profit'].get('source', 'unknown')
-            confidence_indicator = "📊" if "v4_api" in gate_source else "🔍"
+            gate_trade_count = gateio_data['weekly_profit'].get('trade_count', 0)
+            confidence_indicator = "📊" if "v4_api" in gate_source and gate_trade_count > 0 else "🔍"
             lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)} {confidence_indicator}")
         else:
             if bitget_healthy:
@@ -623,7 +664,6 @@ class ProfitReportGenerator(BaseReportGenerator):
     
     def _format_cumulative_performance_robust(self, combined_data: dict, bitget_data: dict, gateio_data: dict, 
                                             bitget_healthy: bool, gateio_healthy: bool) -> str:
-        """견고한 누적 성과 포맷"""
         lines = []
         
         total_cumulative = combined_data['cumulative_profit']
@@ -650,7 +690,6 @@ class ProfitReportGenerator(BaseReportGenerator):
     
     async def _format_positions_detail_robust(self, bitget_data: dict, gateio_data: dict, 
                                             bitget_healthy: bool, gateio_healthy: bool) -> str:
-        """견고한 포지션 정보 포맷"""
         lines = []
         has_any_position = False
         
@@ -723,7 +762,6 @@ class ProfitReportGenerator(BaseReportGenerator):
     
     def _format_asset_detail_robust(self, combined_data: dict, bitget_data: dict, gateio_data: dict, 
                                   bitget_healthy: bool, gateio_healthy: bool) -> str:
-        """견고한 자산 상세 포맷"""
         lines = []
         
         total_available = combined_data['total_available']
@@ -757,7 +795,6 @@ class ProfitReportGenerator(BaseReportGenerator):
         return '\n'.join(lines)
     
     async def _get_market_data_safe(self) -> dict:
-        """안전한 시장 데이터 조회"""
         try:
             if not self.bitget_client:
                 return {'current_price': 0, 'change_24h': 0, 'funding_rate': 0, 'volume_24h': 0}
@@ -787,7 +824,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             return {'current_price': 0, 'change_24h': 0, 'funding_rate': 0, 'volume_24h': 0}
     
     async def _get_cumulative_profit_since_may(self) -> dict:
-        """2025년 5월부터 누적 손익 조회"""
         try:
             # 현재 잔고에서 초기 자본 차감
             try:
@@ -825,7 +861,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             }
     
     def _get_empty_bitget_data(self) -> dict:
-        """Bitget 빈 데이터"""
         return {
             'exchange': 'Bitget',
             'position_info': {'has_position': False},
@@ -843,7 +878,6 @@ class ProfitReportGenerator(BaseReportGenerator):
         }
     
     def _get_empty_gateio_data(self) -> dict:
-        """Gate.io 빈 데이터"""
         return {
             'exchange': 'Gate',
             'position_info': {'has_position': False},
@@ -861,7 +895,6 @@ class ProfitReportGenerator(BaseReportGenerator):
         }
     
     def _format_currency_html(self, amount: float, include_krw: bool = True) -> str:
-        """통화 포맷 (HTML)"""
         # 비현실적인 값 안전장치
         if abs(amount) > 1000000:
             return "$0.00"
@@ -882,7 +915,6 @@ class ProfitReportGenerator(BaseReportGenerator):
         return usd_text
     
     def _format_currency_compact(self, amount: float, roi: float) -> str:
-        """통화 포맷 (압축형)"""
         # 비현실적인 값 안전장치
         if abs(amount) > 1000000:
             return "+$0.00 (+0만원/+0.0%)"
@@ -897,7 +929,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             return f"{sign}${abs(amount):.2f} ({sign}{krw}만원/{sign}{abs(roi):.1f}%)"
     
     def _format_currency_compact_daily(self, amount: float) -> str:
-        """통화 포맷 (일일 압축형)"""
         # 비현실적인 값 안전장치
         if abs(amount) > 100000:
             return "+$0.00 (+0만원/일)"
@@ -912,17 +943,18 @@ class ProfitReportGenerator(BaseReportGenerator):
             return f"{sign}${abs(amount):.2f} ({sign}{krw}만원/일)"
     
     def _get_current_time_kst(self) -> str:
-        """현재 시간 (KST)"""
         kst = pytz.timezone('Asia/Seoul')
         now = datetime.now(kst)
         return now.strftime('%Y-%m-%d %H:%M')
     
     async def _generate_combined_mental_care(self, combined_data: dict) -> str:
-        """통합 멘탈 케어"""
         try:
+            # 정확한 자산 정보로 멘탈 케어 데이터 구성
             account_info = {
-                'usdtEquity': combined_data['total_equity'],
-                'unrealizedPL': combined_data['today_unrealized']
+                'usdtEquity': combined_data['total_equity'],  # 실제 총 자산
+                'total_equity': combined_data['total_equity'],  # 백업용 필드
+                'unrealizedPL': combined_data['today_unrealized'],
+                'unrealized_pl': combined_data['today_unrealized']  # 백업용 필드
             }
             
             position_info = {
@@ -931,8 +963,17 @@ class ProfitReportGenerator(BaseReportGenerator):
             
             weekly_profit = {
                 'total': combined_data['weekly_total'],
-                'average': combined_data['weekly_avg']
+                'total_pnl': combined_data['weekly_total'],  # 백업용 필드
+                'average': combined_data['weekly_avg'],
+                'average_daily': combined_data['weekly_avg']  # 백업용 필드
             }
+            
+            self.logger.info(f"🧠 멘탈 케어 데이터 전달:")
+            self.logger.info(f"  - 총 자산: ${account_info['usdtEquity']:,.2f}")
+            self.logger.info(f"  - 오늘 실현 PnL: ${combined_data['today_position_pnl']:.2f}")
+            self.logger.info(f"  - 오늘 미실현 PnL: ${combined_data['today_unrealized']:.2f}")
+            self.logger.info(f"  - 7일 총 수익: ${weekly_profit['total']:.2f}")
+            self.logger.info(f"  - 포지션 보유: {position_info['has_position']}")
             
             mental_text = await self.mental_care.generate_profit_mental_care(
                 account_info, position_info, combined_data['today_position_pnl'], weekly_profit
@@ -942,4 +983,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             
         except Exception as e:
             self.logger.error(f"통합 멘탈 케어 생성 실패: {e}")
-            return "시장은 변동성이 클 수 있지만, 꾸준한 전략과 리스크 관리로 좋은 결과를 얻을 수 있습니다. 감정에 휘둘리지 말고 차분하게 대응하세요 💪"
+            # 안전한 폴백 메시지 (하드코딩 방지)
+            total_equity = combined_data.get('total_equity', 12000)
+            krw_amount = int(total_equity * 1350 / 10000)
+            return f"현재 ${total_equity:,.0f} ({krw_amount}만원) 자산을 안정적으로 관리하고 계시네요. 감정적 거래보다는 계획적인 접근이 중요해요. 리스크 관리를 철저히 하면서 꾸준히 나아가세요 💪"
