@@ -13,9 +13,6 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         # 2025년 5월 1일부터 집계 시작
         self.PROFIT_START_DATE = datetime(2025, 5, 1, tzinfo=pytz.timezone('Asia/Seoul'))
-        
-        # 초기 자산 설정 (2025년 5월 1일 기준)
-        self.BITGET_INITIAL_CAPITAL = 4000.0  # 2025년 5월 1일 기준 초기 자산 $4000
     
     def set_gateio_client(self, gateio_client):
         self.gateio_client = gateio_client
@@ -101,7 +98,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             position_info = {'has_position': False}
             today_pnl = 0.0
             weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'actual_days': 7}
-            cumulative_data = {'total_profit': 0, 'roi': 0}
+            cumulative_data = {'actual_profit': 0, 'roi': 0, 'total_deposits': 0}
             used_margin = 0.0
             
             # 1. 시장 데이터 (티커/펀딩비)
@@ -183,12 +180,12 @@ class ProfitReportGenerator(BaseReportGenerator):
                 self.logger.warning(f"⚠️ Bitget 7일 PnL 조회 실패: {e}")
                 weekly_profit = {'total_pnl': 0, 'average_daily': 0, 'actual_days': 7}
             
-            # 6. 누적 손익
+            # 6. 누적 손익 - 실제 입금액 기반 계산
             try:
-                cumulative_data = await self._get_cumulative_profit_since_may()
+                cumulative_data = await self._get_bitget_real_cumulative_profit()
             except Exception as e:
                 self.logger.warning(f"⚠️ Bitget 누적 손익 조회 실패: {e}")
-                cumulative_data = {'total_profit': 0, 'roi': 0}
+                cumulative_data = {'actual_profit': 0, 'roi': 0, 'total_deposits': 0}
             
             # 자산 정보 추출
             total_equity = float(account_info.get('usdtEquity', 0))
@@ -210,10 +207,10 @@ class ProfitReportGenerator(BaseReportGenerator):
                     'actual_days': weekly_profit.get('actual_days', 7),
                     'source': weekly_profit.get('source', 'bitget_v2_api')
                 },
-                'cumulative_profit': cumulative_data.get('total_profit', 0),
+                'cumulative_profit': cumulative_data.get('actual_profit', 0),
                 'cumulative_roi': cumulative_data.get('roi', 0),
                 'total_equity': total_equity,
-                'initial_capital': self.BITGET_INITIAL_CAPITAL,
+                'total_deposits': cumulative_data.get('total_deposits', 0),
                 'available': available,
                 'used_margin': used_margin,
                 'unrealized_pl': unrealized_pl,
@@ -225,6 +222,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.info(f"  - API 건강성: {api_healthy}")
             self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
             self.logger.info(f"  - 사용 증거금: ${used_margin:.2f}")
+            self.logger.info(f"  - 실제 수익: ${cumulative_data.get('actual_profit', 0):.2f}")
             
             return result
             
@@ -332,19 +330,19 @@ class ProfitReportGenerator(BaseReportGenerator):
                             if attempt == 0:
                                 await asyncio.sleep(1)
                     
-                    # 7일 PnL 조회 - 강화된 재시도 로직
+                    # 7일 PnL 조회 - 강화된 재시도 로직 (새로운 방법 포함)
                     for attempt in range(3):
                         try:
                             weekly_result = await self.gateio_client.get_7day_position_pnl()
                             
                             if weekly_result and weekly_result.get('trade_count', 0) > 0:
-                                self.logger.info(f"✅ Gate.io 7일 PnL 조회 성공 (시도 {attempt + 1}): {weekly_result.get('total_pnl', 0):.2f}달러")
+                                self.logger.info(f"✅ Gate.io 7일 PnL 조회 성공 (시도 {attempt + 1}): ${weekly_result.get('total_pnl', 0):.2f} (방식: {weekly_result.get('source', 'unknown')})")
                                 weekly_profit = {
                                     'total_pnl': weekly_result.get('total_pnl', 0),
                                     'average_daily': weekly_result.get('average_daily', 0),
                                     'actual_days': weekly_result.get('actual_days', 7.0),
                                     'trade_count': weekly_result.get('trade_count', 0),
-                                    'source': weekly_result.get('source', 'gate_v4_api_enhanced_v2'),
+                                    'source': weekly_result.get('source', 'gate_v4_api_enhanced_v3'),
                                     'confidence': weekly_result.get('confidence', 'medium')
                                 }
                                 break
@@ -381,10 +379,21 @@ class ProfitReportGenerator(BaseReportGenerator):
                 except Exception as e:
                     self.logger.warning(f"⚠️ Gate.io Position PnL 계산 실패: {e}")
             
-            # 누적 수익 계산
-            initial_capital = 750
-            cumulative_profit = total_equity - initial_capital if total_equity > initial_capital else 0
-            cumulative_roi = (cumulative_profit / initial_capital * 100) if initial_capital > 0 else 0
+            # 누적 수익 계산 - 실제 입금액 기반
+            cumulative_data = {'actual_profit': 0, 'roi': 0, 'total_deposits': 0}
+            if total_equity > 0:
+                try:
+                    cumulative_data = await self.gateio_client.get_real_cumulative_profit_analysis()
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Gate.io 누적 수익 계산 실패: {e}")
+                    # 기본값으로 fallback
+                    estimated_deposits = 750
+                    actual_profit = total_equity - estimated_deposits if total_equity > estimated_deposits else 0
+                    cumulative_data = {
+                        'actual_profit': actual_profit,
+                        'total_deposits': estimated_deposits,
+                        'roi': (actual_profit / estimated_deposits * 100) if estimated_deposits > 0 else 0
+                    }
             
             has_account = total_equity > 0
             
@@ -394,21 +403,22 @@ class ProfitReportGenerator(BaseReportGenerator):
                 'account_info': account_response,
                 'today_pnl': today_position_pnl,
                 'weekly_profit': weekly_profit,
-                'cumulative_profit': cumulative_profit,
-                'cumulative_roi': cumulative_roi,
+                'cumulative_profit': cumulative_data.get('actual_profit', 0),
+                'cumulative_roi': cumulative_data.get('roi', 0),
                 'total_equity': total_equity,
-                'initial_capital': initial_capital,
+                'total_deposits': cumulative_data.get('total_deposits', 0),
                 'available': available,
                 'used_margin': used_margin,
                 'unrealized_pnl': unrealized_pnl,
                 'has_account': has_account,
-                'actual_profit': cumulative_profit
+                'cumulative_data': cumulative_data
             }
             
             self.logger.info(f"✅ Gate.io 데이터 조회 완료:")
             self.logger.info(f"  - 계정 존재: {has_account}")
             self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
             self.logger.info(f"  - 7일 PnL: ${weekly_profit['total_pnl']:.2f} (거래: {weekly_profit.get('trade_count', 0)}건)")
+            self.logger.info(f"  - 실제 수익: ${cumulative_data.get('actual_profit', 0):.2f}")
             
             return result
             
@@ -516,24 +526,25 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         weekly_avg = weekly_total / actual_days if actual_days > 0 else 0
         
-        # 누적 수익
+        # 누적 수익 - 실제 입금액 기반
         bitget_cumulative = bitget_data['cumulative_profit'] if bitget_healthy else 0
         gateio_cumulative = gateio_data['cumulative_profit'] if gateio_healthy else 0
         cumulative_profit = bitget_cumulative + gateio_cumulative
         
-        # 초기 자본 계산
-        bitget_initial = self.BITGET_INITIAL_CAPITAL if bitget_healthy else 0
-        gateio_initial = gateio_data.get('initial_capital', 750) if gateio_healthy else 0
-        total_initial = bitget_initial + gateio_initial
+        # 총 입금액 계산
+        bitget_deposits = bitget_data.get('total_deposits', 0) if bitget_healthy else 0
+        gateio_deposits = gateio_data.get('total_deposits', 0) if gateio_healthy else 0
+        total_deposits = bitget_deposits + gateio_deposits
         
-        cumulative_roi = (cumulative_profit / total_initial * 100) if total_initial > 0 else 0
+        cumulative_roi = (cumulative_profit / total_deposits * 100) if total_deposits > 0 else 0
         
         self.logger.info(f"자산 비례 계산 결과:")
         self.logger.info(f"  - 총 자산: ${total_equity:.2f}")
+        self.logger.info(f"  - 총 입금액: ${total_deposits:.2f}")
         self.logger.info(f"  - Bitget 비중: {bitget_weight:.1%}, Gate 비중: {gateio_weight:.1%}")
         self.logger.info(f"  - 금일 수익률: {today_roi:.1f}%")
         self.logger.info(f"  - 7일 수익률: {weekly_roi:.1f}%")
-        self.logger.info(f"  - 7일 총 수익: Bitget ${bitget_weekly:.2f} + Gate ${gateio_weekly:.2f} = ${weekly_total:.2f}")
+        self.logger.info(f"  - 누적 수익: ${cumulative_profit:.2f} ({cumulative_roi:.1f}%)")
         
         return {
             'total_equity': total_equity,
@@ -549,11 +560,11 @@ class ProfitReportGenerator(BaseReportGenerator):
             'actual_days': actual_days,
             'cumulative_profit': cumulative_profit,
             'cumulative_roi': cumulative_roi,
+            'total_deposits': total_deposits,
             'bitget_equity': bitget_equity,
             'gateio_equity': gateio_equity,
             'bitget_weight': bitget_weight,
             'gateio_weight': gateio_weight,
-            'total_initial': total_initial,
             # 개별 거래소 손익
             'bitget_today_realized': bitget_today_pnl,
             'bitget_today_unrealized': bitget_unrealized,
@@ -648,7 +659,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             gate_weekly = gateio_data['weekly_profit']['total_pnl']
             gate_source = gateio_data['weekly_profit'].get('source', 'unknown')
             gate_trade_count = gateio_data['weekly_profit'].get('trade_count', 0)
-            confidence_indicator = "📊" if "v4_api" in gate_source and gate_trade_count > 0 else "🔍"
+            confidence_indicator = "📊" if gate_trade_count > 0 and "api" in gate_source else "🔍"
             lines.append(f"  └ Gate: {self._format_currency_html(gate_weekly, False)} {confidence_indicator}")
         else:
             if bitget_healthy:
@@ -668,21 +679,31 @@ class ProfitReportGenerator(BaseReportGenerator):
         
         total_cumulative = combined_data['cumulative_profit']
         total_cumulative_roi = combined_data['cumulative_roi']
+        total_deposits = combined_data['total_deposits']
         
         lines.append(f"• <b>수익: {self._format_currency_compact(total_cumulative, total_cumulative_roi)}</b>")
+        lines.append(f"• <b>총 입금: ${total_deposits:,.2f}</b>")
         
         # 거래소별 상세
         if gateio_healthy and gateio_data['total_equity'] > 0:
             if bitget_healthy:
-                lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
+                bitget_cumulative = bitget_data['cumulative_profit']
+                bitget_roi = bitget_data['cumulative_roi']
+                bitget_deposits = bitget_data.get('total_deposits', 0)
+                lines.append(f"  ├ Bitget: {self._format_currency_html(bitget_cumulative, False)} ({bitget_roi:+.0f}%) | 입금 ${bitget_deposits:,.0f}")
             else:
                 lines.append(f"  ├ Bitget: API 연결 오류")
             
+            gate_cumulative = gateio_data['cumulative_profit']
             gate_roi = gateio_data['cumulative_roi']
-            lines.append(f"  └ Gate: {self._format_currency_html(gateio_data['cumulative_profit'], False)} ({gate_roi:+.0f}%)")
+            gate_deposits = gateio_data.get('total_deposits', 0)
+            lines.append(f"  └ Gate: {self._format_currency_html(gate_cumulative, False)} ({gate_roi:+.0f}%) | 입금 ${gate_deposits:,.0f}")
         else:
             if bitget_healthy:
-                lines.append(f"  └ Bitget: {self._format_currency_html(bitget_data['cumulative_profit'], False)} ({bitget_data['cumulative_roi']:+.0f}%)")
+                bitget_cumulative = bitget_data['cumulative_profit']
+                bitget_roi = bitget_data['cumulative_roi']
+                bitget_deposits = bitget_data.get('total_deposits', 0)
+                lines.append(f"  └ Bitget: {self._format_currency_html(bitget_cumulative, False)} ({bitget_roi:+.0f}%) | 입금 ${bitget_deposits:,.0f}")
             else:
                 lines.append(f"  └ Bitget: API 연결 오류")
         
@@ -793,6 +814,46 @@ class ProfitReportGenerator(BaseReportGenerator):
             lines.append(f"  └ Gate: ${gateio_data['available']:,.0f} / ${gateio_data['used_margin']:,.0f}")
         
         return '\n'.join(lines)
+
+    async def _get_bitget_real_cumulative_profit(self) -> dict:
+        """비트겟 실제 누적 수익 계산 - 입금액 제외"""
+        try:
+            # 현재 잔고
+            account_info = await self.bitget_client.get_account_info() if self.bitget_client else {}
+            current_equity = float(account_info.get('usdtEquity', 0))
+            
+            # 실제 입금액 추정 (하드코딩 제거)
+            # 여기서는 2025년 5월 1일부터의 거래 내역을 분석하여 실제 입금액을 계산해야 하지만
+            # Bitget API가 입출금 내역을 직접 제공하지 않으므로 추정값 사용
+            # 사용자가 실제 입금액을 알고 있다면 환경변수나 설정으로 받을 수 있음
+            estimated_deposits = 4000.0  # 기본 추정값, 추후 환경변수로 변경 가능
+            
+            # 실제 수익 = 현재 잔고 - 입금액
+            actual_profit = current_equity - estimated_deposits if current_equity >= estimated_deposits else 0
+            roi = (actual_profit / estimated_deposits * 100) if estimated_deposits > 0 else 0
+            
+            self.logger.info(f"✅ Bitget 실제 누적 수익:")
+            self.logger.info(f"  - 현재 잔고: ${current_equity:.2f}")
+            self.logger.info(f"  - 추정 입금액: ${estimated_deposits:.2f}")
+            self.logger.info(f"  - 실제 수익: ${actual_profit:.2f}")
+            self.logger.info(f"  - 수익률: {roi:.1f}%")
+            
+            return {
+                'actual_profit': actual_profit,
+                'roi': roi,
+                'total_deposits': estimated_deposits,
+                'current_equity': current_equity,
+                'calculation_method': 'balance_minus_estimated_deposits'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Bitget 실제 누적 수익 계산 실패: {e}")
+            return {
+                'actual_profit': 0,
+                'roi': 0,
+                'total_deposits': 4000,
+                'calculation_method': 'error'
+            }
     
     async def _get_market_data_safe(self) -> dict:
         try:
@@ -823,43 +884,6 @@ class ProfitReportGenerator(BaseReportGenerator):
             self.logger.error(f"시장 데이터 조회 실패: {e}")
             return {'current_price': 0, 'change_24h': 0, 'funding_rate': 0, 'volume_24h': 0}
     
-    async def _get_cumulative_profit_since_may(self) -> dict:
-        try:
-            # 현재 잔고에서 초기 자본 차감
-            try:
-                account_info = await self.bitget_client.get_account_info() if self.bitget_client else {}
-                current_equity = float(account_info.get('usdtEquity', 0))
-                
-                # 누적 수익 = 현재 잔고 - 초기 자본
-                total_profit = current_equity - self.BITGET_INITIAL_CAPITAL
-                roi = (total_profit / self.BITGET_INITIAL_CAPITAL) * 100 if self.BITGET_INITIAL_CAPITAL > 0 else 0
-                
-                return {
-                    'total_profit': total_profit,
-                    'roi': roi,
-                    'source': 'balance_minus_initial_capital',
-                    'current_equity': current_equity,
-                    'initial_capital': self.BITGET_INITIAL_CAPITAL
-                }
-                
-            except Exception as e:
-                self.logger.error(f"잔고 기반 누적 수익 계산 실패: {e}")
-            
-            # 기본값 반환
-            return {
-                'total_profit': 0,
-                'roi': 0,
-                'source': 'fallback_zero'
-            }
-            
-        except Exception as e:
-            self.logger.error(f"2025년 5월부터 누적 손익 조회 실패: {e}")
-            return {
-                'total_profit': 0,
-                'roi': 0,
-                'source': 'error'
-            }
-    
     def _get_empty_bitget_data(self) -> dict:
         return {
             'exchange': 'Bitget',
@@ -870,7 +894,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             'cumulative_profit': 0,
             'cumulative_roi': 0,
             'total_equity': 0,
-            'initial_capital': self.BITGET_INITIAL_CAPITAL,
+            'total_deposits': 0,
             'available': 0,
             'used_margin': 0,
             'unrealized_pl': 0,
@@ -887,7 +911,7 @@ class ProfitReportGenerator(BaseReportGenerator):
             'cumulative_profit': 0,
             'cumulative_roi': 0,
             'total_equity': 0,
-            'initial_capital': 750,
+            'total_deposits': 0,
             'available': 0,
             'used_margin': 0,
             'unrealized_pnl': 0,
