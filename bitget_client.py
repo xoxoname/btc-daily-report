@@ -462,6 +462,243 @@ class BitgetClient:
         except Exception as e:
             logger.error(f"계정 정보 조회 실패: {e}")
             return {}
+
+    async def get_account_bills(self, coin: str = "USDT", start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
+        """계정 변동 내역 조회 - 입출금 및 거래 내역"""
+        try:
+            endpoint = "/api/v2/spot/account/bills"
+            params = {
+                'coin': coin,
+                'limit': str(min(limit, 500))
+            }
+            
+            if start_time:
+                params['startTime'] = str(start_time)
+            if end_time:
+                params['endTime'] = str(end_time)
+            
+            logger.info(f"🔍 Bitget 계정 변동 내역 조회:")
+            logger.info(f"  - 코인: {coin}")
+            logger.info(f"  - 시작시간: {start_time}")
+            logger.info(f"  - 종료시간: {end_time}")
+            
+            response = await self._request('GET', endpoint, params=params)
+            
+            if isinstance(response, list):
+                logger.info(f"✅ Bitget 계정 변동 내역: {len(response)}건")
+                return response
+            elif isinstance(response, dict) and 'list' in response:
+                bills = response['list']
+                logger.info(f"✅ Bitget 계정 변동 내역: {len(bills)}건")
+                return bills
+            else:
+                logger.warning(f"Bitget 계정 변동 내역 응답 형식 예상치 못함: {type(response)}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Bitget 계정 변동 내역 조회 실패: {e}")
+            return []
+
+    async def get_deposit_withdraw_history(self, coin: str = "USDT", start_time: int = None, end_time: int = None) -> Dict:
+        """입출금 내역 조회"""
+        try:
+            # 입금 내역 조회
+            deposit_endpoint = "/api/v2/spot/wallet/deposit-records"
+            deposit_params = {
+                'coin': coin,
+                'limit': '100'
+            }
+            if start_time:
+                deposit_params['startTime'] = str(start_time)
+            if end_time:
+                deposit_params['endTime'] = str(end_time)
+            
+            # 출금 내역 조회
+            withdraw_endpoint = "/api/v2/spot/wallet/withdrawal-records"
+            withdraw_params = {
+                'coin': coin,
+                'limit': '100'
+            }
+            if start_time:
+                withdraw_params['startTime'] = str(start_time)
+            if end_time:
+                withdraw_params['endTime'] = str(end_time)
+            
+            logger.info(f"🔍 Bitget 입출금 내역 조회: {coin}")
+            
+            # 병렬 조회
+            deposit_task = self._request('GET', deposit_endpoint, params=deposit_params)
+            withdraw_task = self._request('GET', withdraw_endpoint, params=withdraw_params)
+            
+            try:
+                deposit_response, withdraw_response = await asyncio.gather(
+                    deposit_task, withdraw_task, return_exceptions=True
+                )
+                
+                deposits = []
+                withdrawals = []
+                
+                # 입금 내역 처리
+                if not isinstance(deposit_response, Exception):
+                    if isinstance(deposit_response, list):
+                        deposits = deposit_response
+                    elif isinstance(deposit_response, dict) and 'list' in deposit_response:
+                        deposits = deposit_response['list']
+                
+                # 출금 내역 처리
+                if not isinstance(withdraw_response, Exception):
+                    if isinstance(withdraw_response, list):
+                        withdrawals = withdraw_response
+                    elif isinstance(withdraw_response, dict) and 'list' in withdraw_response:
+                        withdrawals = withdraw_response['list']
+                
+                logger.info(f"✅ Bitget 입출금 내역: 입금 {len(deposits)}건, 출금 {len(withdrawals)}건")
+                
+                return {
+                    'deposits': deposits,
+                    'withdrawals': withdrawals
+                }
+                
+            except Exception as e:
+                logger.error(f"Bitget 입출금 내역 병렬 조회 실패: {e}")
+                return {'deposits': [], 'withdrawals': []}
+                
+        except Exception as e:
+            logger.error(f"Bitget 입출금 내역 조회 실패: {e}")
+            return {'deposits': [], 'withdrawals': []}
+
+    async def get_real_cumulative_profit_analysis(self) -> Dict:
+        """실제 누적 수익 분석 - 입금액 제외"""
+        try:
+            logger.info(f"🔍 Bitget 누적 수익 분석 (실 입금액 제외):")
+            
+            # 현재 계정 정보
+            account_info = await self.get_account_info()
+            if not account_info:
+                logger.error("Bitget 계정 정보 조회 실패")
+                return {
+                    'actual_profit': 0,
+                    'total_deposits': 0,
+                    'current_balance': 0,
+                    'roi': 0,
+                    'calculation_method': 'account_error',
+                    'confidence': 'low'
+                }
+            
+            current_balance = float(account_info.get('usdtEquity', 0))
+            
+            # 실제 입금액 계산을 위한 입출금 내역 조회
+            try:
+                # 2025년 1월부터 현재까지 전체 기간
+                now = datetime.now()
+                start_of_year = datetime(2025, 1, 1)
+                
+                start_timestamp = int(start_of_year.timestamp() * 1000)
+                end_timestamp = int(now.timestamp() * 1000)
+                
+                logger.info(f"입출금 내역 조회: {start_of_year.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}")
+                
+                # 입출금 내역 조회
+                deposit_withdraw_data = await self.get_deposit_withdraw_history(
+                    'USDT', 
+                    start_timestamp, 
+                    end_timestamp
+                )
+                
+                deposits = deposit_withdraw_data.get('deposits', [])
+                withdrawals = deposit_withdraw_data.get('withdrawals', [])
+                
+                total_deposits = 0.0
+                total_withdrawals = 0.0
+                
+                # 입금 내역 처리
+                for deposit in deposits:
+                    try:
+                        status = deposit.get('status', '').lower()
+                        if status in ['success', 'successful', 'completed']:
+                            amount = float(deposit.get('amount', 0))
+                            if amount > 0:
+                                total_deposits += amount
+                                logger.debug(f"입금 발견: +${amount:.2f}")
+                    except Exception as deposit_error:
+                        logger.debug(f"입금 항목 처리 오류: {deposit_error}")
+                        continue
+                
+                # 출금 내역 처리
+                for withdrawal in withdrawals:
+                    try:
+                        status = withdrawal.get('status', '').lower()
+                        if status in ['success', 'successful', 'completed']:
+                            amount = float(withdrawal.get('amount', 0))
+                            if amount > 0:
+                                total_withdrawals += amount
+                                logger.debug(f"출금 발견: -${amount:.2f}")
+                    except Exception as withdrawal_error:
+                        logger.debug(f"출금 항목 처리 오류: {withdrawal_error}")
+                        continue
+                
+                net_deposits = total_deposits - total_withdrawals
+                actual_profit = current_balance - net_deposits if net_deposits > 0 else current_balance
+                
+                # ROI 계산
+                roi = (actual_profit / net_deposits * 100) if net_deposits > 0 else 0
+                
+                logger.info(f"✅ Bitget 누적 수익 분석 완료 (실제 입출금 기반):")
+                logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
+                logger.info(f"  - 총 입금: ${total_deposits:.2f}")
+                logger.info(f"  - 총 출금: ${total_withdrawals:.2f}")
+                logger.info(f"  - 순 입금: ${net_deposits:.2f}")
+                logger.info(f"  - 실제 수익: ${actual_profit:.2f}")
+                logger.info(f"  - 수익률: {roi:+.1f}%")
+                
+                return {
+                    'actual_profit': actual_profit,
+                    'total_deposits': net_deposits,
+                    'current_balance': current_balance,
+                    'roi': roi,
+                    'calculation_method': 'deposit_withdraw_records',
+                    'raw_deposits': total_deposits,
+                    'raw_withdrawals': total_withdrawals,
+                    'net_investment': net_deposits,
+                    'confidence': 'high' if total_deposits > 0 else 'medium'
+                }
+                
+            except Exception as deposit_error:
+                logger.warning(f"입출금 내역 기반 계산 실패: {deposit_error}")
+                
+                # 폴백: 추정값 사용 (환경변수에서 가져올 수 있도록 개선)
+                estimated_deposits = 4000.0  # 기본 추정값
+                actual_profit = current_balance - estimated_deposits if current_balance >= estimated_deposits else 0
+                roi = (actual_profit / estimated_deposits * 100) if estimated_deposits > 0 else 0
+                
+                logger.info(f"✅ Bitget 누적 수익 분석 (추정값 기반):")
+                logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
+                logger.info(f"  - 추정 입금: ${estimated_deposits:.2f}")
+                logger.info(f"  - 추정 수익: ${actual_profit:.2f}")
+                logger.info(f"  - 추정 수익률: {roi:+.1f}%")
+                
+                return {
+                    'actual_profit': actual_profit,
+                    'total_deposits': estimated_deposits,
+                    'current_balance': current_balance,
+                    'roi': roi,
+                    'calculation_method': 'estimated_deposits_fallback',
+                    'raw_deposits': estimated_deposits,
+                    'raw_withdrawals': 0,
+                    'net_investment': estimated_deposits,
+                    'confidence': 'medium'
+                }
+            
+        except Exception as e:
+            logger.error(f"Bitget 누적 수익 분석 실패: {e}")
+            return {
+                'actual_profit': 0,
+                'total_deposits': 4000,
+                'current_balance': 0,
+                'roi': 0,
+                'calculation_method': 'error',
+                'confidence': 'low'
+            }
     
     async def get_accurate_used_margin(self) -> float:
         try:
