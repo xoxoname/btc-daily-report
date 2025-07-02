@@ -35,6 +35,11 @@ class BitgetMirrorClient:
         
         self.api_keys_validated = False
         
+        # 체결된 주문 추적 강화
+        self.recently_filled_orders = set()  # 최근 체결된 주문 ID 추적
+        self.filled_orders_cache_time = 300  # 5분간 캐시
+        self.last_filled_check = datetime.min
+        
     def _initialize_session(self):
         if not self.session:
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
@@ -120,7 +125,6 @@ class BitgetMirrorClient:
         body = json.dumps(data) if data else ''
         headers = self._get_headers(method, request_path, body)
         
-        # 재시도 로직
         for attempt in range(max_retries):
             try:
                 logger.debug(f"비트겟 미러링 API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
@@ -131,7 +135,6 @@ class BitgetMirrorClient:
                     logger.debug(f"비트겟 미러링 API 응답 상태: {response.status}")
                     logger.debug(f"비트겟 미러링 API 응답 내용: {response_text[:500]}...")
                     
-                    # 빈 응답 체크
                     if not response_text.strip():
                         error_msg = f"빈 응답 받음 (상태: {response.status})"
                         logger.warning(error_msg)
@@ -142,7 +145,6 @@ class BitgetMirrorClient:
                             self._record_failure(error_msg)
                             raise Exception(error_msg)
                     
-                    # HTTP 상태 코드 체크
                     if response.status != 200:
                         error_msg = f"HTTP {response.status}: {response_text}"
                         logger.error(f"비트겟 미러링 API HTTP 오류: {error_msg}")
@@ -153,7 +155,6 @@ class BitgetMirrorClient:
                             self._record_failure(error_msg)
                             raise Exception(error_msg)
                     
-                    # JSON 파싱
                     try:
                         response_data = json.loads(response_text)
                     except json.JSONDecodeError as json_error:
@@ -166,7 +167,6 @@ class BitgetMirrorClient:
                             self._record_failure(error_msg)
                             raise Exception(error_msg)
                     
-                    # API 응답 코드 체크
                     if response_data.get('code') != '00000':
                         error_msg = f"API 응답 오류: {response_data}"
                         logger.error(error_msg)
@@ -177,7 +177,6 @@ class BitgetMirrorClient:
                             self._record_failure(error_msg)
                             raise Exception(error_msg)
                     
-                    # 성공 기록
                     self._record_success()
                     return response_data.get('data', {})
                     
@@ -211,7 +210,6 @@ class BitgetMirrorClient:
                     self._record_failure(error_msg)
                     raise
         
-        # 모든 재시도 실패
         final_error = f"모든 재시도 실패: {max_retries}회 시도"
         self._record_failure(final_error)
         raise Exception(final_error)
@@ -233,7 +231,6 @@ class BitgetMirrorClient:
     async def get_ticker(self, symbol: str = None) -> Dict:
         symbol = symbol or self.config.symbol
         
-        # 여러 엔드포인트 순차 시도
         for i, endpoint in enumerate(self.ticker_endpoints):
             try:
                 logger.debug(f"미러링 티커 조회 시도 {i + 1}/{len(self.ticker_endpoints)}: {endpoint}")
@@ -281,7 +278,6 @@ class BitgetMirrorClient:
                         logger.warning(f"미러링 V2 스팟: 예상치 못한 응답 형식: {type(response)}")
                         continue
                 
-                # 응답 데이터 검증 및 정규화
                 if ticker_data and self._validate_ticker_data(ticker_data):
                     normalized_ticker = self._normalize_ticker_data(ticker_data, endpoint)
                     logger.info(f"✅ 미러링 티커 조회 성공 ({endpoint}): ${normalized_ticker.get('last', 'N/A')}")
@@ -294,7 +290,6 @@ class BitgetMirrorClient:
                 logger.warning(f"미러링 티커 엔드포인트 {endpoint} 실패: {e}")
                 continue
         
-        # 모든 엔드포인트 실패
         error_msg = f"미러링 모든 티커 엔드포인트 실패: {', '.join(self.ticker_endpoints)}"
         logger.error(error_msg)
         self._record_failure("모든 티커 엔드포인트 실패")
@@ -305,7 +300,6 @@ class BitgetMirrorClient:
             if not isinstance(ticker_data, dict):
                 return False
             
-            # 필수 가격 필드 중 하나라도 있어야 함
             price_fields = ['last', 'lastPr', 'close', 'price', 'mark_price', 'markPrice']
             
             for field in price_fields:
@@ -329,7 +323,6 @@ class BitgetMirrorClient:
         try:
             normalized = {}
             
-            # 가격 필드 정규화
             price_mappings = [
                 ('last', ['last', 'lastPr', 'close', 'price']),
                 ('high', ['high', 'high24h', 'highPrice']),
@@ -344,9 +337,8 @@ class BitgetMirrorClient:
                     if value is not None:
                         try:
                             if target_field == 'changeUtc':
-                                # 변화율을 소수로 변환 (예: 2.5% -> 0.025)
                                 change_val = float(value)
-                                if abs(change_val) > 1:  # 백분율 형태인 경우
+                                if abs(change_val) > 1:
                                     change_val = change_val / 100
                                 normalized[target_field] = change_val
                             else:
@@ -355,7 +347,6 @@ class BitgetMirrorClient:
                         except:
                             continue
             
-            # 기본값 설정
             if 'last' not in normalized:
                 normalized['last'] = 0
             if 'changeUtc' not in normalized:
@@ -363,7 +354,6 @@ class BitgetMirrorClient:
             if 'volume' not in normalized:
                 normalized['volume'] = 0
             
-            # 원본 데이터도 포함
             normalized['_original'] = ticker_data
             normalized['_endpoint'] = endpoint
             
@@ -394,7 +384,6 @@ class BitgetMirrorClient:
                 total_size = float(pos.get('total', 0))
                 if total_size > 0:
                     active_positions.append(pos)
-                    # 청산가 필드 로깅
                     logger.info(f"미러링 포지션 청산가 필드 확인:")
                     logger.info(f"  - liquidationPrice: {pos.get('liquidationPrice')}")
                     logger.info(f"  - markPrice: {pos.get('markPrice')}")
@@ -425,24 +414,21 @@ class BitgetMirrorClient:
         try:
             symbol = symbol or self.config.symbol
             
-            # 현재 시간에서 N분 전까지
             now = datetime.now()
             start_time = now - timedelta(minutes=minutes)
             start_timestamp = int(start_time.timestamp() * 1000)
             end_timestamp = int(now.timestamp() * 1000)
             
-            # 최근 체결된 주문 조회 - 더 정확한 방식 사용
             filled_orders = await self.get_order_history(
                 symbol=symbol,
                 status='filled',
                 start_time=start_timestamp,
                 end_time=end_timestamp,
-                limit=100  # 더 많이 조회하여 정확도 향상
+                limit=100
             )
             
             logger.info(f"미러링 최근 {minutes}분간 체결된 주문: {len(filled_orders)}건")
             
-            # 신규 진입 주문만 필터링 (reduce_only가 아닌 것)
             new_position_orders = []
             for order in filled_orders:
                 reduce_only = order.get('reduceOnly', 'false')
@@ -476,10 +462,8 @@ class BitgetMirrorClient:
         try:
             response = await self._request('GET', endpoint, params=params)
             
-            # 응답이 dict이고 orderList가 있는 경우
             if isinstance(response, dict) and 'orderList' in response:
                 return response['orderList']
-            # 응답이 리스트인 경우
             elif isinstance(response, list):
                 return response
             
@@ -490,17 +474,14 @@ class BitgetMirrorClient:
             return []
     
     async def get_filled_orders_by_ids(self, order_ids: List[str], symbol: str = None) -> List[Dict]:
-        """특정 주문 ID들이 체결되었는지 확인"""
         try:
             if not order_ids:
                 return []
             
             symbol = symbol or self.config.symbol
             
-            # 최근 30분간 체결된 주문들 조회
             filled_orders = await self.get_recent_filled_orders(symbol=symbol, minutes=30)
             
-            # 요청된 ID들 중 체결된 것들만 필터링
             matched_orders = []
             for order in filled_orders:
                 order_id = order.get('orderId', order.get('id', ''))
@@ -515,6 +496,45 @@ class BitgetMirrorClient:
             logger.error(f"특정 주문 ID 체결 확인 실패: {e}")
             return []
     
+    async def update_recently_filled_orders(self, symbol: str = None) -> Set[str]:
+        try:
+            now = datetime.now()
+            
+            # 5분마다 체결된 주문 업데이트
+            if (now - self.last_filled_check).total_seconds() < 60:
+                return self.recently_filled_orders
+            
+            recent_filled = await self.get_recent_filled_orders(symbol, minutes=10)
+            
+            # 캐시 업데이트
+            new_filled_ids = set()
+            for order in recent_filled:
+                order_id = order.get('orderId', order.get('id', ''))
+                if order_id:
+                    new_filled_ids.add(order_id)
+            
+            # 이전 캐시와 병합 (최대 300초간 유지)
+            cache_cutoff = now - timedelta(seconds=self.filled_orders_cache_time)
+            
+            # 최근 체결된 주문 ID 업데이트
+            self.recently_filled_orders = new_filled_ids
+            self.last_filled_check = now
+            
+            logger.debug(f"체결된 주문 캐시 업데이트: {len(self.recently_filled_orders)}개")
+            return self.recently_filled_orders
+            
+        except Exception as e:
+            logger.error(f"체결된 주문 업데이트 실패: {e}")
+            return self.recently_filled_orders
+    
+    async def is_order_recently_filled(self, order_id: str, symbol: str = None) -> bool:
+        try:
+            await self.update_recently_filled_orders(symbol)
+            return order_id in self.recently_filled_orders
+        except Exception as e:
+            logger.error(f"주문 체결 상태 확인 실패: {e}")
+            return False
+    
     async def get_plan_orders_v2_working(self, symbol: str = None) -> List[Dict]:
         try:
             symbol = symbol or self.config.symbol
@@ -523,7 +543,6 @@ class BitgetMirrorClient:
             
             all_found_orders = []
             
-            # 실제 작동하는 V2 엔드포인트만 사용
             working_endpoints = [
                 "/api/v2/mix/order/orders-pending",
             ]
@@ -542,10 +561,8 @@ class BitgetMirrorClient:
                         logger.debug(f"미러링 {endpoint}: 응답이 None")
                         continue
                     
-                    # 응답에서 주문 목록 추출
                     orders = []
                     if isinstance(response, dict):
-                        # entrustedList가 작동하는 필드명
                         if 'entrustedList' in response:
                             orders_raw = response['entrustedList']
                             if isinstance(orders_raw, list):
@@ -559,7 +576,6 @@ class BitgetMirrorClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅 - TP/SL 정보 특별 체크
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -570,7 +586,6 @@ class BitgetMirrorClient:
                             trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
                             size = order.get('size', order.get('volume', 'unknown'))
                             
-                            # TP/SL 정보 상세 로깅
                             tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
                             sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
                             
@@ -581,7 +596,6 @@ class BitgetMirrorClient:
                             if sl_price:
                                 logger.info(f"      🛡️ SL 설정 발견: {sl_price}")
                             
-                            # 모든 필드 확인하여 TP/SL 관련 필드 찾기
                             tp_sl_fields = {}
                             for field_name, field_value in order.items():
                                 if any(keyword in field_name.lower() for keyword in ['stop', 'profit', 'loss', 'tp', 'sl']):
@@ -591,7 +605,6 @@ class BitgetMirrorClient:
                             if tp_sl_fields:
                                 logger.info(f"      🔍 TP/SL 관련 필드들: {tp_sl_fields}")
                         
-                        # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
                         break
                     else:
                         logger.debug(f"미러링 {endpoint}: 주문이 없음")
@@ -600,7 +613,6 @@ class BitgetMirrorClient:
                     logger.debug(f"미러링 {endpoint} 조회 실패: {e}")
                     continue
             
-            # 중복 제거
             seen = set()
             unique_orders = []
             for order in all_found_orders:
@@ -626,7 +638,6 @@ class BitgetMirrorClient:
     
     async def get_plan_orders_v1_working(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
         try:
-            # V1 API는 다른 심볼 형식을 사용
             symbol = symbol or self.config.symbol
             v1_symbol = f"{symbol}_UMCBL"
             
@@ -634,7 +645,6 @@ class BitgetMirrorClient:
             
             all_found_orders = []
             
-            # 실제 작동하는 V1 엔드포인트만 사용
             working_endpoints = [
                 "/api/mix/v1/plan/currentPlan",
             ]
@@ -646,7 +656,6 @@ class BitgetMirrorClient:
                         'productType': 'umcbl'
                     }
                     
-                    # plan_type이 지정된 경우 추가
                     if plan_type:
                         if plan_type == 'profit_loss':
                             params['isPlan'] = 'profit_loss'
@@ -660,10 +669,8 @@ class BitgetMirrorClient:
                         logger.debug(f"미러링 {endpoint}: 응답이 None")
                         continue
                     
-                    # 응답에서 주문 목록 추출
                     orders = []
                     if isinstance(response, dict):
-                        # V1 API 응답 구조
                         for field_name in ['list', 'data']:
                             if field_name in response:
                                 orders_raw = response[field_name]
@@ -679,7 +686,6 @@ class BitgetMirrorClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅 - TP/SL 정보 특별 체크
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -690,7 +696,6 @@ class BitgetMirrorClient:
                             trigger_price = order.get('triggerPrice', order.get('executePrice', 'unknown'))
                             size = order.get('size', order.get('volume', 'unknown'))
                             
-                            # TP/SL 정보 상세 로깅
                             tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
                             sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
                             
@@ -701,7 +706,6 @@ class BitgetMirrorClient:
                             if sl_price:
                                 logger.info(f"      🛡️ V1 SL 설정 발견: {sl_price}")
                         
-                        # 첫 번째 성공한 엔드포인트에서 주문을 찾았으면 종료
                         break
                     else:
                         logger.debug(f"미러링 {endpoint}: 주문이 없음")
@@ -710,7 +714,6 @@ class BitgetMirrorClient:
                     logger.debug(f"미러링 {endpoint} 조회 실패: {e}")
                     continue
             
-            # 중복 제거
             seen = set()
             unique_orders = []
             for order in all_found_orders:
@@ -740,7 +743,6 @@ class BitgetMirrorClient:
         
         logger.info(f"🔍 미러링 모든 트리거 주문 조회 시작: {symbol}")
         
-        # V2 API 조회 (우선)
         try:
             v2_orders = await self.get_plan_orders_v2_working(symbol)
             if v2_orders:
@@ -749,7 +751,6 @@ class BitgetMirrorClient:
         except Exception as e:
             logger.warning(f"미러링 V2 예약 주문 조회 실패: {e}")
         
-        # V1 일반 예약 주문
         try:
             v1_orders = await self.get_plan_orders_v1_working(symbol)
             if v1_orders:
@@ -758,7 +759,6 @@ class BitgetMirrorClient:
         except Exception as e:
             logger.warning(f"미러링 V1 일반 예약 주문 조회 실패: {e}")
         
-        # V1 TP/SL 주문
         try:
             v1_tp_sl = await self.get_plan_orders_v1_working(symbol, 'profit_loss')
             if v1_tp_sl:
@@ -767,7 +767,6 @@ class BitgetMirrorClient:
         except Exception as e:
             logger.warning(f"미러링 V1 TP/SL 주문 조회 실패: {e}")
         
-        # 중복 제거
         seen = set()
         unique_orders = []
         for order in all_orders:
@@ -795,7 +794,6 @@ class BitgetMirrorClient:
                 size = order.get('size', order.get('volume', 'unknown'))
                 order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
                 
-                # TP/SL 정보도 로깅
                 tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
                 sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
                 
@@ -811,10 +809,8 @@ class BitgetMirrorClient:
     
     async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
         try:
-            # 모든 트리거 주문 조회
             all_orders = await self.get_all_trigger_orders(symbol)
             
-            # plan_type이 지정되면 필터링
             if plan_type == 'profit_loss':
                 filtered = [o for o in all_orders if o and (o.get('planType') == 'profit_loss' or o.get('isPlan') == 'profit_loss')]
                 return filtered
@@ -834,10 +830,8 @@ class BitgetMirrorClient:
             
             logger.info(f"🔍 미러링 모든 예약 주문 및 TP/SL 조회 시작: {symbol}")
             
-            # 모든 트리거 주문 조회 (개선된 방식)
             all_orders = await self.get_all_trigger_orders(symbol)
             
-            # TP/SL과 일반 예약주문 분류
             tp_sl_orders = []
             plan_orders = []
             
@@ -847,7 +841,6 @@ class BitgetMirrorClient:
                     
                 is_tp_sl = False
                 
-                # TP/SL 분류 조건들
                 if (order.get('planType') == 'profit_loss' or 
                     order.get('isPlan') == 'profit_loss' or
                     order.get('side') in ['close_long', 'close_short'] or
@@ -856,11 +849,9 @@ class BitgetMirrorClient:
                     order.get('reduceOnly') == 'true'):
                     is_tp_sl = True
                 
-                # TP/SL 가격이 설정된 경우 처리 개선
                 tp_price = self._extract_tp_price(order)
                 sl_price = self._extract_sl_price(order)
                 
-                # TP/SL이 설정된 일반 주문은 plan_orders에 분류하되 TP/SL 정보 보존
                 if tp_price or sl_price:
                     logger.info(f"🎯 미러링 TP/SL 설정이 있는 예약 주문 발견: {order.get('orderId', order.get('planOrderId'))}")
                     if tp_price:
@@ -877,7 +868,6 @@ class BitgetMirrorClient:
                     plan_orders.append(order)
                     logger.info(f"📈 미러링 일반 예약 주문 분류: {order.get('orderId', order.get('planOrderId'))} - {order.get('side', order.get('tradeSide'))}")
             
-            # 통합 결과
             result = {
                 'plan_orders': plan_orders,
                 'tp_sl_orders': tp_sl_orders,
@@ -886,7 +876,6 @@ class BitgetMirrorClient:
             
             logger.info(f"🔥 미러링 전체 예약 주문 분류 완료: 일반 {len(plan_orders)}건 + TP/SL {len(tp_sl_orders)}건 = 총 {result['total_count']}건")
             
-            # 각 카테고리별 상세 로깅
             if plan_orders:
                 logger.info("📈 미러링 일반 예약 주문 목록:")
                 for i, order in enumerate(plan_orders, 1):
@@ -894,7 +883,6 @@ class BitgetMirrorClient:
                     side = order.get('side', order.get('tradeSide', 'unknown'))
                     price = order.get('price', order.get('triggerPrice', 'unknown'))
                     
-                    # 강화된 TP/SL 추출
                     tp_price = self._extract_tp_price(order)
                     sl_price = self._extract_sl_price(order)
                     
@@ -927,7 +915,6 @@ class BitgetMirrorClient:
     
     def _extract_tp_price(self, order: Dict) -> Optional[float]:
         try:
-            # 가능한 TP 필드명들
             tp_fields = [
                 'presetStopSurplusPrice',
                 'stopSurplusPrice',
@@ -956,7 +943,6 @@ class BitgetMirrorClient:
     
     def _extract_sl_price(self, order: Dict) -> Optional[float]:
         try:
-            # 가능한 SL 필드명들
             sl_fields = [
                 'presetStopLossPrice',
                 'stopLossPrice',
