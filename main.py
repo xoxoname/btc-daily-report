@@ -10,7 +10,7 @@ import pytz
 import signal
 import sys
 import json
-from typing import Optional, Dict, List, Set
+from typing import Optional, Dict, List
 
 from config import Config
 from telegram_bot import TelegramBot
@@ -153,7 +153,7 @@ class BitcoinPredictionSystem:
         self.logger.info(f"시스템 초기화 완료 (미러: {'가능' if self.can_use_mirror_trading() else '불가능'}, ML: {'활성' if self.ml_mode else '비활성'})")
 
     def _parse_mirror_trading_mode(self) -> bool:
-        """미러링 모드 파싱"""
+        """미러링 모드 파싱 - O/X 정확한 구분"""
         try:
             raw_mode = os.getenv('MIRROR_TRADING_MODE', 'X')  # 기본값 X (비활성화)
             
@@ -234,7 +234,7 @@ class BitcoinPredictionSystem:
                     self.gate_client = None
                     self.mirror_trading = None
             else:
-                # 더미 미러 시스템 생성
+                # 더미 미러 시스템 생성 - 텔레그램 명령어 응답용
                 try:
                     self.mirror_trading = DummyMirrorTradingSystem(self.config, self.telegram_bot)
                     self.logger.info("✅ 더미 미러 트레이딩 시스템 생성 완료 (텔레그램 응답용)")
@@ -976,6 +976,7 @@ class BitcoinPredictionSystem:
                 parse_mode='HTML'
             )
     
+    # 나머지 핸들러들은 기존과 동일...
     async def handle_report_command(self, update: Update = None, context: ContextTypes.DEFAULT_TYPE = None):
         """리포트 명령 처리"""
         try:
@@ -1447,6 +1448,7 @@ class BitcoinPredictionSystem:
             self.logger.error(f"시작 명령 처리 실패: {e}")
             await update.message.reply_text("❌ 도움말 생성 중 오류가 발생했습니다.", parse_mode='HTML')
     
+    # 나머지 메서드들 계속...
     def _split_message(self, message: str, max_length: int = 4000) -> List[str]:
         """긴 메시지 분할"""
         if len(message) <= max_length:
@@ -2101,6 +2103,8 @@ class BitcoinPredictionSystem:
                 shutdown_msg += "\n/profit, /ratio, /mirror 명령어가 정상적으로 작동했습니다! ✅"
                 shutdown_msg += "\nAPI 정확성 개선이 성공적으로 적용되었습니다! ✅"
                 
+                if self.can_use_mirror_trading():
+                    shutdown_msg += f"\n미러 트레이딩({current_ratio}x)과 텔레그램 실시간 제어가 함께 종료됩니다."
                 
                 await self.telegram_bot.send_message(shutdown_msg, parse_mode='HTML')
             except:
