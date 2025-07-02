@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import json
 import traceback
 
-# 유틸리티 클래스 import
 from mirror_trading_utils import MirrorTradingUtils, PositionInfo, MirrorResult
 from mirror_position_manager import MirrorPositionManager
 
@@ -20,7 +19,7 @@ class MirrorTradingSystem:
         self.telegram = telegram_bot
         self.logger = logging.getLogger('mirror_trading')
         
-        # 🔥🔥🔥 미러링 모드 텔레그램 제어 - 환경변수는 초기값만
+        # 미러링 모드 텔레그램 제어 - 환경변수는 초기값만
         # 환경변수에서 초기값 읽기 (ENABLE_MIRROR_TRADING이 우선)
         enable_mirror = os.getenv('ENABLE_MIRROR_TRADING', '').lower()
         if enable_mirror in ['true', '1', 'yes', 'on']:
@@ -32,20 +31,20 @@ class MirrorTradingSystem:
             raw_mirror_mode = os.getenv('MIRROR_TRADING_MODE', 'O')
             self.mirror_trading_enabled = self._parse_mirror_trading_mode(raw_mirror_mode)
         
-        # 🔥🔥🔥 배율은 기본값 1.0으로 시작, 텔레그램으로 실시간 조정
+        # 배율은 기본값 1.0으로 시작, 텔레그램으로 실시간 조정
         self.mirror_ratio_multiplier = 1.0
         
         # 환경변수 로깅
-        self.logger.info(f"🔥 미러링 모드 초기값: {'활성화' if self.mirror_trading_enabled else '비활성화'} (텔레그램 /mirror로 변경 가능)")
-        self.logger.info(f"🔥 초기 복제 비율: {self.mirror_ratio_multiplier}x (텔레그램 /ratio로 변경 가능)")
+        self.logger.info(f"미러링 모드 초기값: {'활성화' if self.mirror_trading_enabled else '비활성화'} (텔레그램 /mirror로 변경 가능)")
+        self.logger.info(f"초기 복제 비율: {self.mirror_ratio_multiplier}x (텔레그램 /ratio로 변경 가능)")
         
         # Bitget 미러링 전용 클라이언트 import
         try:
             from bitget_mirror_client import BitgetMirrorClient
             self.bitget_mirror = BitgetMirrorClient(config)
-            logger.info("✅ Bitget 미러링 전용 클라이언트 초기화")
+            logger.info("Bitget 미러링 전용 클라이언트 초기화")
         except ImportError as e:
-            logger.error(f"❌ Bitget 미러링 클라이언트 import 실패: {e}")
+            logger.error(f"Bitget 미러링 클라이언트 import 실패: {e}")
             raise
         
         # 유틸리티 클래스 초기화 (미러링 클라이언트 사용)
@@ -55,9 +54,9 @@ class MirrorTradingSystem:
         try:
             from gateio_mirror_client import GateioMirrorClient
             self.gate_mirror = GateioMirrorClient(config)
-            logger.info("✅ Gate.io 미러링 전용 클라이언트 초기화")
+            logger.info("Gate.io 미러링 전용 클라이언트 초기화")
         except ImportError as e:
-            logger.error(f"❌ Gate.io 미러링 클라이언트 import 실패: {e}")
+            logger.error(f"Gate.io 미러링 클라이언트 import 실패: {e}")
             raise
         
         # 포지션 관리자 초기화 (미러링 클라이언트 포함)
@@ -65,7 +64,7 @@ class MirrorTradingSystem:
             config, self.bitget_mirror, gate_client, self.gate_mirror, telegram_bot, self.utils
         )
         
-        # 🔥🔥🔥 실시간 배율 변경을 위한 참조 연결
+        # 실시간 배율 변경을 위한 참조 연결
         self.position_manager.mirror_ratio_multiplier = self.mirror_ratio_multiplier
         
         # 미러링 상태 관리 (포지션 매니저에 위임)
@@ -73,14 +72,14 @@ class MirrorTradingSystem:
         self.startup_positions = self.position_manager.startup_positions
         self.failed_mirrors = self.position_manager.failed_mirrors
         
-        # 🔥🔥🔥 마진 모드 관리 강화
+        # 마진 모드 관리 강화
         self.margin_mode_check_interval = 300  # 5분마다 마진 모드 체크
         self.last_margin_mode_check = datetime.min
         self.margin_mode_enforcement_enabled = True
         self.margin_mode_check_failures = 0
         self.max_margin_mode_failures = 5
         
-        # 🔥🔥🔥 경고 알림 제한 시스템 - 각 타입별로 최대 2번까지만
+        # 경고 알림 제한 시스템 - 각 타입별로 최대 2번까지만
         self.warning_counters = {
             'price_difference': 0,
             'sync_status': 0,
@@ -94,7 +93,7 @@ class MirrorTradingSystem:
             'system_error': 0,
             'position_cleanup': 0,
             'mirror_mode_change': 0,
-            'margin_mode_warning': 0  # 🔥🔥🔥 마진 모드 경고 추가
+            'margin_mode_warning': 0  # 마진 모드 경고 추가
         }
         self.MAX_WARNING_COUNT = 2  # 각 경고 타입별 최대 2회
         
@@ -102,7 +101,7 @@ class MirrorTradingSystem:
         self.last_sync_check = datetime.min
         self.last_report_time = datetime.min
         
-        # 🔥🔥🔥 포지션 동기화 강화 설정
+        # 포지션 동기화 강화 설정
         self.position_sync_enabled = True
         self.position_sync_interval = 30  # 30초마다 포지션 동기화 체크
         self.last_position_sync_time = datetime.min
@@ -112,7 +111,7 @@ class MirrorTradingSystem:
         self.gate_current_price: float = 0.0
         self.price_diff_percent: float = 0.0
         self.last_price_update: datetime = datetime.min
-        self.price_sync_threshold: float = 1000.0  # 🔥🔥🔥 매우 관대하게 설정
+        self.price_sync_threshold: float = 1000.0  # 매우 관대하게 설정
         self.position_wait_timeout: int = 60
         
         # 시세 조회 실패 관리 강화
@@ -122,12 +121,12 @@ class MirrorTradingSystem:
         self.gate_price_failures: int = 0
         self.max_price_failures: int = 10
         
-        # 🔥🔥🔥 예약 주문 동기화 강화 설정 - 개선된 버전
+        # 예약 주문 동기화 강화 설정 - 개선된 버전
         self.order_sync_enabled: bool = True
         self.order_sync_interval: int = 45  # 30초 → 45초로 변경 (더 신중하게)
         self.last_order_sync_time: datetime = datetime.min
         
-        # 🔥🔥🔥 체결된 주문 추적 강화 - 취소와 구분하기 위함
+        # 체결된 주문 추적 강화 - 취소와 구분하기 위함
         self.filled_order_tracking_enabled: bool = True
         self.filled_order_check_interval: int = 5  # 5초마다 체결된 주문 확인
         self.last_filled_order_check: datetime = datetime.min
@@ -152,7 +151,7 @@ class MirrorTradingSystem:
         # 초기화 메시지
         status_text = "활성화" if self.mirror_trading_enabled else "비활성화"
         
-        self.logger.info(f"🔥 미러 트레이딩 시스템 초기화 완료")
+        self.logger.info(f"미러 트레이딩 시스템 초기화 완료")
         self.logger.info(f"   - 미러링 모드: {status_text} (텔레그램 /mirror로 변경)")
         self.logger.info(f"   - 초기 복제 비율: {self.mirror_ratio_multiplier}x (텔레그램 /ratio로 변경)")
         self.logger.info(f"   - 마진 모드: 무조건 Cross로 강제 설정")
@@ -162,7 +161,6 @@ class MirrorTradingSystem:
         self.logger.info(f"   - 경고 알림 제한: 각 타입별 최대 {self.MAX_WARNING_COUNT}회")
 
     def _parse_mirror_trading_mode(self, mode_str: str) -> bool:
-        """🔥🔥🔥 미러링 모드 파싱 - O/X 정확한 구분"""
         if isinstance(mode_str, bool):
             return mode_str
         
@@ -170,37 +168,36 @@ class MirrorTradingSystem:
         mode_str_original = str(mode_str).strip()
         mode_str_upper = mode_str_original.upper()
         
-        self.logger.info(f"🔍 미러링 모드 파싱: 원본='{mode_str_original}', 대문자='{mode_str_upper}'")
+        self.logger.info(f"미러링 모드 파싱: 원본='{mode_str_original}', 대문자='{mode_str_upper}'")
         
-        # 🔥🔥🔥 영어 O, X 우선 처리 (숫자 0과 구분)
+        # 영어 O, X 우선 처리 (숫자 0과 구분)
         if mode_str_upper == 'O':
-            self.logger.info("✅ 영어 대문자 O 감지 → 활성화")
+            self.logger.info("영어 대문자 O 감지 → 활성화")
             return True
         elif mode_str_upper == 'X':
-            self.logger.info("✅ 영어 대문자 X 감지 → 비활성화")
+            self.logger.info("영어 대문자 X 감지 → 비활성화")
             return False
         
         # 기타 활성화 키워드
         elif mode_str_upper in ['ON', 'OPEN', 'TRUE', 'Y', 'YES']:
-            self.logger.info(f"✅ 활성화 키워드 감지: '{mode_str_upper}' → 활성화")
+            self.logger.info(f"활성화 키워드 감지: '{mode_str_upper}' → 활성화")
             return True
         
         # 기타 비활성화 키워드 (숫자 0 포함)
         elif mode_str_upper in ['OFF', 'CLOSE', 'FALSE', 'N', 'NO'] or mode_str_original == '0':
-            self.logger.info(f"✅ 비활성화 키워드 감지: '{mode_str_upper}' → 비활성화")
+            self.logger.info(f"비활성화 키워드 감지: '{mode_str_upper}' → 비활성화")
             return False
         
         # 숫자 1은 활성화
         elif mode_str_original == '1':
-            self.logger.info("✅ 숫자 1 감지 → 활성화")
+            self.logger.info("숫자 1 감지 → 활성화")
             return True
         
         else:
-            self.logger.warning(f"⚠️ 알 수 없는 미러링 모드: '{mode_str_original}', 기본값(활성화) 사용")
+            self.logger.warning(f"알 수 없는 미러링 모드: '{mode_str_original}', 기본값(활성화) 사용")
             return True
 
     async def set_mirror_mode(self, enable: bool) -> Dict:
-        """🔥🔥🔥 실시간 미러링 모드 변경"""
         try:
             # 이전 상태 저장
             old_state = self.mirror_trading_enabled
@@ -214,7 +211,7 @@ class MirrorTradingSystem:
             if old_state != enable:
                 state_change = f"{'비활성화' if old_state else '활성화'} → {'활성화' if enable else '비활성화'}"
             
-            self.logger.info(f"🔄 미러링 모드 실시간 변경: {state_change}")
+            self.logger.info(f"미러링 모드 실시간 변경: {state_change}")
             
             # 미러링 재시작이 필요한 경우
             if enable and not old_state:
@@ -238,11 +235,10 @@ class MirrorTradingSystem:
             }
 
     async def _restart_mirror_monitoring(self):
-        """🔥🔥🔥 미러링 모니터링 재시작 (활성화 시) - 마진 모드 강제 포함"""
         try:
-            self.logger.info("🔄 미러링 모니터링 재시작 중...")
+            self.logger.info("미러링 모니터링 재시작 중...")
             
-            # 🔥🔥🔥 Gate.io 마진 모드 무조건 Cross 강제 설정
+            # Gate.io 마진 모드 무조건 Cross 강제 설정
             await self.gate_mirror.force_cross_margin_mode_aggressive("BTC_USDT")
             
             # 현재 시세 업데이트
@@ -254,13 +250,12 @@ class MirrorTradingSystem:
             # 현재 상태 로깅
             await self._log_mirror_status()
             
-            self.logger.info("✅ 미러링 모니터링 재시작 완료")
+            self.logger.info("미러링 모니터링 재시작 완료")
             
         except Exception as e:
             self.logger.error(f"미러링 모니터링 재시작 실패: {e}")
 
     async def get_current_mirror_mode(self) -> Dict:
-        """현재 미러링 모드 정보 조회"""
         try:
             return {
                 'enabled': self.mirror_trading_enabled,
@@ -279,7 +274,6 @@ class MirrorTradingSystem:
             }
 
     async def _log_mirror_status(self):
-        """현재 미러링 상태 로깅"""
         try:
             # 현재 포지션 상태
             bitget_positions = await self.bitget_mirror.get_positions(self.SYMBOL)
@@ -292,7 +286,7 @@ class MirrorTradingSystem:
             bitget_plan_orders = await self.bitget_mirror.get_all_trigger_orders(self.SYMBOL)
             gate_trigger_orders = await self.gate_mirror.get_price_triggered_orders(self.GATE_CONTRACT, "open")
             
-            # 🔥🔥🔥 마진 모드 상태 확인
+            # 마진 모드 상태 확인
             current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
             
             self.logger.info(f"📊 현재 미러링 상태:")
@@ -308,7 +302,6 @@ class MirrorTradingSystem:
             self.logger.error(f"미러링 상태 로깅 실패: {e}")
 
     async def set_ratio_multiplier(self, new_ratio: float) -> Dict:
-        """🔥🔥🔥 실시간 복제 비율 변경"""
         try:
             # 유효성 검증
             validated_ratio = self.utils.validate_ratio_multiplier(new_ratio)
@@ -328,7 +321,7 @@ class MirrorTradingSystem:
             ratio_description = self.utils.get_ratio_multiplier_description(validated_ratio)
             effect_analysis = self.utils.analyze_ratio_multiplier_effect(validated_ratio, 0.1, 0.1 * validated_ratio)
             
-            self.logger.info(f"🔄 복제 비율 실시간 변경: {old_ratio}x → {validated_ratio}x")
+            self.logger.info(f"복제 비율 실시간 변경: {old_ratio}x → {validated_ratio}x")
             
             return {
                 'success': True,
@@ -348,7 +341,6 @@ class MirrorTradingSystem:
             }
 
     async def get_current_ratio_info(self) -> Dict:
-        """현재 복제 비율 정보 조회"""
         try:
             ratio_description = self.utils.get_ratio_multiplier_description(self.mirror_ratio_multiplier)
             
@@ -368,7 +360,6 @@ class MirrorTradingSystem:
             }
 
     def _should_send_warning(self, warning_type: str) -> bool:
-        """🔥🔥🔥 경고 발송 여부 판단 - 각 타입별 최대 2회 제한"""
         try:
             if warning_type not in self.warning_counters:
                 self.warning_counters[warning_type] = 0
@@ -390,7 +381,6 @@ class MirrorTradingSystem:
             return False
 
     def _reset_warning_counter(self, warning_type: str = None):
-        """🔥🔥🔥 경고 카운터 리셋 (특정 타입 또는 전체)"""
         try:
             if warning_type:
                 if warning_type in self.warning_counters:
@@ -407,9 +397,8 @@ class MirrorTradingSystem:
             self.logger.error(f"경고 카운터 리셋 실패: {e}")
 
     async def monitor_margin_mode_enforcement(self):
-        """🔥🔥🔥 마진 모드 강제 모니터링 - 주기적으로 Cross 모드 체크 및 설정"""
         try:
-            self.logger.info("🔥 마진 모드 강제 모니터링 시작")
+            self.logger.info("마진 모드 강제 모니터링 시작")
             
             while self.monitoring:
                 try:
@@ -444,26 +433,26 @@ class MirrorTradingSystem:
             self.logger.error(f"마진 모드 강제 모니터링 시스템 실패: {e}")
 
     async def _perform_margin_mode_check(self):
-        """🔥🔥🔥 마진 모드 체크 및 강제 설정 수행"""
         try:
-            self.logger.debug("🔥 마진 모드 체크 시작")
+            self.logger.debug("마진 모드 체크 시작")
             
             # 현재 마진 모드 확인
             current_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
             
             if current_mode == "cross":
-                self.logger.debug(f"✅ 마진 모드 정상: {current_mode}")
+                self.logger.debug(f"마진 모드 정상: {current_mode}")
                 self.margin_mode_check_failures = 0  # 성공 시 실패 카운터 리셋
                 return
             
             # Cross가 아닌 경우 강제 설정 시도
-            self.logger.warning(f"⚠️ 마진 모드가 Cross가 아님: {current_mode} → Cross로 강제 변경 시도")
+            self.logger.warning(f"마진 모드가 Cross가 아님: {current_mode} → Cross로 강제 변경 시도")
             
             success = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
             
             if success:
-                self.logger.info(f"✅ 마진 모드 강제 변경 성공: {current_mode} → Cross")
+                self.logger.info(f"마진 모드 강제 변경 성공: {current_mode} → Cross")
                 self.margin_mode_check_failures = 0
+                self.daily_stats['margin_mode_enforcements'] += 1
                 
                 # 성공 알림 (한 번만)
                 if self._should_send_warning('margin_mode_warning'):
@@ -473,7 +462,7 @@ class MirrorTradingSystem:
                         f"💳 Cross 마진 모드로 안전하게 운영됩니다"
                     )
             else:
-                self.logger.warning(f"⚠️ 마진 모드 강제 변경 실패: {current_mode}")
+                self.logger.warning(f"마진 모드 강제 변경 실패: {current_mode}")
                 self.margin_mode_check_failures += 1
                 
                 # 실패 알림 (제한적으로)
@@ -491,14 +480,13 @@ class MirrorTradingSystem:
             self.margin_mode_check_failures += 1
 
     async def start(self):
-        """미러 트레이딩 시작"""
         try:
-            self.logger.info("🔥 미러 트레이딩 시스템 시작 - 텔레그램 제어 + 마진 모드 Cross 강제")
+            self.logger.info("미러 트레이딩 시스템 시작 - 텔레그램 제어 + 마진 모드 Cross 강제")
             
-            # 🔥🔥🔥 미러링 모드 상태 확인 (비활성화여도 시스템은 시작)
+            # 미러링 모드 상태 확인 (비활성화여도 시스템은 시작)
             if not self.mirror_trading_enabled:
-                self.logger.warning("⚠️ 미러링 모드가 비활성화 상태로 시작합니다.")
-                self.logger.info("💡 텔레그램에서 /mirror on 명령어로 활성화할 수 있습니다.")
+                self.logger.warning("미러링 모드가 비활성화 상태로 시작합니다.")
+                self.logger.info("텔레그램에서 /mirror on 명령어로 활성화할 수 있습니다.")
                 await self.telegram.send_message(
                     f"⚠️ 미러 트레이딩 시스템 시작 (비활성화 상태)\n"
                     f"현재 미러링: 비활성화\n"
@@ -510,17 +498,17 @@ class MirrorTradingSystem:
             # Bitget 미러링 클라이언트 초기화
             await self.bitget_mirror.initialize()
             
-            # 🔥🔥🔥 Gate.io 미러링 클라이언트 초기화 (무조건 Cross 마진 모드 강제 설정 포함)
+            # Gate.io 미러링 클라이언트 초기화 (무조건 Cross 마진 모드 강제 설정 포함)
             await self.gate_mirror.initialize()
             
-            # 🔥🔥🔥 추가 마진 모드 강제 설정 확인
-            self.logger.info("🔥 Gate.io 마진 모드 최종 확인 및 강제 설정")
+            # 추가 마진 모드 강제 설정 확인
+            self.logger.info("Gate.io 마진 모드 최종 확인 및 강제 설정")
             final_margin_success = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
             
             if final_margin_success:
-                self.logger.info("✅ Gate.io Cross 마진 모드 최종 확인 완료")
+                self.logger.info("Gate.io Cross 마진 모드 최종 확인 완료")
             else:
-                self.logger.warning("⚠️ Gate.io Cross 마진 모드 자동 설정 실패 - 수동 설정 필요")
+                self.logger.warning("Gate.io Cross 마진 모드 자동 설정 실패 - 수동 설정 필요")
             
             # 현재 시세 업데이트
             await self._update_current_prices()
@@ -542,8 +530,8 @@ class MirrorTradingSystem:
                 self.monitor_sync_status(),
                 self.monitor_price_differences(),
                 self.monitor_order_synchronization(),
-                self.monitor_position_synchronization(),  # 🔥🔥🔥 포지션 동기화 모니터링 추가
-                self.monitor_margin_mode_enforcement(),   # 🔥🔥🔥 마진 모드 강제 모니터링 추가
+                self.monitor_position_synchronization(),  # 포지션 동기화 모니터링 추가
+                self.monitor_margin_mode_enforcement(),   # 마진 모드 강제 모니터링 추가
                 self.generate_daily_reports()
             ]
             
@@ -558,9 +546,8 @@ class MirrorTradingSystem:
             raise
 
     async def monitor_position_synchronization(self):
-        """🔥🔥🔥 포지션 동기화 모니터링 - 비트겟 취소시 게이트도 자동 취소"""
         try:
-            self.logger.info("🔄 포지션 동기화 모니터링 시작 (강화된 버전)")
+            self.logger.info("포지션 동기화 모니터링 시작 (강화된 버전)")
             
             while self.monitoring:
                 try:
@@ -593,9 +580,8 @@ class MirrorTradingSystem:
             self.logger.error(f"포지션 동기화 모니터링 시스템 실패: {e}")
 
     async def _perform_position_synchronization(self):
-        """🔥🔥🔥 포지션 동기화 수행 - 비트겟 없으면 게이트도 정리"""
         try:
-            self.logger.debug("🔄 포지션 동기화 시작")
+            self.logger.debug("포지션 동기화 시작")
             
             # 1. 비트겟 현재 포지션 조회
             bitget_positions = await self.bitget_mirror.get_positions(self.SYMBOL)
@@ -638,23 +624,39 @@ class MirrorTradingSystem:
                         'gate_position': gate_main_pos
                     })
             
-            # 4. 동기화 문제 해결
+            # 4. 동기화 문제 해결 (마진 모드 체크 포함)
             if sync_issues:
                 await self._fix_position_sync_issues(sync_issues)
             else:
-                self.logger.debug(f"✅ 포지션 동기화 상태 양호: 비트겟 {len(bitget_active_positions)}개, 게이트 {len(gate_active_positions)}개")
+                self.logger.debug(f"포지션 동기화 상태 양호: 비트겟 {len(bitget_active_positions)}개, 게이트 {len(gate_active_positions)}개")
             
         except Exception as e:
             self.logger.error(f"포지션 동기화 수행 실패: {e}")
 
     async def _fix_position_sync_issues(self, sync_issues: List[Dict]):
-        """🔥🔥🔥 포지션 동기화 문제 해결"""
         try:
             cleaned_positions = 0
             
             for issue in sync_issues:
                 try:
                     issue_type = issue['type']
+                    
+                    # 포지션 정리 전 마진 모드 강제 체크
+                    try:
+                        current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
+                        if current_margin_mode != 'cross':
+                            self.logger.warning(f"포지션 정리 전 마진 모드가 Cross가 아님: {current_margin_mode} → 강제 변경 시도")
+                            
+                            force_result = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
+                            if force_result:
+                                self.daily_stats['margin_mode_enforcements'] += 1
+                                self.logger.info(f"포지션 정리 전 마진 모드 강제 변경 성공: {current_margin_mode} → Cross")
+                            else:
+                                self.logger.error(f"포지션 정리 전 마진 모드 강제 변경 실패: {current_margin_mode}")
+                        else:
+                            self.logger.debug(f"포지션 정리 전 마진 모드 확인 완료: {current_margin_mode}")
+                    except Exception as margin_error:
+                        self.logger.error(f"포지션 정리 전 마진 모드 체크 실패하지만 계속 진행: {margin_error}")
                     
                     if issue_type == 'orphan_gate_position':
                         # 고아 게이트 포지션 정리
@@ -668,7 +670,7 @@ class MirrorTradingSystem:
                             
                             self.daily_stats['position_closed_cleanups'] = self.daily_stats.get('position_closed_cleanups', 0) + 1
                             
-                            self.logger.info(f"✅ 고아 게이트 포지션 정리 완료: 크기={gate_size}")
+                            self.logger.info(f"고아 게이트 포지션 정리 완료: 크기={gate_size}")
                     
                     elif issue_type == 'position_direction_mismatch':
                         # 포지션 방향 불일치 - 게이트 포지션 정리 후 재미러링
@@ -681,7 +683,7 @@ class MirrorTradingSystem:
                         # 잠시 대기 후 올바른 방향으로 재미러링은 자동으로 수행됨
                         await asyncio.sleep(2)
                         
-                        self.logger.info(f"✅ 포지션 방향 불일치 해결: {issue['bitget_side']} vs {issue['gate_side']}")
+                        self.logger.info(f"포지션 방향 불일치 해결: {issue['bitget_side']} vs {issue['gate_side']}")
                         
                 except Exception as e:
                     self.logger.error(f"포지션 동기화 문제 해결 실패: {issue['type']} - {e}")
@@ -692,20 +694,19 @@ class MirrorTradingSystem:
                 
                 if self._should_send_warning('position_cleanup'):
                     await self.telegram.send_message(
-                        f"🔄 포지션 동기화 완료{ratio_info}\n"
+                        f"포지션 동기화 완료{ratio_info}\n"
                         f"정리된 포지션: {cleaned_positions}개\n"
                         f"비트겟에서 취소된 포지션을 게이트에서도 정리했습니다.\n"
                         f"새로운 포지션은 자동으로 미러링됩니다.{ratio_info}\n"
                         f"💳 마진 모드: Cross 자동 유지"
                     )
                 
-                self.logger.info(f"🔄 포지션 동기화 완료: {cleaned_positions}개 포지션 정리")
+                self.logger.info(f"포지션 동기화 완료: {cleaned_positions}개 포지션 정리")
             
         except Exception as e:
             self.logger.error(f"포지션 동기화 문제 해결 중 오류: {e}")
 
     def _generate_gate_position_id(self, gate_pos: Dict) -> str:
-        """게이트 포지션 ID 생성"""
         try:
             contract = gate_pos.get('contract', self.GATE_CONTRACT)
             size = gate_pos.get('size', 0)
@@ -724,9 +725,8 @@ class MirrorTradingSystem:
             return f"{self.GATE_CONTRACT}_unknown_unknown"
 
     async def monitor_order_synchronization(self):
-        """🔥🔥🔥 예약 주문 동기화 모니터링 - 더욱 신중한 접근"""
         try:
-            self.logger.info("🔄 신중한 예약 주문 동기화 모니터링 시작 (개선된 버전)")
+            self.logger.info("신중한 예약 주문 동기화 모니터링 시작 (개선된 버전)")
             
             while self.monitoring:
                 try:
@@ -740,7 +740,7 @@ class MirrorTradingSystem:
                     
                     current_time = datetime.now()
                     
-                    # 🔥🔥🔥 더 긴 간격으로 동기화 체크 (45초마다)
+                    # 더 긴 간격으로 동기화 체크 (45초마다)
                     if (current_time - self.last_order_sync_time).total_seconds() >= self.order_sync_interval:
                         await self._perform_comprehensive_order_sync()
                         self.last_order_sync_time = current_time
@@ -759,11 +759,10 @@ class MirrorTradingSystem:
             self.logger.error(f"예약 주문 동기화 모니터링 시스템 실패: {e}")
 
     async def _perform_comprehensive_order_sync(self):
-        """🔥🔥🔥 종합적인 예약 주문 동기화 - 개선된 버전"""
         try:
-            self.logger.debug("🔄 종합 예약 주문 동기화 시작 (개선된 버전)")
+            self.logger.debug("종합 예약 주문 동기화 시작 (개선된 버전)")
             
-            # 🔥🔥🔥 수정: 올바른 메서드명 사용
+            # 올바른 메서드명 사용
             all_bitget_orders = await self.position_manager._get_all_current_plan_orders_enhanced()
             
             # 2. 게이트 예약 주문 조회
@@ -772,27 +771,26 @@ class MirrorTradingSystem:
             # 3. 개선된 동기화 분석
             sync_analysis = await self._analyze_comprehensive_sync_improved(all_bitget_orders, gate_orders)
             
-            # 4. 문제가 있으면 수정
+            # 4. 문제가 있으면 수정 (마진 모드 체크 포함)
             if sync_analysis['requires_action']:
                 await self._fix_sync_issues_improved(sync_analysis)
             else:
-                self.logger.debug(f"✅ 예약 주문 동기화 상태 양호: 비트겟 {len(all_bitget_orders)}개, 게이트 {len(gate_orders)}개")
+                self.logger.debug(f"예약 주문 동기화 상태 양호: 비트겟 {len(all_bitget_orders)}개, 게이트 {len(gate_orders)}개")
             
         except Exception as e:
             self.logger.error(f"종합 예약 주문 동기화 실패: {e}")
 
     async def _analyze_comprehensive_sync_improved(self, bitget_orders: List[Dict], gate_orders: List[Dict]) -> Dict:
-        """🔥🔥🔥 개선된 종합적인 동기화 분석 - 더 정확한 판별"""
         try:
             analysis = {
                 'requires_action': False,
                 'missing_mirrors': [],
-                'confirmed_orphans': [],     # 🔥 확실히 검증된 고아만
-                'safe_orders': [],           # 🔥 안전한 주문들 (건드리지 않음)
+                'confirmed_orphans': [],     # 확실히 검증된 고아만
+                'safe_orders': [],           # 안전한 주문들 (건드리지 않음)
                 'total_issues': 0
             }
             
-            # 🔥🔥🔥 1. 비트겟 주문 분석 - 누락된 미러링 찾기
+            # 1. 비트겟 주문 분석 - 누락된 미러링 찾기
             for bitget_order in bitget_orders:
                 bitget_order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
                 if not bitget_order_id:
@@ -830,7 +828,7 @@ class MirrorTradingSystem:
                         'type': 'unmirrored'
                     })
             
-            # 🔥🔥🔥 2. 게이트 고아 주문 찾기 - 매우 보수적인 접근
+            # 2. 게이트 고아 주문 찾기 - 매우 보수적인 접근
             bitget_order_ids = set()
             for order in bitget_orders:
                 order_id = order.get('orderId', order.get('planOrderId', ''))
@@ -842,7 +840,7 @@ class MirrorTradingSystem:
                 if not gate_order_id:
                     continue
                 
-                # 🔥🔥🔥 매핑 확인
+                # 매핑 확인
                 bitget_order_id = self.position_manager.gate_to_bitget_order_mapping.get(gate_order_id)
                 
                 if not bitget_order_id:
@@ -855,7 +853,7 @@ class MirrorTradingSystem:
                         })
                         continue
                     else:
-                        # 🔥🔥🔥 매핑도 없고 기존 주문도 아님 - 매우 신중하게 처리
+                        # 매핑도 없고 기존 주문도 아님 - 매우 신중하게 처리
                         analysis['safe_orders'].append({
                             'gate_order_id': gate_order_id,
                             'type': 'unmapped_unknown',
@@ -863,11 +861,11 @@ class MirrorTradingSystem:
                         })
                         continue
                 
-                # 🔥🔥🔥 매핑이 있는 경우 - 비트겟에서 실제 존재 여부 확인
+                # 매핑이 있는 경우 - 비트겟에서 실제 존재 여부 확인
                 bitget_exists = bitget_order_id in bitget_order_ids
                 
                 if not bitget_exists:
-                    # 🔥🔥🔥 한 번 더 확인 - 정말 확실한 경우만 삭제 대상으로 분류
+                    # 한 번 더 확인 - 정말 확실한 경우만 삭제 대상으로 분류
                     try:
                         recheck_result = await self._recheck_bitget_order_exists_simple(bitget_order_id)
                         
@@ -896,7 +894,7 @@ class MirrorTradingSystem:
                             'reason': f'재확인 실패로 안전상 보존: {recheck_error}'
                         })
             
-            # 🔥🔥🔥 총 문제 개수 계산 - 확실한 것만
+            # 총 문제 개수 계산 - 확실한 것만
             analysis['total_issues'] = (
                 len(analysis['missing_mirrors']) + 
                 len(analysis['confirmed_orphans'])
@@ -905,7 +903,7 @@ class MirrorTradingSystem:
             analysis['requires_action'] = analysis['total_issues'] > 0
             
             if analysis['requires_action']:
-                self.logger.info(f"🔍 동기화 문제 발견: {analysis['total_issues']}건 (확실한 것만)")
+                self.logger.info(f"동기화 문제 발견: {analysis['total_issues']}건 (확실한 것만)")
                 self.logger.info(f"   - 누락 미러링: {len(analysis['missing_mirrors'])}건")
                 self.logger.info(f"   - 확실한 고아 주문: {len(analysis['confirmed_orphans'])}건")
                 self.logger.info(f"   - 안전한 주문 (보존): {len(analysis['safe_orders'])}건")
@@ -923,9 +921,8 @@ class MirrorTradingSystem:
             }
 
     async def _recheck_bitget_order_exists_simple(self, bitget_order_id: str) -> Dict:
-        """🔥🔥🔥 간단한 비트겟 주문 존재 여부 재확인"""
         try:
-            # 🔥🔥🔥 수정: 올바른 메서드명 사용
+            # 올바른 메서드명 사용
             all_current_orders = await self.position_manager._get_all_current_plan_orders_enhanced()
             
             for order in all_current_orders:
@@ -941,7 +938,7 @@ class MirrorTradingSystem:
             # 현재 주문에서 찾을 수 없음
             return {
                 'exists': False,
-                'definitely_deleted': True,  # 🔥🔥🔥 현재 조회에서 없으면 삭제된 것으로 간주
+                'definitely_deleted': True,  # 현재 조회에서 없으면 삭제된 것으로 간주
                 'found_in': 'nowhere',
                 'reason': '현재 활성 주문에서 찾을 수 없음 (취소/체결됨)'
             }
@@ -955,9 +952,26 @@ class MirrorTradingSystem:
             }
 
     async def _fix_sync_issues_improved(self, sync_analysis: Dict):
-        """🔥🔥🔥 개선된 동기화 문제 해결"""
         try:
             fixed_count = 0
+            
+            # 동기화 수정 전 마진 모드 강제 체크
+            try:
+                current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
+                if current_margin_mode != 'cross':
+                    self.logger.warning(f"동기화 수정 전 마진 모드가 Cross가 아님: {current_margin_mode} → 강제 변경 시도")
+                    
+                    force_result = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
+                    if force_result:
+                        self.daily_stats['margin_mode_enforcements'] += 1
+                        self.logger.info(f"동기화 수정 전 마진 모드 강제 변경 성공: {current_margin_mode} → Cross")
+                    else:
+                        self.logger.error(f"동기화 수정 전 마진 모드 강제 변경 실패: {current_margin_mode}")
+                        # 실패해도 동기화는 계속 진행
+                else:
+                    self.logger.debug(f"동기화 수정 전 마진 모드 확인 완료: {current_margin_mode}")
+            except Exception as margin_error:
+                self.logger.error(f"동기화 수정 전 마진 모드 체크 실패하지만 계속 진행: {margin_error}")
             
             # 1. 누락된 미러링 처리 (기존 로직 유지)
             missing_tasks = []
@@ -966,13 +980,13 @@ class MirrorTradingSystem:
                     bitget_order = missing['bitget_order']
                     bitget_order_id = missing['bitget_order_id']
                     
-                    self.logger.info(f"🔄 누락된 미러링 복제: {bitget_order_id}")
+                    self.logger.info(f"누락된 미러링 복제: {bitget_order_id}")
                     
                     # 이미 처리된 주문인지 확인
                     if bitget_order_id not in self.position_manager.processed_plan_orders:
-                        # 🔥🔥🔥 현재 배율 적용된 미러링 처리
+                        # 현재 배율 적용된 미러링 처리
                         close_details = await self.utils.determine_close_order_details_enhanced(bitget_order)
-                        task = self.position_manager._process_perfect_mirror_order_with_ratio_enhanced(
+                        task = self.position_manager._process_perfect_mirror_order_with_price_diff_handling(
                             bitget_order, close_details, self.mirror_ratio_multiplier
                         )
                         missing_tasks.append((bitget_order_id, task))
@@ -994,25 +1008,25 @@ class MirrorTradingSystem:
                         elif result in ["perfect_success", "partial_success", "force_success", "close_order_forced"]:
                             fixed_count += 1
                             self.daily_stats['sync_corrections'] += 1
-                            self.logger.info(f"✅ 누락 미러링 완료: {order_id}")
+                            self.logger.info(f"누락 미러링 완료: {order_id}")
                     except Exception as e:
                         self.logger.error(f"누락 미러링 결과 처리 실패: {order_id} - {e}")
             
-            # 🔥🔥🔥 2. 확실한 고아 주문만 매우 신중하게 처리
+            # 2. 확실한 고아 주문만 매우 신중하게 처리
             confirmed_orphans = sync_analysis.get('confirmed_orphans', [])
             safe_orders = sync_analysis.get('safe_orders', [])
             
             if confirmed_orphans:
-                self.logger.info(f"🔍 확실한 고아 주문 {len(confirmed_orphans)}개 처리 시작")
+                self.logger.info(f"확실한 고아 주문 {len(confirmed_orphans)}개 처리 시작")
                 
                 for orphaned in confirmed_orphans[:3]:  # 한 번에 3개씩만
                     try:
                         gate_order_id = orphaned['gate_order_id']
                         verification = orphaned.get('verification', {})
                         
-                        # 🔥🔥🔥 마지막 한 번 더 확인
+                        # 마지막 한 번 더 확인
                         if verification.get('definitely_deleted'):
-                            self.logger.info(f"🗑️ 확실한 고아 주문 삭제: {gate_order_id}")
+                            self.logger.info(f"확실한 고아 주문 삭제: {gate_order_id}")
                             
                             try:
                                 await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
@@ -1026,7 +1040,7 @@ class MirrorTradingSystem:
                                     if bitget_id in self.position_manager.bitget_to_gate_order_mapping:
                                         del self.position_manager.bitget_to_gate_order_mapping[bitget_id]
                                 
-                                self.logger.info(f"✅ 확실한 고아 주문 삭제 완료: {gate_order_id}")
+                                self.logger.info(f"확실한 고아 주문 삭제 완료: {gate_order_id}")
                                 
                             except Exception as delete_error:
                                 error_msg = str(delete_error).lower()
@@ -1038,7 +1052,7 @@ class MirrorTradingSystem:
                                 else:
                                     self.logger.error(f"고아 주문 삭제 실패: {gate_order_id} - {delete_error}")
                         else:
-                            self.logger.info(f"⚠️ 확실하지 않은 주문은 보존: {gate_order_id}")
+                            self.logger.info(f"확실하지 않은 주문은 보존: {gate_order_id}")
                             
                     except Exception as e:
                         self.logger.error(f"고아 주문 처리 실패: {orphaned['gate_order_id']} - {e}")
@@ -1050,24 +1064,23 @@ class MirrorTradingSystem:
                 
                 if self._should_send_warning('order_synchronization'):
                     await self.telegram.send_message(
-                        f"🔄 예약 주문 안전한 동기화 완료{ratio_info}\n"
+                        f"예약 주문 안전한 동기화 완료{ratio_info}\n"
                         f"해결된 문제: {fixed_count}건\n"
                         f"- 누락 미러링 복제: {len(sync_analysis['missing_mirrors'])}건\n"
                         f"- 확실한 고아 주문 삭제: {len(confirmed_orphans)}건\n"
                         f"- 안전한 주문 보존: {len(safe_orders)}건\n\n"
                         f"📊 현재 시세 차이: ${price_diff:.2f}\n"
-                        f"🛡️ 의심스러운 주문은 모두 안전상 보존됩니다{ratio_info}\n"
+                        f"의심스러운 주문은 모두 안전상 보존됩니다{ratio_info}\n"
                         f"💳 마진 모드: Cross 자동 유지"
                     )
             elif fixed_count > 0:
-                self.logger.info(f"🔄 예약 주문 안전한 동기화 완료: {fixed_count}건 해결")
+                self.logger.info(f"예약 주문 안전한 동기화 완료: {fixed_count}건 해결")
             
         except Exception as e:
             self.logger.error(f"개선된 동기화 문제 해결 실패: {e}")
 
     async def monitor_plan_orders(self):
-        """예약 주문 모니터링 - 포지션 매니저로 위임"""
-        self.logger.info("🎯 예약 주문 모니터링 시작")
+        self.logger.info("예약 주문 모니터링 시작")
         
         while self.monitoring:
             try:
@@ -1087,7 +1100,6 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.PLAN_ORDER_CHECK_INTERVAL * 2)
 
     async def monitor_order_fills(self):
-        """🔥🔥🔥 실시간 주문 체결 감지 - 체결 추적 강화"""
         consecutive_errors = 0
         
         while self.monitoring:
@@ -1099,12 +1111,12 @@ class MirrorTradingSystem:
                 # 시세 차이 확인 후 처리
                 await self._update_current_prices()
                 
-                # 🔥🔥🔥 시세 차이 확인만 하고 처리는 항상 진행
+                # 시세 차이 확인만 하고 처리는 항상 진행
                 valid_price_diff = self._get_valid_price_difference()
                 if valid_price_diff is not None:
                     self.logger.debug(f"시세 차이 ${valid_price_diff:.2f} 확인됨, 주문 처리 계속 진행")
                 
-                # 🔥🔥🔥 체결된 주문 추적 강화 - 포지션 매니저와 연동
+                # 체결된 주문 추적 강화 - 포지션 매니저와 연동
                 current_time = datetime.now()
                 if (self.filled_order_tracking_enabled and 
                     (current_time - self.last_filled_order_check).total_seconds() >= self.filled_order_check_interval):
@@ -1155,7 +1167,6 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.ORDER_CHECK_INTERVAL * 2)
 
     async def monitor_positions(self):
-        """포지션 모니터링"""
         consecutive_errors = 0
         
         while self.monitoring:
@@ -1200,7 +1211,6 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.CHECK_INTERVAL * 2)
 
     async def _update_current_prices(self):
-        """양쪽 거래소 현재 시세 업데이트"""
         try:
             # 비트겟 현재가 조회
             try:
@@ -1280,14 +1290,13 @@ class MirrorTradingSystem:
             self.logger.error(f"시세 업데이트 실패: {e}")
 
     def _get_valid_price_difference(self) -> Optional[float]:
-        """유효한 시세 차이 반환 (0 가격 제외)"""
         try:
             if self.bitget_current_price <= 0 or self.gate_current_price <= 0:
                 return None
             
             price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
             
-            # 🔥🔥🔥 비정상적으로 큰 차이 임계값을 매우 관대하게 (5000달러 이상)
+            # 비정상적으로 큰 차이 임계값을 매우 관대하게 (5000달러 이상)
             if price_diff_abs > 5000:
                 return None
                 
@@ -1298,7 +1307,6 @@ class MirrorTradingSystem:
             return None
 
     async def monitor_price_differences(self):
-        """🔥🔥🔥 거래소 간 시세 차이 모니터링 - 처리 차단 없음"""
         consecutive_errors = 0
         last_warning_time = datetime.min
         last_normal_report_time = datetime.min
@@ -1318,7 +1326,7 @@ class MirrorTradingSystem:
                 
                 now = datetime.now()
                 
-                # 🔥🔥🔥 경고 빈도 감소 - 임계값 1000달러, 경고는 4시간마다만 (처리는 항상 진행)
+                # 경고 빈도 감소 - 임계값 1000달러, 경고는 4시간마다만 (처리는 항상 진행)
                 if (valid_price_diff > self.price_sync_threshold and 
                     (now - last_warning_time).total_seconds() > 14400 and
                     self._should_send_warning('price_difference')):
@@ -1331,11 +1339,11 @@ class MirrorTradingSystem:
                         f"비트겟: ${self.bitget_current_price:,.2f}\n"
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f}\n\n"
-                        f"🔄 미러링 상태: {mirror_status}\n"
-                        f"🔥 시세 차이와 무관하게 모든 주문이 즉시 처리됩니다\n"
-                        f"🛡️ 의심스러운 주문은 안전상 자동 삭제하지 않습니다{ratio_info}\n"
+                        f"미러링 상태: {mirror_status}\n"
+                        f"시세 차이와 무관하게 모든 주문이 즉시 처리됩니다\n"
+                        f"의심스러운 주문은 안전상 자동 삭제하지 않습니다{ratio_info}\n"
                         f"📋 예약 주문 체결/취소가 정확히 구분되어 처리됩니다\n"
-                        f"🔄 포지션 동기화: 비트겟 취소시 게이트도 자동 정리\n"
+                        f"포지션 동기화: 비트겟 취소시 게이트도 자동 정리\n"
                         f"💳 마진 모드: 항상 Cross로 자동 설정"
                     )
                     last_warning_time = now
@@ -1356,11 +1364,11 @@ class MirrorTradingSystem:
                         f"게이트: ${self.gate_current_price:,.2f}\n"
                         f"차이: ${valid_price_diff:.2f}\n"
                         f"상태: {status_emoji} {status_text}\n\n"
-                        f"🔄 미러링 상태: {mirror_status}\n"
-                        f"🔥 시세 차이와 무관하게 모든 주문 즉시 처리\n"
-                        f"🛡️ 안전상 의심스러운 주문은 보존됩니다\n"
+                        f"미러링 상태: {mirror_status}\n"
+                        f"시세 차이와 무관하게 모든 주문 즉시 처리\n"
+                        f"안전상 의심스러운 주문은 보존됩니다\n"
                         f"📋 예약 주문 체결/취소가 정확히 구분됩니다\n"
-                        f"🔄 포지션 동기화: 30초마다 자동 실행{ratio_info}\n"
+                        f"포지션 동기화: 30초마다 자동 실행{ratio_info}\n"
                         f"💳 마진 모드: 항상 Cross로 자동 유지"
                     )
                     last_normal_report_time = now
@@ -1380,7 +1388,6 @@ class MirrorTradingSystem:
                 await asyncio.sleep(60)
 
     async def monitor_sync_status(self):
-        """포지션 동기화 상태 모니터링 - 실패율 계산 수정"""
         sync_retry_count = 0
         
         while self.monitoring:
@@ -1437,27 +1444,27 @@ class MirrorTradingSystem:
                             f"비트겟 신규: {sync_status['bitget_new_count']}개\n"
                             f"게이트 신규: {sync_status['gate_new_count']}개\n"
                             f"차이: {sync_status['position_diff']}개\n\n"
-                            f"🔍 분석된 원인:\n"
+                            f"분석된 원인:\n"
                             f"• {chr(10).join(possible_causes)}\n\n"
-                            f"🔄 미러링 상태: {mirror_status}\n"
-                            f"💡 시세 차이는 미러링 처리에 영향을 주지 않습니다.\n"
-                            f"🔥 모든 주문이 즉시 처리되고 있습니다.\n"
-                            f"🛡️ 의심스러운 예약 주문은 안전상 보존됩니다.\n"
+                            f"미러링 상태: {mirror_status}\n"
+                            f"시세 차이는 미러링 처리에 영향을 주지 않습니다.\n"
+                            f"모든 주문이 즉시 처리되고 있습니다.\n"
+                            f"의심스러운 예약 주문은 안전상 보존됩니다.\n"
                             f"📋 예약 주문 체결/취소가 정확히 구분됩니다.\n"
-                            f"🔄 포지션 동기화가 30초마다 자동 실행됩니다.{ratio_info}\n"
+                            f"포지션 동기화가 30초마다 자동 실행됩니다.{ratio_info}\n"
                             f"💳 마진 모드: 항상 Cross로 자동 유지"
                         )
                         
                         sync_retry_count = 0
                 
-                # 🔥🔥🔥 실패율 계산 수정 - 0으로 나누기 방지
+                # 실패율 계산 수정 - 0으로 나누기 방지
                 if (self.daily_stats['total_mirrored'] >= 10 and 
                     self.daily_stats['failed_mirrors'] > 0):
                     
                     failure_rate = (self.daily_stats['failed_mirrors'] / 
-                                  max(self.daily_stats['total_mirrored'], 1)) * 100  # 🔥 0으로 나누기 방지
+                                  max(self.daily_stats['total_mirrored'], 1)) * 100  # 0으로 나누기 방지
                     
-                    # 🔥🔥🔥 실패율 임계값을 90%로 높임 (기존 70% → 90%)
+                    # 실패율 임계값을 90%로 높임 (기존 70% → 90%)
                     if failure_rate >= 90 and self._should_send_warning('high_failure_rate'):
                         await self.telegram.send_message(
                             f"⚠️ 미러 트레이딩 높은 실패율 감지\n"
@@ -1473,7 +1480,6 @@ class MirrorTradingSystem:
                 await asyncio.sleep(self.SYNC_CHECK_INTERVAL)
 
     async def generate_daily_reports(self):
-        """일일 리포트 생성"""
         while self.monitoring:
             try:
                 now = datetime.now()
@@ -1492,7 +1498,6 @@ class MirrorTradingSystem:
                 await asyncio.sleep(3600)
 
     async def _create_daily_report(self) -> str:
-        """일일 리포트 생성 - 마진 모드 정보 포함"""
         try:
             # 기본 클라이언트로 계정 조회
             bitget_account = await self.bitget.get_account_info()
@@ -1501,7 +1506,7 @@ class MirrorTradingSystem:
             bitget_equity = float(bitget_account.get('accountEquity', 0))
             gate_equity = float(gate_account.get('total', 0))
             
-            # 🔥🔥🔥 실패율 계산 수정 - 0으로 나누기 방지
+            # 실패율 계산 수정 - 0으로 나누기 방지
             success_rate = 0
             failure_rate = 0
             if self.daily_stats['total_mirrored'] > 0:
@@ -1516,19 +1521,19 @@ class MirrorTradingSystem:
             
             price_status_info = ""
             if valid_price_diff is not None:
-                price_status = "✅ 정상" if valid_price_diff <= self.price_sync_threshold else "📊 범위 초과"
+                price_status = "정상" if valid_price_diff <= self.price_sync_threshold else "범위 초과"
                 price_status_info = f"""📈 시세 차이 현황:
 - 비트겟: ${self.bitget_current_price:,.2f}
 - 게이트: ${self.gate_current_price:,.2f}
 - 차이: ${valid_price_diff:.2f} ({self.price_diff_percent:.3f}%)
 - 상태: {price_status}
-- 🔥 처리 상태: 시세 차이와 무관하게 모든 주문 즉시 처리됨"""
+- 처리 상태: 시세 차이와 무관하게 모든 주문 즉시 처리됨"""
             else:
                 price_status_info = f"""📈 시세 차이 현황:
 - 시세 조회에 문제가 있었습니다
 - 비트겟 조회 실패: {self.bitget_price_failures}회
 - 게이트 조회 실패: {self.gate_price_failures}회
-- 🔥 처리 상태: 시세 조회 실패와 무관하게 모든 주문 정상 처리됨"""
+- 처리 상태: 시세 조회 실패와 무관하게 모든 주문 정상 처리됨"""
             
             # TP/SL 미러링 성과 통계
             perfect_mirrors = self.daily_stats.get('perfect_mirrors', 0)
@@ -1536,7 +1541,7 @@ class MirrorTradingSystem:
             tp_sl_success = self.daily_stats.get('tp_sl_success', 0)
             tp_sl_failed = self.daily_stats.get('tp_sl_failed', 0)
             
-            # 🔥🔥🔥 체결/취소 처리 통계 추가
+            # 체결/취소 처리 통계 추가
             cancel_successes = self.daily_stats.get('cancel_successes', 0)
             cancel_failures = self.daily_stats.get('cancel_failures', 0)
             filled_detections = self.daily_stats.get('filled_detection_successes', 0)
@@ -1544,14 +1549,14 @@ class MirrorTradingSystem:
             # 복제 비율 정보
             ratio_description = self.utils.get_ratio_multiplier_description(self.mirror_ratio_multiplier)
             
-            # 🔥🔥🔥 경고 발송 통계
+            # 경고 발송 통계
             total_warnings_sent = sum(self.warning_counters.values())
             warning_types_maxed = len([k for k, v in self.warning_counters.items() if v >= self.MAX_WARNING_COUNT])
             
-            # 🔥🔥🔥 포지션 동기화 통계 추가
+            # 포지션 동기화 통계 추가
             position_cleanups = self.daily_stats.get('position_closed_cleanups', 0)
             
-            # 🔥🔥🔥 마진 모드 현재 상태 확인
+            # 마진 모드 현재 상태 확인
             try:
                 current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
                 margin_mode_status = f"{current_margin_mode.upper()} {'✅' if current_margin_mode == 'cross' else '⚠️'}"
@@ -1561,6 +1566,9 @@ class MirrorTradingSystem:
             
             # 미러링 모드 상태
             mirror_status = "활성화" if self.mirror_trading_enabled else "비활성화"
+            
+            # 마진 모드 강제 설정 통계
+            margin_enforcements = self.daily_stats.get('margin_mode_enforcements', 0)
             
             report = f"""📊 미러 트레이딩 일일 리포트 (텔레그램 제어 + 마진 모드 Cross 강제)
 📅 {datetime.now().strftime('%Y-%m-%d')}
@@ -1572,7 +1580,7 @@ class MirrorTradingSystem:
 
 {price_status_info}
 
-🔄 미러링 설정:
+미러링 설정:
 - 미러링 모드: {mirror_status} (/mirror on/off로 변경)
 - 복제 비율: {self.mirror_ratio_multiplier}x
 - 설명: {ratio_description}
@@ -1583,6 +1591,7 @@ class MirrorTradingSystem:
 - 자동 체크: {self.margin_mode_check_interval}초마다
 - 강제 설정: 4가지 방법으로 시도
 - 모니터링: 활성화 (실패 시 알림)
+- 오늘 강제 설정: {margin_enforcements}회
 
 ⚡ 실시간 포지션 미러링 (실패율 수정):
 - 주문 체결 기반: {self.daily_stats['order_mirrors']}회
@@ -1592,20 +1601,20 @@ class MirrorTradingSystem:
 - 실패: {self.daily_stats['failed_mirrors']}회
 - 성공률: {success_rate:.1f}% (실패율: {failure_rate:.1f}%)
 
-🔄 포지션 동기화 강화:
+포지션 동기화 강화:
 - 자동 포지션 정리: {position_cleanups}회
 - 동기화 주기: 30초마다
 - 비트겟 취소시 게이트도 자동 정리
 - 포지션 방향 불일치 자동 해결
 
-🎯 완벽한 TP/SL 미러링 성과:
+완벽한 TP/SL 미러링 성과:
 - 완벽한 미러링: {perfect_mirrors}회 ✨
 - 부분 미러링: {partial_mirrors}회
-- TP/SL 성공: {tp_sl_success}회 🎯
-- TP/SL 실패: {tp_sl_failed}회 ❌
+- TP/SL 성공: {tp_sl_success}회
+- TP/SL 실패: {tp_sl_failed}회
 - 완벽 성공률: {(perfect_mirrors / max(perfect_mirrors + partial_mirrors, 1) * 100):.1f}%
 
-🔄 예약 주문 미러링:
+예약 주문 미러링:
 - 시작 시 복제: {self.daily_stats['startup_plan_mirrors']}회
 - 신규 미러링: {self.daily_stats['plan_order_mirrors']}회
 - 취소 동기화: {self.daily_stats['plan_order_cancels']}회
@@ -1629,18 +1638,18 @@ class MirrorTradingSystem:
 - 전체 청산: {self.daily_stats['full_closes']}회
 - 총 거래량: ${self.daily_stats['total_volume']:,.2f}
 
-🔔 경고 알림 통계 (각 타입별 최대 {self.MAX_WARNING_COUNT}회):
+경고 알림 통계 (각 타입별 최대 {self.MAX_WARNING_COUNT}회):
 - 총 경고 발송: {total_warnings_sent}회
 - 최대 도달 타입: {warning_types_maxed}개
 - 발송 제한 상태: {'정상' if warning_types_maxed < len(self.warning_counters) else '일부 제한'}
 
-🔄 현재 미러링 상태:
+현재 미러링 상태:
 - 활성 포지션: {len(self.mirrored_positions)}개
 - 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개
 - 완벽한 TP/SL 주문: {len([o for o in self.position_manager.mirrored_plan_orders.values() if o.get('perfect_mirror')])}개
 - 실패 기록: {len(self.failed_mirrors)}건
 
-🔥 강화된 안전장치:
+강화된 안전장치:
 - 미러링 모드: 텔레그램 실시간 제어 (/mirror on/off)
 - 마진 모드: 무조건 Cross 강제 설정 ({self.margin_mode_check_interval}초마다 체크)
 - 마진 모드 강제: 4가지 방법 (포지션, 계정, 리셋, 직접 API)
@@ -1659,12 +1668,13 @@ class MirrorTradingSystem:
 ✅ 미러 트레이딩 시스템 안전하게 작동 중
 🎮 텔레그램으로 실시간 제어 가능 (/mirror, /ratio)
 💳 게이트 마진 모드 무조건 Cross 강제 ({margin_mode_status})
-🛡️ 안전 우선 정책으로 잘못된 삭제 방지
+안전 우선 정책으로 잘못된 삭제 방지
 📋 예약 주문 체결/취소가 정확히 구분됨
-🔄 복제 비율 {self.mirror_ratio_multiplier}x 적용 중
-🔔 경고 알림 스팸 방지: 각 타입별 최대 {self.MAX_WARNING_COUNT}회
-🔄 포지션 동기화 강화: 비트겟 취소시 게이트도 자동 정리
-🔥 마진 모드 강제: {self.margin_mode_check_interval}초마다 Cross 모드 보장"""
+복제 비율 {self.mirror_ratio_multiplier}x 적용 중
+경고 알림 스팸 방지: 각 타입별 최대 {self.MAX_WARNING_COUNT}회
+포지션 동기화 강화: 비트겟 취소시 게이트도 자동 정리
+📊 실패율 계산 수정 (0으로 나누기 방지)
+마진 모드 강제: {self.margin_mode_check_interval}초마다 Cross 보장"""
             
             if self.daily_stats.get('errors'):
                 report += f"\n⚠️ 오류 발생: {len(self.daily_stats['errors'])}건"
@@ -1676,7 +1686,6 @@ class MirrorTradingSystem:
             return f"📊 일일 리포트 생성 실패\n오류: {str(e)}"
 
     def _reset_daily_stats(self):
-        """일일 통계 초기화"""
         self.daily_stats = {
             'total_mirrored': 0,
             'successful_mirrors': 0,
@@ -1701,10 +1710,11 @@ class MirrorTradingSystem:
             'auto_close_order_cleanups': 0,
             'position_closed_cleanups': 0,
             'position_size_corrections': 0,
-            'cancel_successes': 0,  # 🔥🔥🔥 취소 성공 통계
-            'cancel_failures': 0,   # 🔥🔥🔥 취소 실패 통계
-            'filled_detection_successes': 0,  # 🔥🔥🔥 체결 감지 성공 통계
-            'close_order_forced': 0,  # 🔥🔥🔥 강제 클로즈 주문 통계
+            'cancel_successes': 0,
+            'cancel_failures': 0,
+            'filled_detection_successes': 0,
+            'close_order_forced': 0,
+            'margin_mode_enforcements': 0,  # 마진 모드 강제 설정 통계
             'errors': []
         }
         self.failed_mirrors.clear()
@@ -1713,17 +1723,16 @@ class MirrorTradingSystem:
         self.bitget_price_failures = 0
         self.gate_price_failures = 0
         
-        # 🔥🔥🔥 경고 카운터도 매일 리셋
+        # 경고 카운터도 매일 리셋
         self._reset_warning_counter()
         
-        # 🔥🔥🔥 마진 모드 체크 실패 카운터 리셋
+        # 마진 모드 체크 실패 카운터 리셋
         self.margin_mode_check_failures = 0
         
         # 포지션 매니저의 통계도 동기화
         self.position_manager.daily_stats = self.daily_stats
 
     async def _log_account_status(self):
-        """계정 상태 로깅 - 마진 모드 강제 설정 안내 추가"""
         try:
             # 기본 클라이언트로 계정 조회
             bitget_account = await self.bitget.get_account_info()
@@ -1741,12 +1750,12 @@ class MirrorTradingSystem:
 • 비트겟: ${self.bitget_current_price:,.2f}
 • 게이트: ${self.gate_current_price:,.2f}
 • 차이: ${valid_price_diff:.2f} ({price_status})
-• 🔥 처리: 시세 차이와 무관하게 즉시 처리"""
+• 처리: 시세 차이와 무관하게 즉시 처리"""
             else:
                 price_info = f"""📈 시세 상태:
 • 시세 조회 중 문제 발생
 • 시스템이 자동으로 복구 중
-• 🔥 처리: 시세 조회 실패와 무관하게 정상 처리"""
+• 처리: 시세 조회 실패와 무관하게 정상 처리"""
             
             # 복제 비율 설정 정보
             ratio_description = self.utils.get_ratio_multiplier_description(self.mirror_ratio_multiplier)
@@ -1759,7 +1768,7 @@ class MirrorTradingSystem:
 • 현재 상태: /mirror status
 • 복제 비율 변경: /ratio [배율]"""
             
-            # 🔥🔥🔥 게이트 마진 모드 강제 확인 및 설정
+            # Gate 마진 모드 강제 확인 및 설정
             try:
                 gate_margin_mode = await self.gate_mirror.get_current_margin_mode("BTC_USDT")
                 
@@ -1769,11 +1778,12 @@ class MirrorTradingSystem:
                     margin_mode_info = f"💳 게이트 마진 모드: {gate_margin_mode.upper()} ⚠️ → Cross로 강제 변경 시도 중"
                     
                     # 즉시 강제 설정 시도
-                    self.logger.info(f"🔥 마진 모드가 Cross가 아님: {gate_margin_mode} → 즉시 강제 변경 시도")
+                    self.logger.info(f"마진 모드가 Cross가 아님: {gate_margin_mode} → 즉시 강제 변경 시도")
                     force_result = await self.gate_mirror.force_cross_margin_mode_aggressive("BTC_USDT")
                     
                     if force_result:
                         margin_mode_info = f"💳 게이트 마진 모드: {gate_margin_mode.upper()} → CROSS ✅ (강제 변경 완료)"
+                        self.daily_stats['margin_mode_enforcements'] += 1
                     else:
                         margin_mode_info = f"💳 게이트 마진 모드: {gate_margin_mode.upper()} ⚠️ (자동 변경 실패 - 수동 설정 필요)"
                         
@@ -1782,23 +1792,23 @@ class MirrorTradingSystem:
                 self.logger.error(f"마진 모드 확인 실패: {margin_error}")
             
             await self.telegram.send_message(
-                f"🔄 미러 트레이딩 시스템 시작 (텔레그램 제어 + 마진 모드 Cross 강제)\n\n"
+                f"미러 트레이딩 시스템 시작 (텔레그램 제어 + 마진 모드 Cross 강제)\n\n"
                 f"💰 계정 잔고:\n"
                 f"• 비트겟: ${bitget_equity:,.2f}\n"
                 f"• 게이트: ${gate_equity:,.2f}\n\n"
                 f"{price_info}\n\n"
-                f"🔄 미러링 설정:\n"
+                f"미러링 설정:\n"
                 f"• 미러링 모드: {mirror_status}\n"
                 f"• 복제 비율: {self.mirror_ratio_multiplier}x\n"
                 f"• 설명: {ratio_description}\n\n"
                 f"{mirror_control_info}\n\n"
                 f"{margin_mode_info}\n\n"
-                f"🔥 마진 모드 강제 관리:\n"
+                f"마진 모드 강제 관리:\n"
                 f"• 자동 체크: {self.margin_mode_check_interval}초마다 실행\n"
                 f"• 강제 설정: 4가지 방법으로 시도\n"
                 f"• 모니터링: 상시 실행 (실패 시 알림)\n"
                 f"• Cross 보장: 무조건 Cross 모드 유지\n\n"
-                f"🔄 포지션 동기화 강화:\n"
+                f"포지션 동기화 강화:\n"
                 f"• 30초마다 자동 동기화 체크\n"
                 f"• 비트겟에서 포지션 취소시 게이트도 자동 정리\n"
                 f"• 포지션 방향 불일치 자동 해결\n"
@@ -1807,7 +1817,7 @@ class MirrorTradingSystem:
                 f"• 기존 포지션: {len(self.startup_positions)}개 (복제 제외)\n"
                 f"• 기존 예약 주문: {len(self.position_manager.startup_plan_orders)}개\n"
                 f"• 현재 복제된 예약 주문: {len(self.position_manager.mirrored_plan_orders)}개\n\n"
-                f"🔔 경고 알림 제한:\n"
+                f"경고 알림 제한:\n"
                 f"• 각 경고 타입별 최대 {self.MAX_WARNING_COUNT}회만 발송\n"
                 f"• 스팸 방지 정책 적용\n"
                 f"• 매일 자정에 카운터 리셋\n\n"
@@ -1815,22 +1825,22 @@ class MirrorTradingSystem:
                 f"• 🎮 텔레그램 실시간 제어 (/mirror on/off)\n"
                 f"• 💳 게이트 마진 모드 무조건 Cross 강제 ({self.margin_mode_check_interval}초마다)\n"
                 f"• 🎯 완벽한 TP/SL 미러링\n"
-                f"• 🔄 45초마다 안전한 자동 동기화\n"
-                f"• 🛡️ 강화된 중복 복제 방지\n"
-                f"• 🗑️ 확실한 고아 주문만 정리\n"
+                f"• 45초마다 안전한 자동 동기화\n"
+                f"• 강화된 중복 복제 방지\n"
+                f"• 확실한 고아 주문만 정리\n"
                 f"• 📊 모든 예약 주문 감지 (TP/SL 포함)\n"
-                f"• 🔥 시세 차이와 무관하게 즉시 처리\n"
-                f"• 🛡️ 의심스러운 주문은 안전상 보존\n"
+                f"• 시세 차이와 무관하게 즉시 처리\n"
+                f"• 의심스러운 주문은 안전상 보존\n"
                 f"• ⚡ 2차 진입 클로즈 숏 예약 완벽 감지\n"
                 f"• 📋 예약 주문 체결/취소 정확한 구분\n"
-                f"• 🚀 클로징 롱/숏 강제 미러링\n"
+                f"• 클로징 롱/숏 강제 미러링\n"
                 f"• 📈 복제 비율 {self.mirror_ratio_multiplier}x 적용 (텔레그램 실시간 조정)\n"
-                f"• 🔄 렌더 재구동 시 예약 주문 자동 미러링\n"
-                f"• 🔔 경고 알림 스팸 방지 (각 타입별 최대 {self.MAX_WARNING_COUNT}회)\n"
-                f"• 🔄 포지션 동기화 강화 (30초마다 자동 정리)\n"
+                f"• 렌더 재구동 시 예약 주문 자동 미러링\n"
+                f"• 경고 알림 스팸 방지: 각 타입별 최대 {self.MAX_WARNING_COUNT}회\n"
+                f"• 포지션 동기화 강화 (30초마다 자동 정리)\n"
                 f"• 📊 실패율 계산 수정 (0으로 나누기 방지)\n"
-                f"• 🔥 마진 모드 강제: {self.margin_mode_check_interval}초마다 Cross 보장\n\n"
-                f"🚀 텔레그램 제어 + 마진 모드 Cross 강제 시스템이 시작되었습니다.\n"
+                f"• 마진 모드 강제: {self.margin_mode_check_interval}초마다 Cross 보장\n\n"
+                f"텔레그램 제어 + 마진 모드 Cross 강제 시스템이 시작되었습니다.\n"
                 f"📱 /mirror on/off로 미러링을 실시간 제어할 수 있습니다.\n"
                 f"📱 /ratio 명령어로 복제 비율을 실시간 조정할 수 있습니다.\n"
                 f"💳 게이트 마진 모드는 무조건 Cross로 강제 유지됩니다."
@@ -1840,7 +1850,6 @@ class MirrorTradingSystem:
             self.logger.error(f"계정 상태 조회 실패: {e}")
 
     async def stop(self):
-        """미러 트레이딩 중지"""
         self.monitoring = False
         
         try:
@@ -1854,7 +1863,7 @@ class MirrorTradingSystem:
             await self.gate_mirror.close()
             
             final_report = await self._create_daily_report()
-            await self.telegram.send_message(f"🛑 미러 트레이딩 시스템 종료\n\n{final_report}")
+            await self.telegram.send_message(f"미러 트레이딩 시스템 종료\n\n{final_report}")
         except:
             pass
         
