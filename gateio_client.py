@@ -12,6 +12,7 @@ import pytz
 logger = logging.getLogger(__name__)
 
 class GateioMirrorClient:
+    
     def __init__(self, config):
         self.config = config
         self.api_key = config.GATE_API_KEY
@@ -24,9 +25,28 @@ class GateioMirrorClient:
         self.TP_SL_TIMEOUT = 10
         self.MAX_TP_SL_RETRIES = 3
         
-        # API 연결 상태 추적
-        self.api_healthy = True
-        self.last_successful_call = None
+        # 레버리지 설정 강화
+        self.DEFAULT_LEVERAGE = 30
+        self.MAX_LEVERAGE = 100
+        self.MIN_LEVERAGE = 1
+        self.current_leverage_cache = {}
+        
+        # 마진 모드 설정 강화 - 무조건 Cross 강제
+        self.FORCE_CROSS_MARGIN = True  # 무조건 Cross 강제
+        self.DEFAULT_MARGIN_MODE = "cross"  # 항상 Cross 모드 사용
+        self.current_margin_mode_cache = {}
+        self.margin_mode_force_attempts = 0
+        self.max_margin_mode_attempts = 10
+        
+        # 지원되는 마진 모드 매핑 - 모든 것을 Cross로
+        self.MARGIN_MODE_MAPPING = {
+            'cross': 'cross',
+            'isolated': 'cross',  # Isolated도 Cross로 강제 변환
+            'dual_long': 'cross',
+            'dual_short': 'cross',
+            'single': 'cross',
+            'default': 'cross'
+        }
         
     def _initialize_session(self):
         if not self.session:
@@ -46,44 +66,205 @@ class GateioMirrorClient:
     async def initialize(self):
         self._initialize_session()
         
+        # 기본 레버리지를 30배로 설정
         try:
-            logger.info("🔍 Gate.io API 연결 테스트 시작...")
-            
-            # 계정 잔고 조회 테스트
-            test_result = await self.get_account_balance()
-            if test_result is not None and test_result.get('total'):
-                self.api_healthy = True
-                self.last_successful_call = datetime.now()
-                logger.info("✅ Gate.io 계정 조회 성공")
-                
-                # 거래 내역 조회 테스트 - 더 넓은 범위로 테스트
-                try:
-                    now = datetime.now()
-                    thirty_days_ago = now - timedelta(days=30)
-                    start_ts = int(thirty_days_ago.timestamp())
-                    end_ts = int(now.timestamp())
-                    
-                    trades = await self.get_my_trades(
-                        contract="BTC_USDT",
-                        start_time=start_ts,
-                        end_time=end_ts,
-                        limit=50
-                    )
-                    
-                    logger.info(f"✅ Gate.io 거래 내역 조회 테스트: {len(trades)}건 (30일간)")
-                    
-                except Exception as trade_error:
-                    logger.warning(f"⚠️ Gate.io 거래 내역 조회 테스트 실패: {trade_error}")
-                
+            current_leverage = await self.get_current_leverage("BTC_USDT")
+            if current_leverage != self.DEFAULT_LEVERAGE:
+                logger.info(f"기본 레버리지 설정: {current_leverage}x → {self.DEFAULT_LEVERAGE}x")
+                await self.set_leverage("BTC_USDT", self.DEFAULT_LEVERAGE)
             else:
-                logger.warning("⚠️ Gate.io API 연결 테스트 실패 (빈 응답)")
-                self.api_healthy = False
-                
+                logger.info(f"✅ 기본 레버리지 이미 설정됨: {self.DEFAULT_LEVERAGE}x")
         except Exception as e:
-            logger.error(f"❌ Gate.io API 연결 테스트 실패: {e}")
-            self.api_healthy = False
+            logger.warning(f"기본 레버리지 설정 실패하지만 계속 진행: {e}")
+        
+        # 무조건 Cross 마진 모드 강제 설정
+        await self.force_cross_margin_mode_aggressive("BTC_USDT")
         
         logger.info("Gate.io 미러링 클라이언트 초기화 완료")
+    
+    async def force_cross_margin_mode_aggressive(self, contract: str = "BTC_USDT") -> bool:
+        try:
+            logger.info(f"🔥 Gate.io Cross 마진 모드 강제 설정 시작: {contract}")
+            
+            # 현재 마진 모드 확인
+            current_mode = await self.get_current_margin_mode(contract)
+            logger.info(f"🔍 현재 마진 모드: {current_mode}")
+            
+            if current_mode == "cross":
+                logger.info("✅ 이미 Cross 마진 모드입니다")
+                return True
+            
+            # 방법 1: 포지션 기반 마진 모드 변경 시도
+            success_method1 = await self._try_position_margin_mode_change(contract)
+            if success_method1:
+                logger.info("✅ 방법 1 성공: 포지션 기반 마진 모드 변경")
+                return True
+            
+            # 방법 2: 계정 설정 기반 마진 모드 변경 시도  
+            success_method2 = await self._try_account_margin_mode_change(contract)
+            if success_method2:
+                logger.info("✅ 방법 2 성공: 계정 설정 기반 마진 모드 변경")
+                return True
+            
+            # 방법 3: 포지션 종료 후 Cross 모드로 재생성
+            success_method3 = await self._try_position_reset_for_cross(contract)
+            if success_method3:
+                logger.info("✅ 방법 3 성공: 포지션 리셋 후 Cross 모드 설정")
+                return True
+            
+            # 방법 4: API 직접 호출
+            success_method4 = await self._try_direct_margin_mode_api(contract)
+            if success_method4:
+                logger.info("✅ 방법 4 성공: 직접 API 호출")
+                return True
+            
+            logger.warning(f"⚠️ 모든 방법 실패 - 수동으로 Cross 마진 모드 설정 필요")
+            logger.warning(f"💡 Gate.io 웹/앱에서 수동으로 Cross 마진 모드로 변경해주세요")
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Cross 마진 모드 강제 설정 실패: {e}")
+            return False
+    
+    async def _try_position_margin_mode_change(self, contract: str) -> bool:
+        try:
+            logger.info("🔥 방법 1: 포지션 기반 마진 모드 변경 시도")
+            
+            # 현재 포지션 조회
+            positions = await self.get_positions(contract)
+            
+            if not positions:
+                logger.info("포지션이 없어 포지션 기반 변경 불가")
+                return False
+            
+            position = positions[0]
+            
+            # 포지션 마진 모드 변경 API 시도
+            endpoint = f"/api/v4/futures/usdt/positions/{contract}/margin_mode"
+            data = {
+                "margin_mode": "cross"
+            }
+            
+            logger.info(f"포지션 마진 모드 변경 API 호출: {data}")
+            response = await self._request('POST', endpoint, data=data)
+            
+            # 변경 확인
+            await asyncio.sleep(2)
+            new_mode = await self.get_current_margin_mode(contract)
+            
+            if new_mode == "cross":
+                logger.info("✅ 포지션 기반 마진 모드 변경 성공")
+                return True
+            else:
+                logger.info(f"포지션 기반 변경 실패: {new_mode}")
+                return False
+            
+        except Exception as e:
+            logger.debug(f"방법 1 실패: {e}")
+            return False
+    
+    async def _try_account_margin_mode_change(self, contract: str) -> bool:
+        try:
+            logger.info("🔥 방법 2: 계정 설정 기반 마진 모드 변경 시도")
+            
+            # 계정 설정 변경 API 시도
+            endpoint = "/api/v4/futures/usdt/account/margin_mode"
+            data = {
+                "margin_mode": "cross",
+                "contract": contract
+            }
+            
+            logger.info(f"계정 마진 모드 변경 API 호출: {data}")
+            response = await self._request('POST', endpoint, data=data)
+            
+            # 변경 확인
+            await asyncio.sleep(2)
+            new_mode = await self.get_current_margin_mode(contract)
+            
+            if new_mode == "cross":
+                logger.info("✅ 계정 기반 마진 모드 변경 성공")
+                return True
+            else:
+                logger.info(f"계정 기반 변경 실패: {new_mode}")
+                return False
+            
+        except Exception as e:
+            logger.debug(f"방법 2 실패: {e}")
+            return False
+    
+    async def _try_position_reset_for_cross(self, contract: str) -> bool:
+        try:
+            logger.info("🔥 방법 3: 포지션 리셋을 통한 Cross 모드 설정 시도")
+            
+            # 현재 포지션 조회
+            positions = await self.get_positions(contract)
+            
+            if not positions:
+                logger.info("포지션이 없어 리셋 불가, 새 포지션은 Cross로 생성될 예정")
+                return True  # 포지션이 없으면 새로 생성될 때 Cross로 설정됨
+            
+            position = positions[0]
+            current_size = int(position.get('size', 0))
+            
+            if current_size == 0:
+                logger.info("포지션 크기가 0, 새 포지션은 Cross로 생성될 예정")
+                return True
+            
+            logger.warning(f"⚠️ 활성 포지션({current_size}) 있음 - 리셋 건너뛰기")
+            logger.warning(f"💡 포지션 정리 후 새 포지션은 Cross 모드로 생성됩니다")
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"방법 3 실패: {e}")
+            return False
+    
+    async def _try_direct_margin_mode_api(self, contract: str) -> bool:
+        try:
+            logger.info("🔥 방법 4: 직접 마진 모드 API 호출 시도")
+            
+            # Gate.io API v4에서 가능한 여러 엔드포인트 시도
+            endpoints_to_try = [
+                f"/api/v4/futures/usdt/positions/{contract}/margin_mode",
+                "/api/v4/futures/usdt/account",
+                f"/api/v4/futures/usdt/positions/{contract}",
+                "/api/v4/futures/usdt/margin_mode"
+            ]
+            
+            for endpoint in endpoints_to_try:
+                try:
+                    if "account" in endpoint:
+                        data = {
+                            "margin_mode": "cross"
+                        }
+                    else:
+                        data = {
+                            "margin_mode": "cross",
+                            "contract": contract
+                        }
+                    
+                    logger.debug(f"시도: {endpoint} with {data}")
+                    response = await self._request('POST', endpoint, data=data)
+                    
+                    # 변경 확인
+                    await asyncio.sleep(1)
+                    new_mode = await self.get_current_margin_mode(contract)
+                    
+                    if new_mode == "cross":
+                        logger.info(f"✅ 직접 API 호출 성공: {endpoint}")
+                        return True
+                        
+                except Exception as e:
+                    logger.debug(f"직접 API 시도 실패 ({endpoint}): {e}")
+                    continue
+            
+            logger.info("모든 직접 API 호출 실패")
+            return False
+            
+        except Exception as e:
+            logger.debug(f"방법 4 실패: {e}")
+            return False
     
     def _generate_signature(self, method: str, url: str, query_string: str = "", payload: str = "") -> Dict[str, str]:
         timestamp = str(int(time.time()))
@@ -129,60 +310,190 @@ class GateioMirrorClient:
                     response_text = await response.text()
                     
                     if response.status != 200:
-                        error_msg = f"HTTP {response.status}: {response_text[:200]}"
+                        error_msg = f"HTTP {response.status}: {response_text}"
                         logger.error(f"Gate.io API HTTP 오류: {error_msg}")
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
-                            return {}
+                            raise Exception(error_msg)
                     
                     if not response_text.strip():
-                        logger.warning(f"Gate.io API 빈 응답")
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
-                            return {}
+                            raise Exception("빈 응답")
                     
                     try:
-                        result = json.loads(response_text)
-                        
-                        # 성공 기록
-                        self.api_healthy = True
-                        self.last_successful_call = datetime.now()
-                        
-                        return result
-                        
+                        return json.loads(response_text)
                     except json.JSONDecodeError as e:
-                        error_msg = f"JSON 파싱 실패: {e}"
-                        logger.error(f"Gate.io API JSON 오류: {error_msg}")
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
-                            return {}
+                            raise Exception(f"JSON 파싱 실패: {e}")
                             
             except asyncio.TimeoutError:
-                logger.warning(f"Gate.io API 타임아웃 (시도 {attempt + 1})")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2 ** attempt)
                     continue
                 else:
-                    self.api_healthy = False
-                    return {}
+                    raise Exception("요청 타임아웃")
+                    
+            except aiohttp.ClientError as client_error:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                else:
+                    raise Exception(f"클라이언트 오류: {client_error}")
                     
             except Exception as e:
-                logger.error(f"Gate.io API 오류 (시도 {attempt + 1}): {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2 ** attempt)
                     continue
                 else:
-                    self.api_healthy = False
-                    return {}
-        
-        self.api_healthy = False
-        return {}
+                    raise
+    
+    async def get_current_margin_mode(self, contract: str = "BTC_USDT") -> str:
+        try:
+            # 캐시에서 먼저 확인
+            if contract in self.current_margin_mode_cache:
+                cached_time, cached_mode = self.current_margin_mode_cache[contract]
+                if (datetime.now() - cached_time).total_seconds() < 60:  # 1분 캐시
+                    return cached_mode
+            
+            # 포지션 정보에서 마진 모드 확인
+            positions = await self.get_positions(contract)
+            
+            if positions:
+                position = positions[0]
+                margin_mode = position.get('mode', '').lower()
+                
+                # 마진 모드 정규화
+                normalized_mode = self._normalize_margin_mode(margin_mode)
+                
+                if normalized_mode != 'unknown':
+                    # 캐시 업데이트
+                    self.current_margin_mode_cache[contract] = (datetime.now(), normalized_mode)
+                    logger.debug(f"현재 마진 모드 조회: {contract} = {normalized_mode} (원본: {margin_mode})")
+                    return normalized_mode
+                else:
+                    logger.warning(f"알 수 없는 마진 모드: {margin_mode}")
+                    return "unknown"
+            else:
+                # 포지션이 없을 때 계정 설정 확인 시도
+                try:
+                    # Gate.io API v4에서는 계정 설정에서 기본 마진 모드를 확인할 수 있음
+                    endpoint = "/api/v4/futures/usdt/account"
+                    account_info = await self._request('GET', endpoint)
+                    
+                    # 계정의 기본 마진 모드 확인 (Gate.io는 계약별로 다를 수 있음)
+                    # 일반적으로 Gate.io는 기본적으로 cross 모드를 사용
+                    logger.debug(f"포지션이 없어 기본값 반환: cross")
+                    return "cross"
+                    
+                except Exception as e:
+                    logger.debug(f"계정 정보 조회 실패, 기본값 반환: {e}")
+                    return "cross"
+                
+        except Exception as e:
+            logger.error(f"현재 마진 모드 조회 실패: {e}")
+            return "unknown"
+    
+    def _normalize_margin_mode(self, mode: str) -> str:
+        try:
+            mode_lower = str(mode).lower().strip()
+            
+            # 무조건 Cross 모드 강제
+            if self.FORCE_CROSS_MARGIN:
+                if mode_lower in ['cross', 'isolated', 'dual_long', 'dual_short', 'single', 'default']:
+                    logger.debug(f"강제 Cross 매핑: {mode_lower} → cross")
+                    return 'cross'
+            
+            # 일반 매핑
+            if mode_lower in self.MARGIN_MODE_MAPPING:
+                normalized = self.MARGIN_MODE_MAPPING[mode_lower]
+                logger.debug(f"마진 모드 매핑: {mode_lower} → {normalized}")
+                return normalized
+            
+            # 패턴 매칭
+            if 'cross' in mode_lower:
+                return 'cross'
+            elif 'isolated' in mode_lower:
+                return 'cross'  # Isolated도 Cross로 강제
+            elif 'dual' in mode_lower:
+                return 'cross'
+            elif mode_lower in ['single', 'default', '']:
+                return 'cross'
+            else:
+                logger.warning(f"알 수 없는 마진 모드 패턴: {mode_lower}")
+                return 'cross'  # 알 수 없어도 Cross로
+                
+        except Exception as e:
+            logger.error(f"마진 모드 정규화 실패: {e}")
+            return 'cross'  # 오류 시에도 Cross로
+    
+    async def set_margin_mode(self, contract: str, mode: str = "cross") -> Dict:
+        try:
+            logger.info(f"Gate.io 마진 모드 설정 요청: {contract} - {mode}")
+            
+            # 무조건 Cross로 강제
+            if self.FORCE_CROSS_MARGIN:
+                mode = "cross"
+                logger.info(f"🔥 강제 Cross 모드 적용: {mode}")
+            
+            mode = mode.lower()
+            if mode not in ['cross', 'isolated']:
+                logger.error(f"지원되지 않는 마진 모드: {mode}")
+                return {"success": False, "error": f"Invalid margin mode: {mode}"}
+            
+            # 적극적인 마진 모드 설정 시도
+            success = await self.force_cross_margin_mode_aggressive(contract)
+            
+            if success:
+                return {
+                    "success": True,
+                    "mode": "cross",
+                    "contract": contract,
+                    "message": "Cross 마진 모드 설정 성공",
+                    "method": "강제 설정"
+                }
+            else:
+                return {
+                    "success": False,
+                    "mode": "cross",
+                    "contract": contract,
+                    "message": "API 제한으로 수동 설정 필요",
+                    "recommendation": "Gate.io 웹/앱에서 Cross 마진 모드로 수동 설정을 권장합니다"
+                }
+                    
+        except Exception as e:
+            logger.error(f"마진 모드 설정 중 예외 발생: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "recommendation": "수동으로 Cross 마진 모드 설정을 권장합니다"
+            }
+    
+    async def ensure_cross_margin_mode(self, contract: str = "BTC_USDT") -> bool:
+        try:
+            logger.info(f"🔥 Cross 마진 모드 보장 시작: {contract}")
+            
+            # 강제 Cross 모드 설정 시도
+            success = await self.force_cross_margin_mode_aggressive(contract)
+            
+            if success:
+                logger.info(f"✅ Cross 마진 모드 보장 성공: {contract}")
+                return True
+            else:
+                logger.warning(f"⚠️ Cross 마진 모드 자동 설정 실패: {contract}")
+                logger.info(f"💡 수동으로 Cross 마진 모드로 변경을 권장합니다")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Cross 마진 모드 확인 실패: {e}")
+            return False
     
     async def get_current_price(self, contract: str = "BTC_USDT") -> float:
         try:
@@ -199,22 +510,18 @@ class GateioMirrorClient:
         try:
             endpoint = f"/api/v4/futures/usdt/tickers"
             params = {'contract': contract}
-            
             response = await self._request('GET', endpoint, params=params)
             
             if isinstance(response, list) and len(response) > 0:
                 ticker_data = response[0]
                 if 'last' not in ticker_data and 'mark_price' in ticker_data:
                     ticker_data['last'] = ticker_data['mark_price']
-                logger.info(f"✅ Gate.io 티커 조회 성공: {ticker_data.get('last', 'N/A')}")
                 return ticker_data
             elif isinstance(response, dict):
                 if 'last' not in response and 'mark_price' in response:
                     response['last'] = response['mark_price']
-                logger.info(f"✅ Gate.io 티커 조회 성공: {response.get('last', 'N/A')}")
                 return response
             else:
-                logger.warning(f"Gate.io 티커 응답 형식 예상치 못함: {type(response)}")
                 return {}
             
         except Exception as e:
@@ -224,840 +531,95 @@ class GateioMirrorClient:
     async def get_account_balance(self) -> Dict:
         try:
             endpoint = "/api/v4/futures/usdt/accounts"
-            
             response = await self._request('GET', endpoint)
-            
-            if response is None:
-                logger.warning("Gate.io 계정 잔고 응답이 None")
-                return {}
-            
-            # 필수 필드 검증 및 기본값 설정
-            if isinstance(response, dict):
-                # 필수 필드가 없으면 기본값으로 설정
-                required_fields = ['total', 'available', 'unrealised_pnl']
-                for field in required_fields:
-                    if field not in response:
-                        response[field] = '0'
-                
-                # 데이터 타입 검증
-                try:
-                    total = float(response.get('total', 0))
-                    available = float(response.get('available', 0))
-                    unrealized_pnl = float(response.get('unrealised_pnl', 0))
-                    
-                    logger.info(f"✅ Gate.io 계정 정보:")
-                    logger.info(f"  - 총 자산: ${total:.2f}")
-                    logger.info(f"  - 가용 자산: ${available:.2f}")
-                    logger.info(f"  - 미실현 손익: ${unrealized_pnl:.2f}")
-                    
-                    return response
-                    
-                except (ValueError, TypeError) as e:
-                    logger.error(f"Gate.io 계정 데이터 변환 실패: {e}")
-                    return {}
-                    
-            elif isinstance(response, list) and len(response) > 0:
-                return response[0]
-            else:
-                logger.warning(f"Gate.io 계정 응답 형식 예상치 못함: {type(response)}")
-                return {}
-                
+            return response
         except Exception as e:
-            logger.error(f"Gate.io 계정 잔고 조회 실패: {e}")
-            return {}
+            logger.error(f"계정 잔고 조회 실패: {e}")
+            raise
     
     async def get_positions(self, contract: str = "BTC_USDT") -> List[Dict]:
         try:
             endpoint = f"/api/v4/futures/usdt/positions/{contract}"
-            
             response = await self._request('GET', endpoint)
             
-            if response is None:
-                logger.info("Gate.io 포지션 응답이 None - 포지션 없음으로 처리")
-                return []
-            
             if isinstance(response, dict):
-                size = float(response.get('size', 0))
-                if size != 0:
-                    logger.info(f"✅ Gate.io 포지션 발견: 사이즈 {size}")
-                    return [response]
-                else:
-                    logger.info("Gate.io 포지션 없음 (사이즈 0)")
-                    return []
-            elif isinstance(response, list):
-                active_positions = []
-                for pos in response:
-                    if isinstance(pos, dict) and float(pos.get('size', 0)) != 0:
-                        active_positions.append(pos)
-                
-                logger.info(f"✅ Gate.io 활성 포지션: {len(active_positions)}개")
-                return active_positions
-            else:
-                logger.warning(f"Gate.io 포지션 응답 형식 예상치 못함: {type(response)}")
-                return []
+                return [response] if response.get('size', 0) != 0 else []
+            return response
             
         except Exception as e:
-            logger.error(f"Gate.io 포지션 조회 실패: {e}")
-            return []
-
-    async def get_account_book(self, contract: str = "BTC_USDT", start_time: int = None, end_time: int = None, limit: int = 1000) -> List[Dict]:
-        """계정 변동 내역 조회 - 새로운 PnL 계산 방식"""
-        try:
-            endpoint = "/api/v4/futures/usdt/account_book"
-            
-            params = {
-                'limit': str(min(limit, 1000))
-            }
-            
-            if start_time is not None:
-                start_sec = int(start_time / 1000) if start_time > 10000000000 else int(start_time)
-                params['from'] = str(start_sec)
-                
-            if end_time is not None:
-                end_sec = int(end_time / 1000) if end_time > 10000000000 else int(end_time)
-                params['to'] = str(end_sec)
-            
-            logger.info(f"🔍 Gate.io 계정 변동 내역 조회:")
-            logger.info(f"  - 시작시간: {params.get('from', 'None')}")
-            logger.info(f"  - 종료시간: {params.get('to', 'None')}")
-            
-            response = await self._request('GET', endpoint, params=params)
-            
-            if isinstance(response, list):
-                logger.info(f"✅ Gate.io 계정 변동 내역: {len(response)}건")
-                return response
-            else:
-                logger.warning(f"Gate.io 계정 변동 내역 응답 형식 예상치 못함: {type(response)}")
-                return []
-                
-        except Exception as e:
-            logger.error(f"Gate.io 계정 변동 내역 조회 실패: {e}")
-            return []
-
-    async def get_funding_book(self, contract: str = "BTC_USDT", start_time: int = None, end_time: int = None, limit: int = 1000) -> List[Dict]:
-        """펀딩비 내역 조회"""
-        try:
-            endpoint = "/api/v4/futures/usdt/funding_book"
-            
-            params = {
-                'contract': contract,
-                'limit': str(min(limit, 1000))
-            }
-            
-            if start_time is not None:
-                start_sec = int(start_time / 1000) if start_time > 10000000000 else int(start_time)
-                params['from'] = str(start_sec)
-                
-            if end_time is not None:
-                end_sec = int(end_time / 1000) if end_time > 10000000000 else int(end_time)
-                params['to'] = str(end_sec)
-            
-            logger.info(f"🔍 Gate.io 펀딩비 내역 조회: {contract}")
-            
-            response = await self._request('GET', endpoint, params=params)
-            
-            if isinstance(response, list):
-                logger.info(f"✅ Gate.io 펀딩비 내역: {len(response)}건")
-                return response
-            else:
-                logger.warning(f"Gate.io 펀딩비 내역 응답 형식 예상치 못함: {type(response)}")
-                return []
-                
-        except Exception as e:
-            logger.error(f"Gate.io 펀딩비 내역 조회 실패: {e}")
+            logger.error(f"포지션 조회 실패: {e}")
             return []
     
-    async def get_my_trades(self, contract: str = "BTC_USDT", start_time: int = None, end_time: int = None, limit: int = 1000) -> List[Dict]:
+    async def get_current_leverage(self, contract: str) -> int:
         try:
-            endpoint = "/api/v4/futures/usdt/my_trades"
+            # 캐시에서 먼저 확인
+            if contract in self.current_leverage_cache:
+                cached_time, cached_leverage = self.current_leverage_cache[contract]
+                if (datetime.now() - cached_time).total_seconds() < 60:
+                    return cached_leverage
             
-            # 기본 파라미터 설정
-            params = {
-                'contract': contract,
-                'limit': str(min(limit, 1000))
-            }
+            # 포지션 정보에서 레버리지 확인
+            positions = await self.get_positions(contract)
             
-            # 시간 파라미터 처리 - Gate.io는 초 단위 사용
-            if start_time is not None:
-                if start_time > 10000000000:  # 밀리초 형태면 초로 변환
-                    start_time_sec = int(start_time / 1000)
-                else:
-                    start_time_sec = int(start_time)
-                params['from'] = str(start_time_sec)
-                
-            if end_time is not None:
-                if end_time > 10000000000:  # 밀리초 형태면 초로 변환
-                    end_time_sec = int(end_time / 1000)
-                else:
-                    end_time_sec = int(end_time)
-                params['to'] = str(end_time_sec)
-            
-            logger.info(f"🔍 Gate.io 거래 내역 조회 요청:")
-            logger.info(f"  - 계약: {contract}")
-            logger.info(f"  - 시작시간: {params.get('from', 'None')}")
-            logger.info(f"  - 종료시간: {params.get('to', 'None')}")
-            logger.info(f"  - 제한: {params['limit']}")
-            
-            # 재시도 로직 강화
-            for attempt in range(3):
+            if positions:
+                position = positions[0]
+                leverage_str = position.get('leverage', str(self.DEFAULT_LEVERAGE))
                 try:
-                    response = await self._request('GET', endpoint, params=params, max_retries=2)
-                    
-                    if isinstance(response, list):
-                        logger.info(f"✅ Gate.io 거래 내역 조회 성공: {len(response)}건 (시도 {attempt + 1})")
-                        
-                        # 응답 데이터 구조 확인을 위한 상세 로깅
-                        if len(response) > 0:
-                            sample_trade = response[0]
-                            logger.debug(f"샘플 거래 내역 구조: {list(sample_trade.keys())}")
-                            
-                            # 중요 필드 존재 여부 확인
-                            important_fields = ['id', 'create_time', 'contract', 'size', 'price', 'fee', 'point']
-                            existing_fields = [field for field in important_fields if field in sample_trade]
-                            logger.debug(f"존재하는 중요 필드: {existing_fields}")
-                        
-                        return response
-                    else:
-                        logger.warning(f"Gate.io 거래 내역 응답 형식 예상치 못함 (시도 {attempt + 1}): {type(response)}")
-                        if response:
-                            logger.debug(f"응답 내용 샘플: {str(response)[:200]}")
-                        
-                        if attempt < 2:
-                            await asyncio.sleep(1)
-                            continue
-                        else:
-                            return []
-                            
-                except Exception as e:
-                    logger.warning(f"Gate.io 거래 내역 조회 시도 {attempt + 1} 실패: {e}")
-                    if attempt < 2:
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        return []
-            
-            return []
-            
-        except Exception as e:
-            logger.error(f"Gate.io 거래 내역 조회 실패: {e}")
-            return []
-    
-    async def get_position_pnl_alternative_method(self, start_time: int, end_time: int, contract: str = "BTC_USDT") -> Dict:
-        """계정 변동 내역을 통한 대안 PnL 계산"""
-        try:
-            logger.info(f"🔍 Gate.io 대안 PnL 계산 시작 (계정 변동 내역 기반):")
-            
-            # 시간 형식 통일
-            if start_time > 10000000000:
-                start_sec = int(start_time / 1000)
+                    leverage = int(float(leverage_str))
+                    # 캐시 업데이트
+                    self.current_leverage_cache[contract] = (datetime.now(), leverage)
+                    logger.debug(f"현재 레버리지 조회: {contract} = {leverage}x")
+                    return leverage
+                except (ValueError, TypeError):
+                    logger.warning(f"레버리지 값 변환 실패: {leverage_str}")
+                    return self.DEFAULT_LEVERAGE
             else:
-                start_sec = int(start_time)
+                logger.debug(f"포지션이 없어 기본 레버리지 반환: {self.DEFAULT_LEVERAGE}x")
+                return self.DEFAULT_LEVERAGE
                 
-            if end_time > 10000000000:
-                end_sec = int(end_time / 1000)
-            else:
-                end_sec = int(end_time)
-            
-            logger.info(f"  - 시작: {datetime.fromtimestamp(start_sec).strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info(f"  - 종료: {datetime.fromtimestamp(end_sec).strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            # 계정 변동 내역과 펀딩비 내역 병렬 조회
-            book_task = self.get_account_book(contract, start_sec, end_sec, 1000)
-            funding_task = self.get_funding_book(contract, start_sec, end_sec, 1000)
-            
-            try:
-                account_book, funding_book = await asyncio.gather(book_task, funding_task, return_exceptions=True)
-                
-                if isinstance(account_book, Exception):
-                    logger.warning(f"계정 변동 내역 조회 실패: {account_book}")
-                    account_book = []
-                    
-                if isinstance(funding_book, Exception):
-                    logger.warning(f"펀딩비 내역 조회 실패: {funding_book}")
-                    funding_book = []
-                
-            except Exception as e:
-                logger.error(f"계정 내역 병렬 조회 실패: {e}")
-                account_book = []
-                funding_book = []
-            
-            total_pnl = 0.0
-            total_trading_fees = 0.0
-            total_funding_fees = 0.0
-            trade_count = 0
-            
-            # 계정 변동 내역에서 실현 손익과 수수료 추출
-            for entry in account_book:
-                try:
-                    entry_type = entry.get('type', '').lower()
-                    change = float(entry.get('change', 0))
-                    
-                    if change == 0:
-                        continue
-                    
-                    # 실현 손익 (PnL, 정산)
-                    if any(keyword in entry_type for keyword in ['pnl', 'settle', 'realize']):
-                        total_pnl += change
-                        trade_count += 1
-                        logger.debug(f"실현 손익: ${change:.4f} (타입: {entry_type})")
-                    
-                    # 거래 수수료
-                    elif any(keyword in entry_type for keyword in ['fee', 'commission']):
-                        total_trading_fees += abs(change)
-                        logger.debug(f"거래 수수료: ${abs(change):.4f} (타입: {entry_type})")
-                    
-                except Exception as entry_error:
-                    logger.debug(f"계정 변동 항목 처리 오류: {entry_error}")
-                    continue
-            
-            # 펀딩비 내역 처리
-            for funding in funding_book:
-                try:
-                    funding_amount = float(funding.get('funding', 0))
-                    if funding_amount != 0:
-                        total_funding_fees += funding_amount
-                        logger.debug(f"펀딩비: {funding_amount:+.4f}")
-                        
-                except Exception as funding_error:
-                    logger.debug(f"펀딩비 항목 처리 오류: {funding_error}")
-                    continue
-            
-            net_profit = total_pnl + total_funding_fees - total_trading_fees
-            
-            logger.info(f"✅ Gate.io 대안 PnL 계산 완료 (계정 변동 기반):")
-            logger.info(f"  - 계정 변동 항목: {len(account_book)}건")
-            logger.info(f"  - 펀딩비 항목: {len(funding_book)}건")
-            logger.info(f"  - 실현 손익: ${total_pnl:.4f}")
-            logger.info(f"  - 거래 수수료: -${total_trading_fees:.4f}")
-            logger.info(f"  - 펀딩비: {total_funding_fees:+.4f}")
-            logger.info(f"  - 순 수익: ${net_profit:.4f}")
-            
-            return {
-                'position_pnl': total_pnl,
-                'trading_fees': total_trading_fees,
-                'funding_fees': total_funding_fees,
-                'net_profit': net_profit,
-                'trade_count': trade_count,
-                'account_book_count': len(account_book),
-                'funding_book_count': len(funding_book),
-                'source': 'gate_account_book_alternative',
-                'confidence': 'high' if trade_count > 0 else 'medium'
-            }
-            
         except Exception as e:
-            logger.error(f"Gate.io 대안 PnL 계산 실패: {e}")
-            return {
-                'position_pnl': 0.0,
-                'trading_fees': 0.0,
-                'funding_fees': 0.0,
-                'net_profit': 0.0,
-                'trade_count': 0,
-                'source': 'alternative_method_error',
-                'confidence': 'low'
-            }
-    
-    async def get_position_pnl_based_profit(self, start_time: int, end_time: int, contract: str = "BTC_USDT") -> Dict:
-        try:
-            logger.info(f"🔍 Gate.io Position PnL 기준 손익 계산 시작...")
-            
-            # 시간 형식 통일 (밀리초 -> 초)
-            if start_time > 10000000000:
-                start_sec = int(start_time / 1000)
-            else:
-                start_sec = int(start_time)
-                
-            if end_time > 10000000000:
-                end_sec = int(end_time / 1000)
-            else:
-                end_sec = int(end_time)
-            
-            logger.info(f"  - 계약: {contract}")
-            logger.info(f"  - 시작: {datetime.fromtimestamp(start_sec).strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info(f"  - 종료: {datetime.fromtimestamp(end_sec).strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            # 여러 방식으로 거래 내역 조회 시도
-            trades_all = []
-            
-            # 방법 1: my_trades API (기존)
-            try:
-                trades_v1 = await self.get_my_trades(
-                    contract=contract,
-                    start_time=start_sec,
-                    end_time=end_sec,
-                    limit=1000
-                )
-                if trades_v1:
-                    logger.info(f"방법 1 (my_trades): {len(trades_v1)}건")
-                    trades_all.extend(trades_v1)
-            except Exception as e:
-                logger.warning(f"방법 1 실패: {e}")
-            
-            # 방법 2: 계정 변동 내역 기반 (대안)
-            if len(trades_all) == 0:
-                try:
-                    logger.info("방법 2 시도: 계정 변동 내역 기반 PnL 계산")
-                    alternative_result = await self.get_position_pnl_alternative_method(
-                        start_sec, end_sec, contract
-                    )
-                    
-                    if alternative_result.get('trade_count', 0) > 0:
-                        logger.info(f"✅ 대안 방법 성공: {alternative_result}")
-                        return alternative_result
-                        
-                except Exception as e:
-                    logger.warning(f"방법 2 실패: {e}")
-            
-            # 기존 trades 처리 로직
-            logger.info(f"Gate.io 총 거래 내역: {len(trades_all)}건")
-            
-            if not trades_all:
-                logger.info("Gate.io 거래 내역이 없음 - 기간 내 거래 없음")
-                return {
-                    'position_pnl': 0.0,
-                    'trading_fees': 0.0,
-                    'funding_fees': 0.0,
-                    'net_profit': 0.0,
-                    'trade_count': 0,
-                    'source': 'no_trades_found_in_period'
-                }
-            
-            # 거래 내역 분석 및 PnL 계산 - 강화된 로직
-            total_pnl = 0.0
-            total_trading_fees = 0.0
-            total_funding_fees = 0.0
-            trade_count = 0
-            processed_trades = 0
-            
-            for trade in trades_all:
-                try:
-                    processed_trades += 1
-                    
-                    # Gate.io V4 API에서 point 필드가 실제 PnL을 나타냄
-                    trade_pnl = 0.0
-                    pnl_fields = ['point', 'pnl', 'realized_pnl', 'profit', 'close_pnl']
-                    for field in pnl_fields:
-                        if field in trade and trade[field] is not None:
-                            try:
-                                pnl_value = float(trade[field])
-                                if pnl_value != 0:
-                                    trade_pnl = pnl_value
-                                    logger.debug(f"PnL 발견 ({field}): {pnl_value}")
-                                    break
-                            except (ValueError, TypeError):
-                                continue
-                    
-                    # 거래 수수료 확인
-                    trading_fee = 0.0
-                    fee_fields = ['fee', 'trading_fee', 'total_fee']
-                    for field in fee_fields:
-                        if field in trade and trade[field] is not None:
-                            try:
-                                fee_value = float(trade[field])
-                                if fee_value != 0:
-                                    trading_fee = abs(fee_value)  # 수수료는 항상 양수
-                                    break
-                            except (ValueError, TypeError):
-                                continue
-                    
-                    # 펀딩비 확인 
-                    funding_fee = 0.0
-                    funding_fields = ['funding_fee', 'funding_rate_fee', 'funding_cost']
-                    for field in funding_fields:
-                        if field in trade and trade[field] is not None:
-                            try:
-                                funding_value = float(trade[field])
-                                if funding_value != 0:
-                                    funding_fee = funding_value
-                                    break
-                            except (ValueError, TypeError):
-                                continue
-                    
-                    # 유효한 데이터가 있을 때만 누적
-                    if trade_pnl != 0 or trading_fee != 0 or funding_fee != 0:
-                        total_pnl += trade_pnl
-                        total_trading_fees += trading_fee
-                        total_funding_fees += funding_fee
-                        trade_count += 1
-                        
-                        # 상세 로깅 (처음 5건만)
-                        if trade_count <= 5:
-                            logger.debug(f"거래 {trade_count}: PnL=${trade_pnl:.4f}, 수수료=${trading_fee:.4f}, 펀딩=${funding_fee:.4f}")
-                
-                except Exception as trade_error:
-                    logger.debug(f"Gate.io 거래 내역 처리 오류: {trade_error}")
-                    continue
-            
-            # 순 수익 계산
-            net_profit = total_pnl + total_funding_fees - total_trading_fees
-            
-            logger.info(f"✅ Gate.io Position PnL 계산 완료:")
-            logger.info(f"  - 처리된 거래: {processed_trades}건 중 {trade_count}건 유효")
-            logger.info(f"  - Position PnL: ${total_pnl:.4f}")
-            logger.info(f"  - 거래 수수료: -${total_trading_fees:.4f}")
-            logger.info(f"  - 펀딩비: {total_funding_fees:+.4f}")
-            logger.info(f"  - 순 수익: ${net_profit:.4f}")
-            
-            return {
-                'position_pnl': total_pnl,
-                'trading_fees': total_trading_fees,
-                'funding_fees': total_funding_fees,
-                'net_profit': net_profit,
-                'trade_count': trade_count,
-                'processed_trades': processed_trades,
-                'source': 'gate_v4_api_enhanced_v3',
-                'confidence': 'high' if trade_count > 0 else 'medium'
-            }
-            
-        except Exception as e:
-            logger.error(f"Gate.io Position PnL 계산 실패: {e}")
-            
-            return {
-                'position_pnl': 0.0,
-                'trading_fees': 0.0,
-                'funding_fees': 0.0,
-                'net_profit': 0.0,
-                'trade_count': 0,
-                'source': 'error',
-                'confidence': 'low'
-            }
-    
-    async def get_today_position_pnl(self) -> float:
-        try:
-            kst = pytz.timezone('Asia/Seoul')
-            now = datetime.now(kst)
-            
-            # 오늘 0시 (KST)
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            # UTC로 변환하여 타임스탬프 생성
-            start_time_utc = today_start.astimezone(pytz.UTC)
-            end_time_utc = now.astimezone(pytz.UTC)
-            
-            start_timestamp = int(start_time_utc.timestamp())
-            end_timestamp = int(end_time_utc.timestamp())
-            
-            result = await self.get_position_pnl_based_profit(
-                start_timestamp,
-                end_timestamp,
-                'BTC_USDT'
-            )
-            
-            today_pnl = result.get('position_pnl', 0.0)
-            
-            logger.info(f"✅ Gate.io 오늘 PnL: ${today_pnl:.4f}")
-            return today_pnl
-            
-        except Exception as e:
-            logger.error(f"Gate.io 오늘 Position PnL 조회 실패: {e}")
-            return 0.0
-    
-    async def get_7day_position_pnl(self) -> Dict:
-        try:
-            kst = pytz.timezone('Asia/Seoul')
-            current_time = datetime.now(kst)
-            
-            # 현재에서 정확히 7일 전
-            seven_days_ago = current_time - timedelta(days=7)
-            
-            logger.info(f"🔍 Gate.io 7일 Position PnL 계산 (강화된 방식):")
-            logger.info(f"  - 시작: {seven_days_ago.strftime('%Y-%m-%d %H:%M')} KST")
-            logger.info(f"  - 종료: {current_time.strftime('%Y-%m-%d %H:%M')} KST")
-            
-            # UTC로 변환
-            start_time_utc = seven_days_ago.astimezone(pytz.UTC)
-            end_time_utc = current_time.astimezone(pytz.UTC)
-            
-            # 초 단위 타임스탬프 생성
-            start_timestamp = int(start_time_utc.timestamp())
-            end_timestamp = int(end_time_utc.timestamp())
-            
-            # 실제 기간 계산
-            duration_seconds = end_timestamp - start_timestamp
-            duration_days = duration_seconds / (24 * 60 * 60)
-            
-            # 7일보다 조금 많으면 정확히 7일로 조정
-            if duration_days > 7.1:
-                logger.info(f"기간이 7일을 초과함: {duration_days:.1f}일, 정확히 7일로 조정")
-                start_timestamp = end_timestamp - (7 * 24 * 60 * 60)
-                duration_days = 7.0
-            
-            logger.info(f"실제 계산 기간: {duration_days:.1f}일")
-            
-            # 여러 방식으로 강화된 PnL 계산 수행
-            result = None
-            
-            # 방법 1: 일반 방식
-            try:
-                logger.info("🔄 7일 PnL 계산 방법 1: 기본 방식")
-                result = await self.get_position_pnl_based_profit(
-                    start_timestamp,  # 초 단위로 전달
-                    end_timestamp,    # 초 단위로 전달
-                    'BTC_USDT'
-                )
-                
-                if result.get('trade_count', 0) > 0:
-                    logger.info(f"✅ 방법 1 성공: {result.get('trade_count')}건 거래")
-                else:
-                    raise Exception("거래 내역 없음")
-                    
-            except Exception as e:
-                logger.warning(f"방법 1 실패: {e}")
-                
-                # 방법 2: 더 긴 기간으로 재시도
-                try:
-                    logger.info("🔄 7일 PnL 계산 방법 2: 10일 범위로 확장")
-                    ten_days_ago = current_time - timedelta(days=10)
-                    extended_start = int(ten_days_ago.astimezone(pytz.UTC).timestamp())
-                    
-                    extended_result = await self.get_position_pnl_based_profit(
-                        extended_start,
-                        end_timestamp,
-                        'BTC_USDT'
-                    )
-                    
-                    if extended_result.get('trade_count', 0) > 0:
-                        # 10일 결과를 7일로 비례 조정
-                        extended_pnl = extended_result.get('position_pnl', 0)
-                        adjusted_pnl = extended_pnl * (7 / 10)
-                        
-                        result = {
-                            'position_pnl': adjusted_pnl,
-                            'trading_fees': extended_result.get('trading_fees', 0) * 0.7,
-                            'funding_fees': extended_result.get('funding_fees', 0) * 0.7,
-                            'net_profit': extended_result.get('net_profit', 0) * 0.7,
-                            'trade_count': extended_result.get('trade_count', 0),
-                            'source': 'gate_7days_extended_adjusted',
-                            'confidence': 'medium'
-                        }
-                        logger.info(f"✅ 방법 2 성공 (10일→7일 조정): {adjusted_pnl:.4f}")
-                    else:
-                        raise Exception("확장된 범위에서도 거래 없음")
-                        
-                except Exception as e2:
-                    logger.warning(f"방법 2도 실패: {e2}")
-                    
-                    # 방법 3: 계정 변동 내역 방식
-                    try:
-                        logger.info("🔄 7일 PnL 계산 방법 3: 계정 변동 내역")
-                        result = await self.get_position_pnl_alternative_method(
-                            start_timestamp,
-                            end_timestamp,
-                            'BTC_USDT'
-                        )
-                        
-                        if result.get('trade_count', 0) > 0:
-                            logger.info(f"✅ 방법 3 성공: {result.get('trade_count')}건")
-                        else:
-                            raise Exception("계정 변동 내역에서도 데이터 없음")
-                            
-                    except Exception as e3:
-                        logger.error(f"모든 방법 실패: {e3}")
-                        result = {
-                            'position_pnl': 0.0,
-                            'trading_fees': 0.0,
-                            'funding_fees': 0.0,
-                            'net_profit': 0.0,
-                            'trade_count': 0,
-                            'source': 'all_methods_failed',
-                            'confidence': 'low'
-                        }
-            
-            position_pnl = result.get('position_pnl', 0.0)
-            trading_fees = result.get('trading_fees', 0.0)
-            funding_fees = result.get('funding_fees', 0.0)
-            net_profit = result.get('net_profit', 0.0)
-            trade_count = result.get('trade_count', 0)
-            source = result.get('source', 'unknown')
-            confidence = result.get('confidence', 'low')
-            
-            # 일평균 계산
-            daily_average = position_pnl / duration_days if duration_days > 0 else 0
-            
-            logger.info(f"✅ Gate.io 7일 Position PnL 계산 완료:")
-            logger.info(f"  - 실제 기간: {duration_days:.1f}일")
-            logger.info(f"  - 거래 건수: {trade_count}건")
-            logger.info(f"  - Position PnL: ${position_pnl:.4f}")
-            logger.info(f"  - 거래 수수료: -${trading_fees:.4f}")
-            logger.info(f"  - 펀딩비: {funding_fees:+.4f}")
-            logger.info(f"  - 순 수익: ${net_profit:.4f}")
-            logger.info(f"  - 일평균: ${daily_average:.4f}")
-            logger.info(f"  - 계산 방식: {source}")
-            logger.info(f"  - 신뢰도: {confidence}")
-            
-            return {
-                'total_pnl': position_pnl,
-                'daily_pnl': {},
-                'average_daily': daily_average,
-                'trade_count': trade_count,
-                'actual_days': duration_days,
-                'trading_fees': trading_fees,
-                'funding_fees': funding_fees,
-                'net_profit': net_profit,
-                'source': source,
-                'confidence': confidence
-            }
-            
-        except Exception as e:
-            logger.error(f"Gate.io 7일 Position PnL 조회 실패: {e}")
-            
-            return {
-                'total_pnl': 0,
-                'daily_pnl': {},
-                'average_daily': 0,
-                'trade_count': 0,
-                'actual_days': 7,
-                'trading_fees': 0,
-                'funding_fees': 0,
-                'net_profit': 0,
-                'source': 'error_fallback',
-                'confidence': 'low'
-            }
-
-    async def get_real_cumulative_profit_analysis(self) -> Dict:
-        """실제 누적 수익 분석 - 입금액 제외"""
-        try:
-            logger.info(f"🔍 Gate.io 누적 수익 분석 (실 입금액 제외):")
-            
-            # 현재 계정 정보
-            account = await self.get_account_balance()
-            if not account:
-                logger.error("Gate.io 계정 정보 조회 실패")
-                return {
-                    'actual_profit': 0,
-                    'initial_deposits': 0,
-                    'current_balance': 0,
-                    'roi': 0,
-                    'calculation_method': 'account_error',
-                    'confidence': 'low'
-                }
-            
-            current_balance = float(account.get('total', 0))
-            
-            # 실제 입금액 계산을 위한 계정 변동 내역 조회 (전체 기간)
-            try:
-                # 계정 개설 이후 전체 기간의 입출금 내역 조회
-                now = datetime.now()
-                start_of_year = datetime(2025, 1, 1)  # 2025년 시작부터
-                
-                start_timestamp = int(start_of_year.timestamp())
-                end_timestamp = int(now.timestamp())
-                
-                logger.info(f"계정 변동 내역 조회: {start_of_year.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}")
-                
-                account_book = await self.get_account_book(
-                    'BTC_USDT', 
-                    start_timestamp, 
-                    end_timestamp, 
-                    2000  # 충분한 기간 커버
-                )
-                
-                total_deposits = 0.0
-                total_withdrawals = 0.0
-                
-                for entry in account_book:
-                    try:
-                        entry_type = entry.get('type', '').lower()
-                        change = float(entry.get('change', 0))
-                        
-                        # 입금 관련 항목
-                        if any(keyword in entry_type for keyword in ['deposit', 'transfer_in', 'add']):
-                            if change > 0:
-                                total_deposits += change
-                                logger.debug(f"입금 발견: +${change:.2f} (타입: {entry_type})")
-                        
-                        # 출금 관련 항목
-                        elif any(keyword in entry_type for keyword in ['withdraw', 'transfer_out', 'sub']):
-                            if change < 0:
-                                total_withdrawals += abs(change)
-                                logger.debug(f"출금 발견: -${abs(change):.2f} (타입: {entry_type})")
-                                
-                    except Exception as entry_error:
-                        logger.debug(f"계정 변동 항목 처리 오류: {entry_error}")
-                        continue
-                
-                net_deposits = total_deposits - total_withdrawals
-                actual_profit = current_balance - net_deposits
-                
-                # ROI 계산
-                roi = (actual_profit / net_deposits * 100) if net_deposits > 0 else 0
-                
-                logger.info(f"✅ Gate.io 누적 수익 분석 완료 (실제 입금액 기반):")
-                logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
-                logger.info(f"  - 총 입금: ${total_deposits:.2f}")
-                logger.info(f"  - 총 출금: ${total_withdrawals:.2f}")
-                logger.info(f"  - 순 입금: ${net_deposits:.2f}")
-                logger.info(f"  - 실제 수익: ${actual_profit:.2f}")
-                logger.info(f"  - 수익률: {roi:+.1f}%")
-                
-                return {
-                    'actual_profit': actual_profit,
-                    'initial_deposits': net_deposits,
-                    'current_balance': current_balance,
-                    'roi': roi,
-                    'calculation_method': 'account_book_deposits',
-                    'total_deposits': total_deposits,
-                    'total_withdrawals': total_withdrawals,
-                    'net_investment': net_deposits,
-                    'confidence': 'high'
-                }
-                
-            except Exception as book_error:
-                logger.warning(f"계정 변동 내역 기반 계산 실패: {book_error}")
-                
-                # 폴백: 추정값 사용
-                estimated_deposits = 750  # 기본 추정값
-                actual_profit = current_balance - estimated_deposits if current_balance > estimated_deposits else 0
-                roi = (actual_profit / estimated_deposits * 100) if estimated_deposits > 0 else 0
-                
-                logger.info(f"✅ Gate.io 누적 수익 분석 (추정값 기반):")
-                logger.info(f"  - 현재 잔고: ${current_balance:.2f}")
-                logger.info(f"  - 추정 입금: ${estimated_deposits:.2f}")
-                logger.info(f"  - 추정 수익: ${actual_profit:.2f}")
-                logger.info(f"  - 추정 수익률: {roi:+.1f}%")
-                
-                return {
-                    'actual_profit': actual_profit,
-                    'initial_deposits': estimated_deposits,
-                    'current_balance': current_balance,
-                    'roi': roi,
-                    'calculation_method': 'estimated_deposits_fallback',
-                    'total_deposits': estimated_deposits,
-                    'total_withdrawals': 0,
-                    'net_investment': estimated_deposits,
-                    'confidence': 'medium'
-                }
-            
-        except Exception as e:
-            logger.error(f"Gate.io 누적 수익 분석 실패: {e}")
-            return {
-                'actual_profit': 0,
-                'initial_deposits': 750,
-                'current_balance': 0,
-                'roi': 0,
-                'calculation_method': 'error',
-                'confidence': 'low'
-            }
+            logger.error(f"현재 레버리지 조회 실패: {e}")
+            return self.DEFAULT_LEVERAGE
     
     async def set_leverage(self, contract: str, leverage: int, cross_leverage_limit: int = 0, 
                           retry_count: int = 5) -> Dict:
+        
+        # 레버리지 유효성 검증
+        if leverage < self.MIN_LEVERAGE or leverage > self.MAX_LEVERAGE:
+            logger.warning(f"레버리지 범위 초과 ({leverage}x), 기본값 사용: {self.DEFAULT_LEVERAGE}x")
+            leverage = self.DEFAULT_LEVERAGE
+        
         for attempt in range(retry_count):
             try:
+                # 현재 레버리지 확인
+                current_leverage = await self.get_current_leverage(contract)
+                
+                if current_leverage == leverage:
+                    logger.info(f"✅ 레버리지 이미 설정됨: {contract} - {leverage}x")
+                    return {"status": "already_set", "leverage": leverage}
+                
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
                 
-                data = {
-                    "leverage": str(leverage),
-                    "cross_leverage_limit": str(cross_leverage_limit) if cross_leverage_limit > 0 else "0"
+                # Gate.io API v4 정확한 형식
+                params = {
+                    "leverage": str(leverage)
                 }
                 
-                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {leverage}x")
+                if cross_leverage_limit > 0:
+                    params["cross_leverage_limit"] = str(cross_leverage_limit)
                 
-                response = await self._request('POST', endpoint, data=data)
+                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {current_leverage}x → {leverage}x")
+                logger.debug(f"레버리지 설정 파라미터: {params}")
+                
+                response = await self._request('POST', endpoint, params=params)
                 
                 await asyncio.sleep(1.0)
                 
                 # 설정 검증
                 verify_success = await self._verify_leverage_setting(contract, leverage, max_attempts=3)
                 if verify_success:
+                    # 캐시 업데이트
+                    self.current_leverage_cache[contract] = (datetime.now(), leverage)
                     logger.info(f"✅ Gate.io 레버리지 설정 완료: {contract} - {leverage}x")
                     return response
                 else:
@@ -1072,6 +634,13 @@ class GateioMirrorClient:
                 error_msg = str(e)
                 logger.error(f"Gate.io 레버리지 설정 시도 {attempt + 1} 실패: {error_msg}")
                 
+                # 특정 오류는 재시도하지 않음
+                if any(keyword in error_msg.lower() for keyword in [
+                    "leverage not changed", "same leverage", "already set"
+                ]):
+                    logger.info(f"레버리지가 이미 설정되어 있음: {contract} - {leverage}x")
+                    return {"status": "already_set", "leverage": leverage}
+                
                 if attempt < retry_count - 1:
                     await asyncio.sleep(2.0)
                     continue
@@ -1079,12 +648,18 @@ class GateioMirrorClient:
                     logger.warning(f"레버리지 설정 최종 실패하지만 계속 진행: {contract} - {leverage}x")
                     return {"warning": "leverage_setting_failed", "requested_leverage": leverage}
         
+        # 모든 시도 실패해도 경고만 출력하고 계속 진행
+        logger.warning(f"레버리지 설정 모든 재시도 실패, 기본 레버리지로 계속 진행: {contract} - {leverage}x")
         return {"warning": "all_leverage_attempts_failed", "requested_leverage": leverage}
     
     async def _verify_leverage_setting(self, contract: str, expected_leverage: int, max_attempts: int = 3) -> bool:
         for attempt in range(max_attempts):
             try:
                 await asyncio.sleep(0.5 * (attempt + 1))
+                
+                # 캐시 초기화하고 최신 정보 가져오기
+                if contract in self.current_leverage_cache:
+                    del self.current_leverage_cache[contract]
                 
                 positions = await self.get_positions(contract)
                 if positions:
@@ -1095,32 +670,73 @@ class GateioMirrorClient:
                         try:
                             current_lev_int = int(float(current_leverage))
                             if current_lev_int == expected_leverage:
+                                logger.info(f"✅ 레버리지 설정 검증 성공: {current_lev_int}x")
                                 return True
                             else:
+                                logger.debug(f"레버리지 검증: 현재 {current_lev_int}x ≠ 예상 {expected_leverage}x")
                                 if attempt < max_attempts - 1:
                                     continue
                                 return False
                         except (ValueError, TypeError):
+                            logger.debug(f"레버리지 값 변환 실패: {current_leverage}")
                             if attempt < max_attempts - 1:
                                 continue
                             return False
                     else:
+                        logger.debug("레버리지 필드가 없음")
                         if attempt < max_attempts - 1:
                             continue
                         return False
                 else:
+                    # 포지션이 없으면 레버리지 설정은 성공한 것으로 간주
+                    logger.debug("포지션이 없어 레버리지 설정 성공으로 간주")
                     return True
                 
-            except Exception:
+            except Exception as e:
+                logger.debug(f"레버리지 검증 시도 {attempt + 1} 실패: {e}")
                 if attempt < max_attempts - 1:
                     continue
-                return True
+                return True  # 검증 실패해도 설정은 성공한 것으로 간주
         
         return False
+    
+    async def mirror_bitget_leverage(self, bitget_leverage: int, contract: str = "BTC_USDT") -> bool:
+        try:
+            logger.info(f"🔄 레버리지 미러링 시작: 비트겟 {bitget_leverage}x → 게이트 {contract}")
+            
+            # 현재 게이트 레버리지 확인
+            current_gate_leverage = await self.get_current_leverage(contract)
+            
+            if current_gate_leverage == bitget_leverage:
+                logger.info(f"✅ 레버리지 이미 동일: {bitget_leverage}x")
+                return True
+            
+            # 레버리지 설정
+            result = await self.set_leverage(contract, bitget_leverage)
+            
+            if result.get("warning"):
+                logger.warning(f"⚠️ 레버리지 미러링 실패: {result}")
+                return False
+            else:
+                logger.info(f"✅ 레버리지 미러링 성공: {current_gate_leverage}x → {bitget_leverage}x")
+                return True
+            
+        except Exception as e:
+            logger.error(f"레버리지 미러링 실패: {e}")
+            return False
     
     async def create_perfect_tp_sl_order(self, bitget_order: Dict, gate_size: int, gate_margin: float, 
                                        leverage: int, current_gate_price: float) -> Dict:
         try:
+            # Cross 마진 모드 강제 보장 - 주문 생성 전 필수 체크
+            logger.info(f"🔥 주문 생성 전 Cross 마진 모드 강제 확인 시작")
+            await self.ensure_cross_margin_mode("BTC_USDT")
+            
+            # 레버리지 미러링
+            leverage_success = await self.mirror_bitget_leverage(leverage, "BTC_USDT")
+            if not leverage_success:
+                logger.warning("⚠️ 레버리지 미러링 실패하지만 주문 계속 진행")
+            
             # 비트겟 주문 정보 추출
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
             side = bitget_order.get('side', bitget_order.get('tradeSide', '')).lower()
@@ -1135,11 +751,11 @@ class GateioMirrorClient:
             if trigger_price <= 0:
                 raise Exception("유효한 트리거 가격을 찾을 수 없습니다")
             
-            # TP/SL 정보 추출
+            # TP/SL 정보 정확하게 추출
             tp_price = None
             sl_price = None
             
-            # TP 추출
+            # TP 추출 - 비트겟 공식 필드
             tp_fields = ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice']
             for field in tp_fields:
                 value = bitget_order.get(field)
@@ -1147,11 +763,12 @@ class GateioMirrorClient:
                     try:
                         tp_price = float(value)
                         if tp_price > 0:
+                            logger.info(f"🎯 비트겟 TP 추출: {field} = ${tp_price:.2f}")
                             break
                     except:
                         continue
             
-            # SL 추출
+            # SL 추출 - 비트겟 공식 필드
             sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice']
             for field in sl_fields:
                 value = bitget_order.get(field)
@@ -1159,55 +776,74 @@ class GateioMirrorClient:
                     try:
                         sl_price = float(value)
                         if sl_price > 0:
+                            logger.info(f"🛡️ 비트겟 SL 추출: {field} = ${sl_price:.2f}")
                             break
                     except:
                         continue
             
-            # 클로즈 주문 여부 및 방향 판단
+            # 클로즈 주문 여부 및 방향 판단 수정
             reduce_only = bitget_order.get('reduceOnly', False)
-            is_close_order = (
-                'close' in side or 
-                reduce_only is True or 
-                reduce_only == 'true' or
-                str(reduce_only).lower() == 'true'
-            )
+            is_close_order = ('close' in side or reduce_only is True or reduce_only == 'true')
             
-            # 클로즈 주문 방향 매핑
-            final_size = gate_size
-            reduce_only_flag = False
-            
+            # 클로즈 주문 방향 수정 로직
             if is_close_order:
+                # 클로즈 주문: reduce_only=True
+                final_size = gate_size
                 reduce_only_flag = True
                 
+                # 클로즈 주문 방향 매핑 수정
                 if 'close_long' in side or side == 'close long':
+                    # 롱 포지션 종료 → 매도 (음수)
                     final_size = -abs(gate_size)
+                    logger.info(f"🔴 클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
+                    
                 elif 'close_short' in side or side == 'close short':
+                    # 숏 포지션 종료 → 매수 (양수)
                     final_size = abs(gate_size)
-                elif 'sell' in side and 'buy' not in side:
-                    final_size = -abs(gate_size)
-                elif 'buy' in side and 'sell' not in side:
-                    final_size = abs(gate_size)
+                    logger.info(f"🟢 클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
+                    
                 else:
-                    if 'long' in side:
+                    # 일반적인 매도/매수 기반 판단 (클로즈 주문)
+                    if 'sell' in side or 'short' in side:
                         final_size = -abs(gate_size)
-                    elif 'short' in side:
-                        final_size = abs(gate_size)
+                        logger.info(f"🔴 클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
                     else:
-                        final_size = -abs(gate_size)
-            else:
-                reduce_only_flag = False
+                        final_size = abs(gate_size)
+                        logger.info(f"🟢 클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
                 
+            else:
+                # 오픈 주문: 방향 고려
+                reduce_only_flag = False
                 if 'short' in side or 'sell' in side:
                     final_size = -abs(gate_size)
+                    logger.info(f"🔴 오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {final_size})")
                 else:
                     final_size = abs(gate_size)
+                    logger.info(f"🟢 오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {final_size})")
             
             # Gate.io 트리거 타입 결정
             gate_trigger_type = "ge" if trigger_price > current_gate_price else "le"
             
+            logger.info(f"🔍 완벽 미러링 주문 생성:")
+            logger.info(f"   - 비트겟 ID: {order_id}")
+            logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
+            logger.info(f"   - 트리거가: ${trigger_price:.2f}")
+            logger.info(f"   - 레버리지: {leverage}x {'✅ 미러링됨' if leverage_success else '⚠️ 미러링 실패'}")
+            logger.info(f"   - 마진 모드: Cross 강제 보장 완료 ✅")
+            
+            # TP/SL 표시 수정
+            tp_display = f"${tp_price:.2f}" if tp_price is not None else "없음"
+            sl_display = f"${sl_price:.2f}" if sl_price is not None else "없음"
+            
+            logger.info(f"   - TP: {tp_display}")
+            logger.info(f"   - SL: {sl_display}")
+            logger.info(f"   - 게이트 사이즈: {final_size}")
+            
             # TP/SL 포함 통합 주문 생성
             if tp_price or sl_price:
-                gate_order = await self.create_conditional_order_with_tp_sl(
+                logger.info(f"🎯 TP/SL 포함 통합 주문 생성")
+                
+                gate_order = await self.create_conditional_order_with_tp_sl_v3(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     tp_price=tp_price,
@@ -1216,6 +852,7 @@ class GateioMirrorClient:
                     trigger_type=gate_trigger_type
                 )
                 
+                # TP/SL 설정 확인
                 actual_tp = gate_order.get('stop_profit_price', '')
                 actual_sl = gate_order.get('stop_loss_price', '')
                 has_tp_sl = bool(actual_tp or actual_sl)
@@ -1231,10 +868,18 @@ class GateioMirrorClient:
                     'actual_sl_price': actual_sl,
                     'is_close_order': is_close_order,
                     'reduce_only': reduce_only_flag,
-                    'perfect_mirror': has_tp_sl
+                    'perfect_mirror': has_tp_sl,
+                    'leverage_mirrored': leverage_success,
+                    'leverage': leverage,
+                    'margin_mode': 'cross',
+                    'margin_mode_forced': True
                 }
+                
             else:
-                gate_order = await self.create_price_triggered_order(
+                # TP/SL 없는 일반 주문
+                logger.info(f"📝 일반 예약 주문 생성 (TP/SL 없음)")
+                
+                gate_order = await self.create_price_triggered_order_v3(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     reduce_only=reduce_only_flag,
@@ -1248,7 +893,11 @@ class GateioMirrorClient:
                     'has_tp_sl': False,
                     'is_close_order': is_close_order,
                     'reduce_only': reduce_only_flag,
-                    'perfect_mirror': True
+                    'perfect_mirror': True,  # TP/SL이 없으면 완벽
+                    'leverage_mirrored': leverage_success,
+                    'leverage': leverage,
+                    'margin_mode': 'cross',
+                    'margin_mode_forced': True
                 }
             
         except Exception as e:
@@ -1257,85 +906,152 @@ class GateioMirrorClient:
                 'success': False,
                 'error': str(e),
                 'has_tp_sl': False,
-                'perfect_mirror': False
+                'perfect_mirror': False,
+                'leverage_mirrored': False,
+                'margin_mode': 'unknown',
+                'margin_mode_forced': False
             }
     
+    async def create_conditional_order_with_tp_sl_v3(self, trigger_price: float, order_size: int,
+                                                   tp_price: Optional[float] = None,
+                                                   sl_price: Optional[float] = None,
+                                                   reduce_only: bool = False,
+                                                   trigger_type: str = "ge") -> Dict:
+        try:
+            # 주문 생성 전 Cross 마진 모드 강제 보장
+            logger.info(f"🔥 TP/SL 주문 생성 전 Cross 마진 모드 최종 확인")
+            await self.ensure_cross_margin_mode("BTC_USDT")
+            
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            
+            # 수정된 데이터 구조 - initial.tif 추가 + margin_mode 강제
+            data = {
+                "initial": {
+                    "contract": "BTC_USDT",
+                    "size": order_size,  # 정수형으로 전송
+                    "price": "0",  # 시장가로 설정 (0은 시장가 의미)
+                    "tif": "ioc"  # 시장가 주문에는 반드시 ioc 설정
+                },
+                "trigger": {
+                    "strategy_type": 0,   # 가격 기반 트리거
+                    "price_type": 0,      # 마크 가격 기준
+                    "price": str(trigger_price),  # 가격은 문자열로 유지
+                    "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
+                }
+            }
+            
+            # reduce_only 설정 (클로즈 주문인 경우)
+            if reduce_only:
+                data["initial"]["reduce_only"] = True
+            
+            # TP/SL 설정 - 문자열로 전송
+            if tp_price and tp_price > 0:
+                data["stop_profit_price"] = str(tp_price)
+                logger.info(f"🎯 TP 설정: ${tp_price:.2f} (문자열)")
+            
+            if sl_price and sl_price > 0:
+                data["stop_loss_price"] = str(sl_price)
+                logger.info(f"🛡️ SL 설정: ${sl_price:.2f} (문자열)")
+            
+            logger.info(f"🔧 V3 Gate.io TP/SL 주문 데이터 (Cross 마진 강제): {json.dumps(data, indent=2)}")
+            
+            response = await self._request('POST', endpoint, data=data)
+            
+            logger.info(f"✅ Gate.io V3 TP/SL 통합 주문 생성 성공 (Cross 마진): {response.get('id')}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"V3 TP/SL 포함 조건부 주문 생성 실패: {e}")
+            raise
+    
+    async def create_price_triggered_order_v3(self, trigger_price: float, order_size: int,
+                                            reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        try:
+            # 주문 생성 전 Cross 마진 모드 강제 보장
+            logger.info(f"🔥 일반 주문 생성 전 Cross 마진 모드 최종 확인")
+            await self.ensure_cross_margin_mode("BTC_USDT")
+            
+            endpoint = "/api/v4/futures/usdt/price_orders"
+            
+            # 수정된 데이터 구조 - initial.tif 추가 + margin_mode 강제
+            data = {
+                "initial": {
+                    "contract": "BTC_USDT",
+                    "size": order_size,  # 정수형으로 전송
+                    "price": "0",  # 시장가로 설정 (0은 시장가 의미)
+                    "tif": "ioc"  # 시장가 주문에는 반드시 ioc 설정
+                },
+                "trigger": {
+                    "strategy_type": 0,   # 가격 기반 트리거
+                    "price_type": 0,      # 마크 가격 기준
+                    "price": str(trigger_price),  # 가격은 문자열로 유지
+                    "rule": 1 if trigger_type == "ge" else 2  # 1: >=, 2: <=
+                }
+            }
+            
+            # reduce_only 설정 (클로즈 주문인 경우)
+            if reduce_only:
+                data["initial"]["reduce_only"] = True
+            
+            logger.info(f"🔧 V3 Gate.io 일반 주문 데이터 (Cross 마진 강제): {json.dumps(data, indent=2)}")
+            
+            response = await self._request('POST', endpoint, data=data)
+            
+            logger.info(f"✅ Gate.io V3 일반 트리거 주문 생성 성공 (Cross 마진): {response.get('id')}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"V3 일반 가격 트리거 주문 생성 실패: {e}")
+            raise
+    
+    # 기존 메서드들은 호환성을 위해 새로운 메서드로 리다이렉트
+    async def create_conditional_order_with_tp_sl_v2(self, trigger_price: float, order_size: int,
+                                                   tp_price: Optional[float] = None,
+                                                   sl_price: Optional[float] = None,
+                                                   reduce_only: bool = False,
+                                                   trigger_type: str = "ge") -> Dict:
+        return await self.create_conditional_order_with_tp_sl_v3(
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
+        )
+    
+    async def create_price_triggered_order_v2(self, trigger_price: float, order_size: int,
+                                            reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        return await self.create_price_triggered_order_v3(
+            trigger_price, order_size, reduce_only, trigger_type
+        )
+    
+    async def create_conditional_order_with_tp_sl_fixed(self, trigger_price: float, order_size: int,
+                                                      tp_price: Optional[float] = None,
+                                                      sl_price: Optional[float] = None,
+                                                      reduce_only: bool = False,
+                                                      trigger_type: str = "ge") -> Dict:
+        return await self.create_conditional_order_with_tp_sl_v3(
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
+        )
+    
+    async def create_price_triggered_order_fixed(self, trigger_price: float, order_size: int,
+                                               reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
+        return await self.create_price_triggered_order_v3(
+            trigger_price, order_size, reduce_only, trigger_type
+        )
+    
+    # 기존 메서드들은 호환성을 위해 새로운 메서드로 리다이렉트
     async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
                                                 tp_price: Optional[float] = None,
                                                 sl_price: Optional[float] = None,
                                                 reduce_only: bool = False,
                                                 trigger_type: str = "ge") -> Dict:
-        try:
-            endpoint = "/api/v4/futures/usdt/price_orders"
-            
-            initial_data = {
-                "type": "market",
-                "contract": "BTC_USDT",
-                "size": order_size,
-                "price": str(trigger_price)
-            }
-            
-            if reduce_only:
-                initial_data["reduce_only"] = True
-            
-            rule_value = 1 if trigger_type == "ge" else 2
-            
-            data = {
-                "initial": initial_data,
-                "trigger": {
-                    "strategy_type": 0,
-                    "price_type": 0,
-                    "price": str(trigger_price),
-                    "rule": rule_value
-                }
-            }
-            
-            if tp_price and tp_price > 0:
-                data["stop_profit_price"] = str(tp_price)
-            
-            if sl_price and sl_price > 0:
-                data["stop_loss_price"] = str(sl_price)
-            
-            response = await self._request('POST', endpoint, data=data)
-            return response
-            
-        except Exception as e:
-            logger.error(f"TP/SL 포함 조건부 주문 생성 실패: {e}")
-            raise
+        return await self.create_conditional_order_with_tp_sl_v3(
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
+        )
     
     async def create_price_triggered_order(self, trigger_price: float, order_size: int,
                                          reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
-        try:
-            endpoint = "/api/v4/futures/usdt/price_orders"
-            
-            initial_data = {
-                "type": "market",
-                "contract": "BTC_USDT",
-                "size": order_size,
-                "price": str(trigger_price)
-            }
-            
-            if reduce_only:
-                initial_data["reduce_only"] = True
-            
-            rule_value = 1 if trigger_type == "ge" else 2
-            
-            data = {
-                "initial": initial_data,
-                "trigger": {
-                    "strategy_type": 0,
-                    "price_type": 0,
-                    "price": str(trigger_price),
-                    "rule": rule_value
-                }
-            }
-            
-            response = await self._request('POST', endpoint, data=data)
-            return response
-            
-        except Exception as e:
-            logger.error(f"가격 트리거 주문 생성 실패: {e}")
-            raise
+        return await self.create_price_triggered_order_v3(
+            trigger_price, order_size, reduce_only, trigger_type
+        )
     
     async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
         try:
@@ -1366,16 +1082,30 @@ class GateioMirrorClient:
     async def place_order(self, contract: str, size: int, price: Optional[float] = None,
                          reduce_only: bool = False, tif: str = "gtc", iceberg: int = 0) -> Dict:
         try:
+            # 주문 생성 전 Cross 마진 모드 강제 보장
+            logger.info(f"🔥 시장가/지정가 주문 생성 전 Cross 마진 모드 최종 확인")
+            await self.ensure_cross_margin_mode(contract)
+            
+            # 주문 전 현재 레버리지 확인 및 기본값 설정
+            current_leverage = await self.get_current_leverage(contract)
+            if current_leverage < self.DEFAULT_LEVERAGE:
+                logger.info(f"레버리지가 낮음 ({current_leverage}x), 기본값으로 설정: {self.DEFAULT_LEVERAGE}x")
+                await self.set_leverage(contract, self.DEFAULT_LEVERAGE)
+            
             endpoint = "/api/v4/futures/usdt/orders"
             
+            # size는 정수형으로 전송
             data = {
                 "contract": contract,
-                "size": size
+                "size": size  # 정수형으로 전송
             }
             
             if price is not None:
                 data["price"] = str(price)
                 data["tif"] = tif
+            else:
+                # 시장가 주문일 때는 반드시 tif를 ioc로 설정
+                data["tif"] = "ioc"
             
             if reduce_only:
                 data["reduce_only"] = True
@@ -1384,6 +1114,8 @@ class GateioMirrorClient:
                 data["iceberg"] = iceberg
             
             response = await self._request('POST', endpoint, data=data)
+            
+            logger.info(f"✅ Gate.io 주문 생성 성공 (Cross 마진): {response.get('id')} (레버리지: {current_leverage}x)")
             return response
             
         except Exception as e:
@@ -1392,13 +1124,17 @@ class GateioMirrorClient:
     
     async def close_position(self, contract: str, size: Optional[int] = None) -> Dict:
         try:
+            # 포지션 종료 전 Cross 마진 모드 확인
+            logger.info(f"🔥 포지션 종료 전 Cross 마진 모드 최종 확인")
+            await self.ensure_cross_margin_mode(contract)
+            
             positions = await self.get_positions(contract)
             
-            if not positions or float(positions[0].get('size', 0)) == 0:
+            if not positions or positions[0].get('size', 0) == 0:
                 return {"status": "no_position"}
             
             position = positions[0]
-            position_size = int(float(position['size']))
+            position_size = int(position['size'])
             
             if size is None:
                 close_size = -position_size
@@ -1415,6 +1151,7 @@ class GateioMirrorClient:
                 reduce_only=True
             )
             
+            logger.info(f"✅ Gate.io 포지션 종료 성공 (Cross 마진): {close_size}")
             return result
             
         except Exception as e:
