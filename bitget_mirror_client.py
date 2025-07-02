@@ -14,33 +14,29 @@ import traceback
 logger = logging.getLogger(__name__)
 
 class BitgetMirrorClient:
-    """Bitget 미러링 전용 클라이언트 - 예약 주문 및 미러링 기능"""
     
     def __init__(self, config):
         self.config = config
         self.session = None
         self._initialize_session()
         
-        # 🔥🔥🔥 API 연결 상태 추적
+        # API 연결 상태 추적
         self.api_connection_healthy = True
         self.consecutive_failures = 0
         self.last_successful_call = datetime.now()
         self.max_consecutive_failures = 10
         
-        # 🔥🔥🔥 백업 엔드포인트들
+        # 백업 엔드포인트들
         self.ticker_endpoints = [
-            "/api/v2/mix/market/ticker",  # 기본 V2
-            "/api/mix/v1/market/ticker",  # V1 백업
-            "/api/v2/spot/market/tickers", # Spot 백업 (변환 필요)
+            "/api/v2/mix/market/ticker",
+            "/api/mix/v1/market/ticker",
+            "/api/v2/spot/market/tickers",
         ]
         
-        # API 키 검증 상태
         self.api_keys_validated = False
         
     def _initialize_session(self):
-        """세션 초기화"""
         if not self.session:
-            # 🔥🔥🔥 연결 타임아웃 및 재시도 설정 강화
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
             connector = aiohttp.TCPConnector(
                 limit=100,
@@ -55,20 +51,14 @@ class BitgetMirrorClient:
             logger.info("Bitget 미러링 클라이언트 세션 초기화 완료")
         
     async def initialize(self):
-        """클라이언트 초기화"""
         self._initialize_session()
-        
-        # 🔥🔥🔥 API 키 유효성 검증
         await self._validate_api_keys()
-        
         logger.info("Bitget 미러링 클라이언트 초기화 완료")
     
     async def _validate_api_keys(self):
-        """🔥🔥🔥 API 키 유효성 검증"""
         try:
             logger.info("비트겟 미러링 API 키 유효성 검증 시작...")
             
-            # 간단한 계정 정보 조회로 API 키 검증
             endpoint = "/api/v2/mix/account/accounts"
             params = {
                 'productType': 'USDT-FUTURES',
@@ -91,7 +81,6 @@ class BitgetMirrorClient:
             self.api_keys_validated = False
     
     def _generate_signature(self, timestamp: str, method: str, request_path: str, body: str = '') -> str:
-        """API 서명 생성"""
         message = timestamp + method.upper() + request_path + body
         signature = base64.b64encode(
             hmac.new(
@@ -103,7 +92,6 @@ class BitgetMirrorClient:
         return signature
     
     def _get_headers(self, method: str, request_path: str, body: str = '') -> Dict[str, str]:
-        """API 헤더 생성"""
         timestamp = str(int(time.time() * 1000))
         signature = self._generate_signature(timestamp, method, request_path, body)
         
@@ -117,7 +105,6 @@ class BitgetMirrorClient:
         }
     
     async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None, max_retries: int = 3) -> Dict:
-        """🔥🔥🔥 API 요청 - 강화된 오류 처리"""
         if not self.session:
             self._initialize_session()
             
@@ -133,7 +120,7 @@ class BitgetMirrorClient:
         body = json.dumps(data) if data else ''
         headers = self._get_headers(method, request_path, body)
         
-        # 🔥🔥🔥 재시도 로직
+        # 재시도 로직
         for attempt in range(max_retries):
             try:
                 logger.debug(f"비트겟 미러링 API 요청 (시도 {attempt + 1}/{max_retries}): {method} {endpoint}")
@@ -141,9 +128,7 @@ class BitgetMirrorClient:
                 async with self.session.request(method, url, headers=headers, data=body) as response:
                     response_text = await response.text()
                     
-                    # 🔥🔥🔥 상세한 응답 로깅
                     logger.debug(f"비트겟 미러링 API 응답 상태: {response.status}")
-                    logger.debug(f"비트겟 미러링 API 응답 헤더: {dict(response.headers)}")
                     logger.debug(f"비트겟 미러링 API 응답 내용: {response_text[:500]}...")
                     
                     # 빈 응답 체크
@@ -151,7 +136,7 @@ class BitgetMirrorClient:
                         error_msg = f"빈 응답 받음 (상태: {response.status})"
                         logger.warning(error_msg)
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(2 ** attempt)  # 지수 백오프
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         else:
                             self._record_failure(error_msg)
@@ -192,7 +177,7 @@ class BitgetMirrorClient:
                             self._record_failure(error_msg)
                             raise Exception(error_msg)
                     
-                    # 🔥🔥🔥 성공 기록
+                    # 성공 기록
                     self._record_success()
                     return response_data.get('data', {})
                     
@@ -232,13 +217,11 @@ class BitgetMirrorClient:
         raise Exception(final_error)
     
     def _record_success(self):
-        """🔥🔥🔥 성공 기록"""
         self.api_connection_healthy = True
         self.consecutive_failures = 0
         self.last_successful_call = datetime.now()
     
     def _record_failure(self, error_msg: str):
-        """🔥🔥🔥 실패 기록"""
         self.consecutive_failures += 1
         
         if self.consecutive_failures >= self.max_consecutive_failures:
@@ -248,16 +231,14 @@ class BitgetMirrorClient:
         logger.warning(f"비트겟 미러링 API 실패 기록: {error_msg} (연속 실패: {self.consecutive_failures}회)")
     
     async def get_ticker(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 현재가 정보 조회 - 다중 엔드포인트 지원"""
         symbol = symbol or self.config.symbol
         
-        # 🔥🔥🔥 여러 엔드포인트 순차 시도
+        # 여러 엔드포인트 순차 시도
         for i, endpoint in enumerate(self.ticker_endpoints):
             try:
                 logger.debug(f"미러링 티커 조회 시도 {i + 1}/{len(self.ticker_endpoints)}: {endpoint}")
                 
                 if endpoint == "/api/v2/mix/market/ticker":
-                    # V2 믹스 마켓 (기본)
                     params = {
                         'symbol': symbol,
                         'productType': 'USDT-FUTURES'
@@ -273,7 +254,6 @@ class BitgetMirrorClient:
                         continue
                     
                 elif endpoint == "/api/mix/v1/market/ticker":
-                    # V1 믹스 마켓 (백업)
                     v1_symbol = f"{symbol}_UMCBL"
                     params = {
                         'symbol': v1_symbol
@@ -287,7 +267,6 @@ class BitgetMirrorClient:
                         continue
                         
                 elif endpoint == "/api/v2/spot/market/tickers":
-                    # 스팟 마켓 (최후 백업)
                     spot_symbol = symbol.replace('USDT', '-USDT')
                     params = {
                         'symbol': spot_symbol
@@ -302,7 +281,7 @@ class BitgetMirrorClient:
                         logger.warning(f"미러링 V2 스팟: 예상치 못한 응답 형식: {type(response)}")
                         continue
                 
-                # 🔥🔥🔥 응답 데이터 검증 및 정규화
+                # 응답 데이터 검증 및 정규화
                 if ticker_data and self._validate_ticker_data(ticker_data):
                     normalized_ticker = self._normalize_ticker_data(ticker_data, endpoint)
                     logger.info(f"✅ 미러링 티커 조회 성공 ({endpoint}): ${normalized_ticker.get('last', 'N/A')}")
@@ -315,14 +294,13 @@ class BitgetMirrorClient:
                 logger.warning(f"미러링 티커 엔드포인트 {endpoint} 실패: {e}")
                 continue
         
-        # 🔥🔥🔥 모든 엔드포인트 실패
+        # 모든 엔드포인트 실패
         error_msg = f"미러링 모든 티커 엔드포인트 실패: {', '.join(self.ticker_endpoints)}"
         logger.error(error_msg)
         self._record_failure("모든 티커 엔드포인트 실패")
         return {}
     
     def _validate_ticker_data(self, ticker_data: Dict) -> bool:
-        """🔥🔥🔥 티커 데이터 유효성 검증"""
         try:
             if not isinstance(ticker_data, dict):
                 return False
@@ -348,7 +326,6 @@ class BitgetMirrorClient:
             return False
     
     def _normalize_ticker_data(self, ticker_data: Dict, endpoint: str) -> Dict:
-        """🔥🔥🔥 티커 데이터 정규화"""
         try:
             normalized = {}
             
@@ -397,7 +374,6 @@ class BitgetMirrorClient:
             return ticker_data
     
     async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """포지션 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/position/all-position"
         params = {
@@ -429,7 +405,6 @@ class BitgetMirrorClient:
             raise
     
     async def get_account_info(self) -> Dict:
-        """계정 정보 조회 (V2 API)"""
         endpoint = "/api/v2/mix/account/accounts"
         params = {
             'productType': 'USDT-FUTURES',
@@ -447,7 +422,6 @@ class BitgetMirrorClient:
             raise
     
     async def get_recent_filled_orders(self, symbol: str = None, minutes: int = 5) -> List[Dict]:
-        """최근 체결된 주문 조회 (미러링용)"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -457,13 +431,13 @@ class BitgetMirrorClient:
             start_timestamp = int(start_time.timestamp() * 1000)
             end_timestamp = int(now.timestamp() * 1000)
             
-            # 최근 체결된 주문 조회
+            # 최근 체결된 주문 조회 - 더 정확한 방식 사용
             filled_orders = await self.get_order_history(
                 symbol=symbol,
                 status='filled',
                 start_time=start_timestamp,
                 end_time=end_timestamp,
-                limit=50
+                limit=100  # 더 많이 조회하여 정확도 향상
             )
             
             logger.info(f"미러링 최근 {minutes}분간 체결된 주문: {len(filled_orders)}건")
@@ -484,7 +458,6 @@ class BitgetMirrorClient:
     
     async def get_order_history(self, symbol: str = None, status: str = 'filled', 
                               start_time: int = None, end_time: int = None, limit: int = 100) -> List[Dict]:
-        """주문 내역 조회 (V2 API)"""
         symbol = symbol or self.config.symbol
         endpoint = "/api/v2/mix/order/orders-history"
         params = {
@@ -516,8 +489,33 @@ class BitgetMirrorClient:
             logger.error(f"미러링 주문 내역 조회 실패: {e}")
             return []
     
+    async def get_filled_orders_by_ids(self, order_ids: List[str], symbol: str = None) -> List[Dict]:
+        """특정 주문 ID들이 체결되었는지 확인"""
+        try:
+            if not order_ids:
+                return []
+            
+            symbol = symbol or self.config.symbol
+            
+            # 최근 30분간 체결된 주문들 조회
+            filled_orders = await self.get_recent_filled_orders(symbol=symbol, minutes=30)
+            
+            # 요청된 ID들 중 체결된 것들만 필터링
+            matched_orders = []
+            for order in filled_orders:
+                order_id = order.get('orderId', order.get('id', ''))
+                if order_id in order_ids:
+                    matched_orders.append(order)
+                    logger.info(f"체결 확인: {order_id} - {order.get('side')} {order.get('size')}")
+            
+            logger.info(f"요청된 {len(order_ids)}개 주문 중 {len(matched_orders)}개 체결 확인")
+            return matched_orders
+            
+        except Exception as e:
+            logger.error(f"특정 주문 ID 체결 확인 실패: {e}")
+            return []
+    
     async def get_plan_orders_v2_working(self, symbol: str = None) -> List[Dict]:
-        """🔥 V2 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -525,9 +523,9 @@ class BitgetMirrorClient:
             
             all_found_orders = []
             
-            # 🔥 실제 작동하는 V2 엔드포인트만 사용
+            # 실제 작동하는 V2 엔드포인트만 사용
             working_endpoints = [
-                "/api/v2/mix/order/orders-pending",          # ✅ 작동 확인됨
+                "/api/v2/mix/order/orders-pending",
             ]
             
             for endpoint in working_endpoints:
@@ -561,7 +559,7 @@ class BitgetMirrorClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크
+                        # 발견된 주문들 상세 로깅 - TP/SL 정보 특별 체크
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -572,7 +570,7 @@ class BitgetMirrorClient:
                             trigger_price = order.get('triggerPrice', order.get('executePrice', order.get('price', 'unknown')))
                             size = order.get('size', order.get('volume', 'unknown'))
                             
-                            # 🔥🔥🔥 TP/SL 정보 상세 로깅
+                            # TP/SL 정보 상세 로깅
                             tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
                             sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
                             
@@ -583,7 +581,7 @@ class BitgetMirrorClient:
                             if sl_price:
                                 logger.info(f"      🛡️ SL 설정 발견: {sl_price}")
                             
-                            # 🔥🔥🔥 모든 필드 확인하여 TP/SL 관련 필드 찾기
+                            # 모든 필드 확인하여 TP/SL 관련 필드 찾기
                             tp_sl_fields = {}
                             for field_name, field_value in order.items():
                                 if any(keyword in field_name.lower() for keyword in ['stop', 'profit', 'loss', 'tp', 'sl']):
@@ -627,7 +625,6 @@ class BitgetMirrorClient:
             return []
     
     async def get_plan_orders_v1_working(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """🔥 V1 API로 예약 주문 조회 - 실제 작동하는 엔드포인트만 사용"""
         try:
             # V1 API는 다른 심볼 형식을 사용
             symbol = symbol or self.config.symbol
@@ -637,9 +634,9 @@ class BitgetMirrorClient:
             
             all_found_orders = []
             
-            # 🔥 실제 작동하는 V1 엔드포인트만 사용
+            # 실제 작동하는 V1 엔드포인트만 사용
             working_endpoints = [
-                "/api/mix/v1/plan/currentPlan",              # ✅ 작동 확인됨 (비어있을 뿐)
+                "/api/mix/v1/plan/currentPlan",
             ]
             
             for endpoint in working_endpoints:
@@ -682,7 +679,7 @@ class BitgetMirrorClient:
                         all_found_orders.extend(orders)
                         logger.info(f"🎯 미러링 {endpoint}에서 발견: {len(orders)}개 주문")
                         
-                        # 발견된 주문들 상세 로깅 - 🔥🔥🔥 TP/SL 정보 특별 체크
+                        # 발견된 주문들 상세 로깅 - TP/SL 정보 특별 체크
                         for i, order in enumerate(orders):
                             if order is None:
                                 continue
@@ -693,7 +690,7 @@ class BitgetMirrorClient:
                             trigger_price = order.get('triggerPrice', order.get('executePrice', 'unknown'))
                             size = order.get('size', order.get('volume', 'unknown'))
                             
-                            # 🔥🔥🔥 TP/SL 정보 상세 로깅
+                            # TP/SL 정보 상세 로깅
                             tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
                             sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
                             
@@ -738,13 +735,12 @@ class BitgetMirrorClient:
             return []
     
     async def get_all_trigger_orders(self, symbol: str = None) -> List[Dict]:
-        """🔥 모든 트리거 주문 조회 - 작동하는 엔드포인트만 사용"""
         all_orders = []
         symbol = symbol or self.config.symbol
         
         logger.info(f"🔍 미러링 모든 트리거 주문 조회 시작: {symbol}")
         
-        # 🔥 1. V2 API 조회 (우선)
+        # V2 API 조회 (우선)
         try:
             v2_orders = await self.get_plan_orders_v2_working(symbol)
             if v2_orders:
@@ -753,7 +749,7 @@ class BitgetMirrorClient:
         except Exception as e:
             logger.warning(f"미러링 V2 예약 주문 조회 실패: {e}")
         
-        # 🔥 2. V1 일반 예약 주문
+        # V1 일반 예약 주문
         try:
             v1_orders = await self.get_plan_orders_v1_working(symbol)
             if v1_orders:
@@ -762,7 +758,7 @@ class BitgetMirrorClient:
         except Exception as e:
             logger.warning(f"미러링 V1 일반 예약 주문 조회 실패: {e}")
         
-        # 🔥 3. V1 TP/SL 주문
+        # V1 TP/SL 주문
         try:
             v1_tp_sl = await self.get_plan_orders_v1_working(symbol, 'profit_loss')
             if v1_tp_sl:
@@ -790,7 +786,6 @@ class BitgetMirrorClient:
         
         logger.info(f"🔥 미러링 최종 발견된 고유한 트리거 주문: {len(unique_orders)}건")
         
-        # 🔥🔥🔥 수정: 예약 주문이 없을 때 경고 로그 제거
         if unique_orders:
             logger.info("📋 미러링 발견된 예약 주문 목록:")
             for i, order in enumerate(unique_orders, 1):
@@ -800,7 +795,7 @@ class BitgetMirrorClient:
                 size = order.get('size', order.get('volume', 'unknown'))
                 order_type = order.get('orderType', order.get('planType', order.get('type', 'unknown')))
                 
-                # 🔥🔥🔥 TP/SL 정보도 로깅
+                # TP/SL 정보도 로깅
                 tp_price = order.get('presetStopSurplusPrice', order.get('stopSurplusPrice', order.get('takeProfitPrice')))
                 sl_price = order.get('presetStopLossPrice', order.get('stopLossPrice'))
                 
@@ -810,13 +805,11 @@ class BitgetMirrorClient:
                 if sl_price:
                     logger.info(f"     🛡️ SL: {sl_price}")
         else:
-            # 🔥🔥🔥 수정: WARNING → DEBUG로 변경하여 빨간 로그 제거
             logger.debug("📝 미러링 현재 예약 주문이 없습니다.")
         
         return unique_orders
     
     async def get_plan_orders(self, symbol: str = None, plan_type: str = None) -> List[Dict]:
-        """플랜 주문(예약 주문) 조회 - 모든 방법 시도"""
         try:
             # 모든 트리거 주문 조회
             all_orders = await self.get_all_trigger_orders(symbol)
@@ -836,7 +829,6 @@ class BitgetMirrorClient:
             return []
     
     async def get_all_plan_orders_with_tp_sl(self, symbol: str = None) -> Dict:
-        """🔥🔥🔥 모든 플랜 주문과 TP/SL 조회 - 개선된 분류 + TP 정보 강화 (수정된 f-string)"""
         try:
             symbol = symbol or self.config.symbol
             
@@ -864,7 +856,7 @@ class BitgetMirrorClient:
                     order.get('reduceOnly') == 'true'):
                     is_tp_sl = True
                 
-                # 🔥🔥🔥 TP/SL 가격이 설정된 경우 처리 개선
+                # TP/SL 가격이 설정된 경우 처리 개선
                 tp_price = self._extract_tp_price(order)
                 sl_price = self._extract_sl_price(order)
                 
@@ -902,7 +894,7 @@ class BitgetMirrorClient:
                     side = order.get('side', order.get('tradeSide', 'unknown'))
                     price = order.get('price', order.get('triggerPrice', 'unknown'))
                     
-                    # 🔥🔥🔥 강화된 TP/SL 추출
+                    # 강화된 TP/SL 추출
                     tp_price = self._extract_tp_price(order)
                     sl_price = self._extract_sl_price(order)
                     
@@ -934,11 +926,10 @@ class BitgetMirrorClient:
             }
     
     def _extract_tp_price(self, order: Dict) -> Optional[float]:
-        """🔥🔥🔥 TP 가격 추출 - 모든 가능한 필드 확인"""
         try:
             # 가능한 TP 필드명들
             tp_fields = [
-                'presetStopSurplusPrice',  # 주요 필드
+                'presetStopSurplusPrice',
                 'stopSurplusPrice',
                 'takeProfitPrice',
                 'tpPrice',
@@ -964,11 +955,10 @@ class BitgetMirrorClient:
             return None
     
     def _extract_sl_price(self, order: Dict) -> Optional[float]:
-        """🔥🔥🔥 SL 가격 추출 - 모든 가능한 필드 확인"""
         try:
             # 가능한 SL 필드명들
             sl_fields = [
-                'presetStopLossPrice',  # 주요 필드
+                'presetStopLossPrice',
                 'stopLossPrice',
                 'stopPrice',
                 'slPrice',
@@ -993,7 +983,6 @@ class BitgetMirrorClient:
             return None
     
     async def get_api_connection_status(self) -> Dict:
-        """🔥🔥🔥 API 연결 상태 조회"""
         return {
             'healthy': self.api_connection_healthy,
             'consecutive_failures': self.consecutive_failures,
@@ -1003,14 +992,12 @@ class BitgetMirrorClient:
         }
     
     async def reset_connection_status(self):
-        """🔥🔥🔥 연결 상태 리셋"""
         self.api_connection_healthy = True
         self.consecutive_failures = 0
         self.last_successful_call = datetime.now()
         logger.info("비트겟 미러링 API 연결 상태 리셋 완료")
     
     async def close(self):
-        """세션 종료"""
         if self.session:
             await self.session.close()
             logger.info("Bitget 미러링 클라이언트 세션 종료")
