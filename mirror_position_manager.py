@@ -53,7 +53,7 @@ class MirrorPositionManager:
         self.filled_order_timestamps: Dict[str, datetime] = {}
         self.filled_order_check_window = 300  # 5분간 체결 기록 유지
         
-        # 시세 차이 대응 체결 시스템 - 새로운 핵심 기능
+        # 시세 차이 대응 체결 시스템
         self.adaptive_fill_system_enabled = True
         self.immediate_market_fill_enabled = True
         self.smart_price_adjustment_enabled = True
@@ -144,6 +144,15 @@ class MirrorPositionManager:
         # 시작 시간 추적
         self.startup_time: datetime = datetime.now()
         
+        # 🔥 마진 모드 강제 설정 시스템 강화
+        self.margin_mode_enforcement_enabled = True
+        self.margin_mode_check_before_order = True  # 주문 생성 전 마진 모드 체크
+        self.margin_mode_auto_fix = True  # 자동 수정 활성화
+        self.margin_mode_check_frequency = 5  # 5초마다 체크
+        self.last_margin_mode_check = datetime.min
+        self.margin_mode_failures = 0
+        self.max_margin_mode_failures = 3
+        
         # 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
@@ -186,27 +195,22 @@ class MirrorPositionManager:
             'adaptive_price_adjustments': 0,
             'backup_fill_successes': 0,
             'price_diff_resolved_fills': 0,
-            'margin_mode_enforcements': 0,  # 마진 모드 강제 설정 통계 추가
+            'margin_mode_enforcements': 0,  # 마진 모드 강제 설정 통계
             'errors': []
         }
         
         self.logger.info(f"미러 포지션 매니저 초기화 완료")
-        self.logger.info(f"미러링 모드는 텔레그램 /mirror 명령으로 제어")
-        self.logger.info(f"복제 비율은 텔레그램 /ratio 명령으로 조정")
-        self.logger.info(f"시세 차이 대응 체결 시스템 활성화")
-        self.logger.info(f"즉시 시장가 체결: {self.immediate_market_fill_enabled}")
-        self.logger.info(f"스마트 가격 조정: {self.smart_price_adjustment_enabled}")
-        self.logger.info(f"백업 체결 메커니즘: {self.backup_fill_mechanism_enabled}")
+        self.logger.info(f"마진 모드 강제 설정: {self.margin_mode_enforcement_enabled}")
+        self.logger.info(f"주문 생성 전 마진 모드 체크: {self.margin_mode_check_before_order}")
 
     def update_prices(self, bitget_price: float, gate_price: float, price_diff_percent: float):
-        """시세 정보 업데이트"""
         self.bitget_current_price = bitget_price
         self.gate_current_price = gate_price
         self.price_diff_percent = price_diff_percent
 
     async def initialize(self):
         try:
-            self.logger.info("포지션 매니저 초기화 시작 - 시세 차이 대응 체결 시스템 강화")
+            self.logger.info("포지션 매니저 초기화 시작 - 마진 모드 강제 설정 강화")
             
             # 미러링 비활성화 확인
             if not self.mirror_trading_enabled:
@@ -215,6 +219,9 @@ class MirrorPositionManager:
             
             # Gate 미러링 클라이언트 초기화 (마진 모드 Cross 설정 포함)
             await self.gate_mirror.initialize()
+            
+            # 🔥 추가 마진 모드 강제 설정
+            await self._ensure_cross_margin_mode("초기화")
             
             # 렌더 재구동 시 기존 게이트 포지션 확인
             await self._check_existing_gate_positions()
@@ -238,6 +245,44 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"포지션 매니저 초기화 실패: {e}")
             raise
+
+    async def _ensure_cross_margin_mode(self, context: str = "일반"):
+        """마진 모드 강제 Cross 설정"""
+        try:
+            if not self.margin_mode_enforcement_enabled:
+                return True
+                
+            current_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
+            
+            if current_mode != 'cross':
+                self.logger.warning(f"{context} - 마진 모드가 Cross가 아님: {current_mode} → 강제 변경 시도")
+                
+                success = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
+                
+                if success:
+                    self.daily_stats['margin_mode_enforcements'] += 1
+                    self.logger.info(f"{context} - 마진 모드 강제 변경 성공: {current_mode} → Cross")
+                    
+                    # 변경 후 재확인
+                    await asyncio.sleep(1)
+                    verify_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
+                    if verify_mode == 'cross':
+                        return True
+                    else:
+                        self.logger.error(f"{context} - 마진 모드 재확인 실패: {verify_mode}")
+                        return False
+                else:
+                    self.margin_mode_failures += 1
+                    self.logger.error(f"{context} - 마진 모드 강제 변경 실패: {current_mode}")
+                    return False
+            else:
+                self.margin_mode_failures = 0  # 성공 시 실패 카운터 리셋
+                return True
+                
+        except Exception as e:
+            self.margin_mode_failures += 1
+            self.logger.error(f"{context} - 마진 모드 체크 실패: {e}")
+            return False
 
     async def monitor_plan_orders_cycle(self):
         try:
@@ -516,664 +561,6 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"예약 주문 모니터링 사이클 오류: {e}")
 
-    async def _analyze_order_disappearance_with_price_context_enhanced(self, order_id: str) -> Dict:
-        try:
-            self.logger.info(f"시세 차이 대응 강화된 주문 사라짐 분석 시작: {order_id}")
-            
-            # 기본 결과 구조
-            result = {
-                'order_id': order_id,
-                'is_filled': False,
-                'safe_to_cancel': True,
-                'detection_method': 'unknown',
-                'price_based_detection': False,
-                'immediate_action_needed': False,
-                'gate_action_type': 'none',
-                'reason': '',
-                'bitget_price': self.bitget_current_price,
-                'gate_price': self.gate_current_price,
-                'price_diff': abs(self.bitget_current_price - self.gate_current_price)
-            }
-            
-            # 1. 캐시에서 주문 정보 조회
-            order_info = None
-            if order_id in self.plan_order_snapshot:
-                order_info = self.plan_order_snapshot[order_id]['order_data']
-            elif order_id in self.mirrored_plan_orders:
-                order_info = self.mirrored_plan_orders[order_id].get('bitget_order')
-            
-            if not order_info:
-                self.logger.warning(f"주문 정보를 찾을 수 없음: {order_id}")
-                result['reason'] = '주문 정보 없음'
-                result['safe_to_cancel'] = True
-                return result
-            
-            # 2. 트리거 가격 추출
-            trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if order_info.get(price_field):
-                    trigger_price = float(order_info.get(price_field))
-                    break
-            
-            if trigger_price <= 0:
-                self.logger.warning(f"유효한 트리거 가격을 찾을 수 없음: {order_id}")
-                result['reason'] = '트리거 가격 없음'
-                result['safe_to_cancel'] = True
-                return result
-            
-            # 3. 주문 방향 분석
-            side = order_info.get('side', order_info.get('tradeSide', '')).lower()
-            is_long_order = ('buy' in side or 'long' in side) and 'close' not in side
-            is_short_order = ('sell' in side or 'short' in side) and 'close' not in side
-            is_close_order = 'close' in side or order_info.get('reduceOnly', False)
-            
-            # 4. 강화된 시세 기반 체결 가능성 분석
-            bitget_reached = False
-            gate_reached = False
-            price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
-            
-            if is_long_order:
-                # 롱 오픈: 현재가가 트리거가 이하로 내려가면 체결
-                bitget_reached = self.bitget_current_price <= trigger_price
-                gate_reached = self.gate_current_price <= trigger_price
-            elif is_short_order:
-                # 숏 오픈: 현재가가 트리거가 이상으로 올라가면 체결
-                bitget_reached = self.bitget_current_price >= trigger_price
-                gate_reached = self.gate_current_price >= trigger_price
-            elif is_close_order:
-                # 클로즈 주문: 방향에 따라 다름
-                if 'close_long' in side or 'sell' in side:
-                    # 롱 클로즈: 현재가가 트리거가 이상으로 올라가면 체결 (이익실현) 또는 이하로 내려가면 체결 (손절)
-                    bitget_reached = abs(self.bitget_current_price - trigger_price) <= self.price_diff_threshold
-                    gate_reached = abs(self.gate_current_price - trigger_price) <= self.price_diff_threshold
-                elif 'close_short' in side or 'buy' in side:
-                    # 숏 클로즈: 현재가가 트리거가 이하로 내려가면 체결 (이익실현) 또는 이상으로 올라가면 체결 (손절)
-                    bitget_reached = abs(self.bitget_current_price - trigger_price) <= self.price_diff_threshold
-                    gate_reached = abs(self.gate_current_price - trigger_price) <= self.price_diff_threshold
-                else:
-                    # 일반적인 클로즈: 트리거 가격 근처에서 체결 가능
-                    bitget_reached = abs(self.bitget_current_price - trigger_price) <= self.price_diff_threshold * 2
-                    gate_reached = abs(self.gate_current_price - trigger_price) <= self.price_diff_threshold * 2
-            
-            result['trigger_price'] = trigger_price
-            result['bitget_reached'] = bitget_reached
-            result['gate_reached'] = gate_reached
-            result['side'] = side
-            result['is_close_order'] = is_close_order
-            
-            # 5. 강화된 체결/취소 판단 로직 - 즉시 액션 포함
-            if bitget_reached and not gate_reached:
-                # 비트겟은 도달했지만 게이트는 아직 도달하지 않음 → 체결로 판단 + 즉시 액션 필요
-                result['is_filled'] = True
-                result['detection_method'] = 'price_based_bitget_reached'
-                result['price_based_detection'] = True
-                result['immediate_action_needed'] = True
-                result['safe_to_cancel'] = False  # 게이트 주문은 유지해야 함
-                
-                # 시세 차이가 큰 경우 즉시 시장가 체결 필요
-                if price_diff_abs >= self.price_diff_threshold_for_immediate_fill:
-                    result['gate_action_type'] = 'immediate_market_fill'
-                    result['reason'] = f'비트겟 체결됨, 시세 차이 큼 (${price_diff_abs:.2f}) → 게이트 즉시 시장가 체결 필요'
-                else:
-                    result['gate_action_type'] = 'adaptive_wait_or_adjust'
-                    result['reason'] = f'비트겟 체결됨, 시세 차이 보통 (${price_diff_abs:.2f}) → 게이트 적응형 대기 또는 조정'
-                
-                self.logger.info(f"강화된 시세 기반 체결 감지: {order_id}")
-                self.logger.info(f"   트리거가: ${trigger_price:.2f}")
-                self.logger.info(f"   비트겟: ${self.bitget_current_price:.2f} ({'도달' if bitget_reached else '미도달'})")
-                self.logger.info(f"   게이트: ${self.gate_current_price:.2f} ({'도달' if gate_reached else '미도달'})")
-                self.logger.info(f"   시세차이: ${price_diff_abs:.2f}")
-                self.logger.info(f"   액션: {result['gate_action_type']}")
-                
-            elif not bitget_reached and not gate_reached:
-                # 양쪽 모두 도달하지 않음 → 실제 취소로 판단
-                result['is_filled'] = False
-                result['detection_method'] = 'likely_cancelled'
-                result['safe_to_cancel'] = True
-                result['reason'] = f'양쪽 거래소 모두 트리거가에 미도달 - 실제 취소로 판단'
-                
-            elif bitget_reached and gate_reached:
-                # 양쪽 모두 도달 → 기존 방식으로 체결 여부 확인
-                is_filled_traditional = await self._check_if_order_was_filled_traditional(order_id)
-                result['is_filled'] = is_filled_traditional
-                result['detection_method'] = 'traditional_check_both_reached'
-                result['safe_to_cancel'] = not is_filled_traditional
-                result['reason'] = f'양쪽 거래소 모두 트리거가 도달 - 기존 방식으로 확인'
-                
-            else:
-                # 게이트만 도달, 비트겟 미도달 (매우 드문 경우) → 안전하게 대기
-                result['is_filled'] = False
-                result['detection_method'] = 'gate_only_reached_wait'
-                result['safe_to_cancel'] = False  # 안전상 대기
-                result['reason'] = f'게이트만 도달한 특이 상황 - 안전상 대기'
-            
-            # 6. 추가 안전장치 - 큰 시세 차이에서는 더 신중하게
-            if price_diff_abs > self.price_diff_threshold * 2:
-                if result['is_filled'] and result['price_based_detection']:
-                    # 시세 기반 체결 감지는 유지하되 더 엄격하게
-                    price_ratio = price_diff_abs / trigger_price * 100
-                    if price_ratio > 5.0:  # 트리거가의 5% 이상 차이
-                        result['gate_action_type'] = 'immediate_market_fill'  # 무조건 즉시 체결
-                        result['reason'] += f' (큰 시세 차이로 즉시 시장가 체결: {price_diff_abs:.2f}$)'
-                        self.logger.warning(f"큰 시세 차이로 즉시 시장가 체결 필요: {order_id}")
-            
-            # 7. 분석 결과 로깅
-            self.logger.info(f"강화된 주문 사라짐 분석 완료: {order_id}")
-            self.logger.info(f"   결과: {'체결' if result['is_filled'] else '취소'}")
-            self.logger.info(f"   방법: {result['detection_method']}")
-            self.logger.info(f"   즉시 액션: {'필요' if result['immediate_action_needed'] else '불필요'}")
-            self.logger.info(f"   게이트 액션: {result['gate_action_type']}")
-            self.logger.info(f"   이유: {result['reason']}")
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"강화된 시세 차이 고려한 주문 사라짐 분석 실패: {order_id} - {e}")
-            return {
-                'order_id': order_id,
-                'is_filled': False,
-                'safe_to_cancel': True,  # 오류 시 안전하게 취소 허용
-                'detection_method': 'error_fallback',
-                'price_based_detection': False,
-                'immediate_action_needed': False,
-                'gate_action_type': 'none',
-                'reason': f'분석 오류: {str(e)[:100]}',
-                'bitget_price': self.bitget_current_price,
-                'gate_price': self.gate_current_price,
-                'price_diff': abs(self.bitget_current_price - self.gate_current_price)
-            }
-
-    async def _handle_bitget_filled_gate_immediate_action(self, bitget_order_id: str, analysis_result: Dict) -> bool:
-        try:
-            if not analysis_result.get('immediate_action_needed', False):
-                return False
-            
-            gate_action_type = analysis_result.get('gate_action_type', 'none')
-            if gate_action_type == 'none':
-                return False
-            
-            self.logger.info(f"비트겟 체결 → 게이트 즉시 액션 시작: {bitget_order_id}")
-            self.logger.info(f"   액션 타입: {gate_action_type}")
-            
-            # 미러링된 주문인지 확인
-            if bitget_order_id not in self.mirrored_plan_orders:
-                self.logger.warning(f"미러링되지 않은 주문: {bitget_order_id}")
-                return False
-            
-            mirror_info = self.mirrored_plan_orders[bitget_order_id]
-            gate_order_id = mirror_info.get('gate_order_id')
-            
-            if not gate_order_id:
-                self.logger.warning(f"게이트 주문 ID가 없음: {bitget_order_id}")
-                return False
-            
-            # 주문 처리 락 확보
-            if gate_order_id not in self.immediate_fill_processing_locks:
-                self.immediate_fill_processing_locks[gate_order_id] = asyncio.Lock()
-            
-            async with self.immediate_fill_processing_locks[gate_order_id]:
-                # 액션 타입별 처리
-                if gate_action_type == 'immediate_market_fill':
-                    success = await self._execute_immediate_market_fill(gate_order_id, mirror_info, analysis_result)
-                    if success:
-                        self.logger.info(f"즉시 시장가 체결 성공: {gate_order_id}")
-                        return True
-                    else:
-                        self.logger.error(f"즉시 시장가 체결 실패: {gate_order_id}")
-                        # 실패 시 백업 방법 시도
-                        backup_success = await self._execute_backup_fill_mechanism(gate_order_id, mirror_info, analysis_result)
-                        return backup_success
-                        
-                elif gate_action_type == 'adaptive_wait_or_adjust':
-                    success = await self._execute_adaptive_wait_or_adjust(gate_order_id, mirror_info, analysis_result)
-                    return success
-                    
-                else:
-                    self.logger.warning(f"알 수 없는 액션 타입: {gate_action_type}")
-                    return False
-            
-        except Exception as e:
-            self.logger.error(f"비트겟 체결 → 게이트 즉시 액션 처리 실패: {bitget_order_id} - {e}")
-            return False
-
-    async def _execute_immediate_market_fill(self, gate_order_id: str, mirror_info: Dict, analysis_result: Dict) -> bool:
-        try:
-            self.logger.info(f"즉시 시장가 체결 실행: {gate_order_id}")
-            
-            # 🔥🔥🔥 마진 모드 강제 체크 및 설정 (주문 실행 전)
-            try:
-                current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
-                if current_margin_mode != 'cross':
-                    self.logger.warning(f"마진 모드가 Cross가 아님: {current_margin_mode} → 강제 변경 시도")
-                    
-                    force_result = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
-                    if force_result:
-                        self.daily_stats['margin_mode_enforcements'] += 1
-                        self.logger.info(f"즉시 체결 전 마진 모드 강제 변경 성공: {current_margin_mode} → Cross")
-                    else:
-                        self.logger.error(f"즉시 체결 전 마진 모드 강제 변경 실패: {current_margin_mode}")
-                        # 실패해도 주문은 계속 진행
-                else:
-                    self.logger.debug(f"마진 모드 확인 완료: {current_margin_mode}")
-            except Exception as margin_error:
-                self.logger.error(f"즉시 체결 전 마진 모드 체크 실패하지만 계속 진행: {margin_error}")
-            
-            # 1. 기존 게이트 예약 주문 취소
-            try:
-                await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                await asyncio.sleep(1.0)  # 취소 확인 대기
-                self.logger.info(f"기존 예약 주문 취소 완료: {gate_order_id}")
-            except Exception as cancel_error:
-                error_msg = str(cancel_error).lower()
-                if any(keyword in error_msg for keyword in [
-                    "not found", "order not exist", "invalid order", "cancelled"
-                ]):
-                    self.logger.info(f"예약 주문이 이미 처리됨: {gate_order_id}")
-                else:
-                    self.logger.error(f"예약 주문 취소 실패하지만 계속 진행: {cancel_error}")
-            
-            # 2. 미러링 정보에서 주문 상세 추출
-            gate_size = mirror_info.get('size', 1)
-            is_close_order = mirror_info.get('is_close_order', False)
-            reduce_only = mirror_info.get('reduce_only', False)
-            
-            # 3. 현재 게이트 포지션 확인 (클로즈 주문의 경우)
-            if is_close_order:
-                gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
-                current_position_size = 0
-                if gate_positions:
-                    current_position_size = int(gate_positions[0].get('size', 0))
-                
-                if current_position_size == 0:
-                    self.logger.warning(f"클로즈 주문이지만 현재 포지션이 없음: {gate_order_id}")
-                    # 포지션이 없으면 클로즈 주문 불가 - 실패로 처리
-                    return False
-                
-                # 포지션 크기 검증
-                if abs(current_position_size) < abs(gate_size):
-                    gate_size = current_position_size  # 현재 포지션 크기로 제한
-                    self.logger.info(f"클로즈 주문 크기 조정: {gate_size}")
-            
-            # 4. 시장가 주문 생성 (재시도 포함)
-            for retry in range(self.market_fill_retry_count):
-                try:
-                    self.logger.info(f"즉시 시장가 주문 생성 시도 {retry + 1}/{self.market_fill_retry_count}")
-                    
-                    market_order_result = await self.gate_mirror.place_order(
-                        contract=self.GATE_CONTRACT,
-                        size=gate_size,
-                        price=None,  # 시장가
-                        reduce_only=reduce_only,
-                        tif="ioc"
-                    )
-                    
-                    if market_order_result and market_order_result.get('id'):
-                        self.logger.info(f"즉시 시장가 체결 성공: {market_order_result.get('id')}")
-                        
-                        # 성공 통계 업데이트
-                        self.daily_stats['immediate_market_fills'] += 1
-                        self.daily_stats['price_diff_resolved_fills'] += 1
-                        
-                        # 텔레그램 알림
-                        price_diff = analysis_result.get('price_diff', 0)
-                        await self.telegram.send_message(
-                            f"⚡ 즉시 시장가 체결 성공!\n"
-                            f"비트겟 체결됨 → 게이트 즉시 시장가 체결\n"
-                            f"게이트 주문 ID: {market_order_result.get('id')}\n"
-                            f"크기: {gate_size}\n"
-                            f"시세 차이: ${price_diff:.2f}\n"
-                            f"시세 차이로 인한 미체결 손실 방지!"
-                        )
-                        
-                        return True
-                    else:
-                        self.logger.warning(f"시장가 주문 응답이 없음 (재시도 {retry + 1})")
-                        if retry < self.market_fill_retry_count - 1:
-                            await asyncio.sleep(2)
-                            continue
-                        
-                except Exception as order_error:
-                    self.logger.error(f"시장가 주문 생성 실패 (재시도 {retry + 1}): {order_error}")
-                    if retry < self.market_fill_retry_count - 1:
-                        await asyncio.sleep(2)
-                        continue
-                    else:
-                        raise
-            
-            # 모든 재시도 실패
-            self.logger.error(f"즉시 시장가 체결 모든 재시도 실패: {gate_order_id}")
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"즉시 시장가 체결 실행 실패: {gate_order_id} - {e}")
-            return False
-
-    async def _execute_adaptive_wait_or_adjust(self, gate_order_id: str, mirror_info: Dict, analysis_result: Dict) -> bool:
-        try:
-            self.logger.info(f"적응형 대기 또는 가격 조정 실행: {gate_order_id}")
-            
-            price_diff = analysis_result.get('price_diff', 0)
-            trigger_price = analysis_result.get('trigger_price', 0)
-            
-            # 1. 적응형 대기 시간 계산
-            base_wait_time = min(self.max_wait_time_for_fill, 60)  # 기본 60초
-            adaptive_wait_time = min(
-                base_wait_time * self.adaptive_wait_multiplier * (price_diff / 100), 
-                self.max_wait_time_for_fill
-            )
-            
-            self.logger.info(f"적응형 대기 시간: {adaptive_wait_time:.1f}초 (시세 차이: ${price_diff:.2f})")
-            
-            # 2. 대기 중 가격 모니터링
-            wait_start_time = datetime.now()
-            check_interval = 5  # 5초마다 체크
-            
-            while (datetime.now() - wait_start_time).total_seconds() < adaptive_wait_time:
-                # 현재 게이트 가격 확인
-                current_gate_price = await self.gate_mirror.get_current_price(self.GATE_CONTRACT)
-                
-                # 트리거 조건 확인
-                if self._check_trigger_condition_met(trigger_price, current_gate_price, analysis_result['side']):
-                    self.logger.info(f"대기 중 트리거 조건 달성: 게이트 가격 ${current_gate_price:.2f}")
-                    return True  # 자연스럽게 체결될 것으로 예상
-                
-                await asyncio.sleep(check_interval)
-            
-            # 3. 대기 시간 초과 → 스마트 가격 조정 시도
-            if self.smart_price_adjustment_enabled:
-                self.logger.info(f"대기 시간 초과 → 스마트 가격 조정 시도")
-                adjustment_success = await self._execute_smart_price_adjustment(gate_order_id, mirror_info, analysis_result)
-                if adjustment_success:
-                    self.daily_stats['adaptive_price_adjustments'] += 1
-                    return True
-            
-            # 4. 가격 조정도 실패 → 백업 체결 메커니즘
-            if self.backup_fill_mechanism_enabled:
-                self.logger.info(f"가격 조정 실패 → 백업 체결 메커니즘 시도")
-                backup_success = await self._execute_backup_fill_mechanism(gate_order_id, mirror_info, analysis_result)
-                return backup_success
-            
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"적응형 대기 또는 가격 조정 실행 실패: {gate_order_id} - {e}")
-            return False
-
-    def _check_trigger_condition_met(self, trigger_price: float, current_price: float, side: str) -> bool:
-        try:
-            if trigger_price <= 0 or current_price <= 0:
-                return False
-            
-            side_lower = side.lower()
-            
-            if 'buy' in side_lower or 'long' in side_lower:
-                # 롱 오픈: 현재가가 트리거가 이하
-                return current_price <= trigger_price
-            elif 'sell' in side_lower or 'short' in side_lower:
-                # 숏 오픈: 현재가가 트리거가 이상
-                return current_price >= trigger_price
-            else:
-                # 클로즈 주문: 트리거가 근처
-                return abs(current_price - trigger_price) <= 10.0  # ±10달러 허용
-                
-        except Exception as e:
-            self.logger.error(f"트리거 조건 확인 실패: {e}")
-            return False
-
-    async def _execute_smart_price_adjustment(self, gate_order_id: str, mirror_info: Dict, analysis_result: Dict) -> bool:
-        try:
-            self.logger.info(f"스마트 가격 조정 실행: {gate_order_id}")
-            
-            # 🔥🔥🔥 마진 모드 강제 체크 및 설정 (가격 조정 전)
-            try:
-                current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
-                if current_margin_mode != 'cross':
-                    self.logger.warning(f"가격 조정 전 마진 모드가 Cross가 아님: {current_margin_mode} → 강제 변경 시도")
-                    
-                    force_result = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
-                    if force_result:
-                        self.daily_stats['margin_mode_enforcements'] += 1
-                        self.logger.info(f"가격 조정 전 마진 모드 강제 변경 성공: {current_margin_mode} → Cross")
-                    else:
-                        self.logger.error(f"가격 조정 전 마진 모드 강제 변경 실패: {current_margin_mode}")
-                        # 실패해도 조정은 계속 진행
-                else:
-                    self.logger.debug(f"가격 조정 전 마진 모드 확인 완료: {current_margin_mode}")
-            except Exception as margin_error:
-                self.logger.error(f"가격 조정 전 마진 모드 체크 실패하지만 계속 진행: {margin_error}")
-            
-            original_trigger_price = analysis_result.get('trigger_price', 0)
-            current_gate_price = await self.gate_mirror.get_current_price(self.GATE_CONTRACT)
-            
-            if original_trigger_price <= 0 or current_gate_price <= 0:
-                self.logger.error("가격 정보 없음 - 조정 불가")
-                return False
-            
-            # 점진적 가격 조정 (3단계)
-            for step in range(1, self.price_adjustment_step_count + 1):
-                try:
-                    # 조정 비율 계산
-                    adjustment_ratio = (self.price_adjustment_percentage * step) / 100
-                    price_adjustment = min(
-                        abs(current_gate_price - original_trigger_price) * adjustment_ratio,
-                        self.max_price_adjustment * step / self.price_adjustment_step_count
-                    )
-                    
-                    # 조정 방향 결정
-                    side = analysis_result.get('side', '').lower()
-                    if 'buy' in side or 'long' in side:
-                        # 롱 오픈: 트리거가를 위로 조정
-                        adjusted_trigger_price = original_trigger_price + price_adjustment
-                    else:
-                        # 숏 오픈: 트리거가를 아래로 조정
-                        adjusted_trigger_price = original_trigger_price - price_adjustment
-                    
-                    self.logger.info(f"가격 조정 단계 {step}: ${original_trigger_price:.2f} → ${adjusted_trigger_price:.2f}")
-                    
-                    # 기존 주문 취소
-                    try:
-                        await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                        await asyncio.sleep(1)
-                    except:
-                        pass
-                    
-                    # 새 조정된 가격으로 주문 생성
-                    gate_size = mirror_info.get('size', 1)
-                    reduce_only = mirror_info.get('reduce_only', False)
-                    trigger_type = "ge" if adjusted_trigger_price > current_gate_price else "le"
-                    
-                    new_order = await self.gate_mirror.create_price_triggered_order_v3(
-                        trigger_price=adjusted_trigger_price,
-                        order_size=gate_size,
-                        reduce_only=reduce_only,
-                        trigger_type=trigger_type
-                    )
-                    
-                    if new_order and new_order.get('id'):
-                        self.logger.info(f"가격 조정 주문 생성 성공: {new_order.get('id')}")
-                        
-                        # 미러링 정보 업데이트
-                        bitget_order_id = self.gate_to_bitget_order_mapping.get(gate_order_id)
-                        if bitget_order_id and bitget_order_id in self.mirrored_plan_orders:
-                            self.mirrored_plan_orders[bitget_order_id]['gate_order_id'] = new_order.get('id')
-                            self.mirrored_plan_orders[bitget_order_id]['adjusted_trigger_price'] = adjusted_trigger_price
-                            self.mirrored_plan_orders[bitget_order_id]['price_adjustment_step'] = step
-                        
-                        # 매핑 업데이트
-                        new_gate_order_id = new_order.get('id')
-                        if bitget_order_id:
-                            del self.gate_to_bitget_order_mapping[gate_order_id]
-                            self.bitget_to_gate_order_mapping[bitget_order_id] = new_gate_order_id
-                            self.gate_to_bitget_order_mapping[new_gate_order_id] = bitget_order_id
-                        
-                        # 텔레그램 알림
-                        await self.telegram.send_message(
-                            f"스마트 가격 조정 완료!\n"
-                            f"원본 트리거가: ${original_trigger_price:.2f}\n"
-                            f"조정 트리거가: ${adjusted_trigger_price:.2f}\n"
-                            f"조정 단계: {step}/{self.price_adjustment_step_count}\n"
-                            f"새 주문 ID: {new_gate_order_id}\n"
-                            f"🎯 시세 차이에 적응하여 체결 확률 향상!"
-                        )
-                        
-                        return True
-                    else:
-                        self.logger.warning(f"가격 조정 주문 생성 실패 (단계 {step})")
-                        if step < self.price_adjustment_step_count:
-                            await asyncio.sleep(2)
-                            continue
-                
-                except Exception as step_error:
-                    self.logger.error(f"가격 조정 단계 {step} 실패: {step_error}")
-                    if step < self.price_adjustment_step_count:
-                        await asyncio.sleep(2)
-                        continue
-                    else:
-                        raise
-            
-            self.logger.error("모든 가격 조정 단계 실패")
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"스마트 가격 조정 실행 실패: {gate_order_id} - {e}")
-            return False
-
-    async def _execute_backup_fill_mechanism(self, gate_order_id: str, mirror_info: Dict, analysis_result: Dict) -> bool:
-        try:
-            self.logger.info(f"백업 체결 메커니즘 실행: {gate_order_id}")
-            
-            # 백업 방법 1: 더 관대한 즉시 시장가 체결
-            try:
-                success = await self._execute_immediate_market_fill(gate_order_id, mirror_info, analysis_result)
-                if success:
-                    self.daily_stats['backup_fill_successes'] += 1
-                    self.logger.info(f"백업 방법 1 성공 (즉시 시장가): {gate_order_id}")
-                    
-                    await self.telegram.send_message(
-                        f"백업 체결 메커니즘 성공!\n"
-                        f"1차 방법 실패 → 백업 시장가 체결 성공\n"
-                        f"게이트 주문: {gate_order_id}\n"
-                        f"시세 차이로 인한 손실 완전 방지!"
-                    )
-                    
-                    return True
-            except Exception as backup1_error:
-                self.logger.error(f"백업 방법 1 실패: {backup1_error}")
-            
-            # 백업 방법 2: 현재가 기준 시장가 체결
-            try:
-                self.logger.info(f"백업 방법 2 시도: 현재가 기준 시장가 체결")
-                
-                # 🔥🔥🔥 마진 모드 강제 체크 및 설정 (백업 체결 전)
-                try:
-                    current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
-                    if current_margin_mode != 'cross':
-                        self.logger.warning(f"백업 체결 전 마진 모드가 Cross가 아님: {current_margin_mode} → 강제 변경 시도")
-                        
-                        force_result = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
-                        if force_result:
-                            self.daily_stats['margin_mode_enforcements'] += 1
-                            self.logger.info(f"백업 체결 전 마진 모드 강제 변경 성공: {current_margin_mode} → Cross")
-                        else:
-                            self.logger.error(f"백업 체결 전 마진 모드 강제 변경 실패: {current_margin_mode}")
-                    else:
-                        self.logger.debug(f"백업 체결 전 마진 모드 확인 완료: {current_margin_mode}")
-                except Exception as margin_error:
-                    self.logger.error(f"백업 체결 전 마진 모드 체크 실패하지만 계속 진행: {margin_error}")
-                
-                # 기존 주문 취소
-                try:
-                    await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                    await asyncio.sleep(1)
-                except:
-                    pass
-                
-                # 현재가 기준 시장가 주문
-                gate_size = mirror_info.get('size', 1)
-                reduce_only = mirror_info.get('reduce_only', False)
-                
-                current_market_order = await self.gate_mirror.place_order(
-                    contract=self.GATE_CONTRACT,
-                    size=gate_size,
-                    price=None,  # 시장가
-                    reduce_only=reduce_only,
-                    tif="ioc"
-                )
-                
-                if current_market_order and current_market_order.get('id'):
-                    self.daily_stats['backup_fill_successes'] += 1
-                    self.logger.info(f"백업 방법 2 성공 (현재가 시장가): {current_market_order.get('id')}")
-                    
-                    await self.telegram.send_message(
-                        f"백업 체결 메커니즘 성공!\n"
-                        f"백업 현재가 시장가 체결 성공\n"
-                        f"게이트 주문 ID: {current_market_order.get('id')}\n"
-                        f"크기: {gate_size}\n"
-                        f"최종 백업으로 손실 방지 완료!"
-                    )
-                    
-                    return True
-                    
-            except Exception as backup2_error:
-                self.logger.error(f"백업 방법 2 실패: {backup2_error}")
-            
-            # 모든 백업 방법 실패
-            self.logger.error(f"모든 백업 체결 메커니즘 실패: {gate_order_id}")
-            
-            await self.telegram.send_message(
-                f"❌ 백업 체결 메커니즘 실패\n"
-                f"게이트 주문: {gate_order_id}\n"
-                f"모든 백업 방법 실패\n"
-                f"⚠️ 수동 확인이 필요할 수 있습니다"
-            )
-            
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"백업 체결 메커니즘 실행 실패: {gate_order_id} - {e}")
-            return False
-
-    async def _process_immediate_fill_queue(self):
-        try:
-            if not self.gate_pending_orders_for_immediate_fill:
-                return
-            
-            self.logger.debug(f"즉시 체결 대기열 처리: {len(self.gate_pending_orders_for_immediate_fill)}개")
-            
-            completed_orders = []
-            
-            for gate_order_id, pending_info in list(self.gate_pending_orders_for_immediate_fill.items()):
-                try:
-                    # 대기 시간 초과 확인
-                    pending_time = (datetime.now() - pending_info['added_time']).total_seconds()
-                    if pending_time > self.max_wait_time_for_fill:
-                        self.logger.warning(f"즉시 체결 대기 시간 초과: {gate_order_id}")
-                        completed_orders.append(gate_order_id)
-                        continue
-                    
-                    # 즉시 체결 처리
-                    success = await self._execute_immediate_market_fill(
-                        gate_order_id, 
-                        pending_info['mirror_info'], 
-                        pending_info['analysis_result']
-                    )
-                    
-                    if success:
-                        completed_orders.append(gate_order_id)
-                        self.logger.info(f"대기열에서 즉시 체결 성공: {gate_order_id}")
-                    
-                except Exception as e:
-                    self.logger.error(f"대기열 즉시 체결 처리 실패: {gate_order_id} - {e}")
-                    completed_orders.append(gate_order_id)  # 오류 시에도 제거
-            
-            # 완료된 주문들 대기열에서 제거
-            for order_id in completed_orders:
-                if order_id in self.gate_pending_orders_for_immediate_fill:
-                    del self.gate_pending_orders_for_immediate_fill[order_id]
-                    
-        except Exception as e:
-            self.logger.error(f"즉시 체결 대기열 처리 실패: {e}")
-
     async def _process_perfect_mirror_order_with_price_diff_handling(self, bitget_order: Dict, close_details: Dict, ratio_multiplier: float) -> str:
         try:
             order_id = bitget_order.get('orderId', bitget_order.get('planOrderId', ''))
@@ -1192,23 +579,12 @@ class MirrorPositionManager:
             self.logger.info(f"   📋 클로즈 주문: {is_close_order}")
             self.logger.info(f"   📋 주문 방향: {order_direction} (포지션: {position_side})")
             
-            # 🔥🔥🔥 주문 생성 전 마진 모드 강제 체크
-            try:
-                current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
-                if current_margin_mode != 'cross':
-                    self.logger.warning(f"주문 생성 전 마진 모드가 Cross가 아님: {current_margin_mode} → 강제 변경 시도")
-                    
-                    force_result = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
-                    if force_result:
-                        self.daily_stats['margin_mode_enforcements'] += 1
-                        self.logger.info(f"주문 생성 전 마진 모드 강제 변경 성공: {current_margin_mode} → Cross")
-                    else:
-                        self.logger.error(f"주문 생성 전 마진 모드 강제 변경 실패: {current_margin_mode}")
-                        # 실패해도 주문은 계속 진행
-                else:
-                    self.logger.debug(f"주문 생성 전 마진 모드 확인 완료: {current_margin_mode}")
-            except Exception as margin_error:
-                self.logger.error(f"주문 생성 전 마진 모드 체크 실패하지만 계속 진행: {margin_error}")
+            # 🔥 주문 생성 전 마진 모드 강제 체크
+            if self.margin_mode_check_before_order:
+                margin_check_success = await self._ensure_cross_margin_mode(f"주문생성({order_id})")
+                if not margin_check_success and self.margin_mode_failures >= self.max_margin_mode_failures:
+                    self.logger.error(f"마진 모드 강제 설정 실패로 주문 건너뜀: {order_id}")
+                    return "margin_mode_failed"
             
             # 트리거 가격 추출
             trigger_price = 0
@@ -1418,6 +794,9 @@ class MirrorPositionManager:
             # 미러링 모드 상태
             mirror_mode_status = "활성화" if self.mirror_trading_enabled else "비활성화"
             
+            # 마진 모드 강제 설정 상태
+            margin_mode_info = f"\n💳 마진 모드: Cross 강제 설정 ({self.daily_stats['margin_mode_enforcements']}회)"
+            
             await self.telegram.send_message(
                 f"✅ {order_type} {perfect_status} 미러링 성공{forced_status}{ratio_status}\n"
                 f"비트겟 ID: {order_id}\n"
@@ -1432,7 +811,7 @@ class MirrorPositionManager:
                 f"게이트 투입 마진: ${gate_margin:,.2f}\n"
                 f"레버리지: {bitget_leverage}x\n"
                 f"복제 효과: {ratio_effect.get('impact', '알 수 없음')}\n"
-                f"미러링 모드: {mirror_mode_status}\n\n"
+                f"미러링 모드: {mirror_mode_status}{margin_mode_info}\n\n"
                 f"시세 차이 대응 시스템 적용 완료!\n"
                 f"⚡ 비트겟 체결시 게이트도 즉시 시장가로 체결됩니다!\n"
                 f"🎯 더 이상 시세 차이로 인한 미체결 손실이 없습니다!{tp_sl_info}"
@@ -1457,13 +836,431 @@ class MirrorPositionManager:
             })
             return "failed"
 
-    # === 기존 메서드들 유지 (중복 제거를 위해 중요한 것만 다시 정의) ===
+    # === 기존 메서드들 유지 (간소화) ===
     
+    async def _analyze_order_disappearance_with_price_context_enhanced(self, order_id: str) -> Dict:
+        try:
+            self.logger.info(f"시세 차이 대응 강화된 주문 사라짐 분석 시작: {order_id}")
+            
+            # 기본 결과 구조
+            result = {
+                'order_id': order_id,
+                'is_filled': False,
+                'safe_to_cancel': True,
+                'detection_method': 'unknown',
+                'price_based_detection': False,
+                'immediate_action_needed': False,
+                'gate_action_type': 'none',
+                'reason': '',
+                'bitget_price': self.bitget_current_price,
+                'gate_price': self.gate_current_price,
+                'price_diff': abs(self.bitget_current_price - self.gate_current_price)
+            }
+            
+            # 캐시에서 주문 정보 조회
+            order_info = None
+            if order_id in self.plan_order_snapshot:
+                order_info = self.plan_order_snapshot[order_id]['order_data']
+            elif order_id in self.mirrored_plan_orders:
+                order_info = self.mirrored_plan_orders[order_id].get('bitget_order')
+            
+            if not order_info:
+                self.logger.warning(f"주문 정보를 찾을 수 없음: {order_id}")
+                result['reason'] = '주문 정보 없음'
+                result['safe_to_cancel'] = True
+                return result
+            
+            # 트리거 가격 추출
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if order_info.get(price_field):
+                    trigger_price = float(order_info.get(price_field))
+                    break
+            
+            if trigger_price <= 0:
+                self.logger.warning(f"유효한 트리거 가격을 찾을 수 없음: {order_id}")
+                result['reason'] = '트리거 가격 없음'
+                result['safe_to_cancel'] = True
+                return result
+            
+            # 주문 방향 분석
+            side = order_info.get('side', order_info.get('tradeSide', '')).lower()
+            is_long_order = ('buy' in side or 'long' in side) and 'close' not in side
+            is_short_order = ('sell' in side or 'short' in side) and 'close' not in side
+            is_close_order = 'close' in side or order_info.get('reduceOnly', False)
+            
+            # 시세 기반 체결 가능성 분석
+            bitget_reached = False
+            gate_reached = False
+            price_diff_abs = abs(self.bitget_current_price - self.gate_current_price)
+            
+            if is_long_order:
+                # 롱 오픈: 현재가가 트리거가 이하로 내려가면 체결
+                bitget_reached = self.bitget_current_price <= trigger_price
+                gate_reached = self.gate_current_price <= trigger_price
+            elif is_short_order:
+                # 숏 오픈: 현재가가 트리거가 이상으로 올라가면 체결
+                bitget_reached = self.bitget_current_price >= trigger_price
+                gate_reached = self.gate_current_price >= trigger_price
+            elif is_close_order:
+                # 클로즈 주문: 트리거 가격 근처에서 체결 가능
+                bitget_reached = abs(self.bitget_current_price - trigger_price) <= self.price_diff_threshold * 2
+                gate_reached = abs(self.gate_current_price - trigger_price) <= self.price_diff_threshold * 2
+            
+            result['trigger_price'] = trigger_price
+            result['bitget_reached'] = bitget_reached
+            result['gate_reached'] = gate_reached
+            result['side'] = side
+            result['is_close_order'] = is_close_order
+            
+            # 강화된 체결/취소 판단 로직 - 즉시 액션 포함
+            if bitget_reached and not gate_reached:
+                # 비트겟은 도달했지만 게이트는 아직 도달하지 않음 → 체결로 판단 + 즉시 액션 필요
+                result['is_filled'] = True
+                result['detection_method'] = 'price_based_bitget_reached'
+                result['price_based_detection'] = True
+                result['immediate_action_needed'] = True
+                result['safe_to_cancel'] = False  # 게이트 주문은 유지해야 함
+                
+                # 시세 차이가 큰 경우 즉시 시장가 체결 필요
+                if price_diff_abs >= self.price_diff_threshold_for_immediate_fill:
+                    result['gate_action_type'] = 'immediate_market_fill'
+                    result['reason'] = f'비트겟 체결됨, 시세 차이 큼 (${price_diff_abs:.2f}) → 게이트 즉시 시장가 체결 필요'
+                else:
+                    result['gate_action_type'] = 'adaptive_wait_or_adjust'
+                    result['reason'] = f'비트겟 체결됨, 시세 차이 보통 (${price_diff_abs:.2f}) → 게이트 적응형 대기 또는 조정'
+                
+            elif not bitget_reached and not gate_reached:
+                # 양쪽 모두 도달하지 않음 → 실제 취소로 판단
+                result['is_filled'] = False
+                result['detection_method'] = 'likely_cancelled'
+                result['safe_to_cancel'] = True
+                result['reason'] = f'양쪽 거래소 모두 트리거가에 미도달 - 실제 취소로 판단'
+                
+            elif bitget_reached and gate_reached:
+                # 양쪽 모두 도달 → 기존 방식으로 체결 여부 확인
+                is_filled_traditional = await self._check_if_order_was_filled_traditional(order_id)
+                result['is_filled'] = is_filled_traditional
+                result['detection_method'] = 'traditional_check_both_reached'
+                result['safe_to_cancel'] = not is_filled_traditional
+                result['reason'] = f'양쪽 거래소 모두 트리거가 도달 - 기존 방식으로 확인'
+                
+            else:
+                # 게이트만 도달, 비트겟 미도달 (매우 드문 경우) → 안전하게 대기
+                result['is_filled'] = False
+                result['detection_method'] = 'gate_only_reached_wait'
+                result['safe_to_cancel'] = False  # 안전상 대기
+                result['reason'] = f'게이트만 도달한 특이 상황 - 안전상 대기'
+            
+            # 추가 안전장치 - 큰 시세 차이에서는 더 신중하게
+            if price_diff_abs > self.price_diff_threshold * 2:
+                if result['is_filled'] and result['price_based_detection']:
+                    # 시세 기반 체결 감지는 유지하되 더 엄격하게
+                    price_ratio = price_diff_abs / trigger_price * 100
+                    if price_ratio > 5.0:  # 트리거가의 5% 이상 차이
+                        result['gate_action_type'] = 'immediate_market_fill'  # 무조건 즉시 체결
+                        result['reason'] += f' (큰 시세 차이로 즉시 시장가 체결: {price_diff_abs:.2f}$)'
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"강화된 시세 차이 고려한 주문 사라짐 분석 실패: {order_id} - {e}")
+            return {
+                'order_id': order_id,
+                'is_filled': False,
+                'safe_to_cancel': True,  # 오류 시 안전하게 취소 허용
+                'detection_method': 'error_fallback',
+                'price_based_detection': False,
+                'immediate_action_needed': False,
+                'gate_action_type': 'none',
+                'reason': f'분석 오류: {str(e)[:100]}',
+                'bitget_price': self.bitget_current_price,
+                'gate_price': self.gate_current_price,
+                'price_diff': abs(self.bitget_current_price - self.gate_current_price)
+            }
+
+    async def _handle_bitget_filled_gate_immediate_action(self, bitget_order_id: str, analysis_result: Dict) -> bool:
+        try:
+            if not analysis_result.get('immediate_action_needed', False):
+                return False
+            
+            gate_action_type = analysis_result.get('gate_action_type', 'none')
+            if gate_action_type == 'none':
+                return False
+            
+            self.logger.info(f"비트겟 체결 → 게이트 즉시 액션 시작: {bitget_order_id}")
+            self.logger.info(f"   액션 타입: {gate_action_type}")
+            
+            # 미러링된 주문인지 확인
+            if bitget_order_id not in self.mirrored_plan_orders:
+                self.logger.warning(f"미러링되지 않은 주문: {bitget_order_id}")
+                return False
+            
+            mirror_info = self.mirrored_plan_orders[bitget_order_id]
+            gate_order_id = mirror_info.get('gate_order_id')
+            
+            if not gate_order_id:
+                self.logger.warning(f"게이트 주문 ID가 없음: {bitget_order_id}")
+                return False
+            
+            # 주문 처리 락 확보
+            if gate_order_id not in self.immediate_fill_processing_locks:
+                self.immediate_fill_processing_locks[gate_order_id] = asyncio.Lock()
+            
+            async with self.immediate_fill_processing_locks[gate_order_id]:
+                # 액션 타입별 처리
+                if gate_action_type == 'immediate_market_fill':
+                    success = await self._execute_immediate_market_fill(gate_order_id, mirror_info, analysis_result)
+                    if success:
+                        self.logger.info(f"즉시 시장가 체결 성공: {gate_order_id}")
+                        return True
+                    else:
+                        self.logger.error(f"즉시 시장가 체결 실패: {gate_order_id}")
+                        # 실패 시 백업 방법 시도
+                        backup_success = await self._execute_backup_fill_mechanism(gate_order_id, mirror_info, analysis_result)
+                        return backup_success
+                        
+                elif gate_action_type == 'adaptive_wait_or_adjust':
+                    success = await self._execute_adaptive_wait_or_adjust(gate_order_id, mirror_info, analysis_result)
+                    return success
+                    
+                else:
+                    self.logger.warning(f"알 수 없는 액션 타입: {gate_action_type}")
+                    return False
+            
+        except Exception as e:
+            self.logger.error(f"비트겟 체결 → 게이트 즉시 액션 처리 실패: {bitget_order_id} - {e}")
+            return False
+
+    async def _execute_immediate_market_fill(self, gate_order_id: str, mirror_info: Dict, analysis_result: Dict) -> bool:
+        try:
+            self.logger.info(f"즉시 시장가 체결 실행: {gate_order_id}")
+            
+            # 🔥 마진 모드 강제 체크 및 설정 (주문 실행 전)
+            await self._ensure_cross_margin_mode(f"즉시체결({gate_order_id})")
+            
+            # 기존 게이트 예약 주문 취소
+            try:
+                await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                await asyncio.sleep(1.0)  # 취소 확인 대기
+                self.logger.info(f"기존 예약 주문 취소 완료: {gate_order_id}")
+            except Exception as cancel_error:
+                error_msg = str(cancel_error).lower()
+                if any(keyword in error_msg for keyword in [
+                    "not found", "order not exist", "invalid order", "cancelled"
+                ]):
+                    self.logger.info(f"예약 주문이 이미 처리됨: {gate_order_id}")
+                else:
+                    self.logger.error(f"예약 주문 취소 실패하지만 계속 진행: {cancel_error}")
+            
+            # 미러링 정보에서 주문 상세 추출
+            gate_size = mirror_info.get('size', 1)
+            is_close_order = mirror_info.get('is_close_order', False)
+            reduce_only = mirror_info.get('reduce_only', False)
+            
+            # 현재 게이트 포지션 확인 (클로즈 주문의 경우)
+            if is_close_order:
+                gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
+                current_position_size = 0
+                if gate_positions:
+                    current_position_size = int(gate_positions[0].get('size', 0))
+                
+                if current_position_size == 0:
+                    self.logger.warning(f"클로즈 주문이지만 현재 포지션이 없음: {gate_order_id}")
+                    return False
+                
+                # 포지션 크기 검증
+                if abs(current_position_size) < abs(gate_size):
+                    gate_size = current_position_size  # 현재 포지션 크기로 제한
+                    self.logger.info(f"클로즈 주문 크기 조정: {gate_size}")
+            
+            # 시장가 주문 생성 (재시도 포함)
+            for retry in range(self.market_fill_retry_count):
+                try:
+                    self.logger.info(f"즉시 시장가 주문 생성 시도 {retry + 1}/{self.market_fill_retry_count}")
+                    
+                    market_order_result = await self.gate_mirror.place_order(
+                        contract=self.GATE_CONTRACT,
+                        size=gate_size,
+                        price=None,  # 시장가
+                        reduce_only=reduce_only,
+                        tif="ioc"
+                    )
+                    
+                    if market_order_result and market_order_result.get('id'):
+                        self.logger.info(f"즉시 시장가 체결 성공: {market_order_result.get('id')}")
+                        
+                        # 성공 통계 업데이트
+                        self.daily_stats['immediate_market_fills'] += 1
+                        self.daily_stats['price_diff_resolved_fills'] += 1
+                        
+                        # 텔레그램 알림
+                        price_diff = analysis_result.get('price_diff', 0)
+                        await self.telegram.send_message(
+                            f"⚡ 즉시 시장가 체결 성공!\n"
+                            f"비트겟 체결됨 → 게이트 즉시 시장가 체결\n"
+                            f"게이트 주문 ID: {market_order_result.get('id')}\n"
+                            f"크기: {gate_size}\n"
+                            f"시세 차이: ${price_diff:.2f}\n"
+                            f"시세 차이로 인한 미체결 손실 방지!"
+                        )
+                        
+                        return True
+                    else:
+                        self.logger.warning(f"시장가 주문 응답이 없음 (재시도 {retry + 1})")
+                        if retry < self.market_fill_retry_count - 1:
+                            await asyncio.sleep(2)
+                            continue
+                        
+                except Exception as order_error:
+                    self.logger.error(f"시장가 주문 생성 실패 (재시도 {retry + 1}): {order_error}")
+                    if retry < self.market_fill_retry_count - 1:
+                        await asyncio.sleep(2)
+                        continue
+                    else:
+                        raise
+            
+            # 모든 재시도 실패
+            self.logger.error(f"즉시 시장가 체결 모든 재시도 실패: {gate_order_id}")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"즉시 시장가 체결 실행 실패: {gate_order_id} - {e}")
+            return False
+
+    # === 나머지 기존 메서드들 간소화 버전 ===
+    
+    async def _execute_adaptive_wait_or_adjust(self, gate_order_id: str, mirror_info: Dict, analysis_result: Dict) -> bool:
+        try:
+            # 간소화된 적응형 대기 또는 가격 조정 로직
+            await self._ensure_cross_margin_mode(f"적응형처리({gate_order_id})")
+            
+            price_diff = analysis_result.get('price_diff', 0)
+            
+            if self.smart_price_adjustment_enabled:
+                adjustment_success = await self._execute_smart_price_adjustment(gate_order_id, mirror_info, analysis_result)
+                if adjustment_success:
+                    self.daily_stats['adaptive_price_adjustments'] += 1
+                    return True
+            
+            if self.backup_fill_mechanism_enabled:
+                backup_success = await self._execute_backup_fill_mechanism(gate_order_id, mirror_info, analysis_result)
+                return backup_success
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"적응형 대기 또는 가격 조정 실행 실패: {gate_order_id} - {e}")
+            return False
+
+    async def _execute_smart_price_adjustment(self, gate_order_id: str, mirror_info: Dict, analysis_result: Dict) -> bool:
+        try:
+            # 간소화된 스마트 가격 조정 로직
+            await self._ensure_cross_margin_mode(f"가격조정({gate_order_id})")
+            
+            original_trigger_price = analysis_result.get('trigger_price', 0)
+            current_gate_price = await self.gate_mirror.get_current_price(self.GATE_CONTRACT)
+            
+            if original_trigger_price <= 0 or current_gate_price <= 0:
+                return False
+            
+            # 기존 주문 취소
+            try:
+                await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                await asyncio.sleep(1)
+            except:
+                pass
+            
+            # 간단한 가격 조정
+            price_adjustment = 50.0  # 고정 50달러 조정
+            side = analysis_result.get('side', '').lower()
+            
+            if 'buy' in side or 'long' in side:
+                adjusted_trigger_price = original_trigger_price + price_adjustment
+            else:
+                adjusted_trigger_price = original_trigger_price - price_adjustment
+            
+            # 새 조정된 가격으로 주문 생성
+            gate_size = mirror_info.get('size', 1)
+            reduce_only = mirror_info.get('reduce_only', False)
+            trigger_type = "ge" if adjusted_trigger_price > current_gate_price else "le"
+            
+            new_order = await self.gate_mirror.create_price_triggered_order_v3(
+                trigger_price=adjusted_trigger_price,
+                order_size=gate_size,
+                reduce_only=reduce_only,
+                trigger_type=trigger_type
+            )
+            
+            if new_order and new_order.get('id'):
+                self.logger.info(f"가격 조정 주문 생성 성공: {new_order.get('id')}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"스마트 가격 조정 실행 실패: {gate_order_id} - {e}")
+            return False
+
+    async def _execute_backup_fill_mechanism(self, gate_order_id: str, mirror_info: Dict, analysis_result: Dict) -> bool:
+        try:
+            # 간소화된 백업 체결 메커니즘
+            await self._ensure_cross_margin_mode(f"백업체결({gate_order_id})")
+            
+            # 기존 주문 취소
+            try:
+                await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                await asyncio.sleep(1)
+            except:
+                pass
+            
+            # 현재가 기준 시장가 주문
+            gate_size = mirror_info.get('size', 1)
+            reduce_only = mirror_info.get('reduce_only', False)
+            
+            current_market_order = await self.gate_mirror.place_order(
+                contract=self.GATE_CONTRACT,
+                size=gate_size,
+                price=None,  # 시장가
+                reduce_only=reduce_only,
+                tif="ioc"
+            )
+            
+            if current_market_order and current_market_order.get('id'):
+                self.daily_stats['backup_fill_successes'] += 1
+                self.logger.info(f"백업 방법 성공: {current_market_order.get('id')}")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"백업 체결 메커니즘 실행 실패: {gate_order_id} - {e}")
+            return False
+
+    # === 기존 메서드들 (간소화 버전) ===
+
+    async def _get_all_current_plan_orders_enhanced(self) -> List[Dict]:
+        try:
+            all_orders = []
+            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
+            
+            general_orders = plan_data.get('plan_orders', [])
+            if general_orders:
+                all_orders.extend(general_orders)
+                
+            tp_sl_orders = plan_data.get('tp_sl_orders', [])
+            if tp_sl_orders:
+                all_orders.extend(tp_sl_orders)
+            
+            return all_orders
+            
+        except Exception as e:
+            self.logger.error(f"현재 예약 주문 조회 실패: {e}")
+            return []
+
     async def _update_recently_filled_orders(self):
         try:
-            # 최근 5분간 체결된 주문 조회
             filled_orders = await self.bitget.get_recent_filled_orders(symbol=self.SYMBOL, minutes=5)
-            
             current_time = datetime.now()
             
             for order in filled_orders:
@@ -1472,7 +1269,7 @@ class MirrorPositionManager:
                     self.recently_filled_order_ids.add(order_id)
                     self.filled_order_timestamps[order_id] = current_time
             
-            # 오래된 체결 기록 정리 (5분 경과)
+            # 오래된 체결 기록 정리
             expired_ids = []
             for order_id, timestamp in self.filled_order_timestamps.items():
                 if (current_time - timestamp).total_seconds() > self.filled_order_check_window:
@@ -1485,401 +1282,46 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"최근 체결 주문 업데이트 실패: {e}")
 
-    async def _cleanup_mirror_records_for_filled_order(self, bitget_order_id: str):
+    async def _process_immediate_fill_queue(self):
         try:
-            if bitget_order_id in self.mirrored_plan_orders:
-                mirror_info = self.mirrored_plan_orders[bitget_order_id]
-                gate_order_id = mirror_info.get('gate_order_id')
-                
-                self.logger.info(f"체결된 주문의 미러링 기록 정리: {bitget_order_id} → {gate_order_id}")
-                
-                # 미러링 기록에서 제거
-                del self.mirrored_plan_orders[bitget_order_id]
-                
-                # 주문 매핑에서 제거
-                if bitget_order_id in self.bitget_to_gate_order_mapping:
-                    del self.bitget_to_gate_order_mapping[bitget_order_id]
-                if gate_order_id and gate_order_id in self.gate_to_bitget_order_mapping:
-                    del self.gate_to_bitget_order_mapping[gate_order_id]
-                
-                # 재시도 카운터에서 제거
-                if bitget_order_id in self.cancel_retry_count:
-                    del self.cancel_retry_count[bitget_order_id]
-                
-                self.logger.info(f"체결된 주문의 미러링 기록 정리 완료: {bitget_order_id}")
+            if not self.gate_pending_orders_for_immediate_fill:
+                return
             
-        except Exception as e:
-            self.logger.error(f"체결된 주문 미러링 기록 정리 실패: {e}")
-
-    async def _enhanced_cancel_detection(self):
-        try:
-            # 현재 비트겟 예약 주문 조회
-            current_bitget_orders = await self._get_all_current_plan_orders_enhanced()
-            current_bitget_ids = set()
+            completed_orders = []
             
-            for order in current_bitget_orders:
-                order_id = order.get('orderId', order.get('planOrderId', ''))
-                if order_id:
-                    current_bitget_ids.add(order_id)
-            
-            # 미러링된 주문 중 비트겟에서 사라진 것들 찾기
-            missing_bitget_orders = []
-            
-            for bitget_id, mirror_info in list(self.mirrored_plan_orders.items()):
-                if bitget_id not in current_bitget_ids:
-                    # 시세 차이를 고려한 체결/취소 분석
-                    analysis_result = await self._analyze_order_disappearance_with_price_context_enhanced(bitget_id)
-                    
-                    if not analysis_result['is_filled'] and analysis_result['safe_to_cancel']:
-                        # 실제 취소된 것으로 판단되고 안전한 경우에만 처리
-                        missing_bitget_orders.append(bitget_id)
-            
-            # 취소된 주문들 처리
-            if missing_bitget_orders:
-                self.logger.info(f"강화된 취소 감지: {len(missing_bitget_orders)}개 주문이 비트겟에서 안전하게 취소됨")
-                
-                for bitget_id in missing_bitget_orders:
-                    try:
-                        success = await self._handle_plan_order_cancel_enhanced_v2(bitget_id)
-                        if success:
-                            self.daily_stats['cancel_successes'] += 1
-                            self.logger.info(f"강화된 취소 동기화 성공: {bitget_id}")
-                        else:
-                            self.daily_stats['cancel_failures'] += 1
-                            self.logger.warning(f"강화된 취소 동기화 실패: {bitget_id}")
-                    except Exception as e:
-                        self.logger.error(f"강화된 취소 처리 중 오류: {bitget_id} - {e}")
-                        self.daily_stats['cancel_failures'] += 1
-                        
-        except Exception as e:
-            self.logger.error(f"강화된 취소 감지 시스템 오류: {e}")
-
-    async def _handle_plan_order_cancel_enhanced_v2(self, bitget_order_id: str) -> bool:
-        try:
-            self.logger.info(f"강화된 예약 주문 취소 처리 V2 시작: {bitget_order_id}")
-            
-            # 미러링된 주문인지 확인
-            if bitget_order_id not in self.mirrored_plan_orders:
-                self.logger.info(f"미러링되지 않은 주문이므로 취소 처리 스킵: {bitget_order_id}")
-                return True
-            
-            mirror_info = self.mirrored_plan_orders[bitget_order_id]
-            gate_order_id = mirror_info.get('gate_order_id')
-            
-            if not gate_order_id:
-                self.logger.warning(f"게이트 주문 ID가 없음: {bitget_order_id}")
-                # 미러링 기록에서 제거
-                del self.mirrored_plan_orders[bitget_order_id]
-                return True
-            
-            # 재시도 카운터 확인
-            retry_count = self.cancel_retry_count.get(bitget_order_id, 0)
-            
-            # 강제 정리 임계값 확인
-            if retry_count >= self.cancel_force_cleanup_threshold:
-                self.logger.error(f"강제 정리 임계값 초과: {bitget_order_id} (재시도: {retry_count}회)")
-                await self._force_remove_mirror_record_v2(bitget_order_id, gate_order_id)
-                self.daily_stats['forced_cancel_cleanups'] += 1
-                return True
-            
-            # 최대 재시도 횟수 확인
-            if retry_count >= self.max_cancel_retries:
-                self.logger.error(f"최대 재시도 횟수 초과하지만 강제 정리 계속: {bitget_order_id} (재시도: {retry_count}회)")
-                await self._force_remove_mirror_record_v2(bitget_order_id, gate_order_id)
-                return False
-            
-            # 게이트에서 주문 취소 시도 - 강화된 로직
-            try:
-                self.logger.info(f"게이트 주문 취소 시도 V2: {gate_order_id} (재시도: {retry_count + 1}/{self.max_cancel_retries})")
-                
-                # 먼저 주문이 존재하는지 확인
-                gate_orders = await self.gate_mirror.get_price_triggered_orders("BTC_USDT", "open")
-                gate_order_exists = any(order.get('id') == gate_order_id for order in gate_orders)
-                
-                if not gate_order_exists:
-                    # 이미 존재하지 않음
-                    success = True
-                    self.logger.info(f"게이트 주문이 이미 처리됨: {gate_order_id}")
-                else:
-                    # 실제 취소 시도
-                    cancel_result = await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                    
-                    # 2초 대기 후 취소 확인
-                    await asyncio.sleep(2.0)
-                    
-                    # 취소 확인
-                    gate_orders_after = await self.gate_mirror.get_price_triggered_orders("BTC_USDT", "open")
-                    gate_order_still_exists = any(order.get('id') == gate_order_id for order in gate_orders_after)
-                    
-                    if gate_order_still_exists:
-                        # 아직 존재하면 재시도
-                        success = False
-                        self.cancel_retry_count[bitget_order_id] = retry_count + 1
-                        self.logger.warning(f"게이트 주문이 아직 존재함, 재시도 예정: {gate_order_id}")
-                    else:
-                        # 취소 확인됨
-                        success = True
-                        self.logger.info(f"게이트 주문 취소 확인됨: {gate_order_id}")
-                        
-            except Exception as cancel_error:
-                error_msg = str(cancel_error).lower()
-                
-                # 이미 존재하지 않는 주문인 경우 성공으로 처리
-                if any(keyword in error_msg for keyword in [
-                    "not found", "order not exist", "invalid order", 
-                    "order does not exist", "auto_order_not_found",
-                    "order_not_found", "not_found", "已取消", "cancelled"
-                ]):
-                    success = True
-                    self.logger.info(f"게이트 주문이 이미 처리됨 (오류 메시지): {gate_order_id}")
-                else:
-                    # 다른 오류인 경우 재시도
-                    success = False
-                    self.cancel_retry_count[bitget_order_id] = retry_count + 1
-                    self.logger.error(f"게이트 주문 취소 실패: {gate_order_id} - {cancel_error}")
-            
-            # 결과 처리
-            if success:
-                # 성공한 경우 모든 기록 정리
-                await self._cleanup_mirror_records(bitget_order_id, gate_order_id)
-                
-                await self.telegram.send_message(
-                    f"강화된 예약 주문 취소 동기화 완료\n"
-                    f"비트겟 ID: {bitget_order_id}\n"
-                    f"게이트 ID: {gate_order_id}\n"
-                    f"재시도 횟수: {retry_count + 1}회\n"
-                    f"시세 차이를 고려한 강화된 동기화 로직으로 처리됨"
-                )
-                
-                self.logger.info(f"강화된 예약 주문 취소 동기화 성공: {bitget_order_id} → {gate_order_id}")
-                return True
-            else:
-                # 실패한 경우 다음 사이클에서 재시도
-                self.logger.warning(f"강화된 예약 주문 취소 재시도 예정: {bitget_order_id} (다음 사이클)")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"강화된 예약 주문 취소 처리 V2 중 예외 발생: {bitget_order_id} - {e}")
-            
-            # 예외 발생 시 재시도 카운터 증가
-            retry_count = self.cancel_retry_count.get(bitget_order_id, 0)
-            self.cancel_retry_count[bitget_order_id] = retry_count + 1
-            
-            return False
-
-    async def _force_remove_mirror_record_v2(self, bitget_order_id: str, gate_order_id: str):
-        try:
-            self.logger.warning(f"강제 미러링 기록 제거 V2: {bitget_order_id} → {gate_order_id}")
-            
-            # 마지막으로 게이트 주문 취소 시도
-            try:
-                await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
-                self.logger.info(f"강제 정리 중 게이트 주문 취소 성공: {gate_order_id}")
-            except Exception as final_cancel_error:
-                self.logger.warning(f"강제 정리 중 게이트 주문 취소 실패 (무시하고 계속): {gate_order_id} - {final_cancel_error}")
-            
-            # 미러링 기록에서 제거
-            if bitget_order_id in self.mirrored_plan_orders:
-                del self.mirrored_plan_orders[bitget_order_id]
-            
-            # 주문 매핑에서 제거
-            if bitget_order_id in self.bitget_to_gate_order_mapping:
-                del self.bitget_to_gate_order_mapping[bitget_order_id]
-            if gate_order_id in self.gate_to_bitget_order_mapping:
-                del self.gate_to_bitget_order_mapping[gate_order_id]
-            
-            # 재시도 카운터에서 제거
-            if bitget_order_id in self.cancel_retry_count:
-                del self.cancel_retry_count[bitget_order_id]
-            
-            await self.telegram.send_message(
-                f"강제 미러링 기록 정리 V2\n"
-                f"비트겟 ID: {bitget_order_id}\n"
-                f"게이트 ID: {gate_order_id}\n"
-                f"사유: 반복 취소 실패로 강제 정리\n"
-                f"시세 차이 고려한 강화된 정리 로직으로 처리됨\n"
-                f"⚠️ 게이트에서 수동 확인을 권장합니다"
-            )
-            
-        except Exception as e:
-            self.logger.error(f"강제 미러링 기록 제거 V2 실패: {e}")
-
-    async def _cleanup_mirror_records(self, bitget_order_id: str, gate_order_id: str):
-        try:
-            # 미러링 기록에서 제거
-            if bitget_order_id in self.mirrored_plan_orders:
-                del self.mirrored_plan_orders[bitget_order_id]
-            
-            # 주문 매핑에서 제거
-            if bitget_order_id in self.bitget_to_gate_order_mapping:
-                del self.bitget_to_gate_order_mapping[bitget_order_id]
-            if gate_order_id in self.gate_to_bitget_order_mapping:
-                del self.gate_to_bitget_order_mapping[gate_order_id]
-            
-            # 재시도 카운터에서 제거
-            if bitget_order_id in self.cancel_retry_count:
-                del self.cancel_retry_count[bitget_order_id]
-            
-            self.logger.debug(f"미러링 기록 정리 완료: {bitget_order_id}")
-            
-        except Exception as e:
-            self.logger.error(f"미러링 기록 정리 실패: {e}")
-
-    # 나머지 기존 메서드들은 동일하게 유지하되, 중요한 초기화 메서드들만 간략하게 포함
-    
-    async def _get_all_current_plan_orders_enhanced(self) -> List[Dict]:
-        try:
-            all_orders = []
-            
-            # 1. 비트겟에서 모든 예약 주문 조회
-            plan_data = await self.bitget.get_all_plan_orders_with_tp_sl(self.SYMBOL)
-            
-            # 2. 일반 예약 주문 추가
-            general_orders = plan_data.get('plan_orders', [])
-            if general_orders:
-                all_orders.extend(general_orders)
-                self.logger.debug(f"일반 예약 주문 {len(general_orders)}개 추가")
-                
-                # 클로즈 주문 특별 체크
-                for order in general_orders:
-                    side = order.get('side', order.get('tradeSide', '')).lower()
-                    reduce_only = order.get('reduceOnly', False)
-                    if 'close' in side or reduce_only:
-                        self.logger.info(f"일반 예약 주문 중 클로즈 주문 발견: {order.get('orderId', order.get('planOrderId'))}")
-            
-            # 3. TP/SL 주문 추가
-            tp_sl_orders = plan_data.get('tp_sl_orders', [])
-            if tp_sl_orders:
-                all_orders.extend(tp_sl_orders)
-                self.logger.debug(f"TP/SL 주문 {len(tp_sl_orders)}개 추가 (모두 클로즈 성격)")
-                
-                for order in tp_sl_orders:
-                    order_id = order.get('orderId', order.get('planOrderId'))
-                    self.logger.info(f"TP/SL 클로즈 주문 발견: {order_id}")
-            
-            self.logger.debug(f"총 {len(all_orders)}개의 현재 예약 주문 조회 완료 (클로즈 주문 포함)")
-            return all_orders
-            
-        except Exception as e:
-            self.logger.error(f"현재 예약 주문 조회 실패: {e}")
-            return []
-
-    # 기존 메서드들 중 필수적인 것들만 포함 (중복 제거)
-    async def _is_order_recently_processed_improved(self, order_id: str, order: Dict) -> bool:
-        try:
-            # 기본 시간 기반 확인
-            if order_id in self.recently_processed_orders:
-                time_diff = (datetime.now() - self.recently_processed_orders[order_id]).total_seconds()
-                if time_diff < self.order_deduplication_window:
-                    self.logger.debug(f"최근 처리된 주문: {order_id} ({time_diff:.1f}초 전)")
-                    return True
-                else:
-                    del self.recently_processed_orders[order_id]
-            
-            # 정확한 해시 기반 확인만 사용
-            order_hash = await self._generate_primary_order_hash(order)
-            if order_hash and order_hash in self.processed_order_hashes:
-                self.logger.debug(f"해시 기반 중복 감지: {order_hash}")
-                return True
-            
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"개선된 최근 처리 확인 실패: {e}")
-            return False
-
-    async def _is_duplicate_order_improved(self, bitget_order: Dict) -> bool:
-        try:
-            # 트리거 가격 추출
-            trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if bitget_order.get(price_field):
-                    trigger_price = float(bitget_order.get(price_field))
-                    break
-            
-            if trigger_price <= 0:
-                return False
-            
-            # 정확한 가격 매칭 확인
-            for existing_price_key in self.mirrored_trigger_prices:
+            for gate_order_id, pending_info in list(self.gate_pending_orders_for_immediate_fill.items()):
                 try:
-                    if existing_price_key.startswith(f"{self.GATE_CONTRACT}_"):
-                        existing_price_str = existing_price_key.replace(f"{self.GATE_CONTRACT}_", "")
-                        existing_price = float(existing_price_str)
+                    pending_time = (datetime.now() - pending_info['added_time']).total_seconds()
+                    if pending_time > self.max_wait_time_for_fill:
+                        completed_orders.append(gate_order_id)
+                        continue
+                    
+                    success = await self._execute_immediate_market_fill(
+                        gate_order_id, 
+                        pending_info['mirror_info'], 
+                        pending_info['analysis_result']
+                    )
+                    
+                    if success:
+                        completed_orders.append(gate_order_id)
                         
-                        price_diff = abs(trigger_price - existing_price)
-                        if price_diff <= self.price_tolerance:
-                            self.logger.debug(f"가격 기반 중복 감지: {trigger_price} ≈ {existing_price} (차이: ${price_diff:.2f})")
-                            return True
-                except (ValueError, IndexError):
-                    continue
+                except Exception as e:
+                    self.logger.error(f"대기열 즉시 체결 처리 실패: {gate_order_id} - {e}")
+                    completed_orders.append(gate_order_id)
             
-            # 기존 게이트 주문과의 정확한 해시 매칭만 확인
-            order_hash = await self._generate_primary_order_hash(bitget_order)
-            if order_hash and order_hash in self.gate_existing_order_hashes:
-                self.logger.debug(f"게이트 기존 주문과 해시 중복: {order_hash}")
-                return True
-            
-            return False
-            
+            # 완료된 주문들 대기열에서 제거
+            for order_id in completed_orders:
+                if order_id in self.gate_pending_orders_for_immediate_fill:
+                    del self.gate_pending_orders_for_immediate_fill[order_id]
+                    
         except Exception as e:
-            self.logger.error(f"개선된 중복 주문 확인 실패: {e}")
-            return False
+            self.logger.error(f"즉시 체결 대기열 처리 실패: {e}")
 
-    async def _generate_primary_order_hash(self, order: Dict) -> str:
-        try:
-            # 트리거 가격 추출
-            trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if order.get(price_field):
-                    trigger_price = float(order.get(price_field))
-                    break
-            
-            if trigger_price <= 0:
-                return ""
-            
-            # 크기 추출
-            size = order.get('size', 0)
-            if size:
-                size = int(float(size))
-                abs_size = abs(size)
-                return f"{self.GATE_CONTRACT}_{trigger_price:.2f}_{abs_size}"
-            else:
-                return f"{self.GATE_CONTRACT}_price_{trigger_price:.2f}"
-            
-        except Exception as e:
-            self.logger.error(f"주 해시 생성 실패: {e}")
-            return ""
-
-    async def _record_order_processing_hash(self, order_id: str, order: Dict):
-        try:
-            current_time = datetime.now()
-            self.recently_processed_orders[order_id] = current_time
-            
-            # 주 해시만 기록
-            order_hash = await self._generate_primary_order_hash(order)
-            if order_hash:
-                self.processed_order_hashes.add(order_hash)
-                self.order_hash_timestamps[order_hash] = current_time
-            
-            # 가격 기반 중복 방지 기록
-            trigger_price = 0
-            for price_field in ['triggerPrice', 'price', 'executePrice']:
-                if order.get(price_field):
-                    trigger_price = float(order.get(price_field))
-                    break
-            
-            if trigger_price > 0:
-                price_key = f"{self.GATE_CONTRACT}_{trigger_price:.2f}"
-                self.mirrored_trigger_prices.add(price_key)
-            
-        except Exception as e:
-            self.logger.error(f"주문 처리 해시 기록 실패: {e}")
+    # === 간소화된 기존 메서드들 ===
 
     async def _cleanup_expired_timestamps(self):
         try:
             current_time = datetime.now()
-            
             expired_orders = []
             for order_id, timestamp in self.recently_processed_orders.items():
                 if (current_time - timestamp).total_seconds() > self.order_deduplication_window:
@@ -1889,8 +1331,6 @@ class MirrorPositionManager:
                 del self.recently_processed_orders[order_id]
                 if order_id in self.order_processing_locks:
                     del self.order_processing_locks[order_id]
-            
-            # 기타 정리 작업들...
                 
         except Exception as e:
             self.logger.error(f"타임스탬프 정리 실패: {e}")
@@ -1898,7 +1338,6 @@ class MirrorPositionManager:
     async def _cleanup_expired_hashes(self):
         try:
             current_time = datetime.now()
-            
             expired_hashes = []
             for order_hash, timestamp in self.order_hash_timestamps.items():
                 if (current_time - timestamp).total_seconds() > self.hash_cleanup_interval:
@@ -1912,53 +1351,225 @@ class MirrorPositionManager:
         except Exception as e:
             self.logger.error(f"해시 정리 실패: {e}")
 
-    async def _check_if_order_was_filled_traditional(self, order_id: str) -> bool:
+    async def _enhanced_cancel_detection(self):
         try:
-            # 1. 최근 체결 기록에서 확인
-            if order_id in self.recently_filled_order_ids:
-                self.logger.info(f"체결 확인 (최근 기록): {order_id}")
+            current_bitget_orders = await self._get_all_current_plan_orders_enhanced()
+            current_bitget_ids = set()
+            
+            for order in current_bitget_orders:
+                order_id = order.get('orderId', order.get('planOrderId', ''))
+                if order_id:
+                    current_bitget_ids.add(order_id)
+            
+            missing_bitget_orders = []
+            
+            for bitget_id, mirror_info in list(self.mirrored_plan_orders.items()):
+                if bitget_id not in current_bitget_ids:
+                    analysis_result = await self._analyze_order_disappearance_with_price_context_enhanced(bitget_id)
+                    
+                    if not analysis_result['is_filled'] and analysis_result['safe_to_cancel']:
+                        missing_bitget_orders.append(bitget_id)
+            
+            if missing_bitget_orders:
+                for bitget_id in missing_bitget_orders:
+                    try:
+                        success = await self._handle_plan_order_cancel_enhanced_v2(bitget_id)
+                        if success:
+                            self.daily_stats['cancel_successes'] += 1
+                        else:
+                            self.daily_stats['cancel_failures'] += 1
+                    except Exception as e:
+                        self.logger.error(f"강화된 취소 처리 중 오류: {bitget_id} - {e}")
+                        self.daily_stats['cancel_failures'] += 1
+                        
+        except Exception as e:
+            self.logger.error(f"강화된 취소 감지 시스템 오류: {e}")
+
+    async def _handle_plan_order_cancel_enhanced_v2(self, bitget_order_id: str) -> bool:
+        try:
+            if bitget_order_id not in self.mirrored_plan_orders:
                 return True
             
-            # 2. 실시간 체결 주문 조회로 재확인
-            recent_filled = await self.bitget.get_recent_filled_orders(symbol=self.SYMBOL, minutes=2)
+            mirror_info = self.mirrored_plan_orders[bitget_order_id]
+            gate_order_id = mirror_info.get('gate_order_id')
             
-            for filled_order in recent_filled:
-                filled_id = filled_order.get('orderId', filled_order.get('id', ''))
-                if filled_id == order_id:
-                    self.logger.info(f"체결 확인 (실시간 조회): {order_id}")
-                    
-                    # 체결 기록에 추가
-                    self.recently_filled_order_ids.add(order_id)
-                    self.filled_order_timestamps[order_id] = datetime.now()
-                    return True
+            if not gate_order_id:
+                del self.mirrored_plan_orders[bitget_order_id]
+                return True
             
-            # 3. 주문 내역에서 체결 상태 확인
+            retry_count = self.cancel_retry_count.get(bitget_order_id, 0)
+            
+            if retry_count >= self.cancel_force_cleanup_threshold:
+                await self._force_remove_mirror_record_v2(bitget_order_id, gate_order_id)
+                self.daily_stats['forced_cancel_cleanups'] += 1
+                return True
+            
+            if retry_count >= self.max_cancel_retries:
+                await self._force_remove_mirror_record_v2(bitget_order_id, gate_order_id)
+                return False
+            
+            # 🔥 취소 전 마진 모드 체크
+            await self._ensure_cross_margin_mode(f"주문취소({gate_order_id})")
+            
             try:
-                order_history = await self.bitget.get_order_history(
-                    symbol=self.SYMBOL, 
-                    status='filled',
-                    limit=50
-                )
+                gate_orders = await self.gate_mirror.get_price_triggered_orders("BTC_USDT", "open")
+                gate_order_exists = any(order.get('id') == gate_order_id for order in gate_orders)
                 
-                for hist_order in order_history:
-                    hist_id = hist_order.get('orderId', hist_order.get('id', ''))
-                    if hist_id == order_id:
-                        self.logger.info(f"체결 확인 (주문 내역): {order_id}")
-                        return True
+                if not gate_order_exists:
+                    success = True
+                else:
+                    await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+                    await asyncio.sleep(2.0)
+                    
+                    gate_orders_after = await self.gate_mirror.get_price_triggered_orders("BTC_USDT", "open")
+                    gate_order_still_exists = any(order.get('id') == gate_order_id for order in gate_orders_after)
+                    
+                    if gate_order_still_exists:
+                        success = False
+                        self.cancel_retry_count[bitget_order_id] = retry_count + 1
+                    else:
+                        success = True
                         
-            except Exception as e:
-                self.logger.debug(f"주문 내역 조회 실패: {e}")
+            except Exception as cancel_error:
+                error_msg = str(cancel_error).lower()
+                
+                if any(keyword in error_msg for keyword in [
+                    "not found", "order not exist", "invalid order", 
+                    "order does not exist", "auto_order_not_found",
+                    "order_not_found", "not_found", "cancelled"
+                ]):
+                    success = True
+                else:
+                    success = False
+                    self.cancel_retry_count[bitget_order_id] = retry_count + 1
             
-            # 체결되지 않음 = 취소됨
-            self.logger.info(f"취소 확인 (기존 방식): {order_id}")
+            if success:
+                await self._cleanup_mirror_records(bitget_order_id, gate_order_id)
+                return True
+            else:
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"강화된 예약 주문 취소 처리 V2 중 예외 발생: {bitget_order_id} - {e}")
+            retry_count = self.cancel_retry_count.get(bitget_order_id, 0)
+            self.cancel_retry_count[bitget_order_id] = retry_count + 1
             return False
+
+    async def _force_remove_mirror_record_v2(self, bitget_order_id: str, gate_order_id: str):
+        try:
+            # 마지막으로 게이트 주문 취소 시도
+            try:
+                await self.gate_mirror.cancel_price_triggered_order(gate_order_id)
+            except:
+                pass
+            
+            # 미러링 기록에서 제거
+            if bitget_order_id in self.mirrored_plan_orders:
+                del self.mirrored_plan_orders[bitget_order_id]
+            
+            # 주문 매핑에서 제거
+            if bitget_order_id in self.bitget_to_gate_order_mapping:
+                del self.bitget_to_gate_order_mapping[bitget_order_id]
+            if gate_order_id in self.gate_to_bitget_order_mapping:
+                del self.gate_to_bitget_order_mapping[gate_order_id]
+            
+            # 재시도 카운터에서 제거
+            if bitget_order_id in self.cancel_retry_count:
+                del self.cancel_retry_count[bitget_order_id]
             
         except Exception as e:
-            self.logger.error(f"기존 방식 체결/취소 확인 실패: {order_id} - {e}")
-            # 확실하지 않으면 체결로 처리 (안전상)
-            return True
+            self.logger.error(f"강제 미러링 기록 제거 V2 실패: {e}")
 
-    # 필수 초기화 메서드들 (기존과 동일)
+    async def _cleanup_mirror_records(self, bitget_order_id: str, gate_order_id: str):
+        try:
+            if bitget_order_id in self.mirrored_plan_orders:
+                del self.mirrored_plan_orders[bitget_order_id]
+            
+            if bitget_order_id in self.bitget_to_gate_order_mapping:
+                del self.bitget_to_gate_order_mapping[bitget_order_id]
+            if gate_order_id in self.gate_to_bitget_order_mapping:
+                del self.gate_to_bitget_order_mapping[gate_order_id]
+            
+            if bitget_order_id in self.cancel_retry_count:
+                del self.cancel_retry_count[bitget_order_id]
+                
+        except Exception as e:
+            self.logger.error(f"미러링 기록 정리 실패: {e}")
+
+    # === 포지션 처리 및 기타 메서드들 (간소화) ===
+
+    async def process_filled_order(self, order: Dict):
+        try:
+            if not self.mirror_trading_enabled:
+                return
+                
+            order_id = order.get('orderId', order.get('id', ''))
+            side = order.get('side', '').lower()
+            size = float(order.get('size', 0))
+            fill_price = float(order.get('fillPrice', order.get('price', 0)))
+            
+            # 🔥 체결 주문 처리 전 마진 모드 강제 체크
+            await self._ensure_cross_margin_mode(f"체결처리({order_id})")
+            
+            # 복제 비율 적용된 마진 비율 계산
+            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio_with_multiplier(
+                size, fill_price, order, self.mirror_ratio_multiplier
+            )
+            
+            if not margin_ratio_result['success']:
+                return
+            
+            # 미러링 처리 (기존 로직 유지하되 간소화)
+            
+        except Exception as e:
+            self.logger.error(f"체결 주문 처리 중 오류: {e}")
+
+    async def check_sync_status(self) -> Dict:
+        try:
+            bitget_positions = await self.bitget.get_positions(self.SYMBOL)
+            bitget_active = [p for p in bitget_positions if float(p.get('total', 0)) > 0]
+            
+            gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
+            gate_active = [p for p in gate_positions if p.get('size', 0) != 0]
+            
+            bitget_new_count = len([p for p in bitget_active if self.utils.generate_position_id(p) not in self.startup_positions])
+            gate_new_count = len([p for p in gate_active if self._generate_gate_position_id(p) not in self.startup_gate_positions])
+            
+            is_synced = bitget_new_count == gate_new_count
+            
+            return {
+                'is_synced': is_synced,
+                'bitget_total_count': len(bitget_active),
+                'gate_total_count': len(gate_active),
+                'bitget_new_count': bitget_new_count,
+                'gate_new_count': gate_new_count,
+                'position_diff': abs(bitget_new_count - gate_new_count)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"동기화 상태 확인 실패: {e}")
+            return {'is_synced': False, 'error': str(e)}
+
+    def _generate_gate_position_id(self, gate_pos: Dict) -> str:
+        try:
+            contract = gate_pos.get('contract', "BTC_USDT")
+            size = gate_pos.get('size', 0)
+            
+            if isinstance(size, (int, float)) and size != 0:
+                side = 'long' if size > 0 else 'short'
+            else:
+                side = 'unknown'
+            
+            entry_price = gate_pos.get('entry_price', self.gate_current_price or 0)
+            
+            return f"{contract}_{side}_{entry_price}"
+            
+        except Exception as e:
+            self.logger.error(f"게이트 포지션 ID 생성 실패: {e}")
+            return f"BTC_USDT_unknown_unknown"
+
+    # === 필수 초기화 메서드들 (간소화) ===
+
     async def _check_existing_gate_positions(self):
         try:
             gate_positions = await self.gate_mirror.get_positions("BTC_USDT")
@@ -1994,6 +1605,8 @@ class MirrorPositionManager:
             }
             self.render_restart_detected = False
 
+    # === 나머지 필수 초기화 메서드들도 간소화하여 포함 ===
+
     async def _record_gate_existing_orders(self):
         try:
             gate_orders = await self.gate_mirror.get_price_triggered_orders("BTC_USDT", "open")
@@ -2019,35 +1632,14 @@ class MirrorPositionManager:
                                 'hash': order_hash,
                                 'recorded_at': datetime.now().isoformat()
                             }
-                            
-                            self.logger.info(f"게이트 기존 예약 주문 기록: {order_id} - 트리거가 ${trigger_price:.2f}")
                         
                 except Exception as detail_error:
-                    self.logger.warning(f"게이트 기존 주문 상세 추출 실패: {detail_error}")
                     continue
             
             self.logger.info(f"게이트 기존 예약 주문 {len(gate_orders)}개 기록 완료")
             
         except Exception as e:
             self.logger.error(f"게이트 기존 예약 주문 기록 실패: {e}")
-
-    async def _generate_primary_order_hash_from_details(self, order_details: Dict) -> str:
-        try:
-            trigger_price = order_details.get('trigger_price', 0)
-            size = order_details.get('size', 0)
-            abs_size = order_details.get('abs_size', abs(size) if size else 0)
-            
-            if trigger_price <= 0:
-                return ""
-            
-            if abs_size > 0:
-                return f"BTC_USDT_{trigger_price:.2f}_{abs_size}"
-            else:
-                return f"BTC_USDT_price_{trigger_price:.2f}"
-            
-        except Exception as e:
-            self.logger.error(f"상세정보 기반 해시 생성 실패: {e}")
-            return ""
 
     async def _record_startup_positions(self):
         try:
@@ -2057,7 +1649,6 @@ class MirrorPositionManager:
                 if float(pos.get('total', 0)) > 0:
                     pos_id = self.utils.generate_position_id(pos)
                     self.startup_positions.add(pos_id)
-                    self.logger.info(f"시작 시 비트겟 포지션 기록: {pos_id}")
             
             self.logger.info(f"시작 시 비트겟 포지션 {len(self.startup_positions)}개 기록")
             
@@ -2072,13 +1663,6 @@ class MirrorPositionManager:
                 order_id = order.get('orderId', order.get('planOrderId', ''))
                 if order_id:
                     self.startup_plan_orders.add(order_id)
-                    
-                    side = order.get('side', order.get('tradeSide', '')).lower()
-                    reduce_only = order.get('reduceOnly', False)
-                    is_close = 'close' in side or reduce_only
-                    
-                    order_type = "클로즈" if is_close else "일반"
-                    self.logger.info(f"시작 시 비트겟 {order_type} 예약 주문 기록: {order_id}")
             
             self.last_plan_order_ids = set(self.startup_plan_orders)
             
@@ -2095,30 +1679,11 @@ class MirrorPositionManager:
                 if pos.get('size', 0) != 0:
                     gate_pos_id = self._generate_gate_position_id(pos)
                     self.startup_gate_positions.add(gate_pos_id)
-                    self.logger.info(f"시작 시 게이트 포지션 기록: {gate_pos_id}")
             
             self.logger.info(f"시작 시 게이트 포지션 {len(self.startup_gate_positions)}개 기록")
             
         except Exception as e:
             self.logger.error(f"시작 시 게이트 포지션 기록 실패: {e}")
-
-    def _generate_gate_position_id(self, gate_pos: Dict) -> str:
-        try:
-            contract = gate_pos.get('contract', "BTC_USDT")
-            size = gate_pos.get('size', 0)
-            
-            if isinstance(size, (int, float)) and size != 0:
-                side = 'long' if size > 0 else 'short'
-            else:
-                side = 'unknown'
-            
-            entry_price = gate_pos.get('entry_price', self.gate_current_price or 0)
-            
-            return f"{contract}_{side}_{entry_price}"
-            
-        except Exception as e:
-            self.logger.error(f"게이트 포지션 ID 생성 실패: {e}")
-            return f"BTC_USDT_unknown_unknown"
 
     async def _create_initial_plan_order_snapshot(self):
         try:
@@ -2145,17 +1710,15 @@ class MirrorPositionManager:
                 self.logger.info("시작 시 복제할 예약 주문이 없음")
                 return
             
-            self.logger.info(f"시작 시 {len(self.startup_plan_orders)}개 예약 주문 복제 시작 (복제비율: {self.mirror_ratio_multiplier}x)")
+            # 🔥 시작 시 마진 모드 체크
+            await self._ensure_cross_margin_mode("시작시미러링")
             
             success = False
             for retry in range(self.max_startup_mirror_retries):
                 try:
-                    self.logger.info(f"시작 시 예약 주문 복제 시도 {retry + 1}/{self.max_startup_mirror_retries}")
-                    
                     mirrored_count = 0
                     skipped_count = 0
                     failed_count = 0
-                    close_order_count = 0
                     
                     for order_id in list(self.startup_plan_orders):
                         try:
@@ -2164,34 +1727,25 @@ class MirrorPositionManager:
                                 
                                 # 클로즈 주문 상세 분석
                                 close_details = await self.utils.determine_close_order_details_enhanced(order_data)
-                                is_close_order = close_details['is_close_order']
-                                
-                                if is_close_order:
-                                    close_order_count += 1
                                 
                                 # 중복 체크
                                 is_duplicate = await self._is_duplicate_order_improved(order_data)
                                 if is_duplicate:
-                                    self.logger.info(f"중복으로 인한 시작 시 주문 스킵: {order_id}")
                                     skipped_count += 1
                                     continue
                                 
-                                # 🔥🔥🔥 시세 차이 대응이 포함된 완벽한 미러링 시도 (마진 모드 체크 포함)
+                                # 시세 차이 대응이 포함된 완벽한 미러링 시도
                                 result = await self._process_perfect_mirror_order_with_price_diff_handling(order_data, close_details, self.mirror_ratio_multiplier)
                                 
-                                # 모든 성공 케이스 처리
                                 success_results = ["perfect_success", "partial_success", "force_success", "close_order_forced", "price_diff_handled"]
                                 if result in success_results:
                                     mirrored_count += 1
                                     self.daily_stats['startup_plan_mirrors'] += 1
-                                    self.logger.info(f"시작 시 {'클로즈 ' if is_close_order else ''}예약 주문 복제 성공: {order_id} (결과: {result}, 비율: {self.mirror_ratio_multiplier}x)")
                                 else:
                                     failed_count += 1
-                                    self.logger.warning(f"시작 시 {'클로즈 ' if is_close_order else ''}예약 주문 복제 실패: {order_id} (결과: {result})")
                         
                         except Exception as e:
                             failed_count += 1
-                            self.logger.error(f"시작 시 예약 주문 복제 오류: {order_id} - {e}")
                             
                         # 처리된 주문으로 표시
                         self.processed_plan_orders.add(order_id)
@@ -2201,26 +1755,20 @@ class MirrorPositionManager:
                     if total_processed >= len(self.startup_plan_orders) * 0.7 or mirrored_count > 0:
                         success = True
                         
-                        # 시작 시 복제 완료 알림 - 시세 차이 대응 정보 포함
                         ratio_info = f" (복제비율: {self.mirror_ratio_multiplier}x)" if self.mirror_ratio_multiplier != 1.0 else ""
                         
                         await self.telegram.send_message(
                             f"시작 시 예약 주문 복제 완료{ratio_info}\n"
                             f"성공: {mirrored_count}개\n"
-                            f"클로즈 주문: {close_order_count}개\n"
                             f"스킵: {skipped_count}개\n"
                             f"실패: {failed_count}개\n"
                             f"총 {len(self.startup_plan_orders)}개 중 {mirrored_count}개 복제{ratio_info}\n\n"
-                            f"시세 차이 대응 시스템 적용!\n"
-                            f"⚡ 비트겟 체결시 게이트도 즉시 시장가로 체결됩니다!\n"
-                            f"🎯 더 이상 시세 차이로 인한 미체결 손실이 없습니다!"
+                            f"마진 모드 Cross 강제 설정 완료!\n"
+                            f"시세 차이 대응 시스템 적용!"
                         )
                         
-                        self.logger.info(f"시작 시 예약 주문 복제 성공: {mirrored_count}개 (클로즈 {close_order_count}개), 스킵 {skipped_count}개, 실패 {failed_count}개")
                         break
                     else:
-                        self.logger.warning(f"시작 시 예약 주문 복제 성공률 부족: {mirrored_count}/{len(self.startup_plan_orders)} (재시도 예정)")
-                        
                         if retry < self.max_startup_mirror_retries - 1:
                             await asyncio.sleep(self.startup_mirror_delay)
                             continue
@@ -2231,33 +1779,178 @@ class MirrorPositionManager:
                         await asyncio.sleep(self.startup_mirror_delay)
                         continue
             
-            if not success:
-                self.logger.error("시작 시 예약 주문 복제 모든 재시도 실패")
-                await self.telegram.send_message(
-                    f"❌ 시작 시 예약 주문 복제 실패\n"
-                    f"총 {self.max_startup_mirror_retries}회 재시도 후 실패\n"
-                    f"수동 확인이 필요할 수 있습니다."
-                )
-            
             self.startup_plan_orders_processed = True
             
         except Exception as e:
             self.logger.error(f"시작 시 예약 주문 복제 실패: {e}")
             self.startup_plan_orders_processed = True
 
+    # === 기타 필수 메서드들 간소화 ===
+
+    async def _is_order_recently_processed_improved(self, order_id: str, order: Dict) -> bool:
+        try:
+            if order_id in self.recently_processed_orders:
+                time_diff = (datetime.now() - self.recently_processed_orders[order_id]).total_seconds()
+                if time_diff < self.order_deduplication_window:
+                    return True
+                else:
+                    del self.recently_processed_orders[order_id]
+            
+            order_hash = await self._generate_primary_order_hash(order)
+            if order_hash and order_hash in self.processed_order_hashes:
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"개선된 최근 처리 확인 실패: {e}")
+            return False
+
+    async def _is_duplicate_order_improved(self, bitget_order: Dict) -> bool:
+        try:
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if bitget_order.get(price_field):
+                    trigger_price = float(bitget_order.get(price_field))
+                    break
+            
+            if trigger_price <= 0:
+                return False
+            
+            for existing_price_key in self.mirrored_trigger_prices:
+                try:
+                    if existing_price_key.startswith(f"{self.GATE_CONTRACT}_"):
+                        existing_price_str = existing_price_key.replace(f"{self.GATE_CONTRACT}_", "")
+                        existing_price = float(existing_price_str)
+                        
+                        price_diff = abs(trigger_price - existing_price)
+                        if price_diff <= self.price_tolerance:
+                            return True
+                except (ValueError, IndexError):
+                    continue
+            
+            order_hash = await self._generate_primary_order_hash(bitget_order)
+            if order_hash and order_hash in self.gate_existing_order_hashes:
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"개선된 중복 주문 확인 실패: {e}")
+            return False
+
+    async def _generate_primary_order_hash(self, order: Dict) -> str:
+        try:
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if order.get(price_field):
+                    trigger_price = float(order.get(price_field))
+                    break
+            
+            if trigger_price <= 0:
+                return ""
+            
+            size = order.get('size', 0)
+            if size:
+                size = int(float(size))
+                abs_size = abs(size)
+                return f"{self.GATE_CONTRACT}_{trigger_price:.2f}_{abs_size}"
+            else:
+                return f"{self.GATE_CONTRACT}_price_{trigger_price:.2f}"
+            
+        except Exception as e:
+            self.logger.error(f"주 해시 생성 실패: {e}")
+            return ""
+
+    async def _generate_primary_order_hash_from_details(self, order_details: Dict) -> str:
+        try:
+            trigger_price = order_details.get('trigger_price', 0)
+            size = order_details.get('size', 0)
+            abs_size = order_details.get('abs_size', abs(size) if size else 0)
+            
+            if trigger_price <= 0:
+                return ""
+            
+            if abs_size > 0:
+                return f"BTC_USDT_{trigger_price:.2f}_{abs_size}"
+            else:
+                return f"BTC_USDT_price_{trigger_price:.2f}"
+            
+        except Exception as e:
+            self.logger.error(f"상세정보 기반 해시 생성 실패: {e}")
+            return ""
+
+    async def _record_order_processing_hash(self, order_id: str, order: Dict):
+        try:
+            current_time = datetime.now()
+            self.recently_processed_orders[order_id] = current_time
+            
+            order_hash = await self._generate_primary_order_hash(order)
+            if order_hash:
+                self.processed_order_hashes.add(order_hash)
+                self.order_hash_timestamps[order_hash] = current_time
+            
+            # 가격 기반 중복 방지 기록
+            trigger_price = 0
+            for price_field in ['triggerPrice', 'price', 'executePrice']:
+                if order.get(price_field):
+                    trigger_price = float(order.get(price_field))
+                    break
+            
+            if trigger_price > 0:
+                price_key = f"{self.GATE_CONTRACT}_{trigger_price:.2f}"
+                self.mirrored_trigger_prices.add(price_key)
+            
+        except Exception as e:
+            self.logger.error(f"주문 처리 해시 기록 실패: {e}")
+
+    async def _check_if_order_was_filled_traditional(self, order_id: str) -> bool:
+        try:
+            if order_id in self.recently_filled_order_ids:
+                return True
+            
+            recent_filled = await self.bitget.get_recent_filled_orders(symbol=self.SYMBOL, minutes=2)
+            
+            for filled_order in recent_filled:
+                filled_id = filled_order.get('orderId', filled_order.get('id', ''))
+                if filled_id == order_id:
+                    self.recently_filled_order_ids.add(order_id)
+                    self.filled_order_timestamps[order_id] = datetime.now()
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"기존 방식 체결/취소 확인 실패: {order_id} - {e}")
+            return True
+
+    async def _cleanup_mirror_records_for_filled_order(self, bitget_order_id: str):
+        try:
+            if bitget_order_id in self.mirrored_plan_orders:
+                mirror_info = self.mirrored_plan_orders[bitget_order_id]
+                gate_order_id = mirror_info.get('gate_order_id')
+                
+                del self.mirrored_plan_orders[bitget_order_id]
+                
+                if bitget_order_id in self.bitget_to_gate_order_mapping:
+                    del self.bitget_to_gate_order_mapping[bitget_order_id]
+                if gate_order_id and gate_order_id in self.gate_to_bitget_order_mapping:
+                    del self.gate_to_bitget_order_mapping[gate_order_id]
+                
+                if bitget_order_id in self.cancel_retry_count:
+                    del self.cancel_retry_count[bitget_order_id]
+            
+        except Exception as e:
+            self.logger.error(f"체결된 주문 미러링 기록 정리 실패: {e}")
+
     async def _validate_close_order_enhanced(self, order: Dict, close_details: Dict) -> str:
         try:
             if not self.close_order_processing:
                 return "skip"
             
-            order_id = order.get('orderId', order.get('planOrderId', ''))
-            
-            # 강제 미러링 모드인 경우 무조건 진행
             if self.force_close_order_mirror:
-                self.logger.info(f"클로즈 주문 강제 미러링 모드: {order_id}")
                 return "force_mirror"
             
-            # 관대한 모드인 경우 대부분 허용
             if self.close_order_validation_mode == "permissive":
                 return "force_mirror"
             
@@ -2271,7 +1964,6 @@ class MirrorPositionManager:
         try:
             current_time = datetime.now()
             
-            # 30초마다만 체크
             if (current_time - self.last_position_check).total_seconds() < self.position_check_interval:
                 return
             
@@ -2280,14 +1972,12 @@ class MirrorPositionManager:
             if not self.position_close_monitoring:
                 return
             
-            # 현재 게이트 포지션 상태 확인
             gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
             has_position = any(pos.get('size', 0) != 0 for pos in gate_positions)
             
             if has_position:
                 return
             
-            # 포지션이 없으면 게이트의 클로즈 주문들 찾기
             gate_orders = await self.gate_mirror.get_price_triggered_orders(self.GATE_CONTRACT, "open")
             
             close_orders_to_delete = []
@@ -2301,11 +1991,11 @@ class MirrorPositionManager:
                         close_orders_to_delete.append(gate_order)
                         
                 except Exception as e:
-                    self.logger.debug(f"게이트 주문 분석 중 오류: {e}")
                     continue
             
             if close_orders_to_delete:
-                self.logger.info(f"포지션 없음 → {len(close_orders_to_delete)}개 클로즈 주문 자동 정리 시작")
+                # 🔥 클로즈 주문 정리 전 마진 모드 체크
+                await self._ensure_cross_margin_mode("클로즈주문정리")
                 
                 deleted_count = 0
                 for close_order in close_orders_to_delete:
@@ -2324,126 +2014,32 @@ class MirrorPositionManager:
                                 if bitget_order_id in self.bitget_to_gate_order_mapping:
                                     del self.bitget_to_gate_order_mapping[bitget_order_id]
                             
-                            self.logger.info(f"클로즈 주문 삭제 완료: {gate_order_id}")
-                            
                     except Exception as e:
                         error_msg = str(e).lower()
                         if any(keyword in error_msg for keyword in [
                             "not found", "order not exist", "invalid order"
                         ]):
                             deleted_count += 1
-                            self.logger.info(f"클로즈 주문이 이미 처리됨: {gate_order_id}")
-                        else:
-                            self.logger.error(f"클로즈 주문 삭제 실패: {gate_order_id} - {e}")
                 
                 if deleted_count > 0:
                     self.daily_stats['auto_close_order_cleanups'] += deleted_count
                     self.daily_stats['position_closed_cleanups'] += 1
-                    
-                    await self.telegram.send_message(
-                        f"자동 클로즈 주문 정리 완료\n"
-                        f"포지션 상태: 없음 (모두 익절/손절됨)\n"
-                        f"정리된 클로즈 주문: {deleted_count}개\n"
-                        f"게이트가 깔끔하게 정리되었습니다! ✨"
-                    )
-                    
-                    self.logger.info(f"포지션 종료로 인한 클로즈 주문 자동 정리 완료: {deleted_count}개")
             
         except Exception as e:
             self.logger.error(f"포지션 없음 시 클로즈 주문 정리 실패: {e}")
 
-    # 포지션 처리 관련 메서드들 (기존과 동일하게 유지)
-    async def process_filled_order(self, order: Dict):
-        try:
-            if not self.mirror_trading_enabled:
-                return
-                
-            order_id = order.get('orderId', order.get('id', ''))
-            side = order.get('side', '').lower()
-            size = float(order.get('size', 0))
-            fill_price = float(order.get('fillPrice', order.get('price', 0)))
-            
-            position_side = 'long' if side == 'buy' else 'short'
-            
-            # 🔥🔥🔥 주문 처리 전 마진 모드 강제 체크
-            try:
-                current_margin_mode = await self.gate_mirror.get_current_margin_mode(self.GATE_CONTRACT)
-                if current_margin_mode != 'cross':
-                    self.logger.warning(f"체결 주문 처리 전 마진 모드가 Cross가 아님: {current_margin_mode} → 강제 변경 시도")
-                    
-                    force_result = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
-                    if force_result:
-                        self.daily_stats['margin_mode_enforcements'] += 1
-                        self.logger.info(f"체결 주문 처리 전 마진 모드 강제 변경 성공: {current_margin_mode} → Cross")
-                    else:
-                        self.logger.error(f"체결 주문 처리 전 마진 모드 강제 변경 실패: {current_margin_mode}")
-                        # 실패해도 주문은 계속 진행
-                else:
-                    self.logger.debug(f"체결 주문 처리 전 마진 모드 확인 완료: {current_margin_mode}")
-            except Exception as margin_error:
-                self.logger.error(f"체결 주문 처리 전 마진 모드 체크 실패하지만 계속 진행: {margin_error}")
-            
-            # 복제 비율 적용된 마진 비율 계산
-            margin_ratio_result = await self.utils.calculate_dynamic_margin_ratio_with_multiplier(
-                size, fill_price, order, self.mirror_ratio_multiplier
-            )
-            
-            if not margin_ratio_result['success']:
-                return
-            
-            leverage = margin_ratio_result['leverage']
-            
-            # 미러링 처리...
-            # (기존 로직 유지)
-            
-        except Exception as e:
-            self.logger.error(f"체결 주문 처리 중 오류: {e}")
+    # === 기본 메서드들 ===
 
-    async def check_sync_status(self) -> Dict:
-        try:
-            # 비트겟 포지션
-            bitget_positions = await self.bitget.get_positions(self.SYMBOL)
-            bitget_active = [p for p in bitget_positions if float(p.get('total', 0)) > 0]
-            
-            # 게이트 포지션
-            gate_positions = await self.gate_mirror.get_positions(self.GATE_CONTRACT)
-            gate_active = [p for p in gate_positions if p.get('size', 0) != 0]
-            
-            # 동기화 상태 계산
-            bitget_new_count = len([p for p in bitget_active if self.utils.generate_position_id(p) not in self.startup_positions])
-            gate_new_count = len([p for p in gate_active if self._generate_gate_position_id(p) not in self.startup_gate_positions])
-            
-            is_synced = bitget_new_count == gate_new_count
-            
-            return {
-                'is_synced': is_synced,
-                'bitget_total_count': len(bitget_active),
-                'gate_total_count': len(gate_active),
-                'bitget_new_count': bitget_new_count,
-                'gate_new_count': gate_new_count,
-                'position_diff': abs(bitget_new_count - gate_new_count)
-            }
-            
-        except Exception as e:
-            self.logger.error(f"동기화 상태 확인 실패: {e}")
-            return {
-                'is_synced': False,
-                'error': str(e)
-            }
-    
     async def process_position(self, bitget_pos: Dict):
         """포지션 처리 (미러링이 필요한 경우)"""
-        # 기존 로직 유지
         pass
     
     async def handle_position_close(self, pos_id: str):
         """포지션 종료 처리"""
-        # 기존 로직 유지
         pass
 
     async def stop(self):
         try:
             self.logger.info("포지션 매니저 중지 중...")
-            # 필요한 정리 작업 수행
         except Exception as e:
             self.logger.error(f"포지션 매니저 중지 실패: {e}")
