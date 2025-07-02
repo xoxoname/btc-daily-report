@@ -36,25 +36,25 @@ class MirrorTradingUtils:
         self.gate = gate_client
         self.logger = logging.getLogger('mirror_trading_utils')
         
-        # Constants
+        # 기본 설정
         self.SYMBOL = "BTCUSDT"
         self.GATE_CONTRACT = "BTC_USDT"
         self.MIN_MARGIN = 1.0
         self.MAX_PRICE_DIFF_PERCENT = 50.0
         
-        # Leverage settings
+        # 레버리지 설정
         self.DEFAULT_LEVERAGE = 30
         self.MAX_LEVERAGE = 100
         self.MIN_LEVERAGE = 1
         self.leverage_cache = {}
         
-        # Ratio multiplier settings
+        # 복제 비율 설정
         self.DEFAULT_RATIO_MULTIPLIER = 1.0
         self.MAX_RATIO_MULTIPLIER = 10.0
         self.MIN_RATIO_MULTIPLIER = 0.1
         self.current_ratio_multiplier = 1.0
         
-        # Ratio descriptions
+        # 복제 비율 설명
         self.RATIO_DESCRIPTIONS = {
             0.1: "원본의 10% 크기로 대폭 축소",
             0.2: "원본의 20% 크기로 축소",
@@ -78,14 +78,14 @@ class MirrorTradingUtils:
             10.0: "원본의 10배로 최대 확대"
         }
         
-        # Price validation settings
+        # 가격 검증 설정
         self.TRIGGER_PRICE_MIN_DIFF_PERCENT = 0.0
         self.ALLOW_VERY_CLOSE_PRICES = True
         self.PRICE_SYNC_THRESHOLD = 1000.0
         self.PRICE_ADJUSTMENT_ENABLED = True
         self.ABNORMAL_PRICE_DIFF_THRESHOLD = 10000.0
         
-        # Close order detection
+        # 클로즈 주문 감지
         self.CLOSE_ORDER_KEYWORDS = [
             'close', 'close_long', 'close_short', 'close long', 'close short',
             'exit', 'exit_long', 'exit_short', 'exit long', 'exit short',
@@ -100,7 +100,7 @@ class MirrorTradingUtils:
         
         self.CLOSE_ORDER_STRICT_MODE = False
         
-        self.logger.info("Mirror trading utils initialized with ratio multiplier support")
+        self.logger.info("미러 트레이딩 유틸리티 초기화 완료 - 복제 비율 지원")
     
     async def calculate_dynamic_margin_ratio_with_multiplier(self, size: float, trigger_price: float, 
                                                            bitget_order: Dict, ratio_multiplier: float = 1.0) -> Dict:
@@ -108,18 +108,18 @@ class MirrorTradingUtils:
             if size is None or trigger_price is None:
                 return {
                     'success': False,
-                    'error': 'size or trigger_price is None'
+                    'error': 'size나 trigger_price가 None입니다'
                 }
             
-            # Validate ratio multiplier
+            # 복제 비율 검증
             validated_ratio = self.validate_ratio_multiplier(ratio_multiplier)
             if validated_ratio != ratio_multiplier:
-                self.logger.warning(f"Ratio adjusted: {ratio_multiplier} → {validated_ratio}")
+                self.logger.warning(f"복제 비율 조정됨: {ratio_multiplier} → {validated_ratio}")
                 ratio_multiplier = validated_ratio
             
-            self.logger.info(f"Calculating margin with ratio: size={size}, ratio={ratio_multiplier}x")
+            self.logger.info(f"복제 비율 적용 마진 계산: size={size}, ratio={ratio_multiplier}x")
             
-            # Extract leverage
+            # 레버리지 추출
             bitget_account = await self.bitget.get_account_info()
             extracted_leverage = await self.extract_bitget_leverage_enhanced(
                 order_data=bitget_order,
@@ -127,43 +127,43 @@ class MirrorTradingUtils:
                 account_data=bitget_account
             )
             
-            self.logger.info(f"Extracted leverage: {extracted_leverage}x")
+            self.logger.info(f"추출된 레버리지: {extracted_leverage}x")
             
-            # Get Bitget total equity
+            # 비트겟 총 자산 조회
             bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
             
             if bitget_total_equity <= 0:
                 return {
                     'success': False,
-                    'error': 'Bitget total equity is 0 or query failed'
+                    'error': '비트겟 총 자산이 0이거나 조회 실패'
                 }
             
-            # Calculate Bitget margin usage
+            # 비트겟 마진 사용량 계산
             bitget_notional_value = size * trigger_price
             bitget_required_margin = bitget_notional_value / extracted_leverage
             
-            # Calculate base margin ratio
+            # 기본 마진 비율 계산
             base_margin_ratio = bitget_required_margin / bitget_total_equity
             
-            # Apply ratio multiplier
+            # 복제 비율 적용
             adjusted_margin_ratio = base_margin_ratio * ratio_multiplier
             
-            # Safety checks
+            # 안전 검사
             if adjusted_margin_ratio <= 0:
                 return {
                     'success': False,
-                    'error': f'Adjusted margin ratio is 0 or negative: {adjusted_margin_ratio:.4f}'
+                    'error': f'조정된 마진 비율이 0 이하입니다: {adjusted_margin_ratio:.4f}'
                 }
             elif adjusted_margin_ratio > 1:
                 original_ratio = adjusted_margin_ratio
                 adjusted_margin_ratio = 0.95
-                self.logger.warning(f"Margin ratio capped at 95%: {original_ratio:.4f} → {adjusted_margin_ratio:.4f}")
+                self.logger.warning(f"마진 비율 95%로 제한: {original_ratio:.4f} → {adjusted_margin_ratio:.4f}")
             
-            # Recalculate values with adjusted margin
+            # 조정된 마진으로 재계산
             adjusted_required_margin = bitget_total_equity * adjusted_margin_ratio
             adjusted_notional_value = adjusted_required_margin * extracted_leverage
             
-            # Analyze ratio effect
+            # 복제 비율 효과 분석
             ratio_effect = self.analyze_ratio_multiplier_effect(ratio_multiplier, base_margin_ratio, adjusted_margin_ratio)
             
             result = {
@@ -181,17 +181,17 @@ class MirrorTradingUtils:
                 'ratio_description': self.get_ratio_multiplier_description(ratio_multiplier)
             }
             
-            self.logger.info(f"Margin calculation successful:")
-            self.logger.info(f"   - Base margin ratio: {base_margin_ratio*100:.3f}%")
-            self.logger.info(f"   - Ratio multiplier: {ratio_multiplier}x ({ratio_effect['description']})")
-            self.logger.info(f"   - Final margin ratio: {adjusted_margin_ratio*100:.3f}%")
-            self.logger.info(f"   - Leverage: {extracted_leverage}x")
-            self.logger.info(f"   - Effect: {ratio_effect['impact']}")
+            self.logger.info(f"마진 계산 성공:")
+            self.logger.info(f"   - 기본 마진 비율: {base_margin_ratio*100:.3f}%")
+            self.logger.info(f"   - 복제 비율: {ratio_multiplier}x ({ratio_effect['description']})")
+            self.logger.info(f"   - 최종 마진 비율: {adjusted_margin_ratio*100:.3f}%")
+            self.logger.info(f"   - 레버리지: {extracted_leverage}x")
+            self.logger.info(f"   - 효과: {ratio_effect['impact']}")
             
             return result
             
         except Exception as e:
-            self.logger.error(f"Margin calculation with ratio failed: {e}")
+            self.logger.error(f"복제 비율 적용 마진 계산 실패: {e}")
             return {
                 'success': False,
                 'error': str(e)
@@ -203,45 +203,45 @@ class MirrorTradingUtils:
     def validate_ratio_multiplier(self, ratio_multiplier: float) -> float:
         try:
             if ratio_multiplier is None:
-                self.logger.warning("Ratio multiplier is None, using default: 1.0")
+                self.logger.warning(f"복제 비율이 None이므로 기본값 사용: 1.0")
                 return self.DEFAULT_RATIO_MULTIPLIER
             
             ratio_multiplier = float(ratio_multiplier)
             
             if ratio_multiplier < self.MIN_RATIO_MULTIPLIER:
-                self.logger.warning(f"Ratio too small ({ratio_multiplier}), using minimum: {self.MIN_RATIO_MULTIPLIER}")
+                self.logger.warning(f"복제 비율이 너무 작음 ({ratio_multiplier}), 최소값 사용: {self.MIN_RATIO_MULTIPLIER}")
                 return self.MIN_RATIO_MULTIPLIER
             
             if ratio_multiplier > self.MAX_RATIO_MULTIPLIER:
-                self.logger.warning(f"Ratio too large ({ratio_multiplier}), using maximum: {self.MAX_RATIO_MULTIPLIER}")
+                self.logger.warning(f"복제 비율이 너무 큼 ({ratio_multiplier}), 최대값 사용: {self.MAX_RATIO_MULTIPLIER}")
                 return self.MAX_RATIO_MULTIPLIER
             
-            # Risk warnings
+            # 리스크 경고
             if ratio_multiplier > 5.0:
-                self.logger.warning(f"Very high ratio ({ratio_multiplier}x). Risk management required.")
+                self.logger.warning(f"매우 높은 복제 비율 ({ratio_multiplier}x). 리스크 관리 필요.")
             elif ratio_multiplier < 0.5:
-                self.logger.info(f"Conservative ratio ({ratio_multiplier}x). Safe setting.")
+                self.logger.info(f"보수적인 복제 비율 ({ratio_multiplier}x). 안전한 설정.")
             
             return ratio_multiplier
             
         except (ValueError, TypeError):
-            self.logger.error(f"Ratio conversion failed ({ratio_multiplier}), using default: {self.DEFAULT_RATIO_MULTIPLIER}")
+            self.logger.error(f"복제 비율 변환 실패 ({ratio_multiplier}), 기본값 사용: {self.DEFAULT_RATIO_MULTIPLIER}")
             return self.DEFAULT_RATIO_MULTIPLIER
     
     def get_ratio_multiplier_description(self, ratio_multiplier: float) -> str:
         try:
-            # Exact match
+            # 정확한 매칭
             if ratio_multiplier in self.RATIO_DESCRIPTIONS:
                 return self.RATIO_DESCRIPTIONS[ratio_multiplier]
             
-            # Find closest match
+            # 가장 가까운 값 찾기
             closest_ratio = min(self.RATIO_DESCRIPTIONS.keys(), 
                                key=lambda x: abs(x - ratio_multiplier))
             
             if abs(closest_ratio - ratio_multiplier) < 0.05:
                 return self.RATIO_DESCRIPTIONS[closest_ratio]
             
-            # Custom description
+            # 커스텀 설명
             if ratio_multiplier == 1.0:
                 return "원본 비율 그대로"
             elif ratio_multiplier < 1.0:
@@ -251,7 +251,7 @@ class MirrorTradingUtils:
                 return f"원본의 {ratio_multiplier:.1f}배 크기로 확대"
                 
         except Exception as e:
-            self.logger.error(f"Failed to generate ratio description: {e}")
+            self.logger.error(f"복제 비율 설명 생성 실패: {e}")
             return "비율 정보 없음"
     
     def analyze_ratio_multiplier_effect(self, ratio_multiplier: float, base_ratio: float, adjusted_ratio: float) -> Dict:
@@ -268,7 +268,7 @@ class MirrorTradingUtils:
                 'recommendation': ''
             }
             
-            # Impact analysis
+            # 영향 분석
             if ratio_multiplier == 1.0:
                 effect_analysis['impact'] = "원본과 동일한 리스크"
                 effect_analysis['risk_level'] = "기본"
@@ -297,7 +297,7 @@ class MirrorTradingUtils:
             return effect_analysis
             
         except Exception as e:
-            self.logger.error(f"Failed to analyze ratio effect: {e}")
+            self.logger.error(f"복제 비율 효과 분석 실패: {e}")
             return {
                 'multiplier': ratio_multiplier,
                 'description': "분석 실패",
@@ -311,7 +311,7 @@ class MirrorTradingUtils:
             extracted_leverage = self.DEFAULT_LEVERAGE
             source = "default"
             
-            # 1. Order data
+            # 1. 주문 데이터에서 추출
             if order_data:
                 for leverage_field in ['leverage', 'marginLeverage', 'leverageRatio']:
                     order_leverage = order_data.get(leverage_field)
@@ -321,12 +321,12 @@ class MirrorTradingUtils:
                             if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
                                 extracted_leverage = lev_value
                                 source = f"order({leverage_field})"
-                                self.logger.info(f"Leverage from order: {extracted_leverage}x ({source})")
+                                self.logger.info(f"주문에서 레버리지 추출: {extracted_leverage}x ({source})")
                                 return extracted_leverage
                         except (ValueError, TypeError):
                             continue
             
-            # 2. Position data
+            # 2. 포지션 데이터에서 추출
             if position_data:
                 for leverage_field in ['leverage', 'marginLeverage', 'leverageRatio']:
                     pos_leverage = position_data.get(leverage_field)
@@ -336,12 +336,12 @@ class MirrorTradingUtils:
                             if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
                                 extracted_leverage = lev_value
                                 source = f"position({leverage_field})"
-                                self.logger.info(f"Leverage from position: {extracted_leverage}x ({source})")
+                                self.logger.info(f"포지션에서 레버리지 추출: {extracted_leverage}x ({source})")
                                 return extracted_leverage
                         except (ValueError, TypeError):
                             continue
             
-            # 3. Account data
+            # 3. 계정 데이터에서 추출
             if account_data:
                 for leverage_field in ['crossMarginLeverage', 'leverage', 'defaultLeverage', 'marginLeverage']:
                     account_leverage = account_data.get(leverage_field)
@@ -351,12 +351,12 @@ class MirrorTradingUtils:
                             if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
                                 extracted_leverage = lev_value
                                 source = f"account({leverage_field})"
-                                self.logger.info(f"Leverage from account: {extracted_leverage}x ({source})")
+                                self.logger.info(f"계정에서 레버리지 추출: {extracted_leverage}x ({source})")
                                 return extracted_leverage
                         except (ValueError, TypeError):
                             continue
             
-            # 4. Real-time account query
+            # 4. 실시간 계정 조회
             try:
                 fresh_account = await self.bitget.get_account_info()
                 for leverage_field in ['crossMarginLeverage', 'leverage', 'defaultLeverage', 'marginLeverage']:
@@ -367,9 +367,9 @@ class MirrorTradingUtils:
                             if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
                                 extracted_leverage = lev_value
                                 source = f"fresh_account({leverage_field})"
-                                self.logger.info(f"Leverage from fresh account: {extracted_leverage}x ({source})")
+                                self.logger.info(f"실시간 계정에서 레버리지 추출: {extracted_leverage}x ({source})")
                                 
-                                # Cache the result
+                                # 결과 캐시
                                 self.leverage_cache['bitget_default'] = {
                                     'leverage': extracted_leverage,
                                     'timestamp': datetime.now(),
@@ -379,9 +379,9 @@ class MirrorTradingUtils:
                         except (ValueError, TypeError):
                             continue
             except Exception as e:
-                self.logger.warning(f"Fresh account query failed: {e}")
+                self.logger.warning(f"실시간 계정 조회 실패: {e}")
             
-            # 5. Real-time position query
+            # 5. 실시간 포지션 조회
             try:
                 positions = await self.bitget.get_positions(self.SYMBOL)
                 for position in positions:
@@ -393,29 +393,29 @@ class MirrorTradingUtils:
                                 if self.MIN_LEVERAGE <= lev_value <= self.MAX_LEVERAGE:
                                     extracted_leverage = lev_value
                                     source = "live_position"
-                                    self.logger.info(f"Leverage from live position: {extracted_leverage}x ({source})")
+                                    self.logger.info(f"실시간 포지션에서 레버리지 추출: {extracted_leverage}x ({source})")
                                     return extracted_leverage
                             except (ValueError, TypeError):
                                 continue
             except Exception as e:
-                self.logger.warning(f"Live position query failed: {e}")
+                self.logger.warning(f"실시간 포지션 조회 실패: {e}")
             
-            # 6. Cache
+            # 6. 캐시에서 조회
             if 'bitget_default' in self.leverage_cache:
                 cache_data = self.leverage_cache['bitget_default']
                 cache_time = cache_data['timestamp']
-                if (datetime.now() - cache_time).total_seconds() < 3600:  # 1 hour cache
+                if (datetime.now() - cache_time).total_seconds() < 3600:  # 1시간 캐시
                     extracted_leverage = cache_data['leverage']
                     source = f"cache({cache_data['source']})"
-                    self.logger.info(f"Leverage from cache: {extracted_leverage}x ({source})")
+                    self.logger.info(f"캐시에서 레버리지 추출: {extracted_leverage}x ({source})")
                     return extracted_leverage
             
-            # Default fallback
-            self.logger.warning(f"Leverage extraction failed, using default: {extracted_leverage}x")
+            # 기본값 사용
+            self.logger.warning(f"레버리지 추출 실패, 기본값 사용: {extracted_leverage}x")
             return extracted_leverage
             
         except Exception as e:
-            self.logger.error(f"Leverage extraction error: {e}")
+            self.logger.error(f"레버리지 추출 오류: {e}")
             return self.DEFAULT_LEVERAGE
     
     async def determine_close_order_details_enhanced(self, bitget_order: Dict) -> Dict:
@@ -424,74 +424,74 @@ class MirrorTradingUtils:
             reduce_only = bitget_order.get('reduceOnly', False)
             order_type = bitget_order.get('orderType', bitget_order.get('planType', '')).lower()
             
-            self.logger.info(f"Order analysis: side='{side}', reduce_only={reduce_only}, order_type='{order_type}'")
+            self.logger.info(f"주문 분석: side='{side}', reduce_only={reduce_only}, order_type='{order_type}'")
             
-            # Enhanced close order detection
+            # 강화된 클로즈 주문 감지
             is_close_order = False
             detection_method = "none"
             
-            # 1. reduce_only flag (most reliable)
+            # 1. reduce_only 플래그 (가장 신뢰할 수 있음)
             if reduce_only is True or reduce_only == 'true' or str(reduce_only).lower() == 'true':
                 is_close_order = True
                 detection_method = "reduce_only_flag"
-                self.logger.info(f"Close order confirmed by reduce_only=True")
+                self.logger.info(f"reduce_only=True로 클로즈 주문 확인")
             
-            # 2. Explicit close keywords
+            # 2. 명시적 클로즈 키워드
             elif not is_close_order:
                 for keyword in self.CLOSE_ORDER_KEYWORDS:
                     if keyword in side:
                         is_close_order = True
                         detection_method = f"side_keyword_{keyword}"
-                        self.logger.info(f"Close order confirmed by side keyword: '{side}' contains '{keyword}'")
+                        self.logger.info(f"사이드 키워드로 클로즈 주문 확인: '{side}'에 '{keyword}' 포함")
                         break
             
-            # 3. TP/SL only order types
+            # 3. TP/SL 전용 주문 타입
             elif not is_close_order:
                 for tp_sl_type in self.TP_SL_ONLY_ORDER_TYPES:
                     if tp_sl_type in order_type:
                         is_close_order = True
                         detection_method = f"tp_sl_only_type_{tp_sl_type}"
-                        self.logger.info(f"Close order confirmed by TP/SL type: '{order_type}' contains '{tp_sl_type}'")
+                        self.logger.info(f"TP/SL 타입으로 클로즈 주문 확인: '{order_type}'에 '{tp_sl_type}' 포함")
                         break
             
-            # 4. Orders with TP/SL are treated as open orders (prevent misclassification)
+            # 4. TP/SL이 설정된 주문은 오픈 주문으로 처리 (잘못된 분류 방지)
             if not is_close_order:
                 tp_price, sl_price = await self.extract_tp_sl_from_bitget_order(bitget_order)
                 
                 if tp_price or sl_price:
                     is_close_order = False
                     detection_method = "tp_sl_set_but_open_order"
-                    self.logger.info(f"Open order with TP/SL settings (TP={tp_price}, SL={sl_price})")
-                    self.logger.info(f"       → New position creation with TP/SL")
+                    self.logger.info(f"TP/SL 설정된 오픈 주문 (TP={tp_price}, SL={sl_price})")
+                    self.logger.info(f"       → TP/SL이 포함된 신규 포지션 생성")
             
-            # 5. Special close patterns
+            # 5. 특수 클로즈 패턴
             if not is_close_order:
                 special_patterns = ['exit', 'liquidat']
                 for pattern in special_patterns:
                     if pattern in side or pattern in order_type:
                         is_close_order = True
                         detection_method = f"special_pattern_{pattern}"
-                        self.logger.info(f"Close order confirmed by special pattern: '{pattern}'")
+                        self.logger.info(f"특수 패턴으로 클로즈 주문 확인: '{pattern}'")
                         break
             
-            # Final confirmation
+            # 최종 확인
             if not is_close_order:
                 detection_method = "default_open_order"
-                self.logger.info(f"Confirmed as open order (new position creation)")
+                self.logger.info(f"오픈 주문으로 확인 (신규 포지션 생성)")
             
-            self.logger.info(f"Close order analysis result: is_close_order={is_close_order}, method={detection_method}")
+            self.logger.info(f"클로즈 주문 분석 결과: is_close_order={is_close_order}, method={detection_method}")
             
-            # Determine order direction and position side
+            # 주문 방향 및 포지션 사이드 결정
             order_direction = None
             position_side = None
             
             if is_close_order:
-                # Close orders
+                # 클로즈 주문
                 if 'close_long' in side or 'exit_long' in side:
-                    order_direction = 'sell'  # Close long position by selling
+                    order_direction = 'sell'  # 롱 포지션을 매도로 청산
                     position_side = 'long'
                 elif 'close_short' in side or 'exit_short' in side:
-                    order_direction = 'buy'   # Close short position by buying
+                    order_direction = 'buy'   # 숏 포지션을 매수로 청산
                     position_side = 'short'
                 elif 'sell' in side and 'buy' not in side:
                     order_direction = 'sell'
@@ -500,7 +500,7 @@ class MirrorTradingUtils:
                     order_direction = 'buy'
                     position_side = 'short'
                 else:
-                    # Query current positions to determine direction
+                    # 현재 포지션을 조회하여 방향 결정
                     try:
                         bitget_positions = await self.bitget.get_positions(self.SYMBOL)
                         active_positions = [pos for pos in bitget_positions if float(pos.get('total', 0)) > 0]
@@ -512,25 +512,25 @@ class MirrorTradingUtils:
                             if current_side == 'long':
                                 order_direction = 'sell'
                                 position_side = 'long'
-                                self.logger.info(f"Based on current long position: sell to close")
+                                self.logger.info(f"현재 롱 포지션 기준: 매도로 청산")
                             elif current_side == 'short':
                                 order_direction = 'buy'
                                 position_side = 'short'
-                                self.logger.info(f"Based on current short position: buy to close")
+                                self.logger.info(f"현재 숏 포지션 기준: 매수로 청산")
                             else:
                                 order_direction = 'sell'
                                 position_side = 'long'
                         else:
                             order_direction = 'sell'
                             position_side = 'long'
-                            self.logger.warning(f"No active position, using default: long→sell")
+                            self.logger.warning(f"활성 포지션 없음, 기본값 사용: long→sell")
                             
                     except Exception as e:
-                        self.logger.error(f"Position query failed, using default: {e}")
+                        self.logger.error(f"포지션 조회 실패, 기본값 사용: {e}")
                         order_direction = 'sell'
                         position_side = 'long'
             else:
-                # Open orders (including those with TP/SL settings)
+                # 오픈 주문 (TP/SL 설정 포함)
                 if 'buy' in side or 'long' in side:
                     order_direction = 'buy'
                     position_side = 'long'
@@ -551,11 +551,11 @@ class MirrorTradingUtils:
                 'detection_method': detection_method
             }
             
-            self.logger.info(f"Enhanced close order analysis result: {result}")
+            self.logger.info(f"강화된 클로즈 주문 분석 결과: {result}")
             return result
             
         except Exception as e:
-            self.logger.error(f"Enhanced close order details determination failed: {e}")
+            self.logger.error(f"강화된 클로즈 주문 상세 판단 실패: {e}")
             return {
                 'is_close_order': False,
                 'order_direction': 'buy',
@@ -574,7 +574,7 @@ class MirrorTradingUtils:
             tp_price = None
             sl_price = None
             
-            # Extract TP price
+            # TP 가격 추출
             tp_fields = ['presetStopSurplusPrice', 'stopSurplusPrice', 'takeProfitPrice', 'tpPrice']
             
             for field in tp_fields:
@@ -583,12 +583,12 @@ class MirrorTradingUtils:
                     try:
                         tp_price = float(value)
                         if tp_price > 0:
-                            self.logger.info(f"TP price extracted: {field} = {tp_price}")
+                            self.logger.info(f"TP 가격 추출: {field} = {tp_price}")
                             break
                     except:
                         continue
             
-            # Extract SL price
+            # SL 가격 추출
             sl_fields = ['presetStopLossPrice', 'stopLossPrice', 'stopPrice', 'slPrice']
             
             for field in sl_fields:
@@ -597,7 +597,7 @@ class MirrorTradingUtils:
                     try:
                         sl_price = float(value)
                         if sl_price > 0:
-                            self.logger.info(f"SL price extracted: {field} = {sl_price}")
+                            self.logger.info(f"SL 가격 추출: {field} = {sl_price}")
                             break
                     except:
                         continue
@@ -605,7 +605,7 @@ class MirrorTradingUtils:
             return tp_price, sl_price
             
         except Exception as e:
-            self.logger.error(f"TP/SL extraction failed: {e}")
+            self.logger.error(f"TP/SL 추출 실패: {e}")
             return None, None
     
     async def extract_gate_order_details(self, gate_order: Dict) -> Optional[Dict]:
@@ -613,36 +613,36 @@ class MirrorTradingUtils:
             order_id = gate_order.get('id', '') or ''
             contract = gate_order.get('contract', self.GATE_CONTRACT) or self.GATE_CONTRACT
             
-            # Extract trigger info
+            # 트리거 정보 추출
             trigger_info = gate_order.get('trigger', {}) or {}
             trigger_price_raw = trigger_info.get('price')
             
             if trigger_price_raw is None or trigger_price_raw == '':
-                self.logger.debug(f"Trigger price is None or empty: {gate_order}")
+                self.logger.debug(f"트리거 가격이 None이거나 비어있음: {gate_order}")
                 return None
             
             try:
                 trigger_price = float(trigger_price_raw)
             except (ValueError, TypeError):
-                self.logger.debug(f"Trigger price conversion failed: {trigger_price_raw}")
+                self.logger.debug(f"트리거 가격 변환 실패: {trigger_price_raw}")
                 return None
             
-            # Extract initial order info
+            # 초기 주문 정보 추출
             initial_info = gate_order.get('initial', {}) or {}
             size_raw = initial_info.get('size')
             
-            # Handle missing or zero size
-            size = 1  # default
+            # 누락되거나 0인 크기 처리
+            size = 1  # 기본값
             if size_raw is not None:
                 try:
                     size = int(size_raw)
                 except (ValueError, TypeError):
-                    self.logger.debug(f"Size conversion failed, using default: {size_raw}")
+                    self.logger.debug(f"크기 변환 실패, 기본값 사용: {size_raw}")
                     size = 1
             else:
-                self.logger.debug(f"Size is None, using default: {gate_order}")
+                self.logger.debug(f"크기가 None, 기본값 사용: {gate_order}")
             
-            # Extract TP/SL info
+            # TP/SL 정보 추출
             tp_price = None
             sl_price = None
             
@@ -667,7 +667,7 @@ class MirrorTradingUtils:
                         continue
             
             if trigger_price <= 0:
-                self.logger.debug(f"Invalid trigger price: {trigger_price}")
+                self.logger.debug(f"유효하지 않은 트리거 가격: {trigger_price}")
                 return None
             
             return {
@@ -683,19 +683,19 @@ class MirrorTradingUtils:
             }
             
         except Exception as e:
-            self.logger.error(f"Gate order details extraction failed: {e}")
+            self.logger.error(f"게이트 주문 상세 추출 실패: {e}")
             return None
     
     async def generate_multiple_order_hashes(self, order_details: Dict) -> List[str]:
         try:
-            # Validate required fields
+            # 필수 필드 검증
             contract = order_details.get('contract') or self.GATE_CONTRACT
             trigger_price = order_details.get('trigger_price')
             size = order_details.get('size', 0)
             abs_size = order_details.get('abs_size', abs(size) if size else 0)
             
             if trigger_price is None:
-                self.logger.debug(f"Required value is None - trigger_price: {trigger_price}")
+                self.logger.debug(f"필수 값이 None - trigger_price: {trigger_price}")
                 return []
             
             try:
@@ -703,25 +703,25 @@ class MirrorTradingUtils:
                 size = int(size) if size is not None else 0
                 abs_size = abs(size) if size != 0 else 0
             except (ValueError, TypeError) as e:
-                self.logger.debug(f"Value conversion failed - trigger_price: {trigger_price}, size: {size}, error: {e}")
+                self.logger.debug(f"값 변환 실패 - trigger_price: {trigger_price}, size: {size}, 오류: {e}")
                 return []
             
             if trigger_price <= 0:
-                self.logger.debug(f"Invalid trigger price - trigger_price: {trigger_price}")
+                self.logger.debug(f"유효하지 않은 트리거 가격 - trigger_price: {trigger_price}")
                 return []
             
             hashes = []
             
-            # Price-based hashes (core deduplication)
+            # 가격 기반 해시 (핵심 중복 제거)
             try:
-                # Basic price hashes (always generated regardless of size)
+                # 기본 가격 해시 (크기와 무관하게 항상 생성)
                 price_only_hash = f"{contract}_price_{trigger_price:.2f}"
                 hashes.append(price_only_hash)
                 
                 precise_price_hash = f"{contract}_price_{trigger_price:.8f}"
                 hashes.append(precise_price_hash)
                 
-                # Rounded price hashes
+                # 반올림된 가격 해시
                 rounded_price_1 = round(trigger_price, 1)
                 rounded_price_hash_1 = f"{contract}_price_{rounded_price_1:.1f}"
                 hashes.append(rounded_price_hash_1)
@@ -731,24 +731,24 @@ class MirrorTradingUtils:
                 hashes.append(rounded_price_hash_0)
                 
             except Exception as e:
-                self.logger.debug(f"Price-based hash generation failed: {e}")
+                self.logger.debug(f"가격 기반 해시 생성 실패: {e}")
             
-            # Size-inclusive hashes (only when size > 0)
+            # 크기 포함 해시 (크기가 0보다 클 때만)
             if abs_size > 0:
                 try:
-                    # Basic hash
+                    # 기본 해시
                     basic_hash = f"{contract}_{trigger_price:.2f}_{abs_size}"
                     hashes.append(basic_hash)
                     
-                    # Exact price hash
+                    # 정확한 가격 해시
                     exact_price_hash = f"{contract}_{trigger_price:.8f}_{abs_size}"
                     hashes.append(exact_price_hash)
                     
-                    # Signed hash
+                    # 부호 포함 해시
                     signed_hash = f"{contract}_{trigger_price:.2f}_{size}"
                     hashes.append(signed_hash)
                     
-                    # Rounded price hashes
+                    # 반올림된 가격 해시
                     rounded_price_1 = round(trigger_price, 1)
                     rounded_hash_1 = f"{contract}_{rounded_price_1:.1f}_{abs_size}"
                     hashes.append(rounded_hash_1)
@@ -758,41 +758,41 @@ class MirrorTradingUtils:
                     hashes.append(rounded_hash_0)
                     
                 except Exception as e:
-                    self.logger.debug(f"Size-inclusive hash generation failed: {e}")
+                    self.logger.debug(f"크기 포함 해시 생성 실패: {e}")
             else:
-                self.logger.debug(f"Size is 0, generating price-based hashes only - trigger_price: {trigger_price}")
+                self.logger.debug(f"크기가 0이므로 가격 기반 해시만 생성 - trigger_price: {trigger_price}")
             
-            # TP/SL inclusive hashes
+            # TP/SL 포함 해시
             try:
                 if order_details.get('has_tp_sl'):
                     tp_price = order_details.get('tp_price', 0) or 0
                     sl_price = order_details.get('sl_price', 0) or 0
                     
-                    # TP/SL price-based hash (size independent)
+                    # TP/SL 가격 기반 해시 (크기 무관)
                     tp_sl_price_hash = f"{contract}_price_{trigger_price:.2f}_withTPSL"
                     hashes.append(tp_sl_price_hash)
                     
-                    # TP/SL + size hash (only when size > 0)
+                    # TP/SL + 크기 해시 (크기가 0보다 클 때만)
                     if abs_size > 0:
                         tp_sl_hash = f"{contract}_{trigger_price:.2f}_{abs_size}_tp{tp_price:.2f}_sl{sl_price:.2f}"
                         hashes.append(tp_sl_hash)
                         
             except Exception as e:
-                self.logger.debug(f"TP/SL hash generation failed: {e}")
+                self.logger.debug(f"TP/SL 해시 생성 실패: {e}")
             
-            # Lenient price range hashes (±500 dollars)
+            # 관대한 가격 범위 해시 (±500달러)
             try:
-                # 500 dollar range
+                # 500달러 범위
                 price_range_500 = round(trigger_price / 500) * 500
                 range_hash_500 = f"{contract}_range500_{price_range_500:.0f}"
                 hashes.append(range_hash_500)
                 
-                # 100 dollar range
+                # 100달러 범위
                 price_range_100 = round(trigger_price / 100) * 100
                 range_hash_100 = f"{contract}_range100_{price_range_100:.0f}"
                 hashes.append(range_hash_100)
                 
-                # Very wide price difference consideration (±200 dollars)
+                # 매우 넓은 가격 차이 고려 (±200달러)
                 for offset in [-200, -100, -50, -20, 0, 20, 50, 100, 200]:
                     adjusted_price = trigger_price + offset
                     if adjusted_price > 0:
@@ -800,20 +800,20 @@ class MirrorTradingUtils:
                         hashes.append(offset_hash)
                         
             except Exception as e:
-                self.logger.debug(f"Price range hash generation failed: {e}")
+                self.logger.debug(f"가격 범위 해시 생성 실패: {e}")
             
-            # Remove duplicates
+            # 중복 제거
             unique_hashes = list(set(hashes))
             
             if unique_hashes:
-                self.logger.debug(f"Generated {len(unique_hashes)} order hashes: trigger=${trigger_price:.2f}, size={size}")
+                self.logger.debug(f"{len(unique_hashes)}개 주문 해시 생성: trigger=${trigger_price:.2f}, size={size}")
             else:
-                self.logger.debug(f"Hash generation failed - returning empty list")
+                self.logger.debug(f"해시 생성 실패 - 빈 리스트 반환")
             
             return unique_hashes
             
         except Exception as e:
-            self.logger.error(f"Multiple hash generation failed: {e}")
+            self.logger.error(f"다중 해시 생성 실패: {e}")
             try:
                 trigger_price = order_details.get('trigger_price')
                 size = order_details.get('size', 0)
@@ -821,12 +821,12 @@ class MirrorTradingUtils:
                 
                 if trigger_price is not None:
                     trigger_price = float(trigger_price)
-                    # Generate fallback hashes even with size 0
+                    # 크기가 0이어도 폴백 해시 생성
                     basic_hash = f"{contract}_{trigger_price:.2f}_fallback"
                     price_hash = f"{contract}_price_{trigger_price:.2f}"
                     return [basic_hash, price_hash]
             except Exception as fallback_error:
-                self.logger.error(f"Fallback hash generation also failed: {fallback_error}")
+                self.logger.error(f"폴백 해시 생성도 실패: {fallback_error}")
             
             return []
     
@@ -840,14 +840,14 @@ class MirrorTradingUtils:
             trigger_price = float(trigger_price)
             size = int(size) if size is not None else 0
             
-            # Generate price-based hash even with size 0
+            # 크기가 0이어도 가격 기반 해시 생성
             if size == 0:
                 return f"{contract}_price_{trigger_price:.2f}"
             else:
                 return f"{contract}_{trigger_price:.2f}_{abs(size)}"
             
         except (ValueError, TypeError) as e:
-            self.logger.debug(f"Hash generation conversion failed: {e}")
+            self.logger.debug(f"해시 생성 변환 실패: {e}")
             return f"{contract or self.GATE_CONTRACT}_error_error"
     
     def generate_price_based_hash(self, trigger_price: float, contract: str = None) -> str:
@@ -861,7 +861,7 @@ class MirrorTradingUtils:
             return f"{contract}_price_{trigger_price:.2f}"
             
         except (ValueError, TypeError) as e:
-            self.logger.debug(f"Price-based hash generation failed: {e}")
+            self.logger.debug(f"가격 기반 해시 생성 실패: {e}")
             return f"{contract or self.GATE_CONTRACT}_price_error"
     
     async def adjust_price_for_gate(self, price: float, bitget_current_price: float = 0, 
@@ -870,116 +870,116 @@ class MirrorTradingUtils:
             if price is None or price <= 0:
                 return price or 0
             
-            # Always proceed with processing, adjustment is optional
+            # 항상 처리 진행, 조정은 선택적
             if (bitget_current_price > 0 and gate_current_price > 0):
                 price_diff_abs = abs(bitget_current_price - gate_current_price)
                 
-                # Very high threshold for abnormal price difference (10000+ dollars)
+                # 비정상적인 가격 차이에 대한 매우 높은 임계값 (10000달러 이상)
                 if price_diff_abs > self.ABNORMAL_PRICE_DIFF_THRESHOLD:
-                    self.logger.info(f"Extremely large price difference but continuing processing (${price_diff_abs:.2f})")
-                    return price  # Use original price without adjustment
+                    self.logger.info(f"극도로 큰 시세 차이지만 처리 계속 (${price_diff_abs:.2f})")
+                    return price  # 조정 없이 원본 가격 사용
                 
-                # Always process regardless of price difference, but apply adjustment selectively
+                # 시세 차이와 무관하게 항상 처리하되, 선택적으로 조정 적용
                 if (self.PRICE_ADJUSTMENT_ENABLED and 
                     price_diff_abs > self.PRICE_SYNC_THRESHOLD and
                     price_diff_abs <= self.ABNORMAL_PRICE_DIFF_THRESHOLD):
                     
-                    # Calculate price ratio
+                    # 가격 비율 계산
                     price_ratio = gate_current_price / bitget_current_price
                     adjusted_price = price * price_ratio
                     
-                    # Validate adjustment magnitude (very lenient: allow up to 50% adjustment)
+                    # 조정 폭 검증 (매우 관대하게: 최대 50% 조정 허용)
                     adjustment_percent = abs(adjusted_price - price) / price * 100
                     
-                    if adjustment_percent <= 50.0:  # 10% → 50% much more lenient
-                        self.logger.info(f"Price adjusted: ${price:.2f} → ${adjusted_price:.2f} (difference: ${price_diff_abs:.2f})")
+                    if adjustment_percent <= 50.0:  # 10% → 50%로 훨씬 관대하게
+                        self.logger.info(f"가격 조정됨: ${price:.2f} → ${adjusted_price:.2f} (차이: ${price_diff_abs:.2f})")
                         return adjusted_price
                     else:
-                        self.logger.info(f"Large adjustment but continuing with original price ({adjustment_percent:.1f}%)")
-                        return price  # Continue processing without adjustment
+                        self.logger.info(f"큰 조정이지만 원본 가격으로 계속 ({adjustment_percent:.1f}%)")
+                        return price  # 조정 없이 처리 계속
                 else:
                     return price
             elif bitget_current_price <= 0 or gate_current_price <= 0:
-                self.logger.debug("Price query failed but continuing processing")
+                self.logger.debug("가격 조회 실패하지만 처리 계속")
                 return price
             
             return price
             
         except Exception as e:
-            self.logger.error(f"Price adjustment failed but continuing processing: {e}")
+            self.logger.error(f"가격 조정 실패하지만 처리 계속: {e}")
             return price or 0
     
     async def validate_trigger_price(self, trigger_price: float, side: str, current_price: float = 0) -> Tuple[bool, str]:
         try:
             if trigger_price is None or trigger_price <= 0:
-                return False, "Trigger price is None or <= 0"
+                return False, "트리거 가격이 None이거나 0 이하"
             
             if current_price <= 0:
-                self.logger.info("Current price query failed but allowing all trigger prices")
-                return True, "Current price query failed but allowed"
+                self.logger.info("현재가 조회 실패하지만 모든 트리거 가격 허용")
+                return True, "현재가 조회 실패하지만 허용됨"
             
-            # Allow all price differences - no processing blocking
+            # 모든 가격 차이 허용 - 처리 블록 없음
             price_diff_percent = abs(trigger_price - current_price) / current_price * 100
             price_diff_abs = abs(trigger_price - current_price)
             
-            # Extremely high threshold for abnormal price difference detection (10000 dollars)
+            # 비정상적인 가격 차이 감지를 위한 극도로 높은 임계값 (10000달러)
             if price_diff_abs > self.ABNORMAL_PRICE_DIFF_THRESHOLD:
-                self.logger.info(f"Very large price difference but allowing processing: ${price_diff_abs:.2f}")
-                return True, f"Large price difference but allowed (${price_diff_abs:.2f})"
+                self.logger.info(f"매우 큰 가격 차이지만 처리 허용: ${price_diff_abs:.2f}")
+                return True, f"큰 가격 차이지만 허용됨 (${price_diff_abs:.2f})"
             
-            # Allow all prices unconditionally
-            return True, f"All trigger prices allowed (difference: {price_diff_percent:.4f}%)"
+            # 모든 가격 무조건 허용
+            return True, f"모든 트리거 가격 허용 (차이: {price_diff_percent:.4f}%)"
             
         except Exception as e:
-            self.logger.error(f"Trigger price validation failed but allowing: {e}")
-            return True, f"Validation error but allowing all prices: {str(e)[:100]}"
+            self.logger.error(f"트리거 가격 검증 실패하지만 허용: {e}")
+            return True, f"검증 오류하지만 모든 가격 허용: {str(e)[:100]}"
     
     async def calculate_gate_order_size_for_close_order_enhanced(self, current_gate_position_size: int, 
                                                                close_order_details: Dict, 
                                                                bitget_order: Dict) -> Tuple[int, bool]:
         try:
-            position_side = close_order_details['position_side']  # 'long' or 'short'
-            order_direction = close_order_details['order_direction']  # 'buy' or 'sell'
+            position_side = close_order_details['position_side']  # 'long' 또는 'short'
+            order_direction = close_order_details['order_direction']  # 'buy' 또는 'sell'
             
-            self.logger.info(f"Enhanced close order size calculation: current_gate_position={current_gate_position_size}, position={position_side}, direction={order_direction}")
+            self.logger.info(f"강화된 클로즈 주문 크기 계산: current_gate_position={current_gate_position_size}, position={position_side}, direction={order_direction}")
             
-            # Allow close order creation even when current position is 0
+            # 현재 포지션이 0이어도 클로즈 주문 생성 허용
             if current_gate_position_size == 0:
-                self.logger.warning(f"Current position is 0 but forcing close order creation")
+                self.logger.warning(f"현재 포지션이 0이지만 클로즈 주문 강제 생성")
                 
-                # Calculate base size based on Bitget order
+                # 비트겟 주문 기준으로 기본 크기 계산
                 bitget_size = float(bitget_order.get('size', 1))
                 if bitget_size <= 0:
                     bitget_size = 1
                 
-                # Create close order with minimum size
-                base_gate_size = max(int(bitget_size * 10000), 1)  # Convert BTC to contracts
+                # 최소 크기로 클로즈 주문 생성
+                base_gate_size = max(int(bitget_size * 10000), 1)  # BTC를 계약으로 변환
                 
-                # Determine close direction based on position side
+                # 포지션 사이드에 따라 클로즈 방향 결정
                 if position_side == 'long':
-                    final_gate_size = -base_gate_size  # Close long position → sell
+                    final_gate_size = -base_gate_size  # 롱 포지션 클로즈 → 매도
                 else:
-                    final_gate_size = base_gate_size   # Close short position → buy
+                    final_gate_size = base_gate_size   # 숏 포지션 클로즈 → 매수
                 
-                self.logger.info(f"Forced close order creation with no position: {final_gate_size}")
+                self.logger.info(f"포지션 없이 강제 클로즈 주문 생성: {final_gate_size}")
                 return final_gate_size, True
             
-            # Verify current position direction
+            # 현재 포지션 방향 확인
             current_position_side = 'long' if current_gate_position_size > 0 else 'short'
             current_position_abs_size = abs(current_gate_position_size)
             
-            # Check position direction consistency
+            # 포지션 방향 일치성 확인
             if current_position_side != position_side:
-                self.logger.warning(f"Position direction mismatch: current={current_position_side}, expected={position_side}")
-                # Enhanced: adjust to match current position
+                self.logger.warning(f"포지션 방향 불일치: current={current_position_side}, expected={position_side}")
+                # 강화됨: 현재 포지션에 맞춰 조정
                 actual_position_side = current_position_side
             else:
                 actual_position_side = position_side
             
-            # Calculate partial close ratio from Bitget close order
+            # 비트겟 클로즈 주문에서 부분 청산 비율 계산
             bitget_size = float(bitget_order.get('size', 0))
             
-            # Query Bitget current position to calculate partial close ratio
+            # 부분 청산 비율 계산을 위해 비트겟 현재 포지션 조회
             try:
                 bitget_positions = await self.bitget.get_positions(self.SYMBOL)
                 bitget_current_position = None
@@ -993,59 +993,59 @@ class MirrorTradingUtils:
                 if bitget_current_position:
                     bitget_position_size = float(bitget_current_position.get('total', 0))
                     
-                    # Calculate partial close ratio
+                    # 부분 청산 비율 계산
                     if bitget_position_size > 0:
                         close_ratio = min(bitget_size / bitget_position_size, 1.0)
-                        self.logger.info(f"Partial close ratio: {close_ratio*100:.1f}% (Bitget position: {bitget_position_size}, close size: {bitget_size})")
+                        self.logger.info(f"부분 청산 비율: {close_ratio*100:.1f}% (비트겟 포지션: {bitget_position_size}, 청산 크기: {bitget_size})")
                     else:
                         close_ratio = 1.0
-                        self.logger.warning(f"Bitget position size is 0, treating as full close")
+                        self.logger.warning(f"비트겟 포지션 크기가 0, 전체 청산으로 처리")
                 else:
-                    # Can't find Bitget position, use full close
+                    # 비트겟 포지션을 찾을 수 없음, 전체 청산 사용
                     close_ratio = 1.0
-                    self.logger.warning(f"Cannot find corresponding Bitget position, treating as full close")
+                    self.logger.warning(f"해당하는 비트겟 포지션을 찾을 수 없음, 전체 청산으로 처리")
                     
             except Exception as e:
-                # Bitget position query failed, use full close
+                # 비트겟 포지션 조회 실패, 전체 청산 사용
                 close_ratio = 1.0
-                self.logger.error(f"Bitget position query failed, treating as full close: {e}")
+                self.logger.error(f"비트겟 포지션 조회 실패, 전체 청산으로 처리: {e}")
             
-            # Calculate Gate close order size
+            # 게이트 클로즈 주문 크기 계산
             gate_close_size = int(current_position_abs_size * close_ratio)
             
-            # Minimum 1 to close
+            # 최소 1개는 청산
             if gate_close_size == 0:
                 gate_close_size = 1
             
-            # Cannot exceed current position
+            # 현재 포지션을 초과할 수 없음
             if gate_close_size > current_position_abs_size:
                 gate_close_size = current_position_abs_size
             
-            # Determine close order direction (opposite to position)
+            # 클로즈 주문 방향 결정 (포지션과 반대)
             if actual_position_side == 'long':
-                # Close long position → sell (negative)
+                # 롱 포지션 클로즈 → 매도 (음수)
                 final_gate_size = -gate_close_size
-                self.logger.info(f"Long position close: {gate_close_size} → sell order (negative: {final_gate_size})")
+                self.logger.info(f"롱 포지션 클로즈: {gate_close_size} → 매도 주문 (음수: {final_gate_size})")
             else:
-                # Close short position → buy (positive)
+                # 숏 포지션 클로즈 → 매수 (양수)
                 final_gate_size = gate_close_size
-                self.logger.info(f"Short position close: {gate_close_size} → buy order (positive: {final_gate_size})")
+                self.logger.info(f"숏 포지션 클로즈: {gate_close_size} → 매수 주문 (양수: {final_gate_size})")
             
-            self.logger.info(f"Enhanced close order size calculation complete: current position={current_gate_position_size} → close size={final_gate_size} (ratio: {close_ratio*100:.1f}%)")
+            self.logger.info(f"강화된 클로즈 주문 크기 계산 완료: 현재 포지션={current_gate_position_size} → 클로즈 크기={final_gate_size} (비율: {close_ratio*100:.1f}%)")
             
             return final_gate_size, True  # reduce_only=True
             
         except Exception as e:
-            self.logger.error(f"Enhanced close order size calculation failed: {e}")
-            # Even on failure, create close order with base size
+            self.logger.error(f"강화된 클로즈 주문 크기 계산 실패: {e}")
+            # 실패 시에도 기본 크기로 클로즈 주문 생성
             bitget_size = float(bitget_order.get('size', 1))
             base_size = max(int(bitget_size * 10000), 1)
             
             position_side = close_order_details.get('position_side', 'long')
             if position_side == 'long':
-                return -base_size, True  # Close long position → sell
+                return -base_size, True  # 롱 포지션 클로즈 → 매도
             else:
-                return base_size, True   # Close short position → buy
+                return base_size, True   # 숏 포지션 클로즈 → 매수
     
     async def calculate_gate_order_size_for_close_order(self, current_gate_position_size: int, 
                                                        close_order_details: Dict, 
@@ -1059,62 +1059,62 @@ class MirrorTradingUtils:
             side_lower = side.lower()
             reduce_only = False
             
-            self.logger.info(f"Order type analysis: side='{side}', is_close_order={is_close_order}")
+            self.logger.info(f"주문 타입 분석: side='{side}', is_close_order={is_close_order}")
             
-            # Close order processing - completely revised logic
+            # 클로즈 주문 처리 - 완전히 개정된 로직
             if is_close_order or 'close' in side_lower:
                 reduce_only = True
                 
-                # Close orders: order in direction to close position
+                # 클로즈 주문: 포지션을 청산하는 방향으로 주문
                 if 'close_long' in side_lower or side_lower == 'close long':
-                    # Close long position → sell order (negative)
+                    # 롱 포지션 클로즈 → 매도 주문 (음수)
                     gate_size = -abs(base_size)
-                    self.logger.info(f"Close long: Close long position → Gate sell order (negative: {gate_size})")
+                    self.logger.info(f"롱 클로즈: 롱 포지션 클로즈 → 게이트 매도 주문 (음수: {gate_size})")
                     
                 elif 'close_short' in side_lower or side_lower == 'close short':
-                    # Close short position → buy order (positive)
+                    # 숏 포지션 클로즈 → 매수 주문 (양수)
                     gate_size = abs(base_size)
-                    self.logger.info(f"Close short: Close short position → Gate buy order (positive: {gate_size})")
+                    self.logger.info(f"숏 클로즈: 숏 포지션 클로즈 → 게이트 매수 주문 (양수: {gate_size})")
                     
                 elif 'sell' in side_lower and 'buy' not in side_lower:
-                    # Close by selling → closing long position
+                    # 매도로 클로즈 → 롱 포지션 청산
                     gate_size = -abs(base_size)
-                    self.logger.info(f"Close sell: Close long position → Gate sell order (negative: {gate_size})")
+                    self.logger.info(f"매도 클로즈: 롱 포지션 클로즈 → 게이트 매도 주문 (음수: {gate_size})")
                     
                 elif 'buy' in side_lower and 'sell' not in side_lower:
-                    # Close by buying → closing short position
+                    # 매수로 클로즈 → 숏 포지션 청산
                     gate_size = abs(base_size)
-                    self.logger.info(f"Close buy: Close short position → Gate buy order (positive: {gate_size})")
+                    self.logger.info(f"매수 클로즈: 숏 포지션 클로즈 → 게이트 매수 주문 (양수: {gate_size})")
                     
                 else:
-                    # Other close orders - default to sell
+                    # 기타 클로즈 주문 - 기본값으로 매도
                     gate_size = -abs(base_size)
-                    self.logger.warning(f"Unknown close order type: {side}, treating as sell (negative: {gate_size})")
+                    self.logger.warning(f"알 수 없는 클로즈 주문 타입: {side}, 매도로 처리 (음수: {gate_size})")
                         
-            # Open order processing
+            # 오픈 주문 처리
             else:
                 reduce_only = False
                 
                 if 'open_long' in side_lower or ('buy' in side_lower and 'sell' not in side_lower):
-                    # Create long position → buy order (positive)
+                    # 롱 포지션 생성 → 매수 주문 (양수)
                     gate_size = abs(base_size)
-                    self.logger.info(f"Open long: Create new long position → Gate buy order (positive: {gate_size})")
+                    self.logger.info(f"롱 오픈: 새로운 롱 포지션 생성 → 게이트 매수 주문 (양수: {gate_size})")
                     
                 elif 'open_short' in side_lower or 'sell' in side_lower:
-                    # Create short position → sell order (negative)
+                    # 숏 포지션 생성 → 매도 주문 (음수)
                     gate_size = -abs(base_size)
-                    self.logger.info(f"Open short: Create new short position → Gate sell order (negative: {gate_size})")
+                    self.logger.info(f"숏 오픈: 새로운 숏 포지션 생성 → 게이트 매도 주문 (음수: {gate_size})")
                     
                 else:
-                    # Other open orders - maintain original size
+                    # 기타 오픈 주문 - 원본 크기 유지
                     gate_size = base_size
-                    self.logger.warning(f"Unknown open order type: {side}, maintaining original size: {gate_size}")
+                    self.logger.warning(f"알 수 없는 오픈 주문 타입: {side}, 원본 크기 유지: {gate_size}")
             
-            self.logger.info(f"Final conversion result: {side} → Gate size={gate_size}, reduce_only={reduce_only}")
+            self.logger.info(f"최종 변환 결과: {side} → 게이트 크기={gate_size}, reduce_only={reduce_only}")
             return gate_size, reduce_only
             
         except Exception as e:
-            self.logger.error(f"Gate order size calculation failed: {e}")
+            self.logger.error(f"게이트 주문 크기 계산 실패: {e}")
             return base_size, False
     
     async def calculate_gate_order_size(self, side: str, base_size: int) -> int:
@@ -1123,7 +1123,7 @@ class MirrorTradingUtils:
             gate_size, _ = await self.calculate_gate_order_size_fixed(side, base_size, is_close_order)
             return gate_size
         except Exception as e:
-            self.logger.error(f"Gate order size calculation wrapper failed: {e}")
+            self.logger.error(f"게이트 주문 크기 계산 래퍼 실패: {e}")
             return base_size
     
     async def determine_gate_trigger_type(self, trigger_price: float, current_price: float = 0) -> str:
@@ -1132,12 +1132,12 @@ class MirrorTradingUtils:
                 return "ge"
             
             if trigger_price > current_price:
-                return "ge"  # greater than or equal
+                return "ge"  # 이상
             else:
-                return "le"  # less than or equal
+                return "le"  # 이하
                 
         except Exception as e:
-            self.logger.error(f"Gate.io trigger type determination failed: {e}")
+            self.logger.error(f"게이트 트리거 타입 결정 실패: {e}")
             return "ge"
     
     async def get_current_gate_position_size(self, gate_mirror_client, position_side: str = None) -> Tuple[int, str]:
@@ -1145,52 +1145,52 @@ class MirrorTradingUtils:
             gate_positions = await gate_mirror_client.get_positions(self.GATE_CONTRACT)
             
             if not gate_positions:
-                self.logger.info("No Gate positions found")
+                self.logger.info("게이트 포지션 없음")
                 return 0, 'none'
             
             position = gate_positions[0]
             current_size = int(position.get('size', 0))
             
             if current_size == 0:
-                self.logger.info("Gate position size is 0")
+                self.logger.info("게이트 포지션 크기 0")
                 return 0, 'none'
             
-            # Check position direction
+            # 포지션 방향 확인
             current_side = 'long' if current_size > 0 else 'short'
             
-            # Verify requested direction if specified
+            # 요청된 방향이 지정된 경우 검증
             if position_side and current_side != position_side:
-                self.logger.warning(f"Requested position direction ({position_side}) differs from current position direction ({current_side})")
-                return current_size, current_side  # Return actual info
+                self.logger.warning(f"요청된 포지션 방향 ({position_side})이 현재 포지션 방향 ({current_side})과 다름")
+                return current_size, current_side  # 실제 정보 반환
             
-            self.logger.info(f"Current Gate position: {current_size} ({current_side})")
+            self.logger.info(f"현재 게이트 포지션: {current_size} ({current_side})")
             return current_size, current_side
             
         except Exception as e:
-            self.logger.error(f"Current Gate position size query failed: {e}")
+            self.logger.error(f"현재 게이트 포지션 크기 조회 실패: {e}")
             return 0, 'error'
     
     async def validate_close_order_against_position(self, close_order_details: Dict, 
                                                    current_gate_position_size: int) -> Tuple[bool, str]:
         try:
-            # Allow close orders even when no position exists
+            # 포지션이 없어도 클로즈 주문 허용
             if current_gate_position_size == 0:
-                return True, "No current position but forcing close order allowance (position may be created)"
+                return True, "현재 포지션 없지만 클로즈 주문 강제 허용 (포지션이 생성될 수 있음)"
             
-            # Current position direction
+            # 현재 포지션 방향
             current_position_side = 'long' if current_gate_position_size > 0 else 'short'
             
-            # Expected position direction from close order
+            # 클로즈 주문에서 예상하는 포지션 방향
             expected_position_side = close_order_details['position_side']
             
             if current_position_side != expected_position_side:
-                return True, f"Position direction mismatch but allowing adjustment to current position ({current_position_side})"
+                return True, f"포지션 방향 불일치지만 현재 포지션에 맞춰 조정 허용 ({current_position_side})"
             
-            return True, f"Close order valid: {current_position_side} position → {close_order_details['order_direction']} order"
+            return True, f"클로즈 주문 유효: {current_position_side} 포지션 → {close_order_details['order_direction']} 주문"
             
         except Exception as e:
-            self.logger.error(f"Close order validation failed but allowing: {e}")
-            return True, f"Validation error but allowing close order: {str(e)}"
+            self.logger.error(f"클로즈 주문 검증 실패하지만 허용: {e}")
+            return True, f"검증 오류하지만 클로즈 주문 허용: {str(e)}"
     
     def generate_position_id(self, pos: Dict) -> str:
         symbol = pos.get('symbol', self.SYMBOL)
@@ -1219,7 +1219,7 @@ class MirrorTradingUtils:
                     'exceeds_threshold': False,
                     'status': 'invalid_prices',
                     'is_abnormal': False,
-                    'should_process': True  # Always proceed with processing
+                    'should_process': True  # 항상 처리 진행
                 }
             
             price_diff_abs = abs(bitget_price - gate_price)
@@ -1246,27 +1246,27 @@ class MirrorTradingUtils:
                 'status': status,
                 'bitget_price': bitget_price,
                 'gate_price': gate_price,
-                'should_process': True  # Always proceed with processing
+                'should_process': True  # 항상 처리 진행
             }
             
         except Exception as e:
-            self.logger.error(f"Price difference info calculation failed: {e}")
+            self.logger.error(f"시세 차이 정보 계산 실패: {e}")
             return {
                 'price_diff_abs': 0,
                 'price_diff_percent': 0,
                 'exceeds_threshold': False,
                 'status': 'error',
                 'is_abnormal': False,
-                'should_process': True  # Proceed even with errors
+                'should_process': True  # 오류 시에도 처리 진행
             }
     
     async def should_delay_processing(self, bitget_price: float, gate_price: float) -> Tuple[bool, str]:
         try:
             price_info = await self.get_price_difference_info(bitget_price, gate_price)
             
-            # Always proceed with processing - no delays
-            return False, "All orders processed immediately regardless of price difference"
+            # 항상 처리 진행 - 지연 없음
+            return False, "시세 차이와 무관하게 모든 주문 즉시 처리"
             
         except Exception as e:
-            self.logger.error(f"Processing delay determination failed but proceeding: {e}")
-            return False, "Determination error but proceeding"
+            self.logger.error(f"처리 지연 판단 실패하지만 계속 진행: {e}")
+            return False, "판단 오류하지만 계속 진행"
