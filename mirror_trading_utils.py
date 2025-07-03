@@ -56,26 +56,13 @@ class MirrorTradingUtils:
         
         # 복제 비율 설명
         self.RATIO_DESCRIPTIONS = {
-            0.1: "원본의 10% 크기로 대폭 축소",
-            0.2: "원본의 20% 크기로 축소",
-            0.3: "원본의 30% 크기로 축소",
-            0.4: "원본의 40% 크기로 축소",
-            0.5: "원본의 절반 크기로 축소",
-            0.6: "원본의 60% 크기로 축소",
-            0.7: "원본의 70% 크기로 축소",
-            0.8: "원본의 80% 크기로 축소",
-            0.9: "원본의 90% 크기로 축소",
-            1.0: "원본 비율 그대로 복제",
-            1.1: "원본의 1.1배로 10% 확대",
-            1.2: "원본의 1.2배로 20% 확대",
-            1.3: "원본의 1.3배로 30% 확대",
-            1.4: "원본의 1.4배로 40% 확대",
-            1.5: "원본의 1.5배로 50% 확대",
-            2.0: "원본의 2배로 확대",
-            2.5: "원본의 2.5배로 확대",
-            3.0: "원본의 3배로 확대",
-            5.0: "원본의 5배로 확대",
-            10.0: "원본의 10배로 최대 확대"
+            0.1: "원본의 10% 크기로 대폭 축소", 0.2: "원본의 20% 크기로 축소", 0.3: "원본의 30% 크기로 축소",
+            0.4: "원본의 40% 크기로 축소", 0.5: "원본의 절반 크기로 축소", 0.6: "원본의 60% 크기로 축소",
+            0.7: "원본의 70% 크기로 축소", 0.8: "원본의 80% 크기로 축소", 0.9: "원본의 90% 크기로 축소",
+            1.0: "원본 비율 그대로 복제", 1.1: "원본의 1.1배로 10% 확대", 1.2: "원본의 1.2배로 20% 확대",
+            1.3: "원본의 1.3배로 30% 확대", 1.4: "원본의 1.4배로 40% 확대", 1.5: "원본의 1.5배로 50% 확대",
+            2.0: "원본의 2배로 확대", 2.5: "원본의 2.5배로 확대", 3.0: "원본의 3배로 확대",
+            5.0: "원본의 5배로 확대", 10.0: "원본의 10배로 최대 확대"
         }
         
         # 가격 검증 설정
@@ -88,16 +75,10 @@ class MirrorTradingUtils:
         # 클로즈 주문 감지
         self.CLOSE_ORDER_KEYWORDS = [
             'close', 'close_long', 'close_short', 'close long', 'close short',
-            'exit', 'exit_long', 'exit_short', 'exit long', 'exit short',
-            'reduce'
+            'exit', 'exit_long', 'exit_short', 'exit long', 'exit short', 'reduce'
         ]
         
-        self.TP_SL_ONLY_ORDER_TYPES = [
-            'profit_loss',
-            'stop_loss_only', 
-            'take_profit_only'
-        ]
-        
+        self.TP_SL_ONLY_ORDER_TYPES = ['profit_loss', 'stop_loss_only', 'take_profit_only']
         self.CLOSE_ORDER_STRICT_MODE = False
         
         self.logger.info("미러 트레이딩 유틸리티 초기화 완료 - 복제 비율 지원")
@@ -106,10 +87,7 @@ class MirrorTradingUtils:
                                                            bitget_order: Dict, ratio_multiplier: float = 1.0) -> Dict:
         try:
             if size is None or trigger_price is None:
-                return {
-                    'success': False,
-                    'error': 'size나 trigger_price가 None입니다'
-                }
+                return {'success': False, 'error': 'size나 trigger_price가 None입니다'}
             
             # 복제 비율 검증
             validated_ratio = self.validate_ratio_multiplier(ratio_multiplier)
@@ -122,9 +100,7 @@ class MirrorTradingUtils:
             # 레버리지 추출
             bitget_account = await self.bitget.get_account_info()
             extracted_leverage = await self.extract_bitget_leverage_enhanced(
-                order_data=bitget_order,
-                position_data=None,
-                account_data=bitget_account
+                order_data=bitget_order, position_data=None, account_data=bitget_account
             )
             
             self.logger.info(f"추출된 레버리지: {extracted_leverage}x")
@@ -133,10 +109,7 @@ class MirrorTradingUtils:
             bitget_total_equity = float(bitget_account.get('accountEquity', bitget_account.get('usdtEquity', 0)))
             
             if bitget_total_equity <= 0:
-                return {
-                    'success': False,
-                    'error': '비트겟 총 자산이 0이거나 조회 실패'
-                }
+                return {'success': False, 'error': '비트겟 총 자산이 0이거나 조회 실패'}
             
             # 비트겟 마진 사용량 계산
             bitget_notional_value = size * trigger_price
@@ -150,10 +123,7 @@ class MirrorTradingUtils:
             
             # 안전 검사
             if adjusted_margin_ratio <= 0:
-                return {
-                    'success': False,
-                    'error': f'조정된 마진 비율이 0 이하입니다: {adjusted_margin_ratio:.4f}'
-                }
+                return {'success': False, 'error': f'조정된 마진 비율이 0 이하입니다: {adjusted_margin_ratio:.4f}'}
             elif adjusted_margin_ratio > 1:
                 original_ratio = adjusted_margin_ratio
                 adjusted_margin_ratio = 0.95
@@ -167,35 +137,21 @@ class MirrorTradingUtils:
             ratio_effect = self.analyze_ratio_multiplier_effect(ratio_multiplier, base_margin_ratio, adjusted_margin_ratio)
             
             result = {
-                'success': True,
-                'margin_ratio': adjusted_margin_ratio,
-                'leverage': extracted_leverage,
-                'required_margin': adjusted_required_margin,
-                'total_equity': bitget_total_equity,
-                'notional_value': adjusted_notional_value,
-                'ratio_multiplier': ratio_multiplier,
-                'base_margin_ratio': base_margin_ratio,
-                'base_required_margin': bitget_required_margin,
-                'base_notional_value': bitget_notional_value,
-                'ratio_effect': ratio_effect,
+                'success': True, 'margin_ratio': adjusted_margin_ratio, 'leverage': extracted_leverage,
+                'required_margin': adjusted_required_margin, 'total_equity': bitget_total_equity,
+                'notional_value': adjusted_notional_value, 'ratio_multiplier': ratio_multiplier,
+                'base_margin_ratio': base_margin_ratio, 'base_required_margin': bitget_required_margin,
+                'base_notional_value': bitget_notional_value, 'ratio_effect': ratio_effect,
                 'ratio_description': self.get_ratio_multiplier_description(ratio_multiplier)
             }
             
-            self.logger.info(f"마진 계산 성공:")
-            self.logger.info(f"   - 기본 마진 비율: {base_margin_ratio*100:.3f}%")
-            self.logger.info(f"   - 복제 비율: {ratio_multiplier}x ({ratio_effect['description']})")
-            self.logger.info(f"   - 최종 마진 비율: {adjusted_margin_ratio*100:.3f}%")
-            self.logger.info(f"   - 레버리지: {extracted_leverage}x")
-            self.logger.info(f"   - 효과: {ratio_effect['impact']}")
+            self.logger.info(f"마진 계산 성공: 기본 {base_margin_ratio*100:.3f}% → 최종 {adjusted_margin_ratio*100:.3f}% (비율: {ratio_multiplier}x, 레버리지: {extracted_leverage}x)")
             
             return result
             
         except Exception as e:
             self.logger.error(f"복제 비율 적용 마진 계산 실패: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            return {'success': False, 'error': str(e)}
     
     async def calculate_dynamic_margin_ratio(self, size: float, trigger_price: float, bitget_order: Dict) -> Dict:
         return await self.calculate_dynamic_margin_ratio_with_multiplier(size, trigger_price, bitget_order, 1.0)
@@ -235,8 +191,7 @@ class MirrorTradingUtils:
                 return self.RATIO_DESCRIPTIONS[ratio_multiplier]
             
             # 가장 가까운 값 찾기
-            closest_ratio = min(self.RATIO_DESCRIPTIONS.keys(), 
-                               key=lambda x: abs(x - ratio_multiplier))
+            closest_ratio = min(self.RATIO_DESCRIPTIONS.keys(), key=lambda x: abs(x - ratio_multiplier))
             
             if abs(closest_ratio - ratio_multiplier) < 0.05:
                 return self.RATIO_DESCRIPTIONS[closest_ratio]
@@ -257,15 +212,11 @@ class MirrorTradingUtils:
     def analyze_ratio_multiplier_effect(self, ratio_multiplier: float, base_ratio: float, adjusted_ratio: float) -> Dict:
         try:
             effect_analysis = {
-                'multiplier': ratio_multiplier,
-                'base_percentage': base_ratio * 100,
-                'adjusted_percentage': adjusted_ratio * 100,
-                'absolute_increase': (adjusted_ratio - base_ratio) * 100,
+                'multiplier': ratio_multiplier, 'base_percentage': base_ratio * 100,
+                'adjusted_percentage': adjusted_ratio * 100, 'absolute_increase': (adjusted_ratio - base_ratio) * 100,
                 'relative_increase_percent': ((adjusted_ratio / base_ratio) - 1) * 100 if base_ratio > 0 else 0,
                 'description': self.get_ratio_multiplier_description(ratio_multiplier),
-                'impact': '',
-                'risk_level': '',
-                'recommendation': ''
+                'impact': '', 'risk_level': '', 'recommendation': ''
             }
             
             # 영향 분석
@@ -299,11 +250,8 @@ class MirrorTradingUtils:
         except Exception as e:
             self.logger.error(f"복제 비율 효과 분석 실패: {e}")
             return {
-                'multiplier': ratio_multiplier,
-                'description': "분석 실패",
-                'impact': "알 수 없음",
-                'risk_level': "불명",
-                'recommendation': "신중한 검토 필요"
+                'multiplier': ratio_multiplier, 'description': "분석 실패", 'impact': "알 수 없음",
+                'risk_level': "불명", 'recommendation': "신중한 검토 필요"
             }
     
     async def extract_bitget_leverage_enhanced(self, order_data: Dict = None, position_data: Dict = None, account_data: Dict = None) -> int:
@@ -371,9 +319,7 @@ class MirrorTradingUtils:
                                 
                                 # 결과 캐시
                                 self.leverage_cache['bitget_default'] = {
-                                    'leverage': extracted_leverage,
-                                    'timestamp': datetime.now(),
-                                    'source': source
+                                    'leverage': extracted_leverage, 'timestamp': datetime.now(), 'source': source
                                 }
                                 return extracted_leverage
                         except (ValueError, TypeError):
@@ -461,8 +407,7 @@ class MirrorTradingUtils:
                 if tp_price or sl_price:
                     is_close_order = False
                     detection_method = "tp_sl_set_but_open_order"
-                    self.logger.info(f"TP/SL 설정된 오픈 주문 (TP={tp_price}, SL={sl_price})")
-                    self.logger.info(f"       → TP/SL이 포함된 신규 포지션 생성")
+                    self.logger.info(f"TP/SL 설정된 오픈 주문 (TP={tp_price}, SL={sl_price}) → TP/SL이 포함된 신규 포지션 생성")
             
             # 5. 특수 클로즈 패턴
             if not is_close_order:
@@ -542,12 +487,8 @@ class MirrorTradingUtils:
                     position_side = 'long'
             
             result = {
-                'is_close_order': is_close_order,
-                'order_direction': order_direction,
-                'position_side': position_side,
-                'original_side': side,
-                'reduce_only': reduce_only,
-                'order_type': order_type,
+                'is_close_order': is_close_order, 'order_direction': order_direction, 'position_side': position_side,
+                'original_side': side, 'reduce_only': reduce_only, 'order_type': order_type,
                 'detection_method': detection_method
             }
             
@@ -557,13 +498,9 @@ class MirrorTradingUtils:
         except Exception as e:
             self.logger.error(f"강화된 클로즈 주문 상세 판단 실패: {e}")
             return {
-                'is_close_order': False,
-                'order_direction': 'buy',
-                'position_side': 'long',
-                'original_side': side if 'side' in locals() else '',
-                'reduce_only': False,
-                'order_type': order_type if 'order_type' in locals() else '',
-                'detection_method': 'fallback'
+                'is_close_order': False, 'order_direction': 'buy', 'position_side': 'long',
+                'original_side': side if 'side' in locals() else '', 'reduce_only': False,
+                'order_type': order_type if 'order_type' in locals() else '', 'detection_method': 'fallback'
             }
     
     async def determine_close_order_details(self, bitget_order: Dict) -> Dict:
@@ -671,15 +608,9 @@ class MirrorTradingUtils:
                 return None
             
             return {
-                'order_id': order_id,
-                'contract': contract,
-                'trigger_price': trigger_price,
-                'size': size,
-                'abs_size': abs(size),
-                'tp_price': tp_price,
-                'sl_price': sl_price,
-                'has_tp_sl': bool(tp_price or sl_price),
-                'gate_order_raw': gate_order
+                'order_id': order_id, 'contract': contract, 'trigger_price': trigger_price,
+                'size': size, 'abs_size': abs(size), 'tp_price': tp_price, 'sl_price': sl_price,
+                'has_tp_sl': bool(tp_price or sl_price), 'gate_order_raw': gate_order
             }
             
         except Exception as e:
@@ -1214,12 +1145,8 @@ class MirrorTradingUtils:
         try:
             if bitget_price <= 0 or gate_price <= 0:
                 return {
-                    'price_diff_abs': 0,
-                    'price_diff_percent': 0,
-                    'exceeds_threshold': False,
-                    'status': 'invalid_prices',
-                    'is_abnormal': False,
-                    'should_process': True  # 항상 처리 진행
+                    'price_diff_abs': 0, 'price_diff_percent': 0, 'exceeds_threshold': False,
+                    'status': 'invalid_prices', 'is_abnormal': False, 'should_process': True  # 항상 처리 진행
                 }
             
             price_diff_abs = abs(bitget_price - gate_price)
@@ -1237,27 +1164,18 @@ class MirrorTradingUtils:
                 status = 'normal'
             
             return {
-                'price_diff_abs': price_diff_abs,
-                'price_diff_percent': price_diff_percent,
-                'exceeds_threshold': exceeds_threshold,
-                'threshold': self.PRICE_SYNC_THRESHOLD,
-                'abnormal_threshold': self.ABNORMAL_PRICE_DIFF_THRESHOLD,
-                'is_abnormal': is_abnormal,
-                'status': status,
-                'bitget_price': bitget_price,
-                'gate_price': gate_price,
+                'price_diff_abs': price_diff_abs, 'price_diff_percent': price_diff_percent,
+                'exceeds_threshold': exceeds_threshold, 'threshold': self.PRICE_SYNC_THRESHOLD,
+                'abnormal_threshold': self.ABNORMAL_PRICE_DIFF_THRESHOLD, 'is_abnormal': is_abnormal,
+                'status': status, 'bitget_price': bitget_price, 'gate_price': gate_price,
                 'should_process': True  # 항상 처리 진행
             }
             
         except Exception as e:
             self.logger.error(f"시세 차이 정보 계산 실패: {e}")
             return {
-                'price_diff_abs': 0,
-                'price_diff_percent': 0,
-                'exceeds_threshold': False,
-                'status': 'error',
-                'is_abnormal': False,
-                'should_process': True  # 오류 시에도 처리 진행
+                'price_diff_abs': 0, 'price_diff_percent': 0, 'exceeds_threshold': False,
+                'status': 'error', 'is_abnormal': False, 'should_process': True  # 오류 시에도 처리 진행
             }
     
     async def should_delay_processing(self, bitget_price: float, gate_price: float) -> Tuple[bool, str]:
