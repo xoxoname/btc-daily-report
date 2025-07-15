@@ -38,15 +38,13 @@ class GateioMirrorClient:
         self.margin_mode_force_attempts = 0
         self.max_margin_mode_attempts = 10
         
-        # 지원되는 마진 모드 매핑 - 모든 것을 Cross로
+        # 지원되는 마진 모드 매핑 - 모든 것을 Cross로 강제
         self.MARGIN_MODE_MAPPING = {
-            'cross': 'cross',
-            'isolated': 'cross',  # Isolated도 Cross로 강제 변환
-            'dual_long': 'cross',
-            'dual_short': 'cross',
-            'single': 'cross',
-            'default': 'cross'
+            'cross': 'cross'
         }
+        
+        # 🔥 무조건 Cross 모드만 지원 - Isolated 관련 코드 완전 제거
+        self.SUPPORTED_MARGIN_MODES = ['cross']  # Cross 모드만 지원
         
     def _initialize_session(self):
         if not self.session:
@@ -77,21 +75,28 @@ class GateioMirrorClient:
         except Exception as e:
             logger.warning(f"기본 레버리지 설정 실패하지만 계속 진행: {e}")
         
-        # 무조건 Cross 마진 모드 강제 설정
-        await self.force_cross_margin_mode_aggressive("BTC_USDT")
+        # 🔥 무조건 Cross 마진 모드 강제 설정 (Isolated 관련 코드 완전 제거)
+        logger.info("🔥 Gate.io Cross 마진 모드 강제 설정 시작 (Isolated 지원 안 함)")
+        cross_success = await self.force_cross_margin_mode_aggressive("BTC_USDT")
         
+        if cross_success:
+            logger.info("✅ Gate.io Cross 마진 모드 강제 설정 완료 (Isolated 지원 안 함)")
+        else:
+            logger.warning("⚠️ Gate.io Cross 마진 모드 자동 설정 실패 - 수동 설정 필요 (Isolated 지원 안 함)")
+            
         logger.info("Gate.io 미러링 클라이언트 초기화 완료")
     
     async def force_cross_margin_mode_aggressive(self, contract: str = "BTC_USDT") -> bool:
+        """🔥 Gate.io Cross 마진 모드 강제 설정 - Isolated 관련 코드 완전 제거"""
         try:
-            logger.info(f"🔥 Gate.io Cross 마진 모드 강제 설정 시작: {contract}")
+            logger.info(f"🔥 Gate.io Cross 마진 모드 강제 설정 시작: {contract} (Isolated 지원 안 함)")
             
             # 현재 마진 모드 확인
             current_mode = await self.get_current_margin_mode(contract)
-            logger.info(f"🔍 현재 마진 모드: {current_mode}")
+            logger.info(f"🔍 현재 마진 모드: {current_mode} (무조건 Cross로 강제 변경)")
             
             if current_mode == "cross":
-                logger.info("✅ 이미 Cross 마진 모드입니다")
+                logger.info("✅ 이미 Cross 마진 모드입니다 (Isolated 지원 안 함)")
                 return True
             
             # 방법 1: 포지션 기반 마진 모드 변경 시도
@@ -402,53 +407,33 @@ class GateioMirrorClient:
             return "unknown"
     
     def _normalize_margin_mode(self, mode: str) -> str:
+        """🔥 마진 모드 정규화 - 무조건 Cross 모드만 반환 (Isolated 관련 코드 완전 제거)"""
         try:
             mode_lower = str(mode).lower().strip()
             
-            # 무조건 Cross 모드 강제
-            if self.FORCE_CROSS_MARGIN:
-                if mode_lower in ['cross', 'isolated', 'dual_long', 'dual_short', 'single', 'default']:
-                    logger.debug(f"강제 Cross 매핑: {mode_lower} → cross")
-                    return 'cross'
-            
-            # 일반 매핑
-            if mode_lower in self.MARGIN_MODE_MAPPING:
-                normalized = self.MARGIN_MODE_MAPPING[mode_lower]
-                logger.debug(f"마진 모드 매핑: {mode_lower} → {normalized}")
-                return normalized
-            
-            # 패턴 매칭
-            if 'cross' in mode_lower:
-                return 'cross'
-            elif 'isolated' in mode_lower:
-                return 'cross'  # Isolated도 Cross로 강제
-            elif 'dual' in mode_lower:
-                return 'cross'
-            elif mode_lower in ['single', 'default', '']:
-                return 'cross'
-            else:
-                logger.warning(f"알 수 없는 마진 모드 패턴: {mode_lower}")
-                return 'cross'  # 알 수 없어도 Cross로
+            # 🔥 무조건 Cross 모드 강제 - Isolated 관련 코드 완전 제거
+            logger.debug(f"마진 모드 강제 정규화: {mode_lower} → cross (Isolated 지원 안 함)")
+            return 'cross'
                 
         except Exception as e:
             logger.error(f"마진 모드 정규화 실패: {e}")
-            return 'cross'  # 오류 시에도 Cross로
+            return 'cross'  # 오류 시에도 무조건 Cross로
     
     async def set_margin_mode(self, contract: str, mode: str = "cross") -> Dict:
+        """🔥 마진 모드 설정 - 무조건 Cross 모드만 설정 (Isolated 관련 코드 완전 제거)"""
         try:
-            logger.info(f"Gate.io 마진 모드 설정 요청: {contract} - {mode}")
+            logger.info(f"Gate.io 마진 모드 설정 요청: {contract} - Cross 모드 강제")
             
-            # 무조건 Cross로 강제
-            if self.FORCE_CROSS_MARGIN:
-                mode = "cross"
-                logger.info(f"🔥 강제 Cross 모드 적용: {mode}")
+            # 🔥 무조건 Cross로 강제 - Isolated 관련 코드 완전 제거
+            mode = "cross"
+            logger.info(f"🔥 강제 Cross 모드 적용: {mode} (Isolated 지원 안 함)")
             
-            mode = mode.lower()
-            if mode not in ['cross', 'isolated']:
-                logger.error(f"지원되지 않는 마진 모드: {mode}")
-                return {"success": False, "error": f"Invalid margin mode: {mode}"}
+            # Cross 모드만 지원하는 검증
+            if mode not in self.SUPPORTED_MARGIN_MODES:
+                logger.error(f"지원되지 않는 마진 모드: {mode} (Cross 모드만 지원)")
+                return {"success": False, "error": f"Only Cross margin mode is supported: {mode}"}
             
-            # 적극적인 마진 모드 설정 시도
+            # 적극적인 Cross 마진 모드 설정 시도
             success = await self.force_cross_margin_mode_aggressive(contract)
             
             if success:
@@ -456,7 +441,7 @@ class GateioMirrorClient:
                     "success": True,
                     "mode": "cross",
                     "contract": contract,
-                    "message": "Cross 마진 모드 설정 성공",
+                    "message": "Cross 마진 모드 설정 성공 (Isolated 지원 안 함)",
                     "method": "강제 설정"
                 }
             else:
@@ -465,7 +450,7 @@ class GateioMirrorClient:
                     "mode": "cross",
                     "contract": contract,
                     "message": "API 제한으로 수동 설정 필요",
-                    "recommendation": "Gate.io 웹/앱에서 Cross 마진 모드로 수동 설정을 권장합니다"
+                    "recommendation": "Gate.io 웹/앱에서 Cross 마진 모드로 수동 설정을 권장합니다 (Isolated 지원 안 함)"
                 }
                     
         except Exception as e:
@@ -473,7 +458,7 @@ class GateioMirrorClient:
             return {
                 "success": False,
                 "error": str(e),
-                "recommendation": "수동으로 Cross 마진 모드 설정을 권장합니다"
+                "recommendation": "수동으로 Cross 마진 모드 설정을 권장합니다 (Isolated 지원 안 함)"
             }
     
     async def ensure_cross_margin_mode(self, contract: str = "BTC_USDT") -> bool:

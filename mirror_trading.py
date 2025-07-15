@@ -76,6 +76,15 @@ class MirrorTradingSystem:
         self.margin_mode_check_failures = 0
         self.max_margin_mode_failures = 5
         
+        # 🔥 레버리지 실시간 동기화 시스템
+        self.leverage_monitoring_enabled = True
+        self.leverage_check_interval = 30  # 30초마다 레버리지 체크
+        self.last_leverage_check = datetime.min
+        self.current_bitget_leverage = 30  # 현재 비트겟 레버리지 캐시
+        self.current_gate_leverage = 30  # 현재 게이트 레버리지 캐시
+        self.leverage_sync_failures = 0
+        self.max_leverage_sync_failures = 3
+        
         # 경고 알림 제한 시스템 - 각 타입별로 최대 2번까지만
         self.warning_counters = {
             'price_difference': 0,
@@ -90,7 +99,8 @@ class MirrorTradingSystem:
             'system_error': 0,
             'position_cleanup': 0,
             'mirror_mode_change': 0,
-            'margin_mode_warning': 0  # 마진 모드 경고 추가
+            'margin_mode_warning': 0,  # 마진 모드 경고 추가
+            'leverage_sync_warning': 0  # 레버리지 동기화 경고 추가
         }
         self.MAX_WARNING_COUNT = 2  # 각 경고 타입별 최대 2회
         
@@ -399,6 +409,62 @@ class MirrorTradingSystem:
         except Exception as e:
             self.logger.error(f"마진 모드 강제 모니터링 시스템 실패: {e}")
 
+    async def monitor_leverage_sync(self):
+        """레버리지 실시간 동기화 모니터링 루프"""
+        try:
+            self.logger.info("레버리지 실시간 동기화 모니터링 시작")
+            
+            # 초기 레버리지 값 설정
+            try:
+                bitget_account = await self.bitget_mirror.get_account_info()
+                self.current_bitget_leverage = await self.utils.extract_bitget_leverage_enhanced(
+                    account_data=bitget_account
+                )
+                self.current_gate_leverage = await self.gate_mirror.get_current_leverage(self.GATE_CONTRACT)
+                
+                self.logger.info(f"초기 레버리지 설정: 비트겟 {self.current_bitget_leverage}x, 게이트 {self.current_gate_leverage}x")
+                
+                # 초기 동기화 (필요 시)
+                if self.current_bitget_leverage != self.current_gate_leverage:
+                    await self.gate_mirror.mirror_bitget_leverage(self.current_bitget_leverage, self.GATE_CONTRACT)
+                    self.current_gate_leverage = self.current_bitget_leverage
+                    self.logger.info(f"초기 레버리지 동기화 완료: {self.current_bitget_leverage}x")
+                    
+            except Exception as e:
+                self.logger.error(f"초기 레버리지 설정 실패: {e}")
+            
+            while self.monitoring:
+                try:
+                    if not self.mirror_trading_enabled or not self.leverage_monitoring_enabled:
+                        await asyncio.sleep(self.leverage_check_interval)
+                        continue
+                    
+                    current_time = datetime.now()
+                    
+                    # 레버리지 체크 간격 확인
+                    if (current_time - self.last_leverage_check).total_seconds() >= self.leverage_check_interval:
+                        await self._perform_leverage_sync_check()
+                        self.last_leverage_check = current_time
+                    
+                    await asyncio.sleep(30)  # 30초마다 체크
+                    
+                except Exception as e:
+                    self.leverage_sync_failures += 1
+                    self.logger.error(f"레버리지 동기화 모니터링 오류 ({self.leverage_sync_failures}회): {e}")
+                    
+                    if (self.leverage_sync_failures >= self.max_leverage_sync_failures and 
+                        self._should_send_warning('leverage_sync_warning')):
+                        await self.telegram.send_message(
+                            f"⚠️ 레버리지 동기화 모니터링 시스템 오류\n"
+                            f"연속 {self.leverage_sync_failures}회 실패\n"
+                            f"수동으로 비트겟과 게이트 레버리지 확인을 권장합니다."
+                        )
+                    
+                    await asyncio.sleep(self.leverage_check_interval)
+                    
+        except Exception as e:
+            self.logger.error(f"레버리지 동기화 모니터링 시스템 실패: {e}")
+
     async def _perform_margin_mode_check(self):
         try:
             self.logger.debug("마진 모드 체크 시작")
@@ -425,7 +491,8 @@ class MirrorTradingSystem:
                     await self.telegram.send_message(
                         f"✅ Gate.io 마진 모드 자동 수정 완료\n"
                         f"변경: {current_mode.upper()} → CROSS\n"
-                        f"💳 Cross 마진 모드로 안전하게 운영됩니다"
+                        f"💳 Cross 마진 모드로 안전하게 운영됩니다\n"
+                        f"🔥 Isolated 모드는 지원하지 않습니다"
                     )
             else:
                 self.logger.warning(f"마진 모드 강제 변경 실패: {current_mode}")
@@ -438,12 +505,95 @@ class MirrorTradingSystem:
                         f"⚠️ Gate.io 마진 모드 자동 변경 실패\n"
                         f"현재 모드: {current_mode.upper()}\n"
                         f"수동으로 Cross 마진 모드로 변경해주세요.\n"
-                        f"💡 Gate.io 웹/앱 → 선물 거래 → 마진 모드 → Cross 선택"
+                        f"💡 Gate.io 웹/앱 → 선물 거래 → 마진 모드 → Cross 선택\n"
+                        f"🔥 Isolated 모드는 지원하지 않습니다"
                     )
             
         except Exception as e:
             self.logger.error(f"마진 모드 체크 수행 실패: {e}")
             self.margin_mode_check_failures += 1
+
+    async def _perform_leverage_sync_check(self):
+        """비트겟 레버리지 변경 감지 및 게이트 실시간 동기화"""
+        try:
+            if not self.leverage_monitoring_enabled:
+                return
+            
+            self.logger.debug("레버리지 동기화 체크 시작")
+            
+            # 비트겟 현재 레버리지 조회
+            try:
+                bitget_account = await self.bitget_mirror.get_account_info()
+                new_bitget_leverage = await self.utils.extract_bitget_leverage_enhanced(
+                    account_data=bitget_account
+                )
+            except Exception as e:
+                self.logger.warning(f"비트겟 레버리지 조회 실패: {e}")
+                return
+            
+            # 비트겟 레버리지 변경 감지
+            if new_bitget_leverage != self.current_bitget_leverage:
+                self.logger.info(f"🔄 비트겟 레버리지 변경 감지: {self.current_bitget_leverage}x → {new_bitget_leverage}x")
+                
+                # 게이트 레버리지 실시간 동기화
+                try:
+                    sync_success = await self.gate_mirror.mirror_bitget_leverage(new_bitget_leverage, self.GATE_CONTRACT)
+                    
+                    if sync_success:
+                        self.current_bitget_leverage = new_bitget_leverage
+                        self.current_gate_leverage = new_bitget_leverage
+                        self.leverage_sync_failures = 0
+                        
+                        self.logger.info(f"✅ 레버리지 실시간 동기화 완료: {new_bitget_leverage}x")
+                        
+                        # 텔레그램 알림
+                        await self.telegram.send_message(
+                            f"🔄 레버리지 실시간 동기화 완료\n"
+                            f"비트겟: {new_bitget_leverage}x\n"
+                            f"게이트: {new_bitget_leverage}x\n"
+                            f"✅ 동기화 시각: {datetime.now().strftime('%H:%M:%S')}\n"
+                            f"💳 마진 모드: Cross 강제 유지"
+                        )
+                        
+                    else:
+                        self.leverage_sync_failures += 1
+                        self.logger.error(f"레버리지 동기화 실패: {self.current_bitget_leverage}x → {new_bitget_leverage}x")
+                        
+                        if self.leverage_sync_failures >= self.max_leverage_sync_failures:
+                            await self.telegram.send_message(
+                                f"⚠️ 레버리지 동기화 실패\n"
+                                f"비트겟: {new_bitget_leverage}x\n"
+                                f"게이트: {self.current_gate_leverage}x\n"
+                                f"실패 횟수: {self.leverage_sync_failures}회\n"
+                                f"💡 수동으로 게이트 레버리지를 {new_bitget_leverage}x로 설정해주세요"
+                            )
+                        
+                except Exception as e:
+                    self.leverage_sync_failures += 1
+                    self.logger.error(f"레버리지 동기화 중 오류: {e}")
+            
+            else:
+                # 게이트 레버리지 검증 (변경 없는 경우에도 주기적으로 확인)
+                try:
+                    current_gate_leverage = await self.gate_mirror.get_current_leverage(self.GATE_CONTRACT)
+                    
+                    if current_gate_leverage != self.current_bitget_leverage:
+                        self.logger.warning(f"게이트 레버리지 불일치 감지: 비트겟 {self.current_bitget_leverage}x, 게이트 {current_gate_leverage}x")
+                        
+                        # 게이트 레버리지 재동기화
+                        sync_success = await self.gate_mirror.mirror_bitget_leverage(self.current_bitget_leverage, self.GATE_CONTRACT)
+                        
+                        if sync_success:
+                            self.current_gate_leverage = self.current_bitget_leverage
+                            self.logger.info(f"✅ 게이트 레버리지 재동기화 완료: {self.current_bitget_leverage}x")
+                        else:
+                            self.logger.error(f"게이트 레버리지 재동기화 실패")
+                            
+                except Exception as e:
+                    self.logger.warning(f"게이트 레버리지 검증 실패: {e}")
+                        
+        except Exception as e:
+            self.logger.error(f"레버리지 동기화 체크 실패: {e}")
 
     async def start(self):
         try:
@@ -466,14 +616,14 @@ class MirrorTradingSystem:
             # Gate.io 미러링 클라이언트 초기화 (무조건 Cross 마진 모드 강제 설정 포함)
             await self.gate_mirror.initialize()
             
-            # 추가 마진 모드 강제 설정 확인
-            self.logger.info("Gate.io 마진 모드 최종 확인 및 강제 설정")
+            # 🔥 추가 마진 모드 강제 설정 확인 (Isolated 관련 코드 완전 제거)
+            self.logger.info("🔥 Gate.io 마진 모드 최종 확인 및 강제 설정 (Isolated 지원 안 함)")
             final_margin_success = await self.gate_mirror.force_cross_margin_mode_aggressive(self.GATE_CONTRACT)
             
             if final_margin_success:
-                self.logger.info("Gate.io Cross 마진 모드 최종 확인 완료")
+                self.logger.info("✅ Gate.io Cross 마진 모드 최종 확인 완료 (Isolated 지원 안 함)")
             else:
-                self.logger.warning("Gate.io Cross 마진 모드 자동 설정 실패 - 수동 설정 필요")
+                self.logger.warning("⚠️ Gate.io Cross 마진 모드 자동 설정 실패 - 수동 설정 필요 (Isolated 지원 안 함)")
             
             await self._update_current_prices()
             
@@ -495,6 +645,7 @@ class MirrorTradingSystem:
                 self.monitor_order_synchronization(),
                 self.monitor_position_synchronization(),  # 포지션 동기화 모니터링
                 self.monitor_margin_mode_enforcement(),   # 마진 모드 강제 모니터링
+                self.monitor_leverage_sync(),             # 🔥 레버리지 실시간 동기화 모니터링
                 self.generate_daily_reports()
             ]
             

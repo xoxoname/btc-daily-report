@@ -1137,7 +1137,7 @@ class MirrorTradingUtils:
             entry_price=float(bitget_pos.get('openPriceAvg', 0)),
             margin=float(bitget_pos.get('marginSize', 0)),
             leverage=int(float(bitget_pos.get('leverage', 1))),
-            mode='cross' if bitget_pos.get('marginMode') == 'crossed' else 'isolated',
+            mode='cross',  # 🔥 무조건 Cross 모드만 지원 (Isolated 관련 코드 완전 제거)
             unrealized_pnl=float(bitget_pos.get('unrealizedPL', 0))
         )
     
