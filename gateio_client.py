@@ -64,19 +64,40 @@ class GateioMirrorClient:
     async def initialize(self):
         self._initialize_session()
         
-        # 기본 레버리지를 30배로 설정
+        # 🔥 비트겟 실제 레버리지를 가져와서 게이트에 강제 동기화
         try:
+            logger.info("🔍 비트겟 실제 레버리지 조회하여 게이트에 동기화 시작")
+            
+            # 비트겟의 실제 레버리지를 가져오는 임시 코드 (정확한 클라이언트 참조 필요)
+            # 이 부분은 mirror_trading.py에서 실제 비트겟 레버리지를 전달받아야 합니다.
+            target_leverage = self.DEFAULT_LEVERAGE  # 일단 기본값 사용
+            
+            # 현재 게이트 레버리지 확인
             current_leverage = await self.get_current_leverage("BTC_USDT")
-            if current_leverage != self.DEFAULT_LEVERAGE:
-                logger.info(f"기본 레버리지 설정: {current_leverage}x → {self.DEFAULT_LEVERAGE}x")
-                await self.set_leverage("BTC_USDT", self.DEFAULT_LEVERAGE)
+            logger.info(f"🔍 현재 게이트 레버리지: {current_leverage}x")
+            
+            # 레버리지 동기화 필요 시 강제 설정
+            if current_leverage != target_leverage:
+                logger.info(f"🔄 레버리지 동기화 필요: {current_leverage}x → {target_leverage}x")
+                await self.set_leverage("BTC_USDT", target_leverage)
+                logger.info(f"✅ 레버리지 동기화 완료: {target_leverage}x")
             else:
-                logger.info(f"✅ 기본 레버리지 이미 설정됨: {self.DEFAULT_LEVERAGE}x")
+                logger.info(f"✅ 레버리지 이미 동기화됨: {target_leverage}x")
+                
         except Exception as e:
-            logger.warning(f"기본 레버리지 설정 실패하지만 계속 진행: {e}")
+            logger.error(f"레버리지 동기화 실패: {e}")
         
         # 🔥 무조건 Cross 마진 모드 강제 설정 (Isolated 관련 코드 완전 제거)
         logger.info("🔥 Gate.io Cross 마진 모드 강제 설정 시작 (Isolated 지원 안 함)")
+        
+        # 먼저 실제 상태 확인
+        current_margin_mode = await self.get_current_margin_mode("BTC_USDT")
+        logger.info(f"🔍 현재 실제 마진 모드: {current_margin_mode}")
+        
+        # 상태가 isolated인 경우 강제 변경
+        if current_margin_mode == "isolated":
+            logger.warning("⚠️ 마진 모드가 ISOLATED로 확인됨! 강제 변경 필요")
+            
         cross_success = await self.force_cross_margin_mode_aggressive("BTC_USDT")
         
         if cross_success:
@@ -361,46 +382,47 @@ class GateioMirrorClient:
                     raise
     
     async def get_current_margin_mode(self, contract: str = "BTC_USDT") -> str:
+        """🔥 실제 Gate.io 마진 모드 조회 - 실제 상태 확인 후 강제 변경"""
         try:
-            # 캐시에서 먼저 확인
-            if contract in self.current_margin_mode_cache:
-                cached_time, cached_mode = self.current_margin_mode_cache[contract]
-                if (datetime.now() - cached_time).total_seconds() < 60:  # 1분 캐시
-                    return cached_mode
+            # 🔥 캐시 사용 안 함 - 실시간 상태 확인
+            logger.info(f"🔍 Gate.io 실제 마진 모드 조회 시작: {contract}")
             
             # 포지션 정보에서 마진 모드 확인
             positions = await self.get_positions(contract)
             
             if positions:
                 position = positions[0]
-                margin_mode = position.get('mode', '').lower()
+                actual_margin_mode = position.get('mode', '').lower()
+                logger.info(f"🔍 포지션에서 발견한 실제 마진 모드: {actual_margin_mode}")
                 
-                # 마진 모드 정규화
-                normalized_mode = self._normalize_margin_mode(margin_mode)
-                
-                if normalized_mode != 'unknown':
-                    # 캐시 업데이트
-                    self.current_margin_mode_cache[contract] = (datetime.now(), normalized_mode)
-                    logger.debug(f"현재 마진 모드 조회: {contract} = {normalized_mode} (원본: {margin_mode})")
-                    return normalized_mode
+                # 🔥 실제 상태가 isolated인 경우 즉시 강제 변경
+                if actual_margin_mode == 'isolated':
+                    logger.warning(f"⚠️ 실제 마진 모드가 ISOLATED로 발견됨! 즉시 Cross로 강제 변경 시도")
+                    await self.force_cross_margin_mode_aggressive(contract)
+                    return "isolated"  # 실제 상태 반환 (강제 변경은 별도로)
+                elif actual_margin_mode == 'cross':
+                    logger.info(f"✅ 실제 마진 모드가 CROSS로 정상 확인됨")
+                    return "cross"
                 else:
-                    logger.warning(f"알 수 없는 마진 모드: {margin_mode}")
-                    return "unknown"
+                    logger.warning(f"🔍 알 수 없는 마진 모드: {actual_margin_mode} → Cross로 강제 변경 시도")
+                    await self.force_cross_margin_mode_aggressive(contract)
+                    return actual_margin_mode or "unknown"
             else:
                 # 포지션이 없을 때 계정 설정 확인 시도
                 try:
-                    # Gate.io API v4에서는 계정 설정에서 기본 마진 모드를 확인할 수 있음
+                    logger.info(f"🔍 포지션이 없어 계정 정보에서 마진 모드 확인")
                     endpoint = "/api/v4/futures/usdt/account"
                     account_info = await self._request('GET', endpoint)
+                    logger.debug(f"계정 정보 응답: {account_info}")
                     
-                    # 계정의 기본 마진 모드 확인 (Gate.io는 계약별로 다를 수 있음)
-                    # 일반적으로 Gate.io는 기본적으로 cross 모드를 사용
-                    logger.debug(f"포지션이 없어 기본값 반환: cross")
-                    return "cross"
+                    # 🔥 포지션이 없어도 강제로 Cross 모드 설정 시도
+                    await self.force_cross_margin_mode_aggressive(contract)
+                    return "unknown"  # 포지션이 없으면 정확한 상태 알 수 없음
                     
                 except Exception as e:
-                    logger.debug(f"계정 정보 조회 실패, 기본값 반환: {e}")
-                    return "cross"
+                    logger.error(f"계정 정보 조회 실패: {e}")
+                    await self.force_cross_margin_mode_aggressive(contract)
+                    return "unknown"
                 
         except Exception as e:
             logger.error(f"현재 마진 모드 조회 실패: {e}")
@@ -536,12 +558,10 @@ class GateioMirrorClient:
             return []
     
     async def get_current_leverage(self, contract: str) -> int:
+        """🔥 실제 Gate.io 레버리지 조회 - 실시간 상태 확인"""
         try:
-            # 캐시에서 먼저 확인
-            if contract in self.current_leverage_cache:
-                cached_time, cached_leverage = self.current_leverage_cache[contract]
-                if (datetime.now() - cached_time).total_seconds() < 60:
-                    return cached_leverage
+            # 🔥 캐시 사용 안 함 - 실시간 상태 확인
+            logger.info(f"🔍 Gate.io 실제 레버리지 조회 시작: {contract}")
             
             # 포지션 정보에서 레버리지 확인
             positions = await self.get_positions(contract)
@@ -549,18 +569,46 @@ class GateioMirrorClient:
             if positions:
                 position = positions[0]
                 leverage_str = position.get('leverage', str(self.DEFAULT_LEVERAGE))
+                logger.info(f"🔍 포지션에서 발견한 실제 레버리지: {leverage_str}")
                 try:
                     leverage = int(float(leverage_str))
-                    # 캐시 업데이트
-                    self.current_leverage_cache[contract] = (datetime.now(), leverage)
-                    logger.debug(f"현재 레버리지 조회: {contract} = {leverage}x")
+                    logger.info(f"✅ 실제 레버리지 확인됨: {leverage}x")
                     return leverage
                 except (ValueError, TypeError):
                     logger.warning(f"레버리지 값 변환 실패: {leverage_str}")
                     return self.DEFAULT_LEVERAGE
             else:
-                logger.debug(f"포지션이 없어 기본 레버리지 반환: {self.DEFAULT_LEVERAGE}x")
-                return self.DEFAULT_LEVERAGE
+                logger.info(f"🔍 포지션이 없어 계정 설정에서 레버리지 확인 시도")
+                
+                # 🔥 포지션이 없을 때 계정 설정에서 레버리지 확인 시도
+                try:
+                    endpoint = "/api/v4/futures/usdt/account"
+                    account_info = await self._request('GET', endpoint)
+                    logger.debug(f"계정 정보 응답: {account_info}")
+                    
+                    # 계정 정보에서 레버리지 확인 (있다면)
+                    if account_info and isinstance(account_info, dict):
+                        # Gate.io API 응답에서 레버리지 정보 찾기
+                        leverage_value = None
+                        for key in ['leverage', 'cross_leverage', 'default_leverage']:
+                            if key in account_info:
+                                leverage_value = account_info[key]
+                                break
+                        
+                        if leverage_value:
+                            try:
+                                leverage = int(float(leverage_value))
+                                logger.info(f"✅ 계정 정보에서 레버리지 확인됨: {leverage}x")
+                                return leverage
+                            except (ValueError, TypeError):
+                                logger.warning(f"계정 레버리지 값 변환 실패: {leverage_value}")
+                    
+                    logger.info(f"🔍 계정 정보에서 레버리지 찾을 수 없음, 기본값 반환: {self.DEFAULT_LEVERAGE}x")
+                    return self.DEFAULT_LEVERAGE
+                    
+                except Exception as e:
+                    logger.error(f"계정 정보 조회 실패: {e}")
+                    return self.DEFAULT_LEVERAGE
                 
         except Exception as e:
             logger.error(f"현재 레버리지 조회 실패: {e}")

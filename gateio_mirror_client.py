@@ -51,37 +51,69 @@ class GateioMirrorClient:
                 limit=100,
                 limit_per_host=30,
                 ttl_dns_cache=300,
-                use_dns_cache=True
-            )
+                use_dns_cache=True)
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
-                connector=connector
-            )
-            logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료")
+                connector=connector)        logger.info("Gate.io 미러링 클라이언트 세션 초기화 완료")
     
     async def initialize(self):
         self._initialize_session()
         
-        try:
-            current_leverage = await self.get_current_leverage("BTC_USDT")
-            if current_leverage != self.DEFAULT_LEVERAGE:
-                logger.info(f"기본 레버리지 설정: {current_leverage}x → {self.DEFAULT_LEVERAGE}x")
-                await self.set_leverage("BTC_USDT", self.DEFAULT_LEVERAGE)
-            else:
-                logger.info(f"기본 레버리지 이미 설정됨: {self.DEFAULT_LEVERAGE}x")
+        # 🔥 비트겟 실제 레버리지를 가져와서 게이트에 강제 동기화
+        try:        logger.info("🔍 비트겟 실제 레버리지 조회하여 게이트에 동기화 시작")
+            
+            # 비트겟의 실제 레버리지를 가져오는 임시 코드 (정확한 클라이언트 참조 필요)
+            # 이 부분은 mirror_trading.py에서 실제 비트겟 레버리지를 전달받아야 합니다.
+            target_leverage = self.DEFAULT_LEVERAGE  # 일단 기본값 사용
+            
+            # 현재 게이트 레버리지 확인
+            current_leverage = await self.get_current_leverage("BTC_USDT")        logger.info(f"🔍 현재 게이트 레버리지: {current_leverage}x")
+            
+            # 레버리지 동기화 필요 시 강제 설정
+            if current_leverage != target_leverage:        logger.info(f"🔄 레버리지 동기화 필요: {current_leverage}x → {target_leverage}x")
+                await self.set_leverage("BTC_USDT", target_leverage)        logger.info(f"✅ 레버리지 동기화 완료: {target_leverage}x")
+            else:        logger.info(f"✅ 레버리지 이미 동기화됨: {target_leverage}x")
+                
         except Exception as e:
-            logger.warning(f"기본 레버리지 설정 실패하지만 계속 진행: {e}")
+            logger.error(f"레버리지 동기화 실패: {e}")
         
-        # 🔥 무조건 Cross 마진 모드 강제 설정 (Isolated 관련 코드 완전 제거)
-        logger.info("🔥 Gate.io Cross 마진 모드 강제 설정 시작 (Isolated 지원 안 함)")
+        # 🔥 무조건 Cross 마진 모드 강제 설정 (Isolated 관련 코드 완전 제거)        logger.info("🔥 Gate.io Cross 마진 모드 강제 설정 시작 (Isolated 지원 안 함)")
+        
+        # 먼저 실제 상태 확인
+        current_margin_mode = await self.get_current_margin_mode("BTC_USDT")        logger.info(f"🔍 현재 실제 마진 모드: {current_margin_mode}")
+        
+        # 상태가 isolated인 경우 강제 변경
+        if current_margin_mode == "isolated":
+            logger.warning("⚠️ 마진 모드가 ISOLATED로 확인됨! 강제 변경 필요")
+            
         cross_success = await self.force_cross_margin_mode_aggressive("BTC_USDT")
         
-        if cross_success:
-            logger.info("✅ Gate.io Cross 마진 모드 강제 설정 완료 (Isolated 지원 안 함)")
+        if cross_success:        logger.info("✅ Gate.io Cross 마진 모드 강제 설정 완료 (Isolated 지원 안 함)")
         else:
-            logger.warning("⚠️ Gate.io Cross 마진 모드 자동 설정 실패 - 수동 설정 필요 (Isolated 지원 안 함)")
+            logger.warning("⚠️ Gate.io Cross 마진 모드 자동 설정 실패 - 수동 설정 필요 (Isolated 지원 안 함)")        logger.info("Gate.io 미러링 클라이언트 초기화 완료")
+    
+    async def sync_leverage_with_bitget(self, bitget_leverage: int, contract: str = "BTC_USDT") -> bool:
+        """🔥 비트겟 레버리지와 동기화"""
+        try:        logger.info(f"🔄 비트겟 레버리지와 동기화 시작: {bitget_leverage}x → {contract}")
             
-        logger.info("Gate.io 미러링 클라이언트 초기화 완료")
+            # 현재 게이트 레버리지 확인
+            current_gate_leverage = await self.get_current_leverage(contract)        logger.info(f"🔍 현재 게이트 레버리지: {current_gate_leverage}x")
+            
+            if current_gate_leverage == bitget_leverage:        logger.info(f"✅ 레버리지 이미 동기화됨: {bitget_leverage}x")
+                return True
+            
+            # 레버리지 동기화 실행
+            sync_result = await self.mirror_bitget_leverage(bitget_leverage, contract)
+            
+            if sync_result:        logger.info(f"✅ 레버리지 동기화 완료: {current_gate_leverage}x → {bitget_leverage}x")
+                return True
+            else:
+                logger.error(f"❌ 레버리지 동기화 실패: {current_gate_leverage}x → {bitget_leverage}x")
+                return False
+                
+        except Exception as e:
+            logger.error(f"레버리지 동기화 중 오류: {e}")
+            return False
     
     async def ensure_cross_margin_mode_before_order(self, contract: str = "BTC_USDT") -> bool:
         # 주문 생성 전 마진 모드 실시간 체크 및 강제 설정
@@ -94,8 +126,7 @@ class GateioMirrorClient:
             logger.warning(f"주문 생성 전 마진 모드 확인: {current_mode} → Cross로 강제 변경 시도")
             success = await self.force_cross_margin_mode_aggressive(contract)
             
-            if success:
-                logger.info(f"주문 생성 전 마진 모드 강제 변경 성공: Cross")
+            if success:        logger.info(f"주문 생성 전 마진 모드 강제 변경 성공: Cross")
                 return True
             else:
                 logger.error(f"주문 생성 전 마진 모드 강제 변경 실패")
@@ -107,38 +138,31 @@ class GateioMirrorClient:
     
     async def force_cross_margin_mode_aggressive(self, contract: str = "BTC_USDT") -> bool:
         """🔥 Gate.io Cross 마진 모드 강제 설정 - Isolated 관련 코드 완전 제거"""
-        try:
-            logger.info(f"🔥 Gate.io Cross 마진 모드 강제 설정 시작: {contract} (Isolated 지원 안 함)")
+        try:        logger.info(f"🔥 Gate.io Cross 마진 모드 강제 설정 시작: {contract} (Isolated 지원 안 함)")
             
-            current_mode = await self.get_current_margin_mode(contract)
-            logger.info(f"🔍 현재 마진 모드: {current_mode} (무조건 Cross로 강제 변경)")
+            current_mode = await self.get_current_margin_mode(contract)        logger.info(f"🔍 현재 마진 모드: {current_mode} (무조건 Cross로 강제 변경)")
             
-            if current_mode == "cross":
-                logger.info("✅ 이미 Cross 마진 모드입니다 (Isolated 지원 안 함)")
+            if current_mode == "cross":        logger.info("✅ 이미 Cross 마진 모드입니다 (Isolated 지원 안 함)")
                 return True
             
             # 방법 1: Cross 모드 전환 API 직접 호출
             success_method1 = await self._try_cross_mode_api(contract)
-            if success_method1:
-                logger.info("방법 1 성공: Cross 모드 API 호출")
+            if success_method1:        logger.info("방법 1 성공: Cross 모드 API 호출")
                 return True
             
             # 방법 2: 포지션 기반 마진 모드 변경
             success_method2 = await self._try_position_margin_mode_change(contract)
-            if success_method2:
-                logger.info("방법 2 성공: 포지션 기반 마진 모드 변경")
+            if success_method2:        logger.info("방법 2 성공: 포지션 기반 마진 모드 변경")
                 return True
             
             # 방법 3: 계정 설정 기반 마진 모드 변경
             success_method3 = await self._try_account_margin_mode_change(contract)
-            if success_method3:
-                logger.info("방법 3 성공: 계정 설정 기반 마진 모드 변경")
+            if success_method3:        logger.info("방법 3 성공: 계정 설정 기반 마진 모드 변경")
                 return True
             
             # 방법 4: 포지션 종료 후 Cross 모드로 재생성
             success_method4 = await self._try_position_reset_for_cross(contract)
-            if success_method4:
-                logger.info("방법 4 성공: 포지션 리셋 후 Cross 모드 설정")
+            if success_method4:        logger.info("방법 4 성공: 포지션 리셋 후 Cross 모드 설정")
                 return True
             
             logger.warning(f"모든 방법 실패 - 수동으로 Cross 마진 모드 설정 필요")
@@ -150,23 +174,18 @@ class GateioMirrorClient:
     
     async def _try_cross_mode_api(self, contract: str) -> bool:
         # 방법 1: Gate.io 공식 Cross 모드 전환 API
-        try:
-            logger.info("방법 1: Cross 모드 전환 API 호출 시도")
+        try:        logger.info("방법 1: Cross 모드 전환 API 호출 시도")
             
             endpoint = f"/api/v4/futures/usdt/positions/cross_mode"
-            data = {}  # Cross 모드로 전환하는 API
-            
-            logger.info(f"Cross 모드 전환 API 호출")
+            data = {}  # Cross 모드로 전환하는 API        logger.info(f"Cross 모드 전환 API 호출")
             response = await self._request('POST', endpoint, data=data)
             
             await asyncio.sleep(2)
             new_mode = await self.get_current_margin_mode(contract)
             
-            if new_mode == "cross":
-                logger.info("Cross 모드 전환 API 성공")
+            if new_mode == "cross":        logger.info("Cross 모드 전환 API 성공")
                 return True
-            else:
-                logger.info(f"Cross 모드 전환 API 실패: {new_mode}")
+            else:        logger.info(f"Cross 모드 전환 API 실패: {new_mode}")
                 return False
             
         except Exception as e:
@@ -174,13 +193,11 @@ class GateioMirrorClient:
             return False
     
     async def _try_position_margin_mode_change(self, contract: str) -> bool:
-        try:
-            logger.info("방법 2: 포지션 기반 마진 모드 변경 시도")
+        try:        logger.info("방법 2: 포지션 기반 마진 모드 변경 시도")
             
             positions = await self.get_positions(contract)
             
-            if not positions:
-                logger.info("포지션이 없어 포지션 기반 변경 불가")
+            if not positions:        logger.info("포지션이 없어 포지션 기반 변경 불가")
                 return False
             
             position = positions[0]
@@ -188,19 +205,15 @@ class GateioMirrorClient:
             endpoint = f"/api/v4/futures/usdt/positions/{contract}/margin_mode"
             data = {
                 "margin_mode": "cross"
-            }
-            
-            logger.info(f"포지션 마진 모드 변경 API 호출: {data}")
+            }        logger.info(f"포지션 마진 모드 변경 API 호출: {data}")
             response = await self._request('POST', endpoint, data=data)
             
             await asyncio.sleep(2)
             new_mode = await self.get_current_margin_mode(contract)
             
-            if new_mode == "cross":
-                logger.info("포지션 기반 마진 모드 변경 성공")
+            if new_mode == "cross":        logger.info("포지션 기반 마진 모드 변경 성공")
                 return True
-            else:
-                logger.info(f"포지션 기반 변경 실패: {new_mode}")
+            else:        logger.info(f"포지션 기반 변경 실패: {new_mode}")
                 return False
             
         except Exception as e:
@@ -208,26 +221,21 @@ class GateioMirrorClient:
             return False
     
     async def _try_account_margin_mode_change(self, contract: str) -> bool:
-        try:
-            logger.info("방법 3: 계정 설정 기반 마진 모드 변경 시도")
+        try:        logger.info("방법 3: 계정 설정 기반 마진 모드 변경 시도")
             
             endpoint = "/api/v4/futures/usdt/account/margin_mode"
             data = {
                 "margin_mode": "cross",
                 "contract": contract
-            }
-            
-            logger.info(f"계정 마진 모드 변경 API 호출: {data}")
+            }        logger.info(f"계정 마진 모드 변경 API 호출: {data}")
             response = await self._request('POST', endpoint, data=data)
             
             await asyncio.sleep(2)
             new_mode = await self.get_current_margin_mode(contract)
             
-            if new_mode == "cross":
-                logger.info("계정 기반 마진 모드 변경 성공")
+            if new_mode == "cross":        logger.info("계정 기반 마진 모드 변경 성공")
                 return True
-            else:
-                logger.info(f"계정 기반 변경 실패: {new_mode}")
+            else:        logger.info(f"계정 기반 변경 실패: {new_mode}")
                 return False
             
         except Exception as e:
@@ -235,20 +243,17 @@ class GateioMirrorClient:
             return False
     
     async def _try_position_reset_for_cross(self, contract: str) -> bool:
-        try:
-            logger.info("방법 4: 포지션 리셋을 통한 Cross 모드 설정 시도")
+        try:        logger.info("방법 4: 포지션 리셋을 통한 Cross 모드 설정 시도")
             
             positions = await self.get_positions(contract)
             
-            if not positions:
-                logger.info("포지션이 없어 리셋 불가, 새 포지션은 Cross로 생성될 예정")
+            if not positions:        logger.info("포지션이 없어 리셋 불가, 새 포지션은 Cross로 생성될 예정")
                 return True
             
             position = positions[0]
             current_size = int(position.get('size', 0))
             
-            if current_size == 0:
-                logger.info("포지션 크기가 0, 새 포지션은 Cross로 생성될 예정")
+            if current_size == 0:        logger.info("포지션 크기가 0, 새 포지션은 Cross로 생성될 예정")
                 return True
             
             logger.warning(f"활성 포지션({current_size}) 있음 - 리셋 건너뛰기")
@@ -348,39 +353,42 @@ class GateioMirrorClient:
                     raise
     
     async def get_current_margin_mode(self, contract: str = "BTC_USDT") -> str:
+        """🔥 실제 Gate.io 마진 모드 조회 - 실제 상태 확인 후 강제 변경"""
         try:
-            # 캐시에서 먼저 확인
-            if contract in self.current_margin_mode_cache:
-                cached_time, cached_mode = self.current_margin_mode_cache[contract]
-                if (datetime.now() - cached_time).total_seconds() < 60:
-                    return cached_mode
+            # 🔥 캐시 사용 안 함 - 실시간 상태 확인        logger.info(f"🔍 Gate.io 실제 마진 모드 조회 시작: {contract}")
             
             positions = await self.get_positions(contract)
             
             if positions:
                 position = positions[0]
-                margin_mode = position.get('mode', '').lower()
+                actual_margin_mode = position.get('mode', '').lower()        logger.info(f"🔍 포지션에서 발견한 실제 마진 모드: {actual_margin_mode}")
                 
-                normalized_mode = self._normalize_margin_mode(margin_mode)
-                
-                if normalized_mode != 'unknown':
-                    self.current_margin_mode_cache[contract] = (datetime.now(), normalized_mode)
-                    logger.debug(f"현재 마진 모드 조회: {contract} = {normalized_mode} (원본: {margin_mode})")
-                    return normalized_mode
+                # 🔥 실제 상태가 isolated인 경우 즉시 강제 변경
+                if actual_margin_mode == 'isolated':
+                    logger.warning(f"⚠️ 실제 마진 모드가 ISOLATED로 발견됨! 즉시 Cross로 강제 변경 시도")
+                    await self.force_cross_margin_mode_aggressive(contract)
+                    return "isolated"  # 실제 상태 반환 (강제 변경은 별도로)
+                elif actual_margin_mode == 'cross':        logger.info(f"✅ 실제 마진 모드가 CROSS로 정상 확인됨")
+                    return "cross"
                 else:
-                    logger.warning(f"알 수 없는 마진 모드: {margin_mode}")
-                    return "unknown"
+                    logger.warning(f"🔍 알 수 없는 마진 모드: {actual_margin_mode} → Cross로 강제 변경 시도")
+                    await self.force_cross_margin_mode_aggressive(contract)
+                    return actual_margin_mode or "unknown"
             else:
-                try:
+                # 포지션이 없을 때 계정 설정 확인 시도
+                try:        logger.info(f"🔍 포지션이 없어 계정 정보에서 마진 모드 확인")
                     endpoint = "/api/v4/futures/usdt/account"
                     account_info = await self._request('GET', endpoint)
+                    logger.debug(f"계정 정보 응답: {account_info}")
                     
-                    logger.debug(f"포지션이 없어 기본값 반환: cross")
-                    return "cross"
+                    # 🔥 포지션이 없어도 강제로 Cross 모드 설정 시도
+                    await self.force_cross_margin_mode_aggressive(contract)
+                    return "unknown"  # 포지션이 없으면 정확한 상태 알 수 없음
                     
                 except Exception as e:
-                    logger.debug(f"계정 정보 조회 실패, 기본값 반환: {e}")
-                    return "cross"
+                    logger.error(f"계정 정보 조회 실패: {e}")
+                    await self.force_cross_margin_mode_aggressive(contract)
+                    return "unknown"
                 
         except Exception as e:
             logger.error(f"현재 마진 모드 조회 실패: {e}")
@@ -401,12 +409,10 @@ class GateioMirrorClient:
     
     async def set_margin_mode(self, contract: str, mode: str = "cross") -> Dict:
         """🔥 마진 모드 설정 - 무조건 Cross 모드만 설정 (Isolated 관련 코드 완전 제거)"""
-        try:
-            logger.info(f"Gate.io 마진 모드 설정 요청: {contract} - Cross 모드 강제")
+        try:        logger.info(f"Gate.io 마진 모드 설정 요청: {contract} - Cross 모드 강제")
             
             # 🔥 무조건 Cross로 강제 - Isolated 관련 코드 완전 제거
-            mode = "cross"
-            logger.info(f"🔥 강제 Cross 모드 적용: {mode} (Isolated 지원 안 함)")
+            mode = "cross"        logger.info(f"🔥 강제 Cross 모드 적용: {mode} (Isolated 지원 안 함)")
             
             # Cross 모드만 지원하는 검증
             if mode not in self.SUPPORTED_MARGIN_MODES:
@@ -442,13 +448,11 @@ class GateioMirrorClient:
             }
     
     async def ensure_cross_margin_mode(self, contract: str = "BTC_USDT") -> bool:
-        try:
-            logger.info(f"Cross 마진 모드 보장 시작: {contract}")
+        try:        logger.info(f"Cross 마진 모드 보장 시작: {contract}")
             
             success = await self.force_cross_margin_mode_aggressive(contract)
             
-            if success:
-                logger.info(f"Cross 마진 모드 보장 성공: {contract}")
+            if success:        logger.info(f"Cross 마진 모드 보장 성공: {contract}")
                 return True
             else:
                 logger.warning(f"Cross 마진 모드 자동 설정 실패: {contract}")
@@ -514,28 +518,49 @@ class GateioMirrorClient:
             return []
     
     async def get_current_leverage(self, contract: str) -> int:
+        """🔥 실제 Gate.io 레버리지 조회 - 실시간 상태 확인"""
         try:
-            if contract in self.current_leverage_cache:
-                cached_time, cached_leverage = self.current_leverage_cache[contract]
-                if (datetime.now() - cached_time).total_seconds() < 60:
-                    return cached_leverage
+            # 🔥 캐시 사용 안 함 - 실시간 상태 확인        logger.info(f"🔍 Gate.io 실제 레버리지 조회 시작: {contract}")
             
             positions = await self.get_positions(contract)
             
             if positions:
                 position = positions[0]
-                leverage_str = position.get('leverage', str(self.DEFAULT_LEVERAGE))
+                leverage_str = position.get('leverage', str(self.DEFAULT_LEVERAGE))        logger.info(f"🔍 포지션에서 발견한 실제 레버리지: {leverage_str}")
                 try:
-                    leverage = int(float(leverage_str))
-                    self.current_leverage_cache[contract] = (datetime.now(), leverage)
-                    logger.debug(f"현재 레버리지 조회: {contract} = {leverage}x")
+                    leverage = int(float(leverage_str))        logger.info(f"✅ 실제 레버리지 확인됨: {leverage}x")
                     return leverage
                 except (ValueError, TypeError):
                     logger.warning(f"레버리지 값 변환 실패: {leverage_str}")
                     return self.DEFAULT_LEVERAGE
-            else:
-                logger.debug(f"포지션이 없어 기본 레버리지 반환: {self.DEFAULT_LEVERAGE}x")
-                return self.DEFAULT_LEVERAGE
+            else:        logger.info(f"🔍 포지션이 없어 계정 설정에서 레버리지 확인 시도")
+                
+                # 🔥 포지션이 없을 때 계정 설정에서 레버리지 확인 시도
+                try:
+                    endpoint = "/api/v4/futures/usdt/account"
+                    account_info = await self._request('GET', endpoint)
+                    logger.debug(f"계정 정보 응답: {account_info}")
+                    
+                    # 계정 정보에서 레버리지 확인 (있다면)
+                    if account_info and isinstance(account_info, dict):
+                        # Gate.io API 응답에서 레버리지 정보 찾기
+                        leverage_value = None
+                        for key in ['leverage', 'cross_leverage', 'default_leverage']:
+                            if key in account_info:
+                                leverage_value = account_info[key]
+                                break
+                        
+                        if leverage_value:
+                            try:
+                                leverage = int(float(leverage_value))        logger.info(f"✅ 계정 정보에서 레버리지 확인됨: {leverage}x")
+                                return leverage
+                            except (ValueError, TypeError):
+                                logger.warning(f"계정 레버리지 값 변환 실패: {leverage_value}")        logger.info(f"🔍 계정 정보에서 레버리지 찾을 수 없음, 기본값 반환: {self.DEFAULT_LEVERAGE}x")
+                    return self.DEFAULT_LEVERAGE
+                    
+                except Exception as e:
+                    logger.error(f"계정 정보 조회 실패: {e}")
+                    return self.DEFAULT_LEVERAGE
                 
         except Exception as e:
             logger.error(f"현재 레버리지 조회 실패: {e}")
@@ -551,8 +576,7 @@ class GateioMirrorClient:
             try:
                 current_leverage = await self.get_current_leverage(contract)
                 
-                if current_leverage == leverage:
-                    logger.info(f"레버리지 이미 설정됨: {contract} - {leverage}x")
+                if current_leverage == leverage:        logger.info(f"레버리지 이미 설정됨: {contract} - {leverage}x")
                     return {"status": "already_set", "leverage": leverage}
                 
                 endpoint = f"/api/v4/futures/usdt/positions/{contract}/leverage"
@@ -562,9 +586,7 @@ class GateioMirrorClient:
                 }
                 
                 if cross_leverage_limit > 0:
-                    params["cross_leverage_limit"] = str(cross_leverage_limit)
-                
-                logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {current_leverage}x → {leverage}x")
+                    params["cross_leverage_limit"] = str(cross_leverage_limit)        logger.info(f"Gate.io 레버리지 설정 시도 {attempt + 1}/{retry_count}: {contract} - {current_leverage}x → {leverage}x")
                 
                 response = await self._request('POST', endpoint, params=params)
                 
@@ -572,8 +594,7 @@ class GateioMirrorClient:
                 
                 verify_success = await self._verify_leverage_setting(contract, leverage, max_attempts=3)
                 if verify_success:
-                    self.current_leverage_cache[contract] = (datetime.now(), leverage)
-                    logger.info(f"Gate.io 레버리지 설정 완료: {contract} - {leverage}x")
+                    self.current_leverage_cache[contract] = (datetime.now(), leverage)        logger.info(f"Gate.io 레버리지 설정 완료: {contract} - {leverage}x")
                     return response
                 else:
                     if attempt < retry_count - 1:
@@ -589,8 +610,7 @@ class GateioMirrorClient:
                 
                 if any(keyword in error_msg.lower() for keyword in [
                     "leverage not changed", "same leverage", "already set"
-                ]):
-                    logger.info(f"레버리지가 이미 설정되어 있음: {contract} - {leverage}x")
+                ]):        logger.info(f"레버리지가 이미 설정되어 있음: {contract} - {leverage}x")
                     return {"status": "already_set", "leverage": leverage}
                 
                 if attempt < retry_count - 1:
@@ -619,8 +639,7 @@ class GateioMirrorClient:
                     if current_leverage:
                         try:
                             current_lev_int = int(float(current_leverage))
-                            if current_lev_int == expected_leverage:
-                                logger.info(f"레버리지 설정 검증 성공: {current_lev_int}x")
+                            if current_lev_int == expected_leverage:        logger.info(f"레버리지 설정 검증 성공: {current_lev_int}x")
                                 return True
                             else:
                                 logger.debug(f"레버리지 검증: 현재 {current_lev_int}x ≠ 예상 {expected_leverage}x")
@@ -650,13 +669,11 @@ class GateioMirrorClient:
         return False
     
     async def mirror_bitget_leverage(self, bitget_leverage: int, contract: str = "BTC_USDT") -> bool:
-        try:
-            logger.info(f"레버리지 미러링 시작: 비트겟 {bitget_leverage}x → 게이트 {contract}")
+        try:        logger.info(f"레버리지 미러링 시작: 비트겟 {bitget_leverage}x → 게이트 {contract}")
             
             current_gate_leverage = await self.get_current_leverage(contract)
             
-            if current_gate_leverage == bitget_leverage:
-                logger.info(f"레버리지 이미 동일: {bitget_leverage}x")
+            if current_gate_leverage == bitget_leverage:        logger.info(f"레버리지 이미 동일: {bitget_leverage}x")
                 return True
             
             result = await self.set_leverage(contract, bitget_leverage)
@@ -664,8 +681,7 @@ class GateioMirrorClient:
             if result.get("warning"):
                 logger.warning(f"레버리지 미러링 실패: {result}")
                 return False
-            else:
-                logger.info(f"레버리지 미러링 성공: {current_gate_leverage}x → {bitget_leverage}x")
+            else:        logger.info(f"레버리지 미러링 성공: {current_gate_leverage}x → {bitget_leverage}x")
                 return True
             
         except Exception as e:
@@ -705,8 +721,7 @@ class GateioMirrorClient:
                 if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
                     try:
                         tp_price = float(value)
-                        if tp_price > 0:
-                            logger.info(f"비트겟 TP 추출: {field} = ${tp_price:.2f}")
+                        if tp_price > 0:        logger.info(f"비트겟 TP 추출: {field} = ${tp_price:.2f}")
                             break
                     except:
                         continue
@@ -717,8 +732,7 @@ class GateioMirrorClient:
                 if value and str(value) not in ['0', '0.0', '', 'null', 'None']:
                     try:
                         sl_price = float(value)
-                        if sl_price > 0:
-                            logger.info(f"비트겟 SL 추출: {field} = ${sl_price:.2f}")
+                        if sl_price > 0:        logger.info(f"비트겟 SL 추출: {field} = ${sl_price:.2f}")
                             break
                     except:
                         continue
@@ -731,45 +745,27 @@ class GateioMirrorClient:
                 reduce_only_flag = True
                 
                 if 'close_long' in side or side == 'close long':
-                    final_size = -abs(gate_size)
-                    logger.info(f"클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
+                    final_size = -abs(gate_size)        logger.info(f"클로즈 롱: 롱 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
                 elif 'close_short' in side or side == 'close short':
-                    final_size = abs(gate_size)
-                    logger.info(f"클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
+                    final_size = abs(gate_size)        logger.info(f"클로즈 숏: 숏 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
                 else:
                     if 'sell' in side or 'short' in side:
-                        final_size = -abs(gate_size)
-                        logger.info(f"클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
+                        final_size = -abs(gate_size)        logger.info(f"클로즈 매도: 포지션 종료 → 게이트 매도 (음수 사이즈: {final_size})")
                     else:
-                        final_size = abs(gate_size)
-                        logger.info(f"클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
+                        final_size = abs(gate_size)        logger.info(f"클로즈 매수: 포지션 종료 → 게이트 매수 (양수 사이즈: {final_size})")
             else:
                 reduce_only_flag = False
                 if 'short' in side or 'sell' in side:
-                    final_size = -abs(gate_size)
-                    logger.info(f"오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {final_size})")
+                    final_size = -abs(gate_size)        logger.info(f"오픈 숏: 새 숏 포지션 생성 → 게이트 매도 (음수 사이즈: {final_size})")
                 else:
-                    final_size = abs(gate_size)
-                    logger.info(f"오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {final_size})")
+                    final_size = abs(gate_size)        logger.info(f"오픈 롱: 새 롱 포지션 생성 → 게이트 매수 (양수 사이즈: {final_size})")
             
-            gate_trigger_type = "ge" if trigger_price > current_gate_price else "le"
-            
-            logger.info(f"완벽 미러링 주문 생성:")
-            logger.info(f"   - 비트겟 ID: {order_id}")
-            logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")
-            logger.info(f"   - 트리거가: ${trigger_price:.2f}")
-            logger.info(f"   - 레버리지: {leverage}x {'✅' if leverage_success else '⚠️'}")
-            logger.info(f"   - 마진 모드: Cross {'✅' if margin_success else '⚠️'}")
+            gate_trigger_type = "ge" if trigger_price > current_gate_price else "le"        logger.info(f"완벽 미러링 주문 생성:")        logger.info(f"   - 비트겟 ID: {order_id}")        logger.info(f"   - 방향: {side} ({'클로즈' if is_close_order else '오픈'})")        logger.info(f"   - 트리거가: ${trigger_price:.2f}")        logger.info(f"   - 레버리지: {leverage}x {'✅' if leverage_success else '⚠️'}")        logger.info(f"   - 마진 모드: Cross {'✅' if margin_success else '⚠️'}")
             
             tp_display = f"${tp_price:.2f}" if tp_price is not None else "없음"
-            sl_display = f"${sl_price:.2f}" if sl_price is not None else "없음"
+            sl_display = f"${sl_price:.2f}" if sl_price is not None else "없음"        logger.info(f"   - TP: {tp_display}")        logger.info(f"   - SL: {sl_display}")        logger.info(f"   - 게이트 사이즈: {final_size}")
             
-            logger.info(f"   - TP: {tp_display}")
-            logger.info(f"   - SL: {sl_display}")
-            logger.info(f"   - 게이트 사이즈: {final_size}")
-            
-            if tp_price or sl_price:
-                logger.info(f"TP/SL 포함 통합 주문 생성")
+            if tp_price or sl_price:        logger.info(f"TP/SL 포함 통합 주문 생성")
                 
                 gate_order = await self.create_conditional_order_with_tp_sl_v3(
                     trigger_price=trigger_price,
@@ -777,9 +773,7 @@ class GateioMirrorClient:
                     tp_price=tp_price,
                     sl_price=sl_price,
                     reduce_only=reduce_only_flag,
-                    trigger_type=gate_trigger_type
-                )
-                
+                    trigger_type=gate_trigger_type)
                 actual_tp = gate_order.get('stop_profit_price', '')
                 actual_sl = gate_order.get('stop_loss_price', '')
                 has_tp_sl = bool(actual_tp or actual_sl)
@@ -802,16 +796,13 @@ class GateioMirrorClient:
                     'margin_mode_forced': margin_success
                 }
                 
-            else:
-                logger.info(f"일반 예약 주문 생성 (TP/SL 없음)")
+            else:        logger.info(f"일반 예약 주문 생성 (TP/SL 없음)")
                 
                 gate_order = await self.create_price_triggered_order_v3(
                     trigger_price=trigger_price,
                     order_size=final_size,
                     reduce_only=reduce_only_flag,
-                    trigger_type=gate_trigger_type
-                )
-                
+                    trigger_type=gate_trigger_type)
                 return {
                     'success': True,
                     'gate_order_id': gate_order.get('id'),
@@ -868,18 +859,12 @@ class GateioMirrorClient:
                 data["initial"]["reduce_only"] = True
             
             if tp_price and tp_price > 0:
-                data["stop_profit_price"] = str(tp_price)
-                logger.info(f"TP 설정: ${tp_price:.2f}")
+                data["stop_profit_price"] = str(tp_price)        logger.info(f"TP 설정: ${tp_price:.2f}")
             
             if sl_price and sl_price > 0:
-                data["stop_loss_price"] = str(sl_price)
-                logger.info(f"SL 설정: ${sl_price:.2f}")
+                data["stop_loss_price"] = str(sl_price)        logger.info(f"SL 설정: ${sl_price:.2f}")        logger.info(f"Gate.io TP/SL 주문 데이터 (Cross 마진): {json.dumps(data, indent=2)}")
             
-            logger.info(f"Gate.io TP/SL 주문 데이터 (Cross 마진): {json.dumps(data, indent=2)}")
-            
-            response = await self._request('POST', endpoint, data=data)
-            
-            logger.info(f"Gate.io TP/SL 통합 주문 생성 성공 (Cross 마진): {response.get('id')}")
+            response = await self._request('POST', endpoint, data=data)        logger.info(f"Gate.io TP/SL 통합 주문 생성 성공 (Cross 마진): {response.get('id')}")
             
             return response
             
@@ -911,13 +896,9 @@ class GateioMirrorClient:
             }
             
             if reduce_only:
-                data["initial"]["reduce_only"] = True
+                data["initial"]["reduce_only"] = True        logger.info(f"Gate.io 일반 주문 데이터 (Cross 마진): {json.dumps(data, indent=2)}")
             
-            logger.info(f"Gate.io 일반 주문 데이터 (Cross 마진): {json.dumps(data, indent=2)}")
-            
-            response = await self._request('POST', endpoint, data=data)
-            
-            logger.info(f"Gate.io 일반 트리거 주문 생성 성공 (Cross 마진): {response.get('id')}")
+            response = await self._request('POST', endpoint, data=data)        logger.info(f"Gate.io 일반 트리거 주문 생성 성공 (Cross 마진): {response.get('id')}")
             
             return response
             
@@ -932,45 +913,33 @@ class GateioMirrorClient:
                                                    reduce_only: bool = False,
                                                    trigger_type: str = "ge") -> Dict:
         return await self.create_conditional_order_with_tp_sl_v3(
-            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
-        )
-    
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type)
     async def create_price_triggered_order_v2(self, trigger_price: float, order_size: int,
                                             reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
         return await self.create_price_triggered_order_v3(
-            trigger_price, order_size, reduce_only, trigger_type
-        )
-    
+            trigger_price, order_size, reduce_only, trigger_type)
     async def create_conditional_order_with_tp_sl_fixed(self, trigger_price: float, order_size: int,
                                                       tp_price: Optional[float] = None,
                                                       sl_price: Optional[float] = None,
                                                       reduce_only: bool = False,
                                                       trigger_type: str = "ge") -> Dict:
         return await self.create_conditional_order_with_tp_sl_v3(
-            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
-        )
-    
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type)
     async def create_price_triggered_order_fixed(self, trigger_price: float, order_size: int,
                                                reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
         return await self.create_price_triggered_order_v3(
-            trigger_price, order_size, reduce_only, trigger_type
-        )
-    
+            trigger_price, order_size, reduce_only, trigger_type)
     async def create_conditional_order_with_tp_sl(self, trigger_price: float, order_size: int,
                                                 tp_price: Optional[float] = None,
                                                 sl_price: Optional[float] = None,
                                                 reduce_only: bool = False,
                                                 trigger_type: str = "ge") -> Dict:
         return await self.create_conditional_order_with_tp_sl_v3(
-            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type
-        )
-    
+            trigger_price, order_size, tp_price, sl_price, reduce_only, trigger_type)
     async def create_price_triggered_order(self, trigger_price: float, order_size: int,
                                          reduce_only: bool = False, trigger_type: str = "ge") -> Dict:
         return await self.create_price_triggered_order_v3(
-            trigger_price, order_size, reduce_only, trigger_type
-        )
-    
+            trigger_price, order_size, reduce_only, trigger_type)
     async def get_price_triggered_orders(self, contract: str, status: str = "open") -> List[Dict]:
         try:
             endpoint = "/api/v4/futures/usdt/price_orders"
@@ -989,8 +958,7 @@ class GateioMirrorClient:
     async def cancel_price_triggered_order(self, order_id: str) -> Dict:
         try:
             endpoint = f"/api/v4/futures/usdt/price_orders/{order_id}"
-            response = await self._request('DELETE', endpoint)
-            logger.info(f"Gate.io 가격 트리거 주문 취소 성공: {order_id}")
+            response = await self._request('DELETE', endpoint)        logger.info(f"Gate.io 가격 트리거 주문 취소 성공: {order_id}")
             return response
             
         except Exception as e:
@@ -1004,8 +972,7 @@ class GateioMirrorClient:
             await self.ensure_cross_margin_mode_before_order(contract)
             
             current_leverage = await self.get_current_leverage(contract)
-            if current_leverage < self.DEFAULT_LEVERAGE:
-                logger.info(f"레버리지가 낮음 ({current_leverage}x), 기본값으로 설정: {self.DEFAULT_LEVERAGE}x")
+            if current_leverage < self.DEFAULT_LEVERAGE:        logger.info(f"레버리지가 낮음 ({current_leverage}x), 기본값으로 설정: {self.DEFAULT_LEVERAGE}x")
                 await self.set_leverage(contract, self.DEFAULT_LEVERAGE)
             
             endpoint = "/api/v4/futures/usdt/orders"
@@ -1027,9 +994,7 @@ class GateioMirrorClient:
             if iceberg > 0:
                 data["iceberg"] = iceberg
             
-            response = await self._request('POST', endpoint, data=data)
-            
-            logger.info(f"Gate.io 주문 생성 성공 (Cross 마진): {response.get('id')} (레버리지: {current_leverage}x)")
+            response = await self._request('POST', endpoint, data=data)        logger.info(f"Gate.io 주문 생성 성공 (Cross 마진): {response.get('id')} (레버리지: {current_leverage}x)")
             return response
             
         except Exception as e:
@@ -1061,10 +1026,7 @@ class GateioMirrorClient:
                 contract=contract,
                 size=close_size,
                 price=None,
-                reduce_only=True
-            )
-            
-            logger.info(f"Gate.io 포지션 종료 성공 (Cross 마진): {close_size}")
+                reduce_only=True)        logger.info(f"Gate.io 포지션 종료 성공 (Cross 마진): {close_size}")
             return result
             
         except Exception as e:
@@ -1073,5 +1035,4 @@ class GateioMirrorClient:
     
     async def close(self):
         if self.session:
-            await self.session.close()
-            logger.info("Gate.io 미러링 클라이언트 세션 종료")
+            await self.session.close()        logger.info("Gate.io 미러링 클라이언트 세션 종료")
